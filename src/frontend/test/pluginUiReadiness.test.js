@@ -165,6 +165,24 @@ test('① 未就绪（status=starting）→ 占位、不渲染 iframe、不探�
   assert.match(text, /layoutFree\.plugin\.notReadyTitle/, '占位须有 i18n 标题')
   assert.match(text, /layoutFree\.plugin\.notReadyStatus/, '占位须显示插件状态')
   assert.match(text, /layoutFree\.plugin\.retry/, '占位须有「重试」按钮')
+  // PLUGIN-LOAD-1 D11：状态文字不再拼 detail 行（状态文案映射见源码守卫 ④）
+  assert.doesNotMatch(text, /等待外部进程连接/, 'D11：不得显示 detail 行')
+
+  app.unmount()
+})
+
+test('①b 台账已加载但查无此 id → 「未安装」，不探活', async () => {
+  resetPlugins([])
+  probeCalls.length = 0
+  const { app, root } = mount({ ...PROPS })
+  await nextTick()
+
+  assert.ok(byClass(root, 'pph-placeholder'), '未安装须渲染占位')
+  assert.equal(byClass(root, 'pph-frame'), null, '未安装不得渲染 iframe')
+  assert.equal(probeCalls.length, 0, '未安装不做探活')
+  const text = textOf(root)
+  assert.match(text, /layoutFree\.plugin\.notInstalledHint/)
+  // D11 状态文案映射（statusMissing）由源码守卫 ④ 断言（$t 桩只回 key，嵌套参数不可见）
 
   app.unmount()
 })
@@ -242,6 +260,20 @@ test('③ 状态转 running 自动重试上限 3 次；超限后仅手动重试�
   probeOk = false
 })
 
+test('⑤ 源码守卫：打开布局编辑 / 新建前先 plugin-refresh（D2/D4/D5）', () => {
+  const view = read('layout/bar-views/LayoutProfilesView.vue')
+  assert.match(view, /refreshPluginsHard/, '布局下拉须调用 plugin-refresh 封装')
+  assert.match(view, /await preparePlugins\(\)/, '打开编辑框 / 新建对话框前须等待刷新完成')
+  assert.match(view, /class="lp-mask"/, '刷新期间须有不可关闭遮罩')
+  // D4：刷新失败 → 提示并取消打开（不带着未收敛的插件清单继续编辑）
+  assert.match(view, /message\.error\(/, '刷新失败须有错误提示')
+  assert.match(view, /if \(!\(await preparePlugins\(\)\)\) return/, '刷新失败须取消打开')
+  const plugins = readPkg('usePlugins.js')
+  assert.match(plugins, /mq\.emit\('plugin-refresh'/, 'plugin-refresh 走既有 mq 门面')
+  assert.match(plugins, /export function refreshPluginsHard/, '须导出单飞刷新入口')
+  assert.doesNotMatch(plugins, /回落 plugin-list/, '刷新失败不得回落继续打开（D4）')
+})
+
 test('④ 源码守卫：零 watch / 零 watchEffect；iframe 有 error 回调；zh/en 文案齐备', () => {
   const readiness = readPkg('usePluginReadiness.js')
   const host = readPkg('PluginPageHost.vue')
@@ -253,7 +285,7 @@ test('④ 源码守卫：零 watch / 零 watchEffect；iframe 有 error 回调�
   assert.match(readiness, /export const LOAD_TIMEOUT_MS = 3000/, '首帧加载超时须为 3s')
   assert.match(readiness, /export const AUTO_RETRY_LIMIT = 3/, '自动重试上限须为 3')
   assert.match(readiness, /subscribePluginChange\(onPluginChange\)/, '就绪态须由插件变更事件驱动')
-  assert.match(readiness, /import \{ pluginById, subscribePluginChange \} from '\.\/usePlugins'/, '状态取自既有 usePlugins')
+  assert.match(readiness, /import \{ pluginById, pluginsReady, subscribePluginChange \} from '\.\/usePlugins'/, '状态取自既有 usePlugins')
   // PLUGIN-INSTANCE-1：插件页归属 = 承载它的窗口实例（唯一 URL 构造点）
   assert.match(readiness, /instance_id=\$\{encodeURIComponent\(iid\)\}/, 'URL 须带可选 instance_id（PLUGIN-INSTANCE-1）')
   assert.match(readiness, /inst\.currentId\(\)/, '实例 id 取自宿主端口（不直连宿主 mq / 全局）')
@@ -261,6 +293,10 @@ test('④ 源码守卫：零 watch / 零 watchEffect；iframe 有 error 回调�
   assert.match(host, /v-if="showFrame"/, 'iframe 须按就绪态条件挂载')
   assert.match(host, /@error="onFrameError"/, 'iframe 须接 error')
   assert.match(host, /class="pph-retry"/, '占位须有手动重试按钮')
+  // PLUGIN-LOAD-1 D11：状态 → 统一文案映射（未安装 / 启动中 / …），且不再拼 detail
+  assert.match(host, /statusMissing/, '缺插件须显示「未安装」')
+  assert.match(host, /starting: 'statusStarting'/, 'starting 须映射「启动中」')
+  assert.doesNotMatch(host, /\{\{ detail \}\}/, 'D11：不得显示 detail 行')
   // 占位样式段（`.pph-placeholder` 之后）只用主题 token，不得硬编码颜色
   const placeholderCss = host.slice(host.indexOf('.pph-placeholder'))
   assert.doesNotMatch(placeholderCss, /#[0-9a-fA-F]{3,6}\b/, '占位样式不得硬编码颜色（只用主题 token）')
@@ -274,11 +310,21 @@ test('④ 源码守卫：零 watch / 零 watchEffect；iframe 有 error 回调�
     'notReadyStatus',
     'autoRetryExhausted',
     'retry',
+    // PLUGIN-LOAD-1 D11：状态文字（未安装 / 启动中 / …）
+    'notInstalledHint',
+    'statusMissing',
+    'statusStarting',
+    'statusRunning',
+    'statusError',
+    'statusStopped',
+    'statusDisabled',
   ]
   for (const locale of ['zh-CN', 'en-US']) {
     const json = JSON.parse(read(`locales/${locale}/layoutFree.json`))
     for (const k of keys) {
       assert.ok(json.plugin && json.plugin[k], `${locale} 缺 layoutFree.plugin.${k}`)
     }
+    // 插件 view 未注册时的「启动中」占位文案（LfViewHost）
+    assert.ok(json.container && json.container.viewStarting, `${locale} 缺 layoutFree.container.viewStarting`)
   }
 })

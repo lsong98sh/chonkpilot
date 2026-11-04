@@ -44,8 +44,10 @@
   * vfts 文件清单 = 插件自持文件 `<workdir>/.chonkpilot/vfts/file_list.json`（每行含 `path`
     绝对路径）→ 逐文件命中集合（与落盘 codegraph 索引同判据口径）。
   * codegraph 落盘索引 = **bbolt 单文件库** `<ws>/.chonkpilot/codegraph/index.db`（引擎侧
-    store.go；不再有 index.json）→ 经引擎只读自检 `-dump <ws>` 打印 JSON `{count,files}` 读回
-    命中文件集合（不重建、不写盘）。
+    store.go；不再有 index.json）。CODEGRAPH-INLINE（2026-11-02）后引擎库内联进插件进程、
+    发行根不再投放 `mcps/codegraph/` 引擎 exe（原 `-dump` 只读自检面退场）→ 命中文件集合
+    经**查询工具** `codegraph_get_symbol_info`（file+name 精确查，tool.call 动作面）对夹具
+    全部哨兵符号逐一探测推导（符号 ↔ 文件一一映射，哨兵集合即文件集合）。
   * 端到端工具调用已随 `dsl_run` 退役移除（G5 改为配置面回读，见 G5 docstring）。
 
 隔离与环境（51-FP与测试映射 §5/§6-8）：
@@ -61,7 +63,6 @@
 
 import json
 import os
-import subprocess
 import sys
 import time
 
@@ -126,7 +127,7 @@ with open(os.path.join(WS, ".gitignore"), "w", encoding="utf-8") as f:
     f.write("*.gen.go\n!special.gen.go\ngate_ign/sub/\n!gate_ign/sub/u.go\n")
 
 # ── 落盘索引「命中集合」期望值（逐用例由上方夹具 + exts / skip-dirs / .gitignore / '!' / 目录剪枝
-#    规则人工推导；**禁循环论证**——绝不用引擎 `-dump` 输出反推期望）。
+#    规则人工推导；**禁循环论证**——绝不用引擎查询面输出反推期望）。
 # 受支持扩展名（引擎 lang.go extLang）= {.go,.js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyw,.rs,.java}；
 # 故夹具里的 `gate_src/note.md` / `gate_find/*.txt` / `.gitignore` 一律**不被索引**；
 # `gate_find/` 仅 G5（FIND）用，与索引无关。未写 `codegraph.exts` → 引擎回落全部受支持语言。
@@ -596,33 +597,34 @@ def case_g2_legacy_enable_keys_inert():
 
 IDX_DB = os.path.join(WS, ".chonkpilot", "codegraph", "index.db")
 
-
-def _engine_exe():
-    """codegraph 引擎 exe 路径（发行根 `<exeDir>/mcps/codegraph/`——插件按「宿主 exe 同目录/mcps/codegraph」解析）。"""
-    return os.path.join(os.path.dirname(_h.resolve_gui_exe()),
-                        "mcps", "codegraph", "chonkpilot-codegraph-mcp-server.exe")
+# 夹具哨兵符号 → 相对路径（每个夹具文件唯一哨兵函数，见 G1 常量区）——
+# 符号 ↔ 文件一一映射，符号集合即文件集合（I-78 同款思路）。
+SENT_FILES = {
+    "Alpha": "gate_src/alpha.go",
+    "Delta": "gate_skip/delta.go",
+    "SG_IGN_KEEP": "gate_ign/keep.go",
+    "SG_IGN_GEN": "gate_ign/gen.gen.go",
+    "SG_IGN_SPECIAL": "gate_ign/special.gen.go",
+    "SG_IGN_SUB": "gate_ign/sub/u.go",
+}
 
 
 def _idx_files():
     """落盘索引命中文件集合（相对路径，'/' 分隔）。
 
-    索引落盘 = **bbolt 单文件库** `<ws>/.chonkpilot/codegraph/index.db`（引擎侧 store.go），
-    Python 无法直读 → 经引擎**只读自检** `-dump <ws>` 打印 JSON `{count,files}` 读回；
-    `-dump` 只 LoadIndex、不重建、不写盘（库缺失时也不会创建 index.db）。
+    CODEGRAPH-INLINE（2026-11-02）：引擎已库内联进 codegraph 插件进程，发行根**不再投放**
+    `mcps/codegraph/` 引擎 exe → 原 `-dump` 只读自检面退场。改经**查询工具面**探测：
+    对夹具全部哨兵符号逐一 `tool.call codegraph_get_symbol_info`（file+name 精确查），
+    命中即视为该文件在索引中。`{status:"not_found"}` 或未就绪（pending/error）均不算命中
+    （未就绪由上层 `_want_idx_retry` 轮询自然处理）。
     """
-    exe = _engine_exe()
-    if not os.path.isfile(exe):
-        raise TestError("codegraph 引擎 exe 未找到（L4 需发行产物）：%s" % exe)
-    p = subprocess.run([exe, "-dump", WS], capture_output=True, text=True, timeout=180,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    if p.returncode != 0:
-        raise TestError("引擎 -dump 失败（rc=%d）：%s"
-                        % (p.returncode, (p.stderr or "").strip()[:400]))
-    try:
-        o = json.loads(p.stdout or "")
-    except Exception as e:
-        raise TestError("引擎 -dump 输出非 JSON：%r（%s）" % ((p.stdout or "")[:400], e))
-    return set(str(x) for x in (o.get("files") or []))
+    out = set()
+    for sent, rel in SENT_FILES.items():
+        r = plugin_api("tool.call", {"name": "codegraph_get_symbol_info",
+                                     "args": {"workdir": WS, "file": rel, "name": sent}})
+        if isinstance(r, dict) and r.get("status") is None and r.get("matches"):
+            out.add(rel)
+    return out
 
 
 def _want_idx(expected, desc):
@@ -690,8 +692,8 @@ def case_g3_index_scope():
       ② 插件动作 `engine-status` 现取状态：`exts` = 生效扩展名集合、`skipDirs` = 用户追加集、
          `indexedFiles` 命中文件数（与③期望集合规模一致）；
       ③ 落盘 bbolt 索引库 `<ws>/.chonkpilot/codegraph/index.db` 的**命中文件集合**
-         （经引擎只读自检 `-dump` 读回）→ 与**夹具推导的显式期望集合字面全等**
-         （一个不多一个不少，差集在失败信息里打印）。
+         （经查询工具 `codegraph_get_symbol_info` 对夹具哨兵符号探测读回，见 `_idx_files`）
+         → 与**夹具推导的显式期望集合字面全等**（一个不多一个不少，差集在失败信息里打印）。
 
     期望集合口径（夹具推导，见上方 `_G3_AB` / `_G3_B` 常量）：
       基线/A：6 个 .go 全收（gate_src/alpha.go + gate_skip/delta.go +
@@ -1090,8 +1092,39 @@ def case_g9_vfts_gitignore_semantics():
 # main
 # ══════════════════════════════════════════════════════════
 
+def _plugin_status(pid):
+    """插件台账单插件 status（plugin-list 61 §2.3）。"""
+    pl = c.req("plugin-list", {}) or {}
+    plugins = ((pl.get("data") or {}).get("plugins")
+               if isinstance(pl.get("data"), dict) else pl.get("plugins")) or []
+    p = next((x for x in plugins if x.get("id") == pid), None)
+    return (p or {}).get("status") or "absent"
+
+
+def wait_plugins_running(ids, max_wait=420):
+    """等插件台账转 running 后再进用例（G1/G2 工具面与 G3/G4 插件动作都依赖就绪）。
+
+    2026-11-04 首跑定位：codegraph 引擎（CODEGRAPH-INLINE，CGO + bbolt）冷启动
+    初始化可达数分钟，此前用例在插件 `starting` 阶段就断言工具面/插件动作 → 必失败。
+    注：vfts 引擎**内联在 codegraph 插件进程**（配置键 `plugins.codegraph.vfts.*`，
+    `vfts_query` 工具亦由 codegraph 插件注册）→ 台账无独立 vfts 插件，只需等 codegraph。
+    """
+    t0 = time.time()
+    pending = list(ids)
+    while pending and time.time() - t0 < max_wait:
+        pending = [p for p in pending if _plugin_status(p) != "running"]
+        if not pending:
+            break
+        time.sleep(3)
+    if pending:
+        raise TestError("插件 %r 在 %ds 内未就绪（statuses=%s）"
+                        % (pending, max_wait, {p: _plugin_status(p) for p in ids}))
+    print("[boot] 插件就绪：%s（等待 %.0fs）" % (ids, time.time() - t0), flush=True)
+
+
 def main():
     c.wait_ready()
+    wait_plugins_running(["codegraph"])
     c.console(clear=True)
     total = 0
     ok = 0

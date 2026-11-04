@@ -33,7 +33,9 @@ func TestBuckets(t *testing.T) {
 	}{
 		{data.LayerUsr, []string{"config", "llms"}, []string{"sessions", "file_list", "inbox_items", "index_queue"}},
 		{data.LayerPrj, []string{"config"}, []string{"llms", "sessions", "inbox_items", "file_list", "index_queue"}},
-		{data.LayerPrjUsr, []string{"config", "sessions", "tasktree", "inbox_items", "dialogs"}, []string{"file_list", "index_queue"}},
+		// 2026-11-03：prjusr 只建「宿主/server 独占」的表（config + 对话目录 + 进度/名册 + 事件）；
+		// 会话正文桶与二级索引已随旧布局退场 → 不再创建（读写都只走对话库）。
+		{data.LayerPrjUsr, []string{"config", "dialogs", "turn_events", "memory_extract", "group_participants", "group_round_targets"}, []string{"sessions", "turns", "messages", "tasktree", "task_shadow", "inbox_items", "sessions_by_top", "messages_by_session", "file_list", "index_queue"}},
 		// SESSION-DB-2：对话库 = Session 独占，只建会话正文域；配置（config）与对话目录（dialogs）
 		// 归宿主/server 独占库，不得出现在对话库内。
 		{data.LayerDialog, []string{"sessions", "turns", "messages", "inbox_items"}, []string{"config", "dialogs", "llms"}},

@@ -14,11 +14,11 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
+	"github.com/lsong98sh/chonkpilot-agent/gateway"
+	"github.com/lsong98sh/chonkpilot-agent/router"
 	"github.com/lsong98sh/chonkpilot-agent/session"
 	sessioninbox "github.com/lsong98sh/chonkpilot-agent/session/inbox"
 	sessionrunner "github.com/lsong98sh/chonkpilot-agent/session/runner"
-	"github.com/lsong98sh/chonkpilot-agent/gateway"
-	"github.com/lsong98sh/chonkpilot-agent/router"
 )
 
 // StartReq 是 llm-start 载荷：session/turn 由客户端分配（必填）；work_dir/data_dir
@@ -170,6 +170,16 @@ type turnCtx struct {
 	llmModel  string
 	llmThink  string
 	llmEffort string
+	// llmAutoCandidates 是 auto 档位调度（D-65）的同档次候选 provider 名（有序；不含首选）。
+	// 非空 → 交给 router 在可重试失败后换 provider；空 = 既有重试行为（普通指定名 / 恢复轮）。
+	llmAutoCandidates []string
+	// llmImageFallbacks 是 auto 模式「图像感知」的首选替换候选（D-65 口径更新，2026-11-04）：
+	// 默认 LLM 不具备识图能力（vision=0）且本次请求含图像时，**首次调用**改选第一个候选。
+	// 空 = 不触发（普通指定名 / 默认已具备识图 / 无合格候选 → 降级仍用默认 LLM）。
+	llmImageFallbacks []ImageFallback
+	// llmVisionUnavailable = auto 模式且默认 LLM 不具备识图能力，但无任何合格候选 → 含图像时
+	// 降级仍用默认 LLM（仅日志留痕）。
+	llmVisionUnavailable bool
 	// 超时/重试（来自 usr 配置，启动时加载一次；T-27 接线 + RETRY-2）：
 	//   - responseTimeout/streamTimeout 传给 router `CallOptions`（首字节 / 流间隔超时）；
 	//   - retryCount/retryBudget 传给 router `CallOptions`（报文级重试次数 + 退避预算）；
@@ -418,6 +428,12 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		}
 	}
 	llmName := s.resolveAgentLLMNameFrom(usrCfg, agentLLMRef, "", req.LLMModel)
+	// D-65 auto 档位调度：llm 名写 `auto` → 首次解析到**默认 LLM**（defaultLLM；未配置 = 系统默认），
+	// 同档次候选随本轮快照交给 router，在可重试失败后换 provider（不新增消息、不改协议）。
+	autoMode := isAutoLLMName(llmName)
+	if autoMode {
+		llmName = resolveAutoLLMName(usrCfg, llmName)
+	}
 	// 工具面**硬拒**集（SUBCHAT-3 阶段 F-2）：`work_session`（群聊参与者干活子会话）排除
 	// `subchat_finish` —— 群聊收敛以主 agent「【已收敛】」标记 + 用户拍板为准（§7 / D10 / D12）；
 	// **单聊（sub_chat）不受影响**（其收口仍靠 subchat_finish）。其余会话（kind 空 / 主会话 /
@@ -444,6 +460,18 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		llmMaxIter = defaultMaxToolIterations
 	}
 	llmThink, llmEffort := resolveThinkEffort(pcfg, req)
+	// auto 档位调度：同档次候选 provider（D-65；不含首选）。仅 auto 模式计算，其余恒为 nil。
+	// 图像感知（2026-11-04 口径）：默认 LLM 不具备识图能力时预置「同档且 vision>0」的替换候选，
+	// 首次调用若判定本次请求含图像则整体切过去（判定在 llm 侧 `chatLLMClient.Step`）。
+	var llmAutoCandidates []string
+	var llmImageFallbacks []ImageFallback
+	var llmVisionUnavailable bool
+	if autoMode {
+		llmAutoCandidates = autoCandidates(usrCfg, llmName)
+		var needsVision bool
+		llmImageFallbacks, needsVision = s.autoImageFallbacks(usrCfg, llmName, req)
+		llmVisionUnavailable = needsVision && len(llmImageFallbacks) == 0
+	}
 	// 加载 usr 超时/重试配置（T-27 接线）：缺省已回落旧硬编码常量（复用上面已读的 usrCfg）。
 	respTO, streamTO, retryBudget, retryCnt := llmRuntimeConfigFrom(usrCfg)
 	contEnabled, contDelay, contText := llmContinueConfigFrom(usrCfg)
@@ -470,29 +498,32 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		inboxCh:   make(chan facade.InboxItem, 16),
 		asyncDone: make(chan asyncDoneMsg, 8),
 
-		llmTemperature:     llmTemp,
-		llmMaxOutputToken:  llmMO,
-		llmMaxContextToken: llmMC,
-		llmSpec:            llmSpec,
-		llmModel:           llmModel,
-		llmThink:           llmThink,
-		llmEffort:          llmEffort,
-		responseTimeout:    respTO,
-		streamTimeout:      streamTO,
-		retryCount:         retryCnt,
-		retryBudget:        retryBudget,
-		contCfg:            sessionrunner.ContinueConfig{Enabled: contEnabled, Delay: contDelay, Text: contText},
-		nextRunMax:         nextRunMax,
-		pendingTaskTimeout: pendingTaskTimeoutOf(zoneVals),
-		maxToolIterations:  llmMaxIter,
-		allowedTools:       allowedTools,
-		denyTools:          denyTools,
-		keepFullTurns:      keepFullTurnsOf(zoneVals),
-		keepFullTokens:     keepFullTokensOf(zoneVals),
-		briefBudget:        briefBudgetOf(zoneVals),
-		turnTokens:         turnTokens,
-		engineInbox:        newChatInbox(),
-		sysPromptText:      sc.sysPrompt,
+		llmTemperature:       llmTemp,
+		llmMaxOutputToken:    llmMO,
+		llmMaxContextToken:   llmMC,
+		llmSpec:              llmSpec,
+		llmModel:             llmModel,
+		llmThink:             llmThink,
+		llmEffort:            llmEffort,
+		llmAutoCandidates:    llmAutoCandidates,
+		llmImageFallbacks:    llmImageFallbacks,
+		llmVisionUnavailable: llmVisionUnavailable,
+		responseTimeout:      respTO,
+		streamTimeout:        streamTO,
+		retryCount:           retryCnt,
+		retryBudget:          retryBudget,
+		contCfg:              sessionrunner.ContinueConfig{Enabled: contEnabled, Delay: contDelay, Text: contText},
+		nextRunMax:           nextRunMax,
+		pendingTaskTimeout:   pendingTaskTimeoutOf(zoneVals),
+		maxToolIterations:    llmMaxIter,
+		allowedTools:         allowedTools,
+		denyTools:            denyTools,
+		keepFullTurns:        keepFullTurnsOf(zoneVals),
+		keepFullTokens:       keepFullTokensOf(zoneVals),
+		briefBudget:          briefBudgetOf(zoneVals),
+		turnTokens:           turnTokens,
+		engineInbox:          newChatInbox(),
+		sysPromptText:        sc.sysPrompt,
 	}
 	// 子轮次（父链非空 / 子会话 / 干活子会话）不做自动续写（见 engineRuntimeConfig）。
 	tc.autoContinueOff = subTurnNoAutoContinue(req, sc)

@@ -8,6 +8,7 @@
 package server
 
 import (
+	"strings"
 	"time"
 
 	"github.com/lsong98sh/chonkpilot-agent/session/runner"
@@ -17,6 +18,16 @@ import (
 // TURNRUN-1 批次 5 起键与注册表归 `chonkpilot-session/runner`，本函数仅为既有调用点保留适配名。
 // instance_id 与 id（turn/session/ask）都不会含 NUL → 用作分隔符无歧义。
 func instKey(instanceID, id string) string { return runner.Key(instanceID, id) }
+
+// splitInstKey 拆运行态键（[instKey] 的逆）：`<instance>\x00<id>` → (instance, id)；
+// 无 NUL（旧调用方 / instance 为空）→ ("", key)。仅做首 NUL 切分（非二进制内容判定，
+// 不适用 textx.IsBinary）；用 strings.Cut 表达"逆拼接"。
+func splitInstKey(key string) (instanceID, id string) {
+	if instance, id, ok := strings.Cut(key, "\x00"); ok {
+		return instance, id
+	}
+	return "", key
+}
 
 // lookupTurnSessionLocked 取指定 instance 的运行 turn（接口形态；**须持 s.mu**）：
 //   - instance 非空 → 只在该 instance 的桶内命中（跨 instance 不可见）；

@@ -48,7 +48,7 @@ _m = None    # 主窗口客户端
 
 FS_TOPIC = "filesys.changed"          # workdir 级（61 §2.4）
 PRJCFG_TOPIC = "data-prj-config-refresh"  # workdir 级（61 §3.1 项目级）
-INST_TOPIC = "plugin-ui-event"        # instance 级（61 §7.2：载荷可带 instance_id，桥按精确相等过滤）
+INST_TOPIC = "plugin-event"        # instance 级（61 §7.2：载荷可带 instance_id，桥按精确相等过滤）
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -256,7 +256,7 @@ def case_other_workdir_not_delivered():
 def case_instance_scope_unchanged():
     """S2-③ instance 级（载荷带 `instance_id`）回归：命中 → 只该窗；不命中 → 都不收。
 
-    驱动 = `plugin-ui-event`（61 §7.2：载荷**可带** `instance_id`，桥按精确相等过滤；
+    驱动 = `plugin-event`（61 §7.2：载荷**可带** `instance_id`，桥按精确相等过滤；
     有现成生产者路径 `plugin-` 前缀 → 桥直通总线，测试通道可驱动）。
     """
     w1, w2 = open_two_chats()
@@ -271,7 +271,7 @@ def case_instance_scope_unchanged():
     env = cl("").publish(INST_TOPIC, {"id": "mqscope-inst", "instance_id": i1, "topic": "mqscope",
                                       "payload": {"probe": tag}, "probe": tag}, 15000)
     if not isinstance(env, dict) or env.get("ok") is False:
-        raise TestError("plugin-ui-event 发布失败: %r" % (env,))
+        raise TestError("plugin-event 发布失败: %r" % (env,))
     if not poll(lambda: probes(c1, INST_TOPIC), lambda v: tag in v, timeout=15.0):
         raise TestError("instance 定向事件未到目标窗口 w1（主窗捕获=%s w2 捕获=%s）"
                         % (probes(cm, INST_TOPIC), probes(c2, INST_TOPIC)))

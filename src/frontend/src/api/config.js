@@ -202,19 +202,20 @@ export async function getPromptVariables() {
   return Array.isArray(res[GuiPromptVarsKeys.groups]) ? res[GuiPromptVarsKeys.groups] : []
 }
 
-// prj-security（项目安全白名单条目）
-// 契约（对齐 persist，见 14-安全域 §2.3）：**一条信任目录 = 一个 persist key**
-// （prj config 表 `security-<key>`），value = JSON 字符串 {"dir","writable"}；
+// prj-security（项目可写白名单条目）
+// 契约（对齐 persist，见 14-安全域 §2.3）：**一条目录 = 一个 persist key**
+// （prj config 表 `security-<key>`），value = JSON 字符串 `{"dir"}`（只写白名单；2026-11-03 C1 起
+// 不再有 `writable` 字段，旧值 `{dir,writable}` 读取时忽略该键）；
 // list 返回平铺 map（key 已剥 `security-` 前缀）→ 此处还原为条目数组（条目保序依赖 map 键序）。
-// key = 前端生成的不透明稳定 id：改目录/勾选只更新 value，key 不变（无孤儿键）。
+// key = 前端生成的不透明稳定 id：改目录只更新 value，key 不变（无孤儿键）。
 
 // genSecurityKey 生成条目稳定键（base36 时间戳 + 随机后缀；同毫秒并发亦不撞，且键序 ≈ 创建序）。
 function genSecurityKey() {
   return 'dir-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
 }
 
-// parseSecurityEntry 把 map 的 (key, value) 还原为条目：新形态 value = `{"dir","writable"}` JSON；
-// 旧形态 value 为标量（如 "true"）且 key 即目录（历史写法，兼容读回）。
+// parseSecurityEntry 把 map 的 (key, value) 还原为条目：value = `{"dir"}` JSON（兼容旧
+// `{dir,writable}`，`writable` 忽略）；旧形态 value 为标量且 key 即目录（历史写法，兼容读回）。
 function parseSecurityEntry(key, value) {
   let obj = null
   if (typeof value === 'string') {
@@ -226,13 +227,9 @@ function parseSecurityEntry(key, value) {
     obj = value
   }
   if (obj) {
-    return {
-      _key: key,
-      dir: typeof obj.dir === 'string' ? obj.dir : '',
-      writable: obj.writable === true || obj.writable === 'true',
-    }
+    return { _key: key, dir: typeof obj.dir === 'string' ? obj.dir : '' }
   }
-  return { _key: key, dir: key, writable: String(value) === 'true' }
+  return { _key: key, dir: key }
 }
 
 export async function getProjectSecurity() {
@@ -252,7 +249,7 @@ export async function saveProjectSecurity(entries, removedKeys = []) {
   const tasks = []
   for (const it of entries || []) {
     if (!it._key) it._key = genSecurityKey()
-    const value = JSON.stringify({ dir: it.dir || '', writable: !!it.writable })
+    const value = JSON.stringify({ dir: it.dir || '' })
     tasks.push(dataClient.save('prj-security', { key: it._key, value }))
   }
   for (const k of removedKeys) {

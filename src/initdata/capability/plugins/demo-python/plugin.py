@@ -11,15 +11,17 @@
   6. 事件订阅    plugin.register.subscriptions（session-complete）
   7. 私有数据    plugin/v1/data.read|write + storage.self（计数持久化）
   8. LLM 桥      plugin/v1/llm.step（**UDS 或 TCP 均可**：ADDR=`tcp://host:port` 时走 TCP）
-  9. 反向推送    plugin.publish → plugin-ui-event（iframe 实时日志）
+  9. 反向推送    plugin.publish → plugin-event（iframe 实时日志）
  10. 状态上报    plugin.status.report（running / degraded）
  11. 生命周期    plugin.shutdown（ctl）优雅退出；plugin.sys.ping 健康应答
 
   传输：宿主注入的 CHONKPILOT_PLUGIN_ADDR 决定通道 —— 裸路径 = AF_UNIX（默认）；
   `tcp://127.0.0.1:<port>` = TCP（与 UDS 完全相同的帧协议）。LLM 走的也是这条通道。
 
-运行：由宿主按 manifest 拉起（runtime.exe=python, args=["-u","plugin.py"]），
+运行：由宿主按极简 plugin.json 拉起（cmd=["python","-u","plugin.py"]），
 也可手工验证：设置 CHONKPILOT_PLUGIN_ADDR 后 `python plugin.py`。
+
+PLUGIN-LOAD-1（D12）：完整 manifest 由插件自读（同目录 manifest.json）并在 plugin.hello 上报。
 """
 
 import json
@@ -324,7 +326,7 @@ def publish(topic, payload):
     if _bridge is None:
         return
     try:
-        _bridge.call("plugin.publish", {"topic": "plugin-ui-event", "payload": {"topic": topic, "payload": payload}})
+        _bridge.call("plugin.publish", {"topic": "plugin-event", "payload": {"topic": topic, "payload": payload}})
     except Exception as e:
         log("publish failed: %s" % e)
 
@@ -427,6 +429,14 @@ def start_mcp():
     return "http://127.0.0.1:%d/mcp" % port, token
 
 
+def load_plugin_manifest():
+    """读取插件自带的完整 manifest（D12）：<CHONKPILOT_PLUGIN_ROOT>/manifest.json。"""
+    root = os.environ.get("CHONKPILOT_PLUGIN_ROOT", "")
+    if not root:
+        return None
+    return _load_json(os.path.join(root, "manifest.json"), None)
+
+
 def main():
     global _bridge
     addr = os.environ.get("CHONKPILOT_PLUGIN_ADDR", "")
@@ -436,10 +446,14 @@ def main():
     load_config()
     _bridge = Bridge(addr)
 
-    _bridge.call("plugin.hello", {
+    hello = {
         "id": PLUGIN_ID, "name": "Python 演示插件", "version": PLUGIN_VERSION,
         "features": {"mcp": "http", "ui": True, "lang": "python"},
-    })
+    }
+    manifest = load_plugin_manifest()
+    if manifest:
+        hello["manifest"] = manifest
+    _bridge.call("plugin.hello", hello)
     _bridge.call("plugin.register", {
         "features": {"mcp": "http", "ui": True},
         "subscriptions": [{"pattern": "session-complete"}],

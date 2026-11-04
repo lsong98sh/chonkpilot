@@ -245,7 +245,7 @@ test('契约已收录 §4 服务端 / §5 网关面主题（B2）', () => {
     'llm-start', 'llm-send', 'llm-cancel', 'ask-user-reply', 'tool-retry', 'task-stop', 'task-background',
     'prompt-optimise', 'task-verify', 'llm-simple', 'llm.test-connection', 'memory.flush',
     'agent-wizard', 'agent-wizard-probe', 'agent-wizard-compose', 'agent-wizard-generate', 'agent-wizard-skip',
-    'session-receive', 'session-complete', 'session-compress', 'session-ask', 'session-turn-start', 'session-new',
+    'session-receive', 'session-complete', 'session-ask', 'session-turn-start', 'session-new',
     'task-started', 'task-updated', 'task-done', 'server-starting', 'prompt-optimised', 'tool-notify',
     'instance-claim', 'instance-register', 'instance-heartbeat', 'instance-exit',
     // login-register / login-in / login-out 已删除（PRODSIM-1：本地 auth 全删，认证归 registry）
@@ -325,8 +325,8 @@ test('gui.* 消费（FileTree / Toolbar）读键 ⊆ 契约', () => {
     varName: 'r',
   })
 
-  // gui.window.status（WindowControls.vue syncMaximizeState；属性名读取 → 存在级）
-  const tb = read('layout/bar-views/WindowControls.vue')
+  // gui.window.status（TOPO-1：syncMaximizeState 迁基座 useWindowMaximized.js；属性名读取 → 存在级）
+  const tb = read('components/shell/useWindowMaximized.js')
   assertConsumerSubset({
     topic: 'gui.window.status',
     text: windowAround(tb, /async function syncMaximizeState\(\)/, 0, 340),

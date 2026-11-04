@@ -10,6 +10,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/chonkpilot/chonkpilot-llm/server"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 	"github.com/chonkpilot/chonkpilot-workspace"
 	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
@@ -46,7 +47,9 @@ func Build(cfg BootConfig, opts BuildOptions) (*App, error) {
 
 	// 工作区管理（PM）：必须在 filesys / server 之前就绪 —— 它订阅 instance-register 并
 	// 翻译为 workdir-opened/closed（61 §2.5），filesys 的监听范围由它驱动。
-	ws := workspace.New(bus, workspace.Options{})
+	// P5 步骤 1（C15）：实例视图**单源** —— 先建，再同时注入 workspace 与 server，二者只读同一份。
+	im := instance.New(bus)
+	ws := workspace.New(bus, workspace.Options{Instances: im})
 	if err := ws.Start(context.Background()); err != nil {
 		_ = bus.Close()
 		return nil, fmt.Errorf("workspace start: %w", err)
@@ -65,12 +68,13 @@ func Build(cfg BootConfig, opts BuildOptions) (*App, error) {
 
 	if !cfg.NoServer {
 		app.Server = server.New(bus, server.Options{
-			LLMBase:        cfg.LLMBase,
-			LLMModel:       cfg.LLMModel,
-			GatewayServers: opts.GatewayServers,
-			LogWriter:      opts.LogWriter,
-			Form:           cfg.Form,
-			Plugins:        DefaultPlugins(app.Facade),
+			LLMBase:         cfg.LLMBase,
+			LLMModel:        cfg.LLMModel,
+			GatewayServers:  opts.GatewayServers,
+			LogWriter:       opts.LogWriter,
+			Form:            cfg.Form,
+			Plugins:         DefaultPlugins(app.Facade),
+			InstanceManager: im,
 		})
 	}
 	return app, nil

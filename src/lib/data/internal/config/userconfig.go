@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -188,10 +189,64 @@ var userConfigSystemDefaults = map[string]any{
 	"defaultScenario":           "",
 }
 
+// legacyPluginKeyPrefixRenames 是插件改名的旧配置键前缀 → 新前缀（2026-10-31 websearch → web）。
+// 插件桥按会话身份强制 `plugins.<id>.` 前缀，新 id 读不到旧键 → 由数据层在首次读 usr 配置时
+// 一次性搬移（目标已存在则以目标为准，删旧键），保证 API Key 等用户配置不丢。
+var legacyPluginKeyPrefixRenames = [][2]string{
+	{"plugins.websearch.", "plugins.web."},
+}
+
+// migrateRenamedPluginKeys 执行插件改名键迁移；无迁移时原样返回入参（零写）。
+// 注意：不原地改写 vals（它是进程内缓存条目，只读共享）；有迁移时写完再失效缓存重读。
+func migrateRenamedPluginKeys(db *data.DB, vals map[string]string) map[string]string {
+	type move struct{ old, nk, val string }
+	var pending []move
+	planned := map[string]bool{}
+	for _, r := range legacyPluginKeyPrefixRenames {
+		oldPrefix, newPrefix := r[0], r[1]
+		for k, v := range vals {
+			if !strings.HasPrefix(k, oldPrefix) {
+				continue
+			}
+			field := strings.TrimPrefix(k, oldPrefix)
+			if field == "" || strings.Contains(field, "..") {
+				continue
+			}
+			nk := newPrefix + field
+			if _, exists := vals[nk]; exists {
+				pending = append(pending, move{old: k}) // 目标已存在 → 以目标为准，仅删旧键
+				continue
+			}
+			if planned[nk] {
+				continue
+			}
+			planned[nk] = true
+			pending = append(pending, move{old: k, nk: nk, val: v})
+		}
+	}
+	if len(pending) == 0 {
+		return vals
+	}
+	for _, m := range pending {
+		if m.nk != "" {
+			if err := data.SetConfig(db, m.nk, m.val); err != nil {
+				warn("config: 插件配置键迁移写入失败（%s → %s）：%v", m.old, m.nk, err)
+				continue
+			}
+		}
+		if err := data.DeleteConfig(db, m.old); err != nil {
+			warn("config: 插件配置键迁移删除旧键失败（%s）：%v", m.old, err)
+		}
+	}
+	invalidateConfigValues(db.Path())
+	return cachedConfigValues(db)
+}
+
 // readUserConfig 组装用户配置对象：逐 key 标量（缺失补系统默认）+ 专用表集合。
 // 标量/自由键读经进程内值缓存（valuecache.go，D-45）；llms 集合表不缓存（低频、整体替换写）。
 func readUserConfig(db *data.DB) map[string]any {
 	vals := cachedConfigValues(db)
+	vals = migrateRenamedPluginKeys(db, vals)
 	llms := readCollection(db, tableLLMs)
 	out := map[string]any{
 		"llms": llms,

@@ -37,21 +37,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"hash/fnv"
 	"strings"
 	"sync"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-agent/session/component"
 )
 
-// 群聊机读约定常量（见文件头）。
+// 群聊机读约定常量（取值唯一来源 = 组件 `component.Group*`；保留包内别名，调用点不变）。
 const (
-	groupIrrelevantMarker = "无关"    // 「无关」判定：回复首个非空行恰为此
-	groupConvergedMarker  = "【已收敛】" // 主 agent 判收敛：回复中单独一行
-	groupNotMetMarker     = "【未达成】" // 到顶终审「未达成」
-	groupAllMention       = "全体"    // `@全体` 归一标记（`@所有人` / `@all` 亦归一为此）
+	groupIrrelevantMarker = component.GroupIrrelevantMarker // 「无关」判定：回复首个非空行恰为此
+	groupConvergedMarker  = component.GroupConvergedMarker  // 主 agent 判收敛：回复中单独一行
+	groupNotMetMarker     = component.GroupNotMetMarker     // 到顶终审「未达成」
+	groupAllMention       = component.GroupAllMention       // `@全体` 归一标记（`@所有人` / `@all` 亦归一为此）
 )
 
 // groupParticipant 是参与者（名册项；`seq` = 名单固定顺序，D3）。
@@ -84,9 +84,8 @@ type groupSched struct {
 	driverMu sync.Mutex
 	driver   string
 
-	parts   []groupParticipant          // 按 seq 升序（D3）
-	byAgent map[string]groupParticipant // agent → 名册项（mention 解析用）
-	board   string                      // 群聊展示板 turn id（承载所有上屏消息）
+	parts   []groupParticipant // 按 seq 升序（D3）
+	board   string             // 群聊展示板 turn id（承载所有上屏消息）
 }
 
 // startGroupChat 启动群聊调度器（新开群聊）：
@@ -245,54 +244,19 @@ func (s *Server) resumeGroupChat(instanceID, groupID string) {
 //   - 有待补跑者 → (start=该轮, targets=待补跑者, prev=已产结论者末条发言, saveFirst=false)；
 //   - 无待补跑者（本轮已齐/无轮次记录）→ (start=该轮+1 或 1, targets=nil(全体), prev=nil, saveFirst=true)。
 func (s *Server) groupResumePlan(sc *groupSched) (int, []groupParticipant, []groupBoardMsg, bool) {
-	start := 1
-	var targets []groupParticipant
-	var prev []groupBoardMsg
-	saveFirst := true
 	res, err := s.cfg.GroupRoundTargetsLoad(facade.GroupRoundTargetsLoadRequest{
 		InstanceID: sc.instanceID, SessionID: sc.groupID, Scope: sc.scope,
 	})
 	if err != nil || len(res.List) == 0 {
-		return start, targets, prev, saveFirst
+		return 1, nil, nil, true
 	}
-	last := res.List[len(res.List)-1]
-	start = last.Round
-	// 各 agent 被投递的**累计**次数（截至最后一个大轮次）。
-	targeted := map[string]int{}
+	rounds := make([]component.GroupRound, 0, len(res.List))
 	for _, t := range res.List {
-		for _, a := range t.Agents {
-			targeted[a]++
-		}
+		rounds = append(rounds, component.GroupRound{Round: t.Round, Agents: t.Agents})
 	}
-	concluded := sc.boardConclusionCounts()
-	pending := map[string]bool{}
-	for _, a := range last.Agents {
-		if concluded[a] < targeted[a] {
-			pending[a] = true // 本轮（最后一次被叫到）尚未产结论 → 补跑
-		}
-	}
-	if len(pending) == 0 {
-		return last.Round + 1, nil, nil, true // 本轮已齐 → 从下一轮起（到顶续跑语义）
-	}
-	// 已产结论者：取其在展示板上的**末条**发言，重建「本轮已发生发言」作为首轮输入。
-	lastSpoken := map[string]groupBoardMsg{}
-	for _, m := range sc.boardLastMsgs() {
-		if !pending[m.agent] {
-			lastSpoken[m.agent] = m
-		}
-	}
-	targets = make([]groupParticipant, 0, len(pending))
-	for _, p := range sc.parts { // 保持名单固定顺序（D3）
-		if pending[p.agent] {
-			targets = append(targets, p)
-		}
-	}
-	for _, p := range sc.parts {
-		if m, ok := lastSpoken[p.agent]; ok {
-			prev = append(prev, m)
-		}
-	}
-	return start, targets, prev, false
+	start, targets, prev, saveFirst := component.GroupResumePlan(
+		rounds, groupRows(sc.boardView()), groupMembers(sc.parts), sc.mainAgent)
+	return start, groupParticipants(targets), groupBoardMsgs(prev), saveFirst
 }
 
 // buildGroupSched 读群聊会话行 + 参与者名册构造调度器；群聊会话不存在 / 名册为空 → 错误。
@@ -308,11 +272,8 @@ func (s *Server) buildGroupSched(instanceID, groupID string) (*groupSched, error
 		return nil, err
 	}
 	parts := make([]groupParticipant, 0, len(res.List))
-	byAgent := make(map[string]groupParticipant, len(res.List))
 	for _, p := range res.List {
-		gp := groupParticipant{agent: p.Agent, role: p.Role, seq: p.Seq}
-		parts = append(parts, gp)
-		byAgent[p.Agent] = gp
+		parts = append(parts, groupParticipant{agent: p.Agent, role: p.Role, seq: p.Seq})
 	}
 	if len(parts) == 0 {
 		return nil, errors.New("group chat has no participants: " + groupID)
@@ -322,7 +283,7 @@ func (s *Server) buildGroupSched(instanceID, groupID string) (*groupSched, error
 		groupID: groupID, parentID: group.ParentID,
 		scenarioID: group.ScenarioID, llmRef: group.LLM,
 		mainAgent: strings.TrimSpace(group.Agent),
-		parts:     parts, byAgent: byAgent,
+		parts:     parts,
 	}
 	sc.opening = sc.loadOpening()
 	sc.board = sc.ensureBoardTurn()
@@ -431,61 +392,18 @@ func (sc *groupSched) run(startRound, budget int, targets []groupParticipant, pr
 // roundInput 组装本轮喂给某参与者的输入（D32：上一轮发言合并成一条，按 `@` 过滤，D33）。
 // prev 为空（首轮 / 无人认领后的兜底轮）→ 喂布置任务（`opening`）。
 func (sc *groupSched) roundInput(agent string, prev []groupBoardMsg) string {
-	if len(prev) == 0 {
-		return sc.opening
-	}
-	var b strings.Builder
-	b.WriteString("【本轮群聊发言】\n")
-	n := 0
-	for _, m := range prev {
-		if !m.public && !groupContains(m.mentions, agent) {
-			continue // 定向条（@某人）未点到我 → 不投递（D33）
-		}
-		b.WriteString("- " + m.agent + "：" + m.text + "\n")
-		n++
-	}
-	if n == 0 {
-		return sc.opening
-	}
-	b.WriteString("（以上为本轮投递给你的发言。判断与你是否相关：相关就直接给出结论；无关则只回复「无关」。用回复的最后一行 @ 下一个叫谁。）")
-	return b.String()
+	return component.GroupRoundInput(agent, sc.opening, groupSays(prev))
 }
 
 // nextTargets 由本轮发言算下一轮投递对象（D27/D32/D33）：公开条 → 全体；定向条 → 仅被 @ 者。
 // 无人认领（本轮无人发言）→ 主 agent 兜底（D5）；算不出 → 亦回落主 agent。
 func (sc *groupSched) nextTargets(spoken []groupBoardMsg) []groupParticipant {
-	if len(spoken) == 0 {
-		return sc.mainOnly()
-	}
-	anyPublic := false
-	want := map[string]bool{}
-	for _, m := range spoken {
-		if m.public {
-			anyPublic = true
-			continue
-		}
-		for _, a := range m.mentions {
-			want[a] = true
-		}
-	}
-	out := make([]groupParticipant, 0, len(sc.parts))
-	for _, p := range sc.parts { // 保持名单固定顺序（D3）
-		if anyPublic || want[p.agent] {
-			out = append(out, p)
-		}
-	}
-	if len(out) == 0 {
-		return sc.mainOnly()
-	}
-	return out
+	return groupParticipants(component.GroupNextTargets(groupMembers(sc.parts), sc.mainAgent, groupSays(spoken)))
 }
 
 // mainOnly 返回主 agent 单项（兜底，D5）；主 agent 不在名册 → nil。
 func (sc *groupSched) mainOnly() []groupParticipant {
-	if p, ok := sc.byAgent[sc.mainAgent]; ok {
-		return []groupParticipant{p}
-	}
-	return nil
+	return groupParticipants(component.GroupMainOnly(groupMembers(sc.parts), sc.mainAgent))
 }
 
 // allParts 返回全部参与者（按 seq 升序副本）。
@@ -537,40 +455,9 @@ func (sc *groupSched) runWorkTurn(agent, input string) string {
 }
 
 // groupWorkSessionID 计算参与者干活子会话的**确定性 id**（跨轮复用；同一 `(群聊, agent)` 恒同 id）。
-// agent 名可能含 `/`（`<场景id>/<agent名>`）等非安全字符 → 净化 + 追加短哈希防碰撞。
+// 实现唯一 = 组件 `component.GroupWorkSessionID`（净化 + 短哈希防碰撞）。
 func groupWorkSessionID(groupID, agent string) string {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(agent))
-	return "work-" + groupID + "-" + sanitizeIDSeg(agent) + "-" + u32hex(h.Sum32())
-}
-
-// sanitizeIDSeg 保留字母数字与 `_`/`-`，其余替换为 `_`（会话 id 安全段）。
-// utilguard:allow: 字符集不含 '.'，且空值回落 "agent"，与 strx.SafeSeg（保留 '.'、回落参数）不同。
-func sanitizeIDSeg(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	if b.Len() == 0 {
-		return "agent"
-	}
-	return b.String()
-}
-
-// u32hex 32 位无符号整数 → 8 位小写十六进制。
-func u32hex(v uint32) string {
-	const digits = "0123456789abcdef"
-	out := make([]byte, 8)
-	for i := 7; i >= 0; i-- {
-		out[i] = digits[v&0xf]
-		v >>= 4
-	}
-	return string(out)
+	return component.GroupWorkSessionID(groupID, agent)
 }
 
 // ── 展示板（群聊会话消息面）────────────────────────────────────────────
@@ -581,6 +468,62 @@ type groupBoardMsg struct {
 	text     string
 	mentions []string // 解析后的 @ 名单（归一到名册 agent；空 = 公开）
 	public   bool     // 公开条（无 @ / @全体）
+}
+
+// ── 组件纯决策的类型互转（DTO 整形留宿主；语义唯一实现 = 组件 `component.Group*`）──────
+
+func groupMembers(parts []groupParticipant) []component.GroupMember {
+	out := make([]component.GroupMember, 0, len(parts))
+	for _, p := range parts {
+		out = append(out, component.GroupMember{Agent: p.agent, Role: p.role, Seq: p.seq})
+	}
+	return out
+}
+
+func groupParticipants(ms []component.GroupMember) []groupParticipant {
+	if ms == nil {
+		return nil
+	}
+	out := make([]groupParticipant, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, groupParticipant{agent: m.Agent, role: m.Role, seq: m.Seq})
+	}
+	return out
+}
+
+func groupSays(msgs []groupBoardMsg) []component.GroupSay {
+	out := make([]component.GroupSay, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, component.GroupSay{Agent: m.agent, Body: m.text, Mentions: m.mentions, Public: m.public})
+	}
+	return out
+}
+
+func groupBoardMsgs(ms []component.GroupSay) []groupBoardMsg {
+	if ms == nil {
+		return nil
+	}
+	out := make([]groupBoardMsg, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, groupBoardMsg{agent: m.Agent, text: m.Body, mentions: m.Mentions, public: m.Public})
+	}
+	return out
+}
+
+// groupRows 把展示板消息视图（`data-session-history`）折成组件的原始行视图。
+func groupRows(view []map[string]any) []component.GroupRow {
+	out := make([]component.GroupRow, 0, len(view))
+	for _, m := range view {
+		raw, _ := m["mentions"].([]any)
+		mentions := make([]string, 0, len(raw))
+		for _, e := range raw {
+			if s := str(e); s != "" {
+				mentions = append(mentions, s)
+			}
+		}
+		out = append(out, component.GroupRow{Agent: str(m["sender_agent"]), Body: str(m["content"]), Mentions: mentions})
+	}
+	return out
 }
 
 // appendBoard 把一条结论追加到群聊展示板（**上屏**，D31）：带 `sender_agent` + `mentions`。
@@ -651,50 +594,13 @@ func (sc *groupSched) boardView() []map[string]any {
 // boardConclusionCounts 统计展示板上各 `sender_agent` 的**结论文数**（F2-4 断点补跑判定用）：
 // 首条消息 = 主 agent 的布置任务（`role=user`，D18/D47，**不是结论**）→ 从主 agent 计数中扣除 1。
 func (sc *groupSched) boardConclusionCounts() map[string]int {
-	counts := map[string]int{}
-	for _, m := range sc.boardView() {
-		if a := str(m["sender_agent"]); a != "" {
-			counts[a]++
-		}
-	}
-	if counts[sc.mainAgent] > 0 {
-		counts[sc.mainAgent]-- // 扣掉首条布置任务
-	}
-	return counts
+	return component.GroupConclusionCounts(groupRows(sc.boardView()), sc.mainAgent)
 }
 
 // boardLastMsgs 返回展示板上各 `sender_agent` 的**末条**发言（F2-4：断点补跑重建「本轮已发生发言」）。
 // 跳过首条（= 布置任务）；按名册顺序稳定输出。
 func (sc *groupSched) boardLastMsgs() []groupBoardMsg {
-	msgs := sc.boardView()
-	if len(msgs) == 0 {
-		return nil
-	}
-	last := map[string]groupBoardMsg{}
-	for i, m := range msgs {
-		if i == 0 {
-			continue // 首条 = 布置任务（D18），非本轮发言
-		}
-		a := str(m["sender_agent"])
-		if a == "" {
-			continue
-		}
-		ment, _ := m["mentions"].([]any)
-		mentions := make([]string, 0, len(ment))
-		for _, e := range ment {
-			if s := str(e); s != "" {
-				mentions = append(mentions, s)
-			}
-		}
-		last[a] = groupBoardMsg{agent: a, text: str(m["content"]), mentions: mentions, public: isPublicMention(mentions)}
-	}
-	out := make([]groupBoardMsg, 0, len(last))
-	for _, p := range sc.parts { // 名单固定顺序
-		if m, ok := last[p.agent]; ok {
-			out = append(out, m)
-		}
-	}
-	return out
+	return groupBoardMsgs(component.GroupLastSays(groupRows(sc.boardView()), groupMembers(sc.parts)))
 }
 
 // emitParticipantState 发 `subchat-participant-state`（server→client，61 §4.3；阶段 E 已登记契约）。
@@ -748,137 +654,22 @@ func (sc *groupSched) finalReview() {
 	sc.appendBoardNotice("（因达轮次上限终止，本次群聊可能未完成。可点「继续」在原线程上续跑。）")
 }
 
-// ── `@` 解析与机读判定 ──────────────────────────────────────────────────
+// ── `@` 解析与机读判定（唯一实现 = 组件 `component.Group*`）────────────────
 
 // parseMentions 解析发言**末行**的 `@` 名单并归一到名册 agent（D27/D33）：
 // `@全体` / `@所有人` / `@all` → 归一为 `["全体"]`；未点名册内 → 忽略。
 func (sc *groupSched) parseMentions(text string) []string {
-	line := lastNonEmptyLine(text)
-	if line == "" {
-		return nil
-	}
-	var out []string
-	seen := map[string]bool{}
-	for _, tok := range strings.FieldsFunc(line, isMentionDelim) {
-		tok = strings.TrimSpace(tok)
-		if !strings.HasPrefix(tok, "@") {
-			continue
-		}
-		name := strings.Trim(strings.TrimSpace(strings.TrimPrefix(tok, "@")), "。，,.、:：；;!！?？\"'（）()[]【】<>")
-		if name == "" {
-			continue
-		}
-		if isAllMentionName(name) {
-			return []string{groupAllMention} // @全体 → 公开条
-		}
-		if a, ok := sc.resolveMention(name); ok && !seen[a] {
-			seen[a] = true
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-// isMentionDelim 是 mention 分词分隔符（空白 / 常见中英标点）。
-func isMentionDelim(r rune) bool {
-	switch r {
-	case ' ', '\t', '\n', '\r', '，', ',', '、', '；', ';', '。', '|', '/':
-		return true
-	}
-	return false
-}
-
-// resolveMention 把 `@` 名归一到名册 agent：精确命中 → 命中；否则按裸名（`<场景id>/<agent名>`
-// 的末段）命中名册中唯一同名者。
-func (sc *groupSched) resolveMention(name string) (string, bool) {
-	if _, ok := sc.byAgent[name]; ok {
-		return name, true
-	}
-	hit, n := "", 0
-	for a := range sc.byAgent {
-		if _, bare := splitAgentRef(a); bare == name {
-			hit, n = a, n+1
-		}
-	}
-	if n == 1 {
-		return hit, true
-	}
-	return "", false
-}
-
-// isAllMentionName 判定是否为「全体」类 mention 名。
-func isAllMentionName(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "全体", "所有人", "大家", "all", "everyone", "everybody":
-		return true
-	}
-	return false
+	return component.GroupMentions(text, groupMembers(sc.parts))
 }
 
 // isPublicMention 判定一条发言是否公开（无 `@` 或 `@全体` → 投给全体，D33）。
-func isPublicMention(mentions []string) bool {
-	if len(mentions) == 0 {
-		return true
-	}
-	for _, m := range mentions {
-		if m == groupAllMention {
-			return true
-		}
-	}
-	return false
-}
+func isPublicMention(mentions []string) bool { return component.GroupIsPublic(mentions) }
 
 // isGroupIrrelevant 判定参与者回复是否「无关」：首个非空行恰为「无关」（可机读约定）。
-func isGroupIrrelevant(text string) bool {
-	line := strings.TrimSpace(firstNonEmptyLine(text))
-	return line == groupIrrelevantMarker
-}
+func isGroupIrrelevant(text string) bool { return component.GroupIrrelevant(text) }
 
 // isGroupConverged 判定主 agent 是否判「收敛」：文本中**单独一行**为「【已收敛】」。
-func isGroupConverged(text string) bool {
-	return hasMarkerLine(text, groupConvergedMarker)
-}
-
-// hasMarkerLine 判定文本中是否有**单独一行**恰为目标标记（去首尾空白后逐行比较）。
-func hasMarkerLine(text, marker string) bool {
-	for _, ln := range strings.Split(text, "\n") {
-		if strings.TrimSpace(ln) == marker {
-			return true
-		}
-	}
-	return false
-}
-
-// firstNonEmptyLine 返回首个非空行（去首尾空白）；全空 → ""。
-func firstNonEmptyLine(text string) string {
-	for _, ln := range strings.Split(text, "\n") {
-		if strings.TrimSpace(ln) != "" {
-			return strings.TrimSpace(ln)
-		}
-	}
-	return ""
-}
-
-// lastNonEmptyLine 返回最后一个非空行（去首尾空白）；全空 → ""。
-func lastNonEmptyLine(text string) string {
-	lines := strings.Split(text, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.TrimSpace(lines[i]) != "" {
-			return strings.TrimSpace(lines[i])
-		}
-	}
-	return ""
-}
-
-// groupContains 判定字符串切片是否含目标。
-func groupContains(list []string, v string) bool {
-	for _, e := range list {
-		if e == v {
-			return true
-		}
-	}
-	return false
-}
+func isGroupConverged(text string) bool { return component.GroupConverged(text) }
 
 // ── 发起（扩展 `subchat_open`）与「继续」────────────────────────────────
 
@@ -911,16 +702,18 @@ func groupParticipantsArg(args map[string]any) ([]facade.GroupParticipant, bool)
 }
 
 // ensureMainParticipant 保证主 agent 在名册内（D46）：不在 → 置首位（角色标注「发起者 / 兜底裁判」）。
+// 判定唯一实现 = 组件 `component.GroupEnsureMain`；本处只做 facade DTO 互转。
 func ensureMainParticipant(list []facade.GroupParticipant, mainAgent string) []facade.GroupParticipant {
-	if mainAgent == "" {
-		return list
-	}
+	members := make([]component.GroupMember, 0, len(list))
 	for _, p := range list {
-		if p.Agent == mainAgent {
-			return list
-		}
+		members = append(members, component.GroupMember{Agent: p.Agent, Role: p.Role})
 	}
-	return append([]facade.GroupParticipant{{Agent: mainAgent, Role: "发起者 / 兜底裁判"}}, list...)
+	out := component.GroupEnsureMain(members, mainAgent)
+	res := make([]facade.GroupParticipant, 0, len(out))
+	for _, m := range out {
+		res = append(res, facade.GroupParticipant{Agent: m.Agent, Role: m.Role})
+	}
+	return res
 }
 
 // runGroupChatOpen 处理 `subchat_open` 的**群聊**分支（N ≥ 2）：建 `kind=group_chat` 会话

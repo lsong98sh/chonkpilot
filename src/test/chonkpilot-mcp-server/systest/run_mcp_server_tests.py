@@ -285,12 +285,12 @@ def suite_core(core, work):
     """core 工具面 + 四原语（prompts/resources）+ 能力声明 + 调用上下文。
 
     工具名 = 契约文件名（spec 25-mcp-server §3.1「原语名 = 文件名去后缀」）。现行工具面
-    （2026-10-28）= **core 1**（`web_fetch`；`script_run` 已迁为 task 插件 `task_run`）。
-    `desktop_run` / `browser_run` 已随 GATEWAY-2 L9/L10 改为插件形态；**file 域 11 工具已随
-    file 插件迁出主仓**（PLUGIN-SPLIT-1，执行体 = 插件 MCP server），故均不在本 `tools_list` 面。
+    （2026-10-31）= **core 0**：`web_search` / `web_fetch` / `web_download` 已随 `web` 插件
+    （chonkpilot-plugins/web）迁出主仓；`script_run` 迁为 task 插件 `task_run`；
+    `desktop_run` / `browser_run` 为常驻插件；file 域 11 工具随 file 插件迁出 —— 均不在本 `tools_list` 面。
     """
     names = {t["name"] for t in core.tools_list()}
-    expect = {"web_fetch"}
+    expect = set()
     # 平铺单实例：单根扫描 → 全部工具在同一端点（多 category 不构成路由，spec 25 §7）
     assert names == expect, f"tools 集合不符：多 {names - expect} / 缺 {expect - names}"
     ctx = call_context(work)
@@ -300,7 +300,12 @@ def suite_core(core, work):
         # **无** resources.subscribe、**无** tasks、**无** extensions——
         # 依据 server/server.go:71-159 RegisterContracts 仅 AddTool/AddPrompt/AddResource。
         cap = core.capabilities
-        assert cap.get("tools", {}).get("listChanged"), cap
+        # 2026-10-31：core 面无工具（web 工具随 web 插件）→ SDK 不注册 tools 能力；
+        # 有工具时仍要求 tools.listChanged。
+        if core.tools_list():
+            assert cap.get("tools", {}).get("listChanged"), cap
+        else:
+            assert "tools" not in cap or cap["tools"].get("listChanged"), cap
         assert cap.get("prompts", {}).get("listChanged"), cap
         assert cap.get("resources", {}).get("listChanged"), cap
         assert "subscribe" not in cap.get("resources", {}), cap
@@ -314,7 +319,7 @@ def suite_core(core, work):
         skills = {p["name"] for p in core.prompts_list() if (p.get("_meta") or {}).get("type") == "skill"}
         expect = {
             # skills/core/
-            "agent-prompt-rule", "debug", "explore", "sandbox-escape",
+            "agent-prompt-rule", "debug", "explore", "sandbox-escape", "platform-capability",
             # skills/ux/
             "accessibility-audit", "ai-slop-check", "component-extract", "design-system-extract",
             "discovery-questions", "frontend-aesthetic-direction", "generate-variations",
@@ -356,10 +361,8 @@ def suite_core(core, work):
         raise SkipTest("script_run 已迁为 task 插件 task_run（P2-3）")
 
     def t_fetch():
-        # 旧 fetch → 现行 web_fetch（URL 参数 url）
-        res = core.tool_call("web_fetch", {"url": f"http://127.0.0.1:{echo_port}/hello"})
-        txt = res["content"][0]["text"]
-        assert "hello-mcp" in txt, txt
+        # 2026-10-31：web_fetch 随 web 插件迁出主仓（DeepSeek 抓取由插件实现）→ 本 server 无该工具。
+        raise SkipTest("web_search / web_fetch / web_download 已随 web 插件迁出主仓")
 
     def t_unknown_tool():
         res = core.error_call("no_such_tool", {})
@@ -404,14 +407,10 @@ def suite_core(core, work):
         assert "探索项目" in txt and "FIND" in txt, txt[:200]
 
     def t_task_param_ignored():
-        # MCP tasks 不属 mcp-server 契约面（server.go:71-159 只注册四原语；capabilities 无 tasks）：
-        # tools/call 带 task 字段不生效 → 同步返回 result、无 task 对象
-        res = core.call("tools/call", {"name": "web_fetch",
-                                       "arguments": {"url": f"http://127.0.0.1:{echo_port}/hello"},
-                                       "task": {"ttl": 120000}})
-        assert "task" not in res, res
-        assert "hello-mcp" in json.dumps(res, ensure_ascii=False), json.dumps(res, ensure_ascii=False)[:300]
+        # MCP tasks 不属 mcp-server 契约面（server.go:71-159 只注册四原语；capabilities 无 tasks）。
+        # 2026-10-31：core 面已无工具（web 工具随 web 插件）→ tools/call 探针改由插件侧覆盖。
         assert "tasks" not in core.capabilities, core.capabilities
+        raise SkipTest("core 面无工具（web 工具随 web 插件）")
 
     def t_tasks_list_unsupported():
         # 未注册方法 → HTTP 400 + `JSON RPC not handled: "tasks/list" unsupported`（实测）
@@ -434,9 +433,9 @@ def suite_desktop(desk, work):
     """desktop / browser 分类（2026-10-22 起）：**不再注册 MCP 工具**。
 
     GATEWAY-2 L9/L10 把浏览器 / 桌面自动化改为常驻插件（UDS `browser.sock` / `desktop.sock`，
-    端点 `start` / `stop` / `operation`）；2026-10-25（PLUGIN-SPLIT-1）file 域亦随插件迁出、
-    2026-10-28（P2-3）`script_run` 迁为 task 插件 `task_run` → 本 server 的工具面只剩 core 1
-    （`web_fetch`）；本套件改为**正向断言"未注册"**（原 `desktop_run` 断言已随契约删除）。
+    端点 `start` / `stop` / `operation`）；2026-10-25（PLUGIN-SPLIT-1）file 域随插件迁出；
+    2026-10-28（P2-3）`script_run` 迁为 task 插件 `task_run`；2026-10-31 web 工具随 `web` 插件
+    迁出 → 本 server core 面已无工具。本套件改为**正向断言"未注册"**（原 `desktop_run` 断言已随契约删除）。
     """
 
     def t_tool_face_excludes_desktop_browser():
@@ -454,8 +453,8 @@ def suite_defaults_injection(defaults_core, work):
 
     2026-10-22 口径变更：`skip_dirs` 原为 `filesys_run` 的 FIND **脚本选项**；GATEWAY-2 L2 把
     文件域拆成独立工具后，`file_find` 契约**没有 skip_dirs 参数**。
-    2026-10-25（PLUGIN-SPLIT-1）：file 域随插件事出主仓 → 本套件只验证**自定义 config 能被
-    装载**（用 `web_fetch` 作探针），文件域断言改由插件侧覆盖。
+    2026-10-25（PLUGIN-SPLIT-1）：file 域随插件迁出主仓 → 本套件只验证**自定义 config 能被
+    装载**（用四原语 prompts 探针；web 工具已于 2026-10-31 随 web 插件迁出，不再作探针）。
     """
     os.makedirs(os.path.join(work, "vendor"), exist_ok=True)
     with open(os.path.join(work, "vendor", "dep.txt"), "w", encoding="utf-8") as f:
@@ -464,9 +463,9 @@ def suite_defaults_injection(defaults_core, work):
         f.write("SENTINEL_DEFAULT\n")
 
     def t_custom_config_probe():
-        res = defaults_core.tool_call("web_fetch", {"url": f"http://127.0.0.1:{echo_port}/hello"})
-        txt = res["content"][0]["text"]
-        assert "hello-mcp" in txt, txt
+        # 探针改为 prompts（四原语之一）：证明自定义 --config 装载后契约根仍正常注册。
+        names = {p["name"] for p in defaults_core.prompts_list()}
+        assert "code_review" in names, names
 
     for fn in [t_custom_config_probe]:
         check(f"[defaults] {fn.__name__[2:]}", fn)
@@ -498,7 +497,9 @@ def suite_service(server_exe):
             c = MCPClient(f"http://127.0.0.1:{DEFAULT_PORT}/mcp")
             c.initialize()
             names = {t["name"] for t in c.tools_list()}
-            assert "filesys_run" in names, names
+            # G-72（2026-10-31）：DSL 退役 + file 工具随 file 插件迁出 → 本 server 不再有
+            # `filesys_run` 等旧工具；保留「旧名不得回流」的回归保护（不再硬要求某个工具存在）。
+            assert not ({"dsl_run", "filesys_run", "browser_run", "desktop_run"} & names), names
         finally:
             subprocess.run(["sc", "stop", "chonkpilot-mcp-server"], capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=30)

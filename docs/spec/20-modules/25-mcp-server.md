@@ -26,7 +26,7 @@
 - **一句话**：把「契约目录」（四原语 `.md`）注册到一个**装配方自建的官方 go-sdk `mcp.Server`** 上；工具调用时 spawn executor exe 执行。
 - **做**：契约解析（四原语）、注册（tools→`AddTool`；prompts/skills→`AddPrompt`；resources→`AddResource`）、`tools/call` 执行链（spawn + 输出封装）、独立 exe 三种运行形态。
 - **不做**：不建容器/实例/注册表/传输层（go-sdk `mcp.Server` 由装配方传入）；不做沙箱；不持持久状态。
-- **单体链路中的角色**：`RegisterContracts` 由**装配方**在**自建的官方 server 实例**上调用 —— 单体链路 = `src/lib/llm` 的 `Server.New()` 先 `ms := mcp.NewServer(...)`（`src/lib/llm/server/server.go:236`）再 `mcpms.RegisterContracts(ms, root, cfg)` 扫描注册（`server.go:239-243`），随后该 `ms` 作为 `Params.MCPServer` 交 gateway；本模块因此以 **lib 形态**参与（不自建 instance、不持有它）。另一路装配方 = gateway 的 **dir 目录节点**自建 server 后同法调用（`chonkpilot-mcp-gateway/gateway/dirnode.go:38-41`，独立仓）。装配链全貌与阶段划分见 [26-mcp-gateway §4.0](26-mcp-gateway.md)。
+- **单体链路中的角色**：`RegisterContracts` 由**装配方**在**自建的官方 server 实例**上调用 —— 单体链路 = `src/lib/llm` 的 `Server.New()` 先 `ms := mcp.NewServer(...)`（`src/lib/llm/server/server.go:236`）再 `mcpms.RegisterContracts(ms, root, cfg)` 扫描注册（`server.go:239-243`），随后该 `ms` 作为 `Params.MCPServer` 交 gateway；本模块因此以 **lib 形态**参与（不自建 instance、不持有它）。另一路装配方 = gateway 的 **dir 目录节点**自建 server 后同法调用（`chonkpilot-agent/gateway/src/dirnode.go:38-41`，独立仓）。装配链全貌与阶段划分见 [26-mcp-gateway §4.0](26-mcp-gateway.md)。
 
 ---
 
@@ -51,7 +51,7 @@
 | 鉴权 | `Authorization: Bearer <token>`（constant-time；token 仅宿主与 gateway 可见） |
 | 调用上下文 | `X-Chonk-Instance-Id` / `X-Chonk-Session-Id` / `X-Chonk-Turn-Id` / `X-Chonk-Call-Id` / `X-Chonk-Work-Dir` / `X-Chonk-Data-Dir` / `X-Chonk-Purpose` / `X-Chonk-Scope` / `X-Chonk-Deadline-Ms` / `X-Chonk-No-Timeout`；协议 `_meta.chonkpilot` 为兼容回落（**MCP 会话建立后头不随每次请求更新，gateway 路径以 `_meta` 为准**） |
 | 执行 | 按契约执行方式：**`runtime` 契约**每次 `tools/call` spawn 一个 executor 进程；**`builtin` 契约**（meta / server 域）在 core 进程内执行；ctx 取消/超时 → `winproc.KillTree` 只杀该次 executor 进程树，绝不杀 core 本身 |
-| 工具面 | MCP `tools/list` 只暴露**非 internal** 契约，且只含 core `--root` 下实际存在的 `*.tool.md`。**当前出厂契约** = `capability/tools/server/` 6 个域工具（源 `src/lib/llm/contracts/tools/`）；`src/initdata/capability/tools/` 现无出厂工具契约（file 11 / task / mcp / websearch / codegraph / vfts 等均随各自插件 MCP server 暴露）。`internal: true` 契约只进 core 内部执行表，不进 MCP 工具面。详见 [03 §3](../00-overview/03-构建与部署.md) |
+| 工具面 | MCP `tools/list` 只暴露**非 internal** 契约，且只含 core `--root` 下实际存在的 `*.tool.md`。**当前出厂契约** = `capability/tools/server/` 6 个域工具（源 `src/lib/llm/contracts/tools/`）；`src/initdata/capability/tools/` 现无出厂工具契约（file 11 / task / mcp / web / codegraph / vfts 等均随各自插件 MCP server 暴露）。`internal: true` 契约只进 core 内部执行表，不进 MCP 工具面。详见 [03 §3](../00-overview/03-构建与部署.md) |
 | 契约标记 | `meta.internal: true` = 仅 `/internal/exec` 执行（不进 core `tools/list`）；`meta.core-only: true` = 仅 core 注册执行（进程内 mcp-server 跳过，避免与 core 重复注册） |
 | 配置 | 启动参数 `--root/--work-dir/--data-dir/--config/--plugin-addr/--plugin-token`；usr/prj 热生效经 `POST /internal/runtime`（`mcpms.RuntimeConfig`：timeout/并发/解释器/Chrome/skip_dirs/tool_async/tool_sandbox/security_dirs） |
 | gateway 接入 | 经既有方法面 `servers/register`（`mcp-servers-register`）登记为内置 HTTP 下游：`name=core`、`namespace="-"`（P0a 2026-10-29：**暴露名原样，不加 `self_` 前缀**）、`origin=builtin`、`mcp_server.headers.Authorization`；**不新增 MQ 主题**。**取消语义**：core 为纯远程（proxied）下游 → gateway `Terminate` 为协作式 no-op（取消经执行池 ctx 送达 HTTP 请求），**不重建共享连接**（见 [26 §核心下游](26-mcp-gateway.md)） |

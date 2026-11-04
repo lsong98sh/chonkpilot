@@ -58,9 +58,12 @@ def main():
         except RuntimeError as e:
             c.check("S2 data-session-active-set 成功", False, str(e))
 
-        # S3 data-session-active-get → 无真实会话记录 → 回落最新（空）
+        # S3 data-session-active-get → **只回读写入值**（SESSION-DB-2 定稿：活动位是宿主推送的
+        # UI 运行态，数据层不跨 owner 去对话库校验该会话是否仍存在；见
+        # src/lib/data/internal/session/dialog_route_test.go TestActiveGetHostPushedValue）。
         r = gui.req('data-session-active-get')
-        c.check("S3 data-session-active-get 回落（无记录→空）", r.get('session_id', 'x') == '', repr(r)[:80])
+        c.check("S3 data-session-active-get 回读写入值（不校验存在性）",
+                r.get('session_id') == 'sess-bridge-1', repr(r)[:80])
 
         # S8 data-session-list 空 → {list: []}（须在锚点会话创建**之前**断言）
         r = gui.req('data-session-list')

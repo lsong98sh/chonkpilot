@@ -86,7 +86,7 @@ func TestSessionNextRunCounter(t *testing.T) {
 	if ok, err := sdb.Table("sessions").Get(sid, &row); err != nil || !ok {
 		t.Fatalf("读会话行：ok=%v err=%v", ok, err)
 	}
-	if _, exists := row[nextRunCountKey]; exists {
+	if _, exists := row["next_run_count"]; exists {
 		t.Fatalf("计数归零后应删键（行形状与从未计数一致）：%+v", row)
 	}
 

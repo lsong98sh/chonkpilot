@@ -86,7 +86,8 @@ type ScenarioGetRequest struct {
 	InstanceID string `json:"instance_id,omitempty"`
 	// ScenarioID 场景 id（必填）。
 	ScenarioID string `json:"scenario_id"`
-	// Level 限定级别（空 = 具体级优先：project → user → app）。
+	// Level 限定级别（空 = 具体级优先：prjusr → project → user → app；非空须为四级之一，
+	// 未知级别直接报错，D-54）。
 	Level string `json:"level,omitempty"`
 	// Scope 实例数据根（可选；语义同上）。
 	Scope Scope `json:"scope,omitempty"`
@@ -123,7 +124,8 @@ type ScenarioDeleteRequest struct {
 	InstanceID string `json:"instance_id,omitempty"`
 	// ScenarioID 场景 id（必填）。
 	ScenarioID string `json:"scenario_id"`
-	// Level 指定级别（空 = 具体级优先 project → user → app 查找实际存在的副本）。
+	// Level 指定级别（空 = 具体级优先 prjusr → project → user → app 查找实际存在的副本；
+	// 非空须为四级之一，未知级别直接报错、不回落到 user 级，D-54）。
 	Level string `json:"level,omitempty"`
 	// Scope 实例数据根（可选；语义同上）。
 	Scope Scope `json:"scope,omitempty"`

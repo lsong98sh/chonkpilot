@@ -1161,11 +1161,13 @@ def _procs_with_cmdline(sentinel):
 
 def case_cancel_on_timeout_thirdparty():
     """I（配置⑤）：第三方 stdio 工具配 `cancel_on_timeout` → 到超时点**自动取消**（不等裁决）
-    → 层权威行 cancelled；「kill+respawn」按取消阶梯 L3 应发生（**实测未发生 → 41 D-68**）。
+    → 层权威行 cancelled；取消后快工具必须**换进程**（D-68 已修：L0 标记槽不可复用 → 宽限到点
+    kill 进程树并退役该池实例 → 下一次调用重新 spawn）。
 
     驱动链：usr `tool_async.slow3p_slow_sleep.cancel_on_timeout=1` → gateway `doCall` 到超时点
-    直接 `tm.cancelRef`（**不发 mcp-tools-timeout**）→ `onTaskCancel` → provider `Terminate`。
-    硬断言：层权威行 state=cancelled + 取消后快工具仍可用；pid 变化仅作证据（D-68）。
+    直接 `tm.cancelRef`（**不发 mcp-tools-timeout**）→ `onTaskCancel` → provider `CancelCall`
+    （L0 协议取消 + 槽标记 → L1 grace → L2/L3 kill + 退役）。
+    断言：层权威行 state=cancelled + 取消后快工具可用 + **pid 必须变化**（kill+respawn 真发生）。
     """
     snap = _snapshot_tool_async()
     try:
@@ -1190,11 +1192,10 @@ def case_cancel_on_timeout_thirdparty():
         pid2, _ = _echo_pid()
         print("    [cancel_on_timeout] 自动取消后慢工具重调 pid=%s" % pid2)
         if pid2 == pid1:
-            # 2026-10-23：取消阶梯 L0→L3 中，L0（协议取消）被夹具忽略后应落到 L3（kill+respawn）；
-            # 实测 pid 未变化 ⇒ L3 未发生。该差异登记为 [41 D-68]；本用例保留「层行 cancelled +
-            # 链路仍可用」的硬断言，pid 变化降级为证据打印。
-            print("    [SKIP] 未观察到 kill+respawn（pid 未变，见 41 D-68）：pid1=%s pid2=%s"
-                  % (pid1, pid2), flush=True)
+            # D-68 已修（2026-11-04）：取消阶梯 L1 只认「对端应答」为结束，宽限到点必 kill 并退役
+            # 该池实例 → 下一次调用重新 spawn。pid 未变 = L3 仍未发生（硬失败，不再降级为证据）。
+            raise TestError("取消后未观察到 kill+respawn（pid 未变，见 41 D-68）：pid1=%s pid2=%s"
+                            % (pid1, pid2))
         _drain_turn()
     finally:
         _restore_tool_async(snap)

@@ -1,6 +1,6 @@
 // 可复用执行 API（P6 2026-10-19）：把「契约扫描 → mcp.Tool 定义 + executor handler」的
-// 同一份实现暴露给**进程外**装配方（如 chonkpilot-self-tools），使系统级 app 根的工具
-// 不再由宿主进程内注册执行。
+// 同一份实现暴露给**进程外**装配方（如独立 gateway），使带 executor 的契约可由外部进程注册执行。
+// （2026-11-02：`chonkpilot-self-tools` 已退役；桌面单体不再使用进程外执行面。）
 //
 // 与 RegisterContracts 共用 loadTools / buildTool / makeToolHandler：契约解析、用户级异步
 // 覆盖、并发限流、参数解析、_meta 调用上下文、spawn executor 语义**完全一致**，不产生第二套口径。

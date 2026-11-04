@@ -61,6 +61,8 @@
             :is-active="turnActive"
             :is-last-message="it.origIdx === messages.length - 1"
             :from-history="!!it.msg.fromHistory"
+            :find-hit="findHitIds.has(it.msg.id)"
+            :find-active="!!findActiveId && it.msg.id === findActiveId"
             :data-idx="it.origIdx"
             @clear-arbitration="onClearArbitration"
           />
@@ -76,6 +78,8 @@
           :is-active="turnActive"
           :is-last-message="i === messages.length - 1"
           :from-history="!!msg.fromHistory"
+          :find-hit="findHitIds.has(msg.id)"
+          :find-active="!!findActiveId && msg.id === findActiveId"
           @clear-arbitration="onClearArbitration"
         />
         <!-- 「加载中」占位（独立 pending 状态，不在 messages 内）→ 历史全量替换不影响 -->
@@ -106,7 +110,7 @@ import { createSessionMessages } from '../../utils/sessionMessages'
 import { sessionDialogOf } from '../../api/session'
 import {
   publishLLMContinue,
-  publishInboxAdd, listInbox, discardInbox, promoteInbox,
+  publishInboxAdd, listInbox, discardInbox, promoteInbox, revertInbox,
 } from '../../api/chat'
 import { sendQueue } from '../../composables/useSendQueue'
 import { useTaskView } from '../../composables/useTaskView'
@@ -133,6 +137,10 @@ const props = defineProps({
     default: 'right',
     validator: (v) => ['top', 'bottom', 'left', 'right'].includes(v),
   },
+  // 会话内查找（CHAT-028）：命中关键字 + 当前命中消息 id。
+  // 命中消息加高亮描边（关键字不在 markdown/代码块里二次包裹，避免破坏既有渲染）。
+  findText: { type: String, default: '' },
+  findActiveId: { type: String, default: '' },
 })
 
 // 主会话 cancel（§〇.7）：全部级联，无弹框
@@ -165,6 +173,20 @@ const pendingMessage = computed(() => ({
 const pendingShowHeader = computed(() => {
   const arr = messages.value
   return arr.length === 0 || arr[arr.length - 1].role !== 'assistant'
+})
+
+// ── 会话内查找（CHAT-028）：命中消息集合（本地按关键字子串匹配正文）──
+// 命中集合只用于**气泡高亮描边**；滚动/翻页由 revealMessage 负责（见下）。
+// 无关键字 → 空集合（不参与渲染）；有关键字时随 messages 变化重算（流式期亦保持最新）。
+const findHitIds = computed(() => {
+  const kw = (props.findText || '').trim().toLowerCase()
+  const ids = new Set()
+  if (!kw) return ids
+  for (const m of messages.value) {
+    const c = m.content
+    if (typeof c === 'string' && c.toLowerCase().includes(kw)) ids.add(m.id)
+  }
+  return ids
 })
 
 // ── Scroll state ──
@@ -578,6 +600,85 @@ function scrollTop() {
 
 function scrollBottom() {
   listRef.value?.scrollTo({ top: listRef.value.scrollHeight, behavior: 'smooth' })
+}
+
+// ── 会话内查找定位（CHAT-028）：滚动到指定消息 / 必要时向上翻页 ──
+function messageIndexById(id) {
+  if (!id) return -1
+  return messages.value.findIndex((m) => m.id === id)
+}
+
+/** 取已渲染的消息节点（MessageItem 根节点带 `data-id`）。 */
+function findMessageNode(id) {
+  const el = listRef.value
+  if (!el) return null
+  const nodes = el.querySelectorAll('.message-item[data-id]')
+  for (const n of nodes) {
+    if (n.getAttribute('data-id') === id) return n
+  }
+  return null
+}
+
+/**
+ * 滚动到指定消息（消息须已在 messages 中；未渲染时按窗口化估算 offset 再精修）。
+ * 手动定位 = 停止贴底自动跟随，避免后续 onUpdated 立刻拉回底部。
+ */
+async function scrollToMessage(messageId) {
+  const idx = messageIndexById(messageId)
+  if (idx < 0) return false
+  const el = listRef.value
+  if (!el) return false
+  autoScroll.value = false
+  if (virtual.value.enabled) {
+    const est = virtualOffsets.value[idx] || 0
+    el.scrollTop = Math.max(0, est - 40)
+    scrollTopVal.value = el.scrollTop
+    await nextTick()
+    const node = findMessageNode(messageId)
+    if (node) el.scrollTop = Math.max(0, node.offsetTop - 40)
+  } else {
+    await nextTick()
+    const node = findMessageNode(messageId)
+    if (node) el.scrollTop = Math.max(0, node.offsetTop - 40)
+  }
+  scrollTopVal.value = el.scrollTop
+  if (viewportH.value !== el.clientHeight) viewportH.value = el.clientHeight
+  return true
+}
+
+/** 等待在途 loadMore 收口（loadMoreMessages 自带 loadingMore 守卫，不能并发重入）。 */
+async function waitLoadMoreIdle(timeoutMs = 4000) {
+  const start = Date.now()
+  while (loadingMore.value && Date.now() - start < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
+
+/**
+ * 定位命中消息：已在内存则直接滚动；否则向上加载历史（最多 maxPages 页）。
+ * @returns {Promise<{found:boolean, pages:number}>}
+ */
+async function revealMessage(messageId, maxPages = 5) {
+  if (!messageId) return { found: false, pages: 0 }
+  if (messageIndexById(messageId) >= 0) {
+    await scrollToMessage(messageId)
+    return { found: true, pages: 0 }
+  }
+  let pages = 0
+  for (let i = 0; i < maxPages; i++) {
+    await waitLoadMoreIdle()
+    if (!hasMore.value || loadingMessages.value) break
+    const before = messages.value.length
+    await loadMoreMessages()
+    if (messages.value.length === before) break // 守卫挡下 / 本批无新增 → 停止（有界兜底）
+    pages++
+    await nextTick()
+    if (messageIndexById(messageId) >= 0) {
+      await scrollToMessage(messageId)
+      return { found: true, pages }
+    }
+  }
+  return { found: false, pages }
 }
 
 // 当前会话 id（声明**前移**到所有使用点之前，消除「引用后置 const」的 TDZ 隐患）。
@@ -1036,6 +1137,7 @@ function pushUserBubble(text, at) {
     type: 'text',
     id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
     createdAt: new Date().toISOString(),
+    localOnly: true, // 本地乐观气泡：历史回填不得冲掉（sessionMessages.loadMessages 竞态保护）
   })
   autoScroll.value = true
   nextTick(() => scrollToBottom())
@@ -1072,7 +1174,9 @@ async function handleCanceledQueue() {
   if (texts.length > 0) mq.emit(EventNames.chatQueueRestore, { text: texts.join('\n') })
 }
 
-// ── 队列项操作（InputBox popover）：撤回（删除 + 写回 textarea）/ 删除 / 立刻插入 ──
+// ── inbox 项操作（InputBox 摘要条 / popover）：
+//    insert = 登记插话意向（→ 取消插话由 revert 承担）/ revert = 取消意向 / delete = 删除 /
+//    recall = 撤回编辑（删除 + 内容写回输入框）──
 async function onQueueAction({ id, action }) {
   const item = sendQueue.takeById(id)
   if (!item) return
@@ -1082,6 +1186,8 @@ async function onQueueAction({ id, action }) {
     await discardInbox(id)
   } else if (action === 'insert') {
     await promoteInbox(id)
+  } else if (action === 'revert') {
+    await revertInbox(id)
   } else {
     await discardInbox(id)
   }
@@ -1111,6 +1217,7 @@ function onCompletionNotice(d) {
     type: 'user-notify',
     content: text,
     createdAt: new Date().toISOString(),
+    localOnly: true, // 本地追加的通知（历史回填竞态保护）
   })
   autoScroll.value = true
   nextTick(() => scrollToBottom())
@@ -1371,6 +1478,7 @@ let unsubToolPairUpdate = null
 let unsubToolTimeout = null
 let unsubQueueAction = null
 let unsubChatContinue = null
+let unsubInboxChanged = null
 // 窗口化：视口尺寸监听（ResizeObserver，替代 watch）
 let listResizeObserver = null
 
@@ -1393,8 +1501,16 @@ onMounted(async () => {
   unsubToolPairUpdate = mq.on(EventNames.toolPair, onToolPairUpdate)
   // 调用超时待裁决（mcp-tools-timeout）：挂载裁决条到对应 tool_pair 卡片
   unsubToolTimeout = mq.on(EventNames.toolTimeout, onToolTimeout)
-  // 队列项操作（InputBox popover）：撤回 / 删除（§3.4.1）
+  // 队列项操作（InputBox 摘要条 / popover）：插话 / 取消插话 / 删除 / 撤回编辑
   unsubQueueAction = mq.on(EventNames.chatQueueAction, onQueueAction)
+  // inbox 变更广播（session-inbox-changed）：桌面或手机任一端入队 / 插话 / 删除 / 消费
+  // → 本端刷新全量一览（2026-11-01 两端共享同一 inbox）。
+  unsubInboxChanged = mq.on(EventNames.inboxChanged, (d) => {
+    const sid = activeSessionId.value || props.sessionId
+    if (!sid) return
+    if (d && d.session && d.session !== sid) return
+    refreshInbox()
+  })
   // 滚动主题（msg-scroll-top/bottom）保留为**程序化入口**（仅本会话实例响应；主 LLM / 子 LLM
   // 各自滚动）——原「向上/向下箭头」浮窗按钮已按用户口径移除（P3-C1，2026-09-24）。
   unsubScrollTop = mq.on(EventNames.msgScrollTop, (d) => { if (isForThisSession(d)) scrollTop() })
@@ -1457,6 +1573,7 @@ onUnmounted(() => {
   if (unsubToolPairUpdate) unsubToolPairUpdate()
   if (unsubToolTimeout) unsubToolTimeout()
   if (unsubQueueAction) unsubQueueAction()
+  if (unsubInboxChanged) unsubInboxChanged()
   if (unsubChatContinue) unsubChatContinue()
   persistentUnsubs.forEach(fn => { try { fn() } catch (e) { console.error('[MessageList] persistentUnsubs cleanup error:', e) } })
   persistentUnsubs.length = 0
@@ -1467,7 +1584,7 @@ onUnmounted(() => {
   resetMessages()
 })
 
-defineExpose({ scrollTop, scrollBottom, isLoading, showContinue, lastInterruptedPair, emptyReplyHint, onRetryToolClick, activeSessionId, currentTurnId })
+defineExpose({ scrollTop, scrollBottom, isLoading, showContinue, lastInterruptedPair, emptyReplyHint, onRetryToolClick, activeSessionId, currentTurnId, scrollToMessage, revealMessage })
 </script>
 
 <style scoped>

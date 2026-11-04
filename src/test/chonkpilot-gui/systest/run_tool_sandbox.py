@@ -55,12 +55,10 @@ WS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws")
 CFG_KEY = "tool_sandbox"
 KIND = "settings-tool-sandbox"
 ROOT = ".settings-page"
-# 内置 executor 单位（= useToolSandbox.js EXECUTOR_UNITS；写入 executors 子表的键）
-EXECUTORS = [
-    "chonkpilot-tools-executor.exe",
-    "chonkpilot-script-executor.exe",
-    "chonkpilot-web-executor.exe",
-]
+# 内置 executor 单位（= useToolSandbox.js EXECUTOR_UNITS；写入 executors 子表的键）。
+# 2026-10-31（D-72）：内置 executor 已全部退场（`src/lib/mcp-tools` 整体删除）→ 空表；
+# 沙箱单位只剩外部 MCP（写入 mcps 子表）。
+EXECUTORS = []
 # 未被沙箱覆盖的执行体（browser/desktop 改常驻插件；dsl 退役）
 NOT_EXECUTORS = ["chonkpilot-browser-executor.exe", "chonkpilot-dsl-executor.exe"]
 
@@ -374,9 +372,12 @@ def case_c_save_disabled_when_clean():
 
 
 def case_d_toggle_then_save():
-    """D 拨动 → 未保存标记 + 保存可用 → 保存 → 回读 `executors['<exe>']=true`（executor 级形态）。"""
+    """D 拨动 → 未保存标记 + 保存可用 → 保存 → 回读对应子表为 true（executor 级 / MCP 级形态）。"""
     require_page()
-    key = EXECUTORS[0]
+    key = EXECUTORS[0] if EXECUTORS else (rows()[0]["key"] if rows() else "")
+    if not key:
+        raise TestError("页面无任何沙箱单位行")
+    sub = "executors" if key in EXECUTORS else "mcps"
     with _h.user_config_guard(c, [CFG_KEY]):
         reset_key()
         open_page()
@@ -394,36 +395,39 @@ def case_d_toggle_then_save():
         if user_map():
             raise TestError("拨动未保存时不应落库：%r" % user_map())
         click_save()
-        got = poll(lambda: user_map() if ((user_map().get("executors") or {}).get(key) is True) else None)
+        got = poll(lambda: user_map() if ((user_map().get(sub) or {}).get(key) is True) else None)
         if not got:
-            raise TestError("保存后回读不一致：usr tool_sandbox=%r，期望 executors[%r]=true"
-                            % (user_map(), key))
+            raise TestError("保存后回读不一致：usr tool_sandbox=%r，期望 %s[%r]=true"
+                            % (user_map(), sub, key))
         if set(got.keys()) - {"executors", "mcps"}:
             raise TestError("落库形态须为 {executors,mcps} 两子表：%r" % got)
-        if set((got.get("executors") or {}).keys()) != {key}:
-            raise TestError("executors 子表只应含刚拨动的执行体 %r：%r" % (key, got.get("executors")))
+        if set((got.get(sub) or {}).keys()) != {key}:
+            raise TestError("%s 子表只应含刚拨动的单位 %r：%r" % (sub, key, got.get(sub)))
         # 保存后回到干净态（无未保存标记 + 保存禁用）
         if not poll(lambda: (not unsaved_mark()) and save_btn()["disabled"]):
             raise TestError("保存后应清除「未保存」标记并禁用保存按钮")
-        print("[D] %s → executors[%r]=true 落库（两子表形态）" % (key, key), flush=True)
+        print("[D] %s → %s[%r]=true 落库（两子表形态）" % (key, sub, key), flush=True)
 
 
 def case_e_restore_unset():
     """E 重置 → 待保存态 → 保存 → 键项/整键删除（回落不设置）。"""
     require_page()
-    key = EXECUTORS[0]
+    key = EXECUTORS[0] if EXECUTORS else (rows()[0]["key"] if rows() else "")
+    if not key:
+        raise TestError("页面无任何沙箱单位行")
+    sub = "executors" if key in EXECUTORS else "mcps"
     with _h.user_config_guard(c, [CFG_KEY]):
         reset_key()
         open_page()
         click_switch(key)
         click_save()
-        if not poll(lambda: ((user_map().get("executors") or {}).get(key) is True)):
+        if not poll(lambda: ((user_map().get(sub) or {}).get(key) is True)):
             raise TestError("前置失败：%s 未落库：%r" % (key, user_map()))
         # 重置 → 待保存态（不立即落库）
         click_restore(key)
         if not unsaved_mark():
             raise TestError("重置后应进入待保存态（显示「未保存」）")
-        if (user_map().get("executors") or {}).get(key) is not True:
+        if (user_map().get(sub) or {}).get(key) is not True:
             raise TestError("重置不应立即落库（仍应保留 %s=true）：%r" % (key, user_map()))
         click_save()
         if not poll(lambda: CFG_KEY not in ucfg()):

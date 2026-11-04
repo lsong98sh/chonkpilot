@@ -31,10 +31,8 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { useProfileStore } from '@ckfw/layout/profiles.js'
+import { useProfileStore, createLayoutProfile } from '@ckfw/layout/profiles.js'
 import { nextDefaultName, validateName } from '@ckfw/layout/profiles-core.js'
-import { EventNames } from '@ckfw/layout-free/events/event-names.js'
-import mq from '@ckfw/utils/mq.js'
 
 const props = defineProps({
   /** 关闭对话框（由调用方注入） */
@@ -54,7 +52,7 @@ function confirm() {
     error.value = err
     return
   }
-  mq.emit(EventNames.layoutProfileCreate, { name: name.value.trim(), from: from.value })
+  createLayoutProfile(name.value.trim(), from.value)
   props.onDone?.()
 }
 

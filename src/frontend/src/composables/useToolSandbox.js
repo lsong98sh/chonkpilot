@@ -35,15 +35,10 @@ import { MsgClientTopics } from '../events/msgkeys.js'
 // usr 配置键（自由键通道）：值与 tool_async 同形态 = JSON 对象文本。
 export const TOOL_SANDBOX_KEY = 'tool_sandbox'
 
-// 内置 executor 单位：unit = executor exe 基名（写入 tool_sandbox.executors 的键），
-// category = 该执行体工具契约的 `_meta.category`（tools-list 归组用）。
-// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 只剩 tools / script / web 三个 executor；
-// browser / desktop 已改为常驻插件（UDS，不接 gateway），不受本开关约束。
-export const EXECUTOR_UNITS = [
-  { unit: 'chonkpilot-tools-executor.exe', category: 'file' },
-  { unit: 'chonkpilot-script-executor.exe', category: 'script' },
-  { unit: 'chonkpilot-web-executor.exe', category: 'web' },
-]
+// 内置 executor 单位：2026-10-31（D-72）起**全部退场**（`src/lib/mcp-tools` 整体删除；
+// web 三工具随 `web` 插件），故清单为空——沙箱单位只剩外部 MCP（`mcps`）。
+// 保留常量供页面分组与既有测试引用（空数组 = executors 区不渲染）。
+export const EXECUTOR_UNITS = []
 
 // isSet：该键是否显式设置（区分 true / false 与「未设置」）。
 function isSet(v) { return v === true || v === false }
@@ -113,6 +108,10 @@ export function useToolSandbox() {
     const applicableByName = Object.fromEntries(mcpList.value.map((m) => [m.name, m.applicable]))
     const names = new Set()
     for (const m of mcpList.value) names.add(m.name)
+    // 插件 MCP（C3/C4，2026-11-03）：它们不在 data-mcp-list（非文件条目），但工具带
+    // `_meta.server.alias`（如 `plugin-file`）、且同样受 `tool_sandbox.mcps` 开关约束
+    // （插件内按 `_meta.chonkpilot.sandbox` 校验写路径）→ 并入清单，避免「配置隐身」。
+    for (const k of Object.keys(toolsByServer.value)) names.add(k)
     for (const k of Object.keys(mc)) names.add(k)
     for (const name of [...names].sort()) {
       const v = mc[name]

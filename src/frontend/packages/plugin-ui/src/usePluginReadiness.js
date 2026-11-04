@@ -17,7 +17,7 @@
  *   - 已成功加载（`stage === 'ready'`）后不再被状态事件拉回占位，避免页面被偶然的降级事件清空。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { pluginById, subscribePluginChange } from './usePlugins'
+import { pluginById, pluginsReady, subscribePluginChange } from './usePlugins'
 import { pluginUIPageURL } from './pluginUiRoute.js'
 import { pluginHost, pluginHostReady } from './host.js'
 
@@ -65,6 +65,8 @@ export function usePluginReadiness(props) {
   const plugin = computed(() => pluginById(props.pluginId))
   const status = computed(() => (plugin.value && plugin.value.status) || '')
   const detail = computed(() => (plugin.value && plugin.value.detail) || '')
+  /** 台账已加载但查无此 id → 「未安装」（PLUGIN-LOAD-1 D11）；台账未到时不下结论。 */
+  const notInstalled = computed(() => pluginsReady() && !plugin.value)
 
   const src = computed(() => {
     if (!props.entry) return 'about:blank'
@@ -165,6 +167,10 @@ export function usePluginReadiness(props) {
       stage.value = 'idle'
       return
     }
+    if (notInstalled.value) {
+      fail('missing')
+      return
+    }
     if (blockedByStatus()) {
       fail('status')
       return
@@ -213,6 +219,10 @@ export function usePluginReadiness(props) {
   function onPluginChange(id) {
     if (id !== props.pluginId) return
     if (stage.value === 'ready') return
+    if (notInstalled.value) {
+      if (stage.value !== 'not-ready' || reason.value !== 'missing') fail('missing')
+      return
+    }
     if (status.value === READY_STATUS) {
       if (stage.value === 'not-ready' && attempts.value < AUTO_RETRY_LIMIT) {
         attempts.value += 1
@@ -243,6 +253,7 @@ export function usePluginReadiness(props) {
     src,
     status,
     detail,
+    notInstalled,
     showFrame,
     showLoading,
     showPlaceholder,

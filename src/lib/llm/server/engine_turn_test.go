@@ -304,7 +304,9 @@ func TestEngineTurnInsert(t *testing.T) {
 	drive := func(session, turn string, log *eventLog) {
 		engineTextTurn(s, session, turn, "请用慢工具")
 		waitInsertable(t, s, session) // 工具等待期（pending 已登记）
-		res := inboxAddMQ(t, s, session, "【ET】插话A")
+		// 2026-11-01 语义：插话是用户显式动作（insert=true），不再按相位自动插话。
+		// 依据 docs/spec/60-reference/61-消息一览.md `llm-inbox-add`。
+		res := inboxAddInsertMQ(t, s, session, "【ET】插话A")
 		if str(res["type"]) != "insert" {
 			t.Fatalf("工具等待期应分类为 insert：%+v", res)
 		}

@@ -2,12 +2,10 @@ module github.com/chonkpilot/chonkpilot-workspace
 
 go 1.26.0
 
-
 require (
 	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3 // indirect
 	github.com/lsong98sh/chonkpilot-util v0.0.0 // indirect
 )
-
 
 replace github.com/lsong98sh/chonkpilot-util => ../../../../chonkpilot-util
 
@@ -23,4 +21,12 @@ require github.com/lsong98sh/chonkpilot-framework/host v0.0.0
 
 replace github.com/lsong98sh/chonkpilot-agent => ../../../../chonkpilot-agent
 
-require github.com/lsong98sh/chonkpilot-agent v0.0.0
+replace github.com/lsong98sh/chonkpilot-agent/chat => ../../../../chonkpilot-agent/chat/src
+
+replace github.com/lsong98sh/chonkpilot-agent/gateway => ../../../../chonkpilot-agent/gateway/src
+
+replace github.com/lsong98sh/chonkpilot-agent/router => ../../../../chonkpilot-agent/router/src
+
+replace github.com/lsong98sh/chonkpilot-agent/session => ../../../../chonkpilot-agent/session/src
+
+replace github.com/lsong98sh/chonkpilot-agent/types => ../../../../chonkpilot-agent/types/src

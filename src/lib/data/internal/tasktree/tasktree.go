@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -31,6 +30,8 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
+	"github.com/lsong98sh/chonkpilot-agent/session/component"
+	"github.com/lsong98sh/chonkpilot-agent/session/store"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
@@ -45,13 +46,8 @@ func New(base *kernel.Base) *Service { return &Service{Base: base} }
 // 编译期断言：实现完整 tasktree 域门面（缺方法即编译不过）。
 var _ facade.TasktreeAPI = (*Service)(nil)
 
-// tasktreeTableFor 选择读写表：影子域（P1 回滚开关）→ task_shadow；默认 → tasktree（P2 权威表）。
-func tasktreeTableFor(shadow bool) string {
-	if shadow {
-		return shadowTable
-	}
-	return "tasktree"
-}
+// 表选择（`tasktree` / `task_shadow`）与行过滤（closed / init）实现唯一 = 会话组件
+// （`component.Tasktree*`，P4-2 批次 C，2026-10-31）；本包只保留 DTO 整形与跨库聚合。
 
 // TasktreeList 读某主会话的任务树节点（Mode="init" → 仅 DSL 作业根（kind=dsl_job，DSL-3 起；
 // 原 kind=llm 已改判）/运行中存活节点）；
@@ -60,32 +56,30 @@ func (s *Service) TasktreeList(req facade.TasktreeListRequest) (facade.TasktreeL
 	if req.TopSession == "" {
 		return facade.TasktreeListResponse{}, errors.New("top_session required")
 	}
+	if req.DialogID == "" {
+		return facade.TasktreeListResponse{}, kernel.ErrDialogRequired
+	}
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.TasktreeListResponse{}, err
 	}
-	db, release, err := kernel.ContentDB(prj, req.DialogID)
+	comp, err := componentBridge(prj)
 	if err != nil {
 		return facade.TasktreeListResponse{}, err
 	}
-	defer release()
-	recs, _, err := db.Table(tasktreeTableFor(req.Shadow)).Query(data.Query{
-		Where:   data.Record{"top_session": req.TopSession},
-		OrderBy: "created_at",
+	recs, err := comp.TasktreeList(component.TasktreeListCmd{
+		DialogID:      req.DialogID,
+		TopSession:    req.TopSession,
+		Mode:          req.Mode,
+		Shadow:        req.Shadow,
+		IncludeClosed: req.IncludeClosed,
 	})
 	if err != nil {
-		return facade.TasktreeListResponse{}, fmt.Errorf("list tasktree: %v", err)
+		return facade.TasktreeListResponse{}, err
 	}
 	nodes := make([]facade.TaskNode, 0, len(recs))
 	for _, r := range recs {
-		if !req.IncludeClosed && closedRow(r) {
-			continue // 逻辑删除行不出视图（历史仍可经 IncludeClosed / 直查库）
-		}
-		// Mode="init"：保留 LLM 作业根（DSL-3 起 kind=dsl_job；原 kind=llm 已改判）或运行中存活节点。
-		if req.Mode == "init" && kernel.Sval(r["kind"]) != "dsl_job" && kernel.Sval(r["status"]) != "running" {
-			continue
-		}
-		nodes = append(nodes, wire.TaskNodeFromWire(kernel.RecordView(r, "node_id")))
+		nodes = append(nodes, wire.TaskNodeFromWire(kernel.RecordView(data.Record(r), "node_id")))
 	}
 	return facade.TasktreeListResponse{Nodes: nodes}, nil
 }
@@ -93,16 +87,17 @@ func (s *Service) TasktreeList(req facade.TasktreeListRequest) (facade.TasktreeL
 // TasktreeTasks 读任务快照列表（**单源 = 任务层权威表**：运行态与持久态同源）；
 // 默认过滤逻辑删除（closed）行，IncludeClosed=true → 一并返回。
 func (s *Service) TasktreeTasks(req facade.TasktreeTasksRequest) (facade.TasktreeTasksResponse, error) {
-	where := data.Record{}
-	if req.SessionID != "" {
-		where["session_id"] = req.SessionID
-	}
-	if req.TopSession != "" {
-		where["top_session"] = req.TopSession
-	}
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.TasktreeTasksResponse{}, err
+	}
+	comp, err := componentBridge(prj)
+	if err != nil {
+		return facade.TasktreeTasksResponse{}, err
+	}
+	cmd := component.TasktreeTasksCmd{
+		SessionID: req.SessionID, TopSession: req.TopSession,
+		Shadow: req.Shadow, IncludeClosed: req.IncludeClosed,
 	}
 	// 一树一库：无 dialog_id 时为**全实例快照**（任务层启动恢复）→ 跨对话库聚合（61 §0.6 例外）。
 	if req.DialogID == "" {
@@ -116,42 +111,27 @@ func (s *Service) TasktreeTasks(req facade.TasktreeTasksRequest) (facade.Tasktre
 			if !ok {
 				continue
 			}
-			db, release, err := data.OpenExistingDialog(prj.Path(), dialogID)
+			cmd.DialogID = dialogID
+			recs, err := comp.TasktreeTasks(cmd)
 			if err != nil {
 				continue // 打不开（锁/损坏）→ 跳过，不阻断其它对话
 			}
-			got, err := tasksIn(db, where, req)
-			release()
-			if err != nil {
-				return facade.TasktreeTasksResponse{}, err
-			}
-			out = append(out, got...)
+			out = append(out, tasksFrom(recs)...)
 		}
 		return facade.TasktreeTasksResponse{List: out}, nil
 	}
-	db, release, err := kernel.ContentDB(prj, req.DialogID)
+	cmd.DialogID = req.DialogID
+	recs, err := comp.TasktreeTasks(cmd)
 	if err != nil {
 		return facade.TasktreeTasksResponse{}, err
 	}
-	defer release()
-	out, err := tasksIn(db, where, req)
-	if err != nil {
-		return facade.TasktreeTasksResponse{}, err
-	}
-	return facade.TasktreeTasksResponse{List: out}, nil
+	return facade.TasktreeTasksResponse{List: tasksFrom(recs)}, nil
 }
 
-// tasksIn 在单个库内读任务快照（调用方已限定 where）。
-func tasksIn(db *data.DB, where data.Record, req facade.TasktreeTasksRequest) ([]facade.Task, error) {
-	recs, _, err := db.Table(tasktreeTableFor(req.Shadow)).Query(data.Query{Where: where, OrderBy: "created_at"})
-	if err != nil {
-		return nil, fmt.Errorf("task list: %v", err)
-	}
+// tasksFrom 把任务树原始行映射为门面任务快照（字段口径与改前逐字一致）。
+func tasksFrom(recs []store.Record) []facade.Task {
 	out := make([]facade.Task, 0, len(recs))
 	for _, r := range recs {
-		if !req.IncludeClosed && closedRow(r) {
-			continue // 逻辑删除行不出视图
-		}
 		taskID := kernel.Sval(r["node_id"])
 		if taskID == "" {
 			taskID = kernel.Sval(r[data.KeyField])
@@ -181,14 +161,13 @@ func tasksIn(db *data.DB, where data.Record, req facade.TasktreeTasksRequest) ([
 			ReturnFile:   kernel.Sval(r["return_file"]),
 			ReturnSize:   ival(r["return_size"]),
 		}
-		// 待裁决明细（I-99）：仅当层权威 state == awaiting 且执行态携带 options 时给出
-		// （存在即带、缺省不加——缺省与既有载荷逐字节等价）。
+		// 待裁决明细（I-99）：仅当层权威 state == awaiting 且执行态携带 options 时给出。
 		if item.State == "awaiting" {
 			item.Awaiting = awaitingView(item.ExecJSON)
 		}
 		out = append(out, item)
 	}
-	return out, nil
+	return out
 }
 
 // TasktreeUpsert 节点幂等落库（同 id 覆盖；P2 起 = 任务层唯一写入路径）：
@@ -266,34 +245,19 @@ func (s *Service) TasktreeUpsert(req facade.TasktreeUpsertRequest) (facade.Taskt
 	if err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
-	db, release, err := kernel.ContentDB(prj, req.DialogID)
+	if req.DialogID == "" {
+		return facade.TasktreeUpsertResponse{}, kernel.ErrDialogRequired
+	}
+	comp, err := componentBridge(prj)
 	if err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
-	defer release()
-	tb := db.Table(tasktreeTableFor(req.Shadow))
-	// 状态列合并（A-03/A-24）+ 单事务 RMW（A-18）：Upsert 是**全量覆盖写**，未携带的列会随旧值
-	// 一起丢失（如 llm 再上报 running 把「已逻辑删除」的节点复活，或未上报的 exec_json/
-	// return_* / steps 被清空）。Get→改→Upsert 跨两事务在并发下仍会互覆，故收进 UpdateIn：合并
-	// 逻辑在 fn 内基于同事务读到的旧行执行。合并清单 = 上方全部**条件写入列**（非空/非零/有键
-	// 才落）——「本次未携带」即不写 → 保留旧值；`closed` 经 *bool 区分「未携带」与「显式置空」，
-	// 合并同样按「未携带才保留」处理（请求携带则以请求为准）。行不存在 → 空记录无旧值可合并，
-	// 直接新建，口径不变。
-	if err := tb.UpdateIn(n.ID, func(cur data.Record) data.Record {
-		for _, k := range []string{
-			"closed", "deleted_at", "finished_at",
-			"tool_call_id", "instance_id", "work_dir", "state",
-			"args_digest", "result_digest", "exec_json", "started_at", "done_at",
-			"return_kind", "return_inline", "return_file", "created_at",
-			"loop_current", "loop_total", "return_size", "shadow", "steps",
-		} {
-			if _, has := rec[k]; !has {
-				if v, hasOld := cur[k]; hasOld {
-					rec[k] = v
-				}
-			}
-		}
-		return rec
+	// 单一实现 = 组件 `UpdateIn`（本次未携带的条件写入列保留旧值；行不存在 → 新建）。
+	if err := comp.TasktreeUpsert(component.TasktreeUpsertCmd{
+		DialogID: req.DialogID,
+		Shadow:   req.Shadow,
+		ID:       n.ID,
+		Rec:      store.Record(rec),
 	}); err != nil {
 		return facade.TasktreeUpsertResponse{}, err
 	}
@@ -312,156 +276,23 @@ func (s *Service) TasktreeDelete(req facade.TasktreeDeleteRequest) (facade.Taskt
 	if err != nil {
 		return facade.TasktreeDeleteResponse{}, err
 	}
-	db, release, err := kernel.ContentDB(prj, req.DialogID)
+	if req.DialogID == "" {
+		return facade.TasktreeDeleteResponse{}, kernel.ErrDialogRequired
+	}
+	comp, err := componentBridge(prj)
 	if err != nil {
 		return facade.TasktreeDeleteResponse{}, err
 	}
-	defer release()
-	t := db.Table(tasktreeTableFor(req.Shadow))
-	// 级联子树改走二级索引 <table>_by_parent（键 = 父 id + "\x00" + 子主键，无排序段）：
-	// 对每个待删节点按 ListPrefix("<id>\x00") 取直接子节点，BFS 下钻 → O(子树) 而非 O(全库)。
-	// 子节点集合口径与旧全表扫逐点一致：不排除逻辑删除行、不区分 top_session（索引对空值/删除行
-	// 均入/保留键）；seen 去重 + 环/自环防护（口径同 task/layer.go descendantsLocked）。
-	//
-	// 主键→node_id 映射**一次单事务扫描**建好（A-30）：原实现对每个直接子节点单独 t.Get
-	// （各独立 View 事务 → 级联删除 O(子树) 事务数）。索引值仅为主键，node_id 可能与主键不同，
-	// 故仍需映射而非直接取索引键；BFS 全程不变更行 → 映射结果与逐点回表逐字等价。
-	nodeIDs := map[string]string{} // 主键 → node_id
-	nodePKs := map[string]string{} // node_id → 主键（级联删除/更新按**真实主键**操作，行主键可能 ≠ node_id）
-	// 全表映射（原实现无条件建）：仅在「有子节点」或「本节点行不存在（可能是旧行主键 ≠ node_id）」
-	// 时才需要（见下）。
-	buildMaps := func() error {
-		return t.ForEach(func(k string, rec data.Record) error {
-			id := kernel.Sval(rec["node_id"])
-			if id == "" {
-				id = k
-			}
-			nodeIDs[k] = id
-			nodePKs[id] = k
-			return nil
-		})
-	}
-	parentIdx := db.Table(t.Name() + "_by_parent")
-	// F-6（DATA-OPT-1 P4）：先探**直接子节点**（<table>_by_parent 前缀 Seek，O(子节点)）。
-	// 关闭单个**叶子**节点时无需为「主键 ⇄ node_id 映射」全表 ForEach（原实现恒 O(全库)）。
-	// 子节点集合本就只经该索引枚举，故叶子判定与级联结果同源（索引未就绪时同样无子）。
-	childKeys, err := parentIdx.ListPrefix(req.NodeID + "\x00")
-	if err != nil {
+	// 级联子树实现唯一 = 组件（全表扫描建父子关系，替代 `_by_parent` 前缀索引；结果集等价）。
+	if err := comp.TasktreeDelete(component.TasktreeDeleteCmd{
+		DialogID: req.DialogID, Shadow: req.Shadow, NodeID: req.NodeID,
+	}); err != nil {
 		return facade.TasktreeDeleteResponse{}, err
 	}
-	if len(childKeys) == 0 {
-		var rec data.Record
-		ok, err := t.Get(req.NodeID, &rec)
-		if err != nil {
-			return facade.TasktreeDeleteResponse{}, err
-		}
-		if ok {
-			// 现行写路径 key == node_id → 只需本行的映射；行缺失（幂等删除）/ 旧行主键 ≠ node_id
-			// → 回落全表映射（与改前逐字一致）。
-			id := kernel.Sval(rec["node_id"])
-			if id == "" {
-				id = req.NodeID
-			}
-			nodeIDs[req.NodeID] = id
-			nodePKs[id] = req.NodeID
-		} else if err := buildMaps(); err != nil {
-			return facade.TasktreeDeleteResponse{}, err
-		}
-	} else if err := buildMaps(); err != nil {
-		return facade.TasktreeDeleteResponse{}, err
+	if !req.Shadow { // 影子域保持 P1 语义：物理删除且**不广播**
+		s.emitTaskDeleted(req.InstanceID, req.NodeID)
 	}
-	seen := map[string]bool{req.NodeID: true}
-	toDelete := []string{req.NodeID}
-	for i := 0; i < len(toDelete); i++ {
-		kids, err := childIDs(parentIdx, nodeIDs, toDelete[i])
-		if err != nil {
-			return facade.TasktreeDeleteResponse{}, err
-		}
-		for _, id := range kids {
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			toDelete = append(toDelete, id)
-		}
-	}
-	if req.Shadow {
-		// 逐行物理删（含索引键，由 Table 写入口同事务清理）；错误聚合上报（A-02）：
-		// 原 `_ = t.Delete(id)` 吞错 → 失败静默残留且恒返回 OK。不存在视为已删（幂等）。
-		// **按真实主键删（A-31）**：toDelete 承载的是 node_id，而 Delete 需主键 —— 原实现直接
-		// `t.Delete(node_id)`，行主键 ≠ node_id 时命中不到（ErrNotFound 被忽略）→ 子树未被真正删除。
-		var errs []error
-		for _, id := range toDelete {
-			if err := t.Delete(pkOfNode(nodePKs, id)); err != nil && !errors.Is(err, data.ErrNotFound) {
-				errs = append(errs, fmt.Errorf("shadow delete %s: %w", id, err))
-			}
-		}
-		if err := errors.Join(errs...); err != nil {
-			return facade.TasktreeDeleteResponse{}, err
-		}
-		return facade.TasktreeDeleteResponse{OK: true}, nil
-	}
-	// 逻辑删除：节点 + 级联子树同样标记（行保留；幂等）。错误聚合上报（A-02）：逐行为独立
-	// 事务，单行失败不回滚 → 必须上报，否则静默残留未关闭节点且恒返回 OK。
-	// 标记收进 UpdateIn 单事务 RMW（A-18）：Get→改→Upsert 跨两事务会把并发窗口内新上报的
-	// 状态用旧 rec 覆盖；行已消失 → fn 返回 nil 跳过（保持「不存在即跳过」幂等口径，不建空行）。
-	// **按真实主键标记（A-31）**：同 shadow 分支——UpdateIn 以 node_id 为主键会命中不到行
-	// （rec 为空 → fn 返回 nil 跳过），子树未被真正关闭。
-	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
-	var errs []error
-	for _, id := range toDelete {
-		if err := t.UpdateIn(pkOfNode(nodePKs, id), func(rec data.Record) data.Record {
-			if len(rec) == 0 {
-				return nil
-			}
-			rec["closed"] = true
-			rec["deleted_at"] = now
-			rec["updated_at"] = now
-			return rec
-		}); err != nil {
-			errs = append(errs, fmt.Errorf("close %s: %w", id, err))
-		}
-	}
-	if err := errors.Join(errs...); err != nil {
-		return facade.TasktreeDeleteResponse{}, err
-	}
-	s.emitTaskDeleted(req.InstanceID, req.NodeID)
 	return facade.TasktreeDeleteResponse{OK: true}, nil
-}
-
-// pkOfNode 取 node_id 对应的**真实桶主键**（A-31）：级联删除/更新须按主键操作，而行主键可能
-// ≠ node_id。未映射（行缺失 / 缺 node_id 字段的旧行）→ 回落 node_id 本身（Delete 得 ErrNotFound
-// 幂等跳过、UpdateIn 得空 rec 放弃写入，与「不存在即跳过」口径一致）。
-func pkOfNode(nodePKs map[string]string, nodeID string) string {
-	if pk, ok := nodePKs[nodeID]; ok {
-		return pk
-	}
-	return nodeID
-}
-
-// childIDs 返回 parentID 的**直接子节点 id 列表**（cascade 删除用）：对索引桶
-// <table>_by_parent（键 = 父 id + "\x00" + 子主键，无排序段）做前缀 Seek，只扫本父节点区段
-// → O(直接子节点数) 而非 O(全库)。子节点 id 口径与旧全表扫逐点一致：`node_id` 优先、缺失
-// 回落主键；脏索引（索引键在而主行缺失）跳过（旧扫主表本就不会产出该行）。
-// 索引对空值/逻辑删除行均入 / 保留键，故「含已 closed 行、跨 top_session」与旧实现一致。
-// parentIdx = 索引桶（前缀读子主键）；nodeIDs = 主键→node_id 映射（调用方单事务一次建好，
-// A-30；索引值仅为主键，node_id 可能与主键不同，故经映射转换）。
-func childIDs(parentIdx *data.Table, nodeIDs map[string]string, parentID string) ([]string, error) {
-	prefix := parentID + "\x00" // 与 data.indexes.go 的索引段分隔符一致（节点 id 不含 \x00）
-	keys, err := parentIdx.ListPrefix(prefix)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(keys))
-	for _, k := range keys {
-		pk := strings.TrimPrefix(k, prefix)
-		id, ok := nodeIDs[pk]
-		if !ok {
-			continue // 脏索引（主行缺失）→ 跳过，与全表扫描口径一致
-		}
-		ids = append(ids, id)
-	}
-	return ids, nil
 }
 
 // emitTaskDeleted 广播 task-deleted（相对主题），载荷 = `{instance_id, node_id}`（61 §3.4；
@@ -472,21 +303,6 @@ func (s *Service) emitTaskDeleted(instanceID, nodeID string) {
 	}
 	b, _ := json.Marshal(map[string]any{"instance_id": instanceID, "node_id": nodeID})
 	_ = s.Bus.Emit(context.Background(), msgkeys.TopicTaskDeleted, b)
-}
-
-// 影子域路由（21 §9.1 P1 遗留，**P2 仅作回滚开关**）：载荷 data.shadow = true → 读写**影子桶**
-// task_shadow（+ task_shadow_by_top / _by_session / _by_parent 索引桶，由 Table 写入口维护，见
-// indexes.go / migrate.go）。**不新增 MQ 主题**（复用既有 data-tasktree-* 四个方法）；
-// **默认不传 shadow → 权威表 tasktree**（P2 单写者路径）。影子路径保留 P1 语义（含物理删除），
-// 供回滚时不改代码直接切换。
-const shadowTable = "task_shadow"
-
-// closedRow 判定行是否已逻辑删除（closed=true 或 deleted_at 非空）。
-func closedRow(r data.Record) bool {
-	if v, ok := r["closed"].(bool); ok && v {
-		return true
-	}
-	return kernel.Sval(r["deleted_at"]) != ""
 }
 
 // ival 把数据面 JSON 数值（float64/int/json.Number）转为 int（非法 → 0）。

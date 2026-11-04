@@ -38,12 +38,13 @@ test('MemoryTotal：B2「打开全部配置」图标与菜单已移除（无死�
   }
 })
 
-test('MemoryTotal：上下文管理页仅保留只读总量（不留重复入口）', () => {
+test('MemoryTotal：上下文管理页不再承载记忆入口（配置迁至 memory 插件配置页）', () => {
   const ctx = read('views/settings/ContextConfig.vue')
   assert.doesNotMatch(ctx, /@click="openCategoryList"/, '上下文管理页不得再挂点击入口')
   assert.doesNotMatch(ctx, /MemoryCategoryListDialog/, '分类列表弹框逻辑应整体迁至 composable')
-  assert.match(ctx, /useMemoryCategories/, '应复用共享 composable')
-  assert.match(ctx, /mem-total-value/, '仍只读展示总量')
+  assert.doesNotMatch(ctx, /useMemoryCategories/, 'MEMORY-UI-1 起配置不再由上下文页承载')
+  assert.doesNotMatch(ctx, /mem-total-value/, '上下文页不得再展示记忆总量')
+  assert.match(ctx, /projectConfig\.context_memory_moved/, '须给迁移提示（指向插件配置页）')
 })
 
 test('MemoryTotal：composable 只读配置门控 + 编辑器读写口径', () => {

@@ -74,23 +74,32 @@ func (s *Service) prjUsrCapRoot(instanceID string, scope facade.Scope) string {
 }
 
 // scenarioRootForWrite 解析写入目标级（app / user / project / prjusr 四级均可写）。
-// 缺省 user；project 需 workDir 非空（否则回落 user）；prjusr 需 prjUsrCapRoot 非空（否则回落 user）。
-func (s *Service) scenarioRootForWrite(level, workDir, prjUsrCapRoot string) (string, string) {
+//
+// 级别语义（D-54，2026-10-31）：**空 = 用户级**（保持原有缺省）；非空必须是四级之一——
+// 未知级别 / 该级当前不可用（project 缺 work_dir、prjusr 缺项目私有根）一律**返回错误**，
+// 禁止静默回落 user 级（回落可能误删 / 误写用户级同名项）。
+func (s *Service) scenarioRootForWrite(level, workDir, prjUsrCapRoot string) (string, string, error) {
 	switch level {
+	case "", capfs.KindUser:
+		return capfs.KindUser, capfs.ScenarioUserRoot(s.UsrPath), nil
 	case capfs.KindApp:
 		if root, err := capfs.ScenarioSystemRoot(s.AppDir); err == nil {
-			return capfs.KindApp, root
+			return capfs.KindApp, root, nil
 		}
+		return "", "", errors.New("app 级不可用：无法解析系统级场景根")
 	case capfs.KindProject:
-		if workDir != "" {
-			return capfs.KindProject, capfs.ScenarioProjectRoot(workDir)
+		if workDir == "" {
+			return "", "", errors.New("project 级不可用：当前实例未绑定 work_dir")
 		}
+		return capfs.KindProject, capfs.ScenarioProjectRoot(workDir), nil
 	case capfs.KindPrjUsr:
-		if prjUsrCapRoot != "" {
-			return capfs.KindPrjUsr, capfs.ScenariosRoot(prjUsrCapRoot)
+		if prjUsrCapRoot == "" {
+			return "", "", errors.New("prjusr 级不可用：当前实例未解析项目私有根")
 		}
+		return capfs.KindPrjUsr, capfs.ScenariosRoot(prjUsrCapRoot), nil
+	default:
+		return "", "", fmt.Errorf("未知的级别 %q（可选：app / user / project / prjusr）", level)
 	}
-	return capfs.KindUser, capfs.ScenarioUserRoot(s.UsrPath)
 }
 
 // refRootsOf 由四级**场景根**推导四级 **capability 根**（= filepath.Dir(场景根)）→ 供场景
@@ -222,7 +231,10 @@ func (s *Service) ScenarioSave(req facade.ScenarioSaveRequest) (facade.ScenarioS
 	}
 	workDir := s.WorkDirLoose(req.InstanceID, req.Scope)
 	prjUsrCap := s.prjUsrCapRoot(req.InstanceID, req.Scope)
-	kind, root := s.scenarioRootForWrite(sc.Level, workDir, prjUsrCap)
+	kind, root, err := s.scenarioRootForWrite(sc.Level, workDir, prjUsrCap)
+	if err != nil {
+		return facade.ScenarioSaveResponse{}, err
+	}
 	levels := capfs.ScenarioRoots(s.AppDir, s.UsrPath, workDir, prjUsrCap)
 	if err := s.ensureScenarioIDUnique(levels, sc.ID, kind); err != nil {
 		return facade.ScenarioSaveResponse{}, err
@@ -258,9 +270,12 @@ func (s *Service) ScenarioDelete(req facade.ScenarioDeleteRequest) (facade.Scena
 		}
 	}
 	if level == "" {
-		level = capfs.KindUser
+		level = capfs.KindUser // 未指定且四级均无该场景：按 user 级空删（幂等，无副作用）
 	}
-	_, root := s.scenarioRootForWrite(level, workDir, prjUsrCap)
+	_, root, err := s.scenarioRootForWrite(level, workDir, prjUsrCap)
+	if err != nil {
+		return facade.ScenarioDeleteResponse{}, err
+	}
 	target := filepath.Join(root, req.ScenarioID)
 	// 越界复验（A-31/A-38）：id 已过 ValidScenarioID，此处再兜底词法（StrictlyWithin）+ 实路径
 	// （RealPathInside）确认删除落点仍在场景根内（防 `..` 越界删 / 根内 symlink 被 RemoveAll 跟随）。

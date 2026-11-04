@@ -1,5 +1,5 @@
 /**
- * PLUGIN-UI-1 第三段前端守卫：6 个插件（browser/desktop/file/mcp/task/websearch）配置面收口。
+ * PLUGIN-UI-1 第三段前端守卫：6 个插件（browser/desktop/file/mcp/task/web）配置面收口。
  *
  * 覆盖：
  *   ① manifest 仍是配置页唯一入口（`ui.views` id=config + 动作面 load/save/reset），
@@ -22,10 +22,11 @@ import { readSrc } from './support/feSource.mjs'
 const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const repoDir = join(here, '..', '..', '..')
-const PLUGINS = ['browser', 'desktop', 'file', 'mcp', 'task', 'websearch']
+const PLUGINS = ['browser', 'desktop', 'file', 'mcp', 'task', 'web']
 const read = (rel) => readSrc(rel)
+// PLUGIN-LOAD-1 D12：完整 manifest 走 manifest.json（plugin.json = 极简启动信息）。
 const manifestOf = (id) =>
-  JSON.parse(readFileSync(join(repoDir, 'src', 'initdata', 'capability', 'plugins', id, 'plugin.json'), 'utf8'))
+  JSON.parse(readFileSync(join(repoDir, 'src', 'initdata', 'capability', 'plugins', id, 'manifest.json'), 'utf8'))
 const pluginsDir = join(repoDir, '..', 'chonkpilot-plugins')
 const pageOf = (id) => readFileSync(join(pluginsDir, id, 'src', 'webui', 'config.html'), 'utf8')
 

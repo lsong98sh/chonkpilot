@@ -43,7 +43,7 @@ test('api/config.js：setConfigs 一次批量写（报文 {data:{entries}}）；
 // keysFn = 承载批量键字面量的函数。
 // 〔UIREG-1〕codegraph / vfts 配置页已并入 codegraph 插件（前端页面删除），此处只保留剩余设置页。
 const PAGES = [
-  { file: 'views/settings/ContextConfig.vue', fn: 'handleSave', keysFn: 'handleSave', keys: ["'memory.enabled'"] },
+  { file: 'views/settings/ContextConfig.vue', fn: 'handleSave', keysFn: 'handleSave', keys: ["'compress.subsession'"] },
   { file: 'views/settings/HistoryConfig.vue', fn: 'handleRetentionSave', keysFn: 'handleRetentionSave', keys: ["'history.checkpoint_keep'", "'history.checkpoint_ttl_days'"] },
 ]
 

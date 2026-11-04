@@ -32,6 +32,14 @@ const (
 	MaxLLMOutTok  = 1000000 // maxOutputToken 上限
 	MaxLLMCtxTok  = 1000000000
 	MaxLLMIter    = 2000
+	// MaxLLMCapability 是 LLM 能力档位上限（D-65：双维度各 0~5，一位小数 = 步进 0.1；0 = 不具备）。
+	MaxLLMCapability = 5.0
+)
+
+// LLM 能力双维度键名（D-65，2026-11-04 用户口径）：`reasoning` = 推理能力 / `vision` = 识图能力。
+const (
+	capabilityReasoning = "reasoning"
+	capabilityVision    = "vision"
 )
 
 // ── 插件自身配置（usr 层 `plugins.<插件id>.<字段>`）──────────────
@@ -307,8 +315,71 @@ func validateLLMItems(items []any) error {
 		if err := validateIntRange(item, i, "maxToolIterations", 0, MaxLLMIter); err != nil {
 			return err
 		}
+		// 能力双维度（D-65，2026-11-04）：`capability{reasoning, vision}` 各 0~5 的一位小数
+		// （步进 0.1）；0 = 不具备。旧形态（单一数值）已作废 → 明确拒绝（不静默丢弃）。
+		if v, exists := item["capability"]; exists && v != nil {
+			obj, ok := v.(map[string]any)
+			if !ok {
+				return fmt.Errorf("llms[%d].capability: 须为对象 {reasoning, vision}", i)
+			}
+			for _, key := range []string{capabilityReasoning, capabilityVision} {
+				raw, exists := obj[key]
+				if !exists || raw == nil {
+					continue
+				}
+				f, ok := asFloat(raw)
+				if !ok || f < 0 || f > MaxLLMCapability || math.Abs(f*10-math.Round(f*10)) > 1e-9 {
+					return fmt.Errorf("llms[%d].capability.%s: 须为 0–5 的一位小数（步进 0.1）", i, key)
+				}
+			}
+		}
+		// 旧声明式能力（`capabilities` 字符串数组，取值 reasoning / vision）：仍可写（读侧映射为
+		// 中位档 3.0），但形态必须合法 → 非数组 / 含非字符串项一律拒绝。
+		if v, exists := item["capabilities"]; exists && v != nil {
+			switch arr := v.(type) {
+			case []any:
+				for _, e := range arr {
+					if _, ok := e.(string); !ok {
+						return fmt.Errorf("llms[%d].capabilities: 须为字符串数组", i)
+					}
+				}
+			case []string: // 内部直传（非总线 JSON）
+			default:
+				return fmt.Errorf("llms[%d].capabilities: 须为字符串数组", i)
+			}
+		}
 	}
 	return nil
+}
+
+// DeriveLLMCapabilities 按 `capability{reasoning,vision}` 派生旧声明式 `capabilities` 字符串数组
+// （档位 >0 即含该项），保证 ChatPanel 截图门控与 configsuggest 等旧读侧契约不破（D-65，2026-11-04）。
+//
+// 仅在条目**显式写了 `capability`** 时派生：未写 capability 的条目（旧数据 / 未编辑）保持原样，
+// 避免把「只有 capabilities 的旧记录」清空。原地改写入参 payload（写侧归一，非校验）。
+func DeriveLLMCapabilities(payload map[string]any) {
+	items, ok := payload["llms"].([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		capObj, ok := item["capability"].(map[string]any)
+		if !ok {
+			continue
+		}
+		caps := make([]any, 0, 2)
+		if dim, ok := asFloat(capObj[capabilityReasoning]); ok && dim > 0 {
+			caps = append(caps, capabilityReasoning)
+		}
+		if dim, ok := asFloat(capObj[capabilityVision]); ok && dim > 0 {
+			caps = append(caps, capabilityVision)
+		}
+		item["capabilities"] = caps
+	}
 }
 
 // validateConfigKV 校验 prj-config / prj-security 的已知键写入（ConfigKVSet 写库前调用）。
@@ -355,14 +426,17 @@ func ValidateConfigKV(domain string, entries map[string]string) error {
 	return nil
 }
 
-// validateSecurityEntry 校验一条信任目录（`{dir, writable}` JSON；专题 §3.2）。
+// validateSecurityEntry 校验一条可写目录（`{dir}` JSON；专题 §3.2）。
+//
+// 2026-11-03（C1）：安全配置收敛为**只写白名单**——`writable` 不再是必填字段；
+// 旧值 `{dir,writable}` 仍可读（结构体保留该键但不校验，写入侧只写 `{dir}`）。
 func validateSecurityEntry(key, val string) error {
 	var obj struct {
 		Dir      string `json:"dir"`
-		Writable any    `json:"writable"`
+		Writable any    `json:"writable"` // 兼容旧值：忽略，不校验
 	}
 	if err := json.Unmarshal([]byte(val), &obj); err != nil {
-		return fmt.Errorf("security-%s: 必须是 {dir,writable} JSON（%v）", key, err)
+		return fmt.Errorf("security-%s: 必须是 {dir} JSON（%v）", key, err)
 	}
 	dir := strings.TrimSpace(obj.Dir)
 	if dir == "" {
@@ -373,9 +447,6 @@ func validateSecurityEntry(key, val string) error {
 	}
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return fmt.Errorf("security-%s.dir: 目录不存在或不可访问（%s）", key, dir)
-	}
-	if obj.Writable == nil {
-		return fmt.Errorf("security-%s.writable: 必填（true|false）", key)
 	}
 	return nil
 }

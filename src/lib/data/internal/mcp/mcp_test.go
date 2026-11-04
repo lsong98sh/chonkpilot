@@ -242,3 +242,41 @@ func TestMcpSaveRejectsInvalidName(t *testing.T) {
 		t.Fatal("非法名不应落盘")
 	}
 }
+
+// TestMcpRejectsUnknownLevel（D-54，2026-10-31）：save / delete 的显式 level 不是四级之一 →
+// **报错**，且绝不回落 user 级（不得误写 / 误删 user 级同名定义）。
+func TestMcpRejectsUnknownLevel(t *testing.T) {
+	s, _, usrPath := testService(t)
+	root := capfs.McpUserRoot(usrPath)
+	if _, err := s.McpSave(facade.McpSaveRequest{Server: facade.McpServer{
+		Name: "keep", URL: "http://keep", Enabled: true, Level: capfs.KindUser,
+	}}); err != nil {
+		t.Fatalf("预置 user 级定义失败：%v", err)
+	}
+
+	if _, err := s.McpSave(facade.McpSaveRequest{Server: facade.McpServer{
+		Name: "bad", URL: "http://bad", Enabled: true, Level: "bogus",
+	}}); err == nil {
+		t.Fatal("McpSave(level=bogus) 应报错（禁止回落 user 级）")
+	}
+	if capfs.McpFileExists(root, "bad") {
+		t.Fatal("未知级别不得回落 user 级落盘")
+	}
+
+	if _, err := s.McpDelete(facade.McpDeleteRequest{Name: "keep", Level: "bogus"}); err == nil {
+		t.Fatal("McpDelete(level=bogus) 应报错（禁止回落 user 级）")
+	}
+	if !capfs.McpFileExists(root, "keep") {
+		t.Fatal("未知级别不得回落 user 级误删同名定义")
+	}
+
+	// 合法级别但当前不可用（未绑定实例 → 无 work_dir）同样报错，不回落 user 级。
+	if _, err := s.McpSave(facade.McpSaveRequest{Server: facade.McpServer{
+		Name: "proj-srv", URL: "http://proj", Enabled: true, Level: capfs.KindProject,
+	}}); err == nil {
+		t.Fatal("McpSave(level=project) 在未绑定 work_dir 时应报错")
+	}
+	if capfs.McpFileExists(root, "proj-srv") {
+		t.Fatal("不可用级别不得回落 user 级落盘")
+	}
+}

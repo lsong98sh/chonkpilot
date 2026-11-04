@@ -6,22 +6,25 @@
   * 加强 UI 元素断言：文字（i18n 精确）/ 位置（getBoundingClientRect）/ 颜色（getComputedStyle）。
 
 覆盖矩阵
-  A. 项目设置页（preview tab `settings-project`；Tabs：安全/上下文管理/CodeGraph 索引/Vfts 全文索引/文件历史）
+  A. 项目设置页（preview tab `settings-project`；页签：安全/上下文管理/代码知识库/文件历史/
+     文件树/群聊/日志/配置导入/导出）
      A1 页签文字 + 页面在视口内（位置）
-     A2 上下文管理：记忆库开关**联动禁用**其子项（位置/颜色 opacity=0.5）+ 总结提示词默认非空
-        → 拨记忆库开关（只改本地态）→ 点击【保存】→ data-prj-config-list 回读 memory.enabled
-        （2026-09-27：K3/A2 改「手动保存」—— 拨开关/改数值不再即时落库，须点【保存】）
-     A3 CodeGraph 索引：文件后缀 / 排除的目录和文件**默认值已回显**；启用开关点击保存并回读 enable-codegraph；
-        保存按钮点击（handleIndexSave）→ 回读 codegraph.exts；「叠加 gitignore」勾选（勾选后输入框仍可编辑）
+     A2 上下文管理（MEMORY-UI-1，2026-11-02：**记忆沉淀配置已迁 memory 插件页**）：
+        本页仅上下文压缩配置 —— 迁移提示文案 + 三项阈值 + 快速阈值按钮组（64K…1M）+
+        压缩子会话开关 + 「启用记忆库」等记忆文案确已迁出；快速阈值 64K 点击（只改本地态）
+        → 主【保存】→ compress_token_threshold=65536 批量落库回读 + data-prj-config-refresh
+        恰 1 条（ids 含全组键）+ 总结提示词弹框内容非空
+     A3 CodeGraph 索引（插件自持 iframe 配置页，D-71）：文件后缀 / 排除的目录和文件**默认值已回显**；
+        启用开关点击保存并回读 enable-codegraph；「叠加 gitignore」勾选（勾选后输入框仍可编辑）
         → 保存 → 回读 codegraph.stack-gitignore
-     A4 Vfts 全文索引：默认值回显 + 启用开关点击保存并回读 + **编辑后**保存回读 vfts.exts
+     A4 Vfts 全文索引（同插件 iframe）：默认值回显 + 启用开关点击保存并回读 + **编辑后**保存回读 vfts.exts
         （2026-09-15 产品改动：vfts 保存改为「仅写实际改动的键」，未改动 → 不写并提示
         「无改动（未写入配置）」；故本用例先写入哨兵值再点保存，覆盖「保存落库」路径）
   B. 用户设置页（preview tab settings-llm / settings-mcp / settings-paths）
      B1 LLM 配置：2 页签（**一览** / **默认模型**）——
         一览 = provider 清单（添加/编辑/删除，**无只读行、无「设为默认」**）；
         默认模型 = **主对话** + 3 个子系统下拉（提示词优化/记忆/压缩；2026-10-25 移除
-        analysis/decision 预留键，后端零消费方）
+        analysis/decision 预留键，后端零消费方）+ 新字段「推理能力」「识图能力」（D-65）
         （2026-09-26 用户口径：原「只读内置行 + 设为默认」已移除；`gui.system.builtins` 不再下发
          `builtinLLMs`，聊天输入框选择器只列 usr providers）
         + 添加弹窗字段文字 + 弹窗在视口内（位置）+ 表单**一行两列**（位置）→ 填表保存 →
@@ -29,7 +32,8 @@
      B2 MCP：transport 与 url / runtime 的**从属显示**（切换 Select；args 不受 transport 门控）
         + 保存 runtime/args → 经 data-mcp-list 回读（2026-10-01 四级文件化）→ 清理
      B3 路径/工具链：系统页 Chrome **已被探测出**（路径非空 + 版本 x.y.z.w）；用户页含 Chrome 输入；
-        项目页不含 Chrome（三级归属）
+        项目页含 Chrome 行且带「继承系统」归属标注 + 项目级覆盖输入（2026-11 现状：项目页
+        展示全工具链行，留空 = 继承用户/系统）
   C. 已删除项确不存在：旧配置弹窗（.config-dialog-body-scroll）、独立「提示词」页签
   D. 重启持久化复核：独立 work-dir（含 .git）启动 GUI → 点击「文件历史」开关保存 history.enabled
      → **重启 GUI 后重新打开页面回读**（开关状态）
@@ -42,7 +46,8 @@
 颜色断言口径：主按钮背景 = var(--accent)；禁用开关 opacity=0.5、禁用输入 opacity=0.6；
 保存成功提示左边框 = var(--success)。
 
-前置：dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir=<大写盘符 ws>；
+前置：dist\\chonkpilot.exe --test-port=2345 --work-dir=<大写盘符 ws>（2026-11-02 dist 扁平化，
+      exe 与 capability/ 同级，不再有 dist/desktop 层）；
       本脚本自起独立实例 2347 验证「重启持久化」，结束回收。
 运行：python run_config_ui.py
 """
@@ -64,7 +69,8 @@ _h.suite_config_guard(c)  # 套件级配置快照-还原（51 §6-8）：含 usr
 _h.ensure_locale(c)  # 语言确定性：本套件按 zh-CN 文案断言（DB ui.locale 可能被他套件写成 en-US）
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(HERE))))
-EXE = os.path.join(ROOT, "dist", "desktop", "chonkpilot.exe")
+# 2026-11-02（产物扁平化）：dist/desktop/ 层取消 → exe 与 capability/ 均在 dist 根
+EXE = os.path.join(ROOT, "dist", "chonkpilot.exe")
 WS = os.path.join(HERE, "ws")
 SHOTS = os.path.join(HERE, "_cfg_ui_shots")
 
@@ -75,7 +81,7 @@ HIST_DATA = os.path.join(HERE, "_cfg_hist_data")
 BASE_PORT = 2345
 
 # G 用例（本波新改动：恢复默认 / 知识库右键菜单）使用的四级 capability 根
-APP_CAP = os.path.join(ROOT, "dist", "desktop", "capability")          # 系统级（只读）
+APP_CAP = os.path.join(ROOT, "dist", "capability")                     # 系统级（只读；与 exe 同级）
 PROJ_CAP = os.path.join(WS, ".chonkpilot", "capability")               # 项目级
 PROJ_TOOL_DIR = os.path.join(PROJ_CAP, "tools", "server")
 # 口径变更（2026-10-23）：core 分类随工具迁入插件而消失，app 级 `capability/tools/` 只剩
@@ -359,20 +365,38 @@ def case_a1_tabs_text_position():
 
 
 def case_a2_context_memory():
-    """A2 上下文管理：文字 + 记忆库开关联动禁用子项（颜色）+ 总结提示词默认非空 + 点击保存落库。"""
-    with prj_guard(["memory.enabled"]):
+    """A2 上下文管理（MEMORY-UI-1，2026-11-02：记忆沉淀配置已迁 memory 插件页）：
+    本页只保留**上下文压缩配置**（三项阈值 + 快速阈值按钮 + 压缩子会话开关 + 总结提示词弹框）。
+    断言：迁移提示文案（context_memory_moved）+ 压缩三项 label + 快速阈值按钮组（64K…1M）
+    + 「启用记忆库」等记忆文案确已迁出；快速阈值 64K 点击（只改本地态）→ 主【保存】→
+    compress_token_threshold=65536 批量落库回读 + data-prj-config-refresh 恰 1 条（ids 含全组键）；
+    总结提示词弹框内容非空。"""
+    with prj_guard(["keep_full_max_turns", "keep_full_max_tokens",
+                    "compress_token_threshold", "compress.subsession"]):
         open_page("settings-project", ".project-config-panel")
         click_tab("上下文管理", ".project-config-panel")
         shot("a2-context.png")
         txt = panel_text(".project-config-panel")
-        for want in ("记忆配置", "启用记忆库", "用户偏好", "上下文压缩配置",
+        for want in ("记忆沉淀配置已迁移到插件配置页", "上下文压缩配置",
                      "保留完整对话内容的最近轮数（默认 10）",
                      "保留完整对话内容的 token 上限（默认 24000）",
                      "简化区 Token 压缩阈值（默认 20000）",
-                     "编辑总结提示词（压缩时使用）"):
+                     "编辑总结提示词（压缩时使用）", "压缩子会话"):
             if want not in txt:
                 raise TestError("上下文管理缺文案：%r" % want)
-        # 总结提示词：只读展示已移除 → 改「弹框内查看」（2026-09-26）：点「编辑」开弹框，内容非空
+        # 记忆配置确已迁出本页（迁 memory 插件配置页）
+        for gone in ("启用记忆库", "记忆配置"):
+            if gone in txt:
+                raise TestError("上下文管理仍含已迁移的记忆配置文案：%r" % gone)
+        # 压缩子会话开关（switch-row）存在
+        if not find_switch_by_label(".project-config-panel", "压缩子会话"):
+            raise TestError("未找到 压缩子会话 开关")
+        # 快速阈值按钮组（QUICK_THRESHOLDS：64K/128K/256K/512K/1M）
+        quick = ev(panel_js(".project-config-panel", """
+return [...R.querySelectorAll('.quick-threshold-btn')].map(b=>b.textContent.trim());""")) or []
+        if quick != ["64K", "128K", "256K", "512K", "1M"]:
+            raise TestError("快速阈值按钮组不符：%r" % quick)
+        # 总结提示词：弹框内查看（2026-09-26）：点「编辑」开弹框，内容非空
         r = ev(panel_js(".project-config-panel", """
 const hs=[...R.querySelectorAll('.prompt-editor-header')];
 const h=hs[0];
@@ -387,40 +411,13 @@ if(!b)return 'no-btn';b.dispatchEvent(new MouseEvent('click',{bubbles:true}));re
         if len(val.strip()) < 8:
             raise TestError("总结提示词弹框内容疑似为空：%r" % (val[:40],))
         close_stray_dialogs()
-        # 记忆库开关：关 → 子项全部禁用（联动）
-        st = find_switch_by_label(".project-config-panel", "启用记忆库")
-        if not st:
-            raise TestError("未找到 启用记忆库 开关")
-        # 2026-09-27（手动保存口径）：开关只改本地态，点【保存】才落库。
-        # 先归一到「关闭」基准：若当前为开 → 关闭后点【保存】落库 OFF，使「已保存态」= OFF。
-        if st["checked"]:
-            if click_switch_by_label(".project-config-panel", "启用记忆库") != "ok":
-                raise TestError("关闭记忆库开关失败")
-            if click_primary(".project-config-panel", "保存") != "ok":
-                raise TestError("归一记忆库为关闭时点击保存失败")
-            if not wait_toast("b-message--success"):
-                raise TestError("归一保存后未见成功提示")
-        info = ev(panel_js(".project-config-panel", """
-return {dis_inp:[...R.querySelectorAll('input.b-input.is-disabled')].filter(e=>e.getBoundingClientRect().width>0).length,
-        dis_sw:[...R.querySelectorAll('.b-switch.is-disabled')].filter(e=>e.getBoundingClientRect().width>0).length,
-        sw_opacity:(function(){const s=[...R.querySelectorAll('.b-switch.is-disabled')][0];
-          return s?getComputedStyle(s).opacity:'-';})(),
-        inp_opacity:(function(){const s=[...R.querySelectorAll('input.b-input.is-disabled')][0];
-          return s?getComputedStyle(s).opacity:'-';})()};"""))
-        if info["dis_inp"] < 2 or info["dis_sw"] < 1:
-            raise TestError("记忆库关闭时子项未联动禁用：%r" % info)
-        if info["sw_opacity"] != "0.5":
-            raise TestError("禁用开关 opacity=%s，期望 0.5" % info["sw_opacity"])
-        if info["inp_opacity"] != "0.6":
-            raise TestError("禁用输入 opacity=%s，期望 0.6" % info["inp_opacity"])
-        # 点击开启 → 只改本地态（子项解禁），**此时尚未落库**（手动保存口径）
-        if click_switch_by_label(".project-config-panel", "启用记忆库") != "ok":
-            raise TestError("开启记忆库开关失败")
-        if ev(panel_js(".project-config-panel",
-                       "return [...R.querySelectorAll('input.b-input.is-disabled')].filter(e=>e.getBoundingClientRect().width>0).length;")) != 0:
-            raise TestError("记忆库开启后子项仍禁用")
-        if prj().get("memory.enabled") == "true":
-            raise TestError("开关拨动即落库（应改为手动保存：拨动不落库）")
+        # 快速阈值 64K → 只改本地态（compress_token_threshold=65536），点【保存】才落库
+        r = ev(panel_js(".project-config-panel", """
+const b=[...R.querySelectorAll('.quick-threshold-btn')].find(x=>x.textContent.trim()==='64K');
+if(!b)return 'no-btn';b.dispatchEvent(new MouseEvent('click',{bubbles:true}));return 'ok';"""))
+        if r != "ok":
+            raise TestError("点击快速阈值 64K 失败：%r" % r)
+        time.sleep(0.4)
         # 主保存按钮：文字 + 颜色（= var(--accent)）
         save_txt = ev(panel_js(".project-config-panel",
                                "const b=[...R.querySelectorAll('button.b-btn--primary')].filter(x=>x.getBoundingClientRect().width>0)[0];"
@@ -432,9 +429,10 @@ return {dis_inp:[...R.querySelectorAll('input.b-input.is-disabled')].filter(e=>e
                          "return b?getComputedStyle(b).backgroundColor:null;"))
         if bg != css_color("var(--accent)"):
             raise TestError("主按钮背景=%s，期望 var(--accent)=%s" % (bg, css_color("var(--accent)")))
-        # 点击保存 → 成功提示（颜色 = var(--success)）+ memory.enabled 落库
-        # 本轮变更实测（批量写）：一次【保存】= 一次 `setConfigs` 批量写 → 后端整批只广播 **1 条**
-        # `data-prj-config-refresh`（载荷带 `ids` 全组键，61 §3.1）；保存前挂监听、保存后计数。
+        # 点击保存 → 成功提示（颜色 = var(--success)）+ 批量落库
+        # 一次【保存】= 一次 `setConfigs` 批量写（压缩三项 + compress.subsession）→ 后端整批只广播
+        # **1 条** `data-prj-config-refresh`（载荷带 `ids` 全组键，61 §3.1）；保存前挂监听、保存后计数。
+        mem_enabled_before = prj().get("memory.enabled")
         c.mq_on_capture(["data-prj-config-refresh"])
         if click_primary(".project-config-panel", "保存") != "ok":
             raise TestError("点击上下文保存按钮失败")
@@ -443,8 +441,6 @@ return {dis_inp:[...R.querySelectorAll('input.b-input.is-disabled')].filter(e=>e
         if toast_border("b-message--success") != css_color("var(--success)"):
             raise TestError("成功提示左边框=%s，期望 var(--success)=%s"
                             % (toast_border("b-message--success"), css_color("var(--success)")))
-        if prj().get("memory.enabled") != "true":
-            raise TestError("保存后 memory.enabled=%r，期望 'true'" % prj().get("memory.enabled"))
         # 批量写广播计数：1 次保存 → 恰好 1 条 prj-config-refresh，且载荷 `ids` 覆盖本页批量键
         c.wait_events("data-prj-config-refresh", n=1, max_wait=10, clear=False)
         time.sleep(1.0)
@@ -454,16 +450,25 @@ return {dis_inp:[...R.querySelectorAll('input.b-input.is-disabled')].filter(e=>e
                             % (len(refs), refs))
         _ids = (refs[0].get("payload") or {}).get("ids")
         if not (isinstance(_ids, list) and "keep_full_max_turns" in _ids
-                and "memory.enabled" in _ids and "compress_token_threshold" in _ids):
-            raise TestError("批量 refresh 载荷 ids 应含全组键（keep_full_max_turns/memory.enabled/"
-                            "compress_token_threshold…），实测 %r" % (_ids,))
+                and "keep_full_max_tokens" in _ids and "compress_token_threshold" in _ids
+                and "compress.subsession" in _ids):
+            raise TestError("批量 refresh 载荷 ids 应含本页全组键（keep_full_max_turns/"
+                            "keep_full_max_tokens/compress_token_threshold/compress.subsession），实测 %r" % (_ids,))
         print("[A2] 一次保存 → data-prj-config-refresh 条数=%d ids=%r" % (len(refs), _ids), flush=True)
-        # 2026-09-24（D1）：三项阈值随主保存落库（读回正整数字符串）
+        # 落库回读：快速阈值 64K 生效（65536）+ 三项阈值均为正整数字符串
         p = prj()
-        for k in ("keep_full_max_turns", "keep_full_max_tokens", "compress_token_threshold"):
+        if p.get("compress_token_threshold") != "65536":
+            raise TestError("保存后 compress_token_threshold=%r，期望 '65536'（快速阈值 64K）"
+                            % p.get("compress_token_threshold"))
+        for k in ("keep_full_max_turns", "keep_full_max_tokens"):
             v = (p.get(k) or "").strip()
             if not v.isdigit() or int(v) <= 0:
                 raise TestError("上下文管理保存后 %s=%r，期望正整数字符串" % (k, p.get(k)))
+        # 记忆键已迁出本页：本页保存不得改写 memory.enabled（归 memory 插件页域）。
+        # 共享 ws 可能残留历史值（前轮 E 段开启过记忆库）→ 断言「保存前后不变」而非「不存在」。
+        if prj().get("memory.enabled") != mem_enabled_before:
+            raise TestError("上下文管理保存改写了 memory.enabled（应只由 memory 插件页写）：%r → %r"
+                            % (mem_enabled_before, prj().get("memory.enabled")))
 
 
 # ── 「代码知识库」页签 = 插件自持 iframe（webui/config.html）────────────────
@@ -480,12 +485,17 @@ def iframe_js(inner):
 
 
 def iframe_ready(max_wait=25):
-    """等 iframe 就绪：`load` 动作回填 workdir（空 = 插件未加载/实例未解析）。"""
+    """等 iframe 就绪：`load` 动作回填 workdir（空 = 插件未加载/实例未解析）。
+
+    iframe_js 的哨兵返回值（'no-panel'/'no-frame'/'no-doc'）不是 workdir —— 满负载下
+    iframe 挂载可能滞后数秒，必须轮询到**真实回填**（2026-11-04 A3/A4 flaky 根因：
+    首轮询命中 'no-frame' 即被当作就绪返回）。
+    """
     deadline = time.time() + max_wait
     last = None
     while time.time() < deadline:
         last = iframe_js("return (d.getElementById('workdir')||{}).value||'';")
-        if isinstance(last, str) and last:
+        if isinstance(last, str) and last and not last.startswith("no-"):
             return last
         time.sleep(0.5)
     raise TestError("代码知识库 iframe 未就绪（workdir 未回填：%r）" % (last,))
@@ -658,7 +668,7 @@ def case_b1_llm_list_params():
         labs = dialog_labels()
         # 2026-09-26：去掉「推理强度」label（下拉保留）→ 从字段清单移除该项
         for want in ("名称", "模型", "接口地址", "API 密钥", "温度", "最大输出 Token",
-                     "上下文窗口", "模型能力", "思考模式", "最大工具迭代"):
+                     "上下文窗口", "推理能力", "识图能力", "思考模式", "最大工具迭代"):
             if want not in labs:
                 raise TestError("LLM 弹窗缺字段 %r（实际 %r）" % (want, labs))
         if "推理强度" in labs:
@@ -804,20 +814,32 @@ def case_b3_paths_toolchain():
     labels = tab_labels(".settings-page")
     if labels != ["系统", "用户", "项目"]:
         raise TestError("路径页签文字不符：%r" % labels)
-    # 系统页：Chrome 行
+    # 系统页：Chrome 行（探测异步回填，满负载下首读可能仍为空 → 有界重读到非空+版本合规）
     click_tab("系统", ".settings-page")
-    info = ev(panel_js(".settings-page", """
+    import re as _re
+
+    def _chrome_row():
+        info = ev(panel_js(".settings-page", """
 const rows=[...R.querySelectorAll('.path-row')].map(r=>({
   name:(r.querySelector('.path-label')||{}).textContent ? r.querySelector('.path-label').textContent.trim():'',
   path:(r.querySelector('.mono')||{}).textContent||'',
   ver:(r.querySelector('.version')||{}).textContent||''}));
 return rows;""")) or []
-    chrome = next((r for r in info if r["name"] == "Chrome"), None)
+        return next((r for r in info if r["name"] == "Chrome"), None)
+
+    def _chrome_ok(r):
+        return bool(r and r["path"].strip()
+                    and _re.match(r"^\d+(\.\d+){2,4}$", r["ver"].strip()))
+
+    deadline = time.time() + 20
+    chrome = _chrome_row()
+    while time.time() < deadline and not _chrome_ok(chrome):
+        time.sleep(0.5)
+        chrome = _chrome_row()
     if not chrome:
-        raise TestError("系统页无 Chrome 行：%r" % [r["name"] for r in info])
+        raise TestError("系统页无 Chrome 行")
     if not chrome["path"].strip():
         raise TestError("系统页 Chrome 路径为空（未被探测出）")
-    import re as _re
     if not _re.match(r"^\d+(\.\d+){2,4}$", chrome["ver"].strip()):
         raise TestError("系统页 Chrome 版本=%r，期望 x.y.z(.w)" % chrome["ver"])
     # 用户页：Chrome 可编辑输入
@@ -829,13 +851,20 @@ return rows;""")) or []
     uchrome = next((r for r in urows if r["name"].startswith("Chrome")), None)
     if not uchrome or not uchrome["hasInput"]:
         raise TestError("用户页 Chrome 应可编辑（含输入框）：%r" % urows)
-    # 项目页：不含 Chrome
+    # 项目页：Chrome 行**存在**且带「继承系统」归属标注（2026-11 现状：项目页展示全工具链行，
+    # 留空 = 继承用户/系统 → 项目级覆盖输入仍可用）
     click_tab("项目", ".settings-page")
     prows = ev(panel_js(".settings-page",
-               "return [...R.querySelectorAll('.path-row')].map(r=>"
-               "((r.querySelector('.path-label')||{}).textContent||'').trim());")) or []
-    if any(p.startswith("Chrome") for p in prows):
-        raise TestError("项目页不应出现 Chrome（Chrome 仅系统/用户两级）：%r" % prows)
+               "return [...R.querySelectorAll('.path-row')].map(r=>({"
+               "name:((r.querySelector('.path-label')||{}).textContent||'').trim(),"
+               "hasInput:!!r.querySelector('input.b-input')}));")) or []
+    pchrome = next((r for r in prows if r["name"].startswith("Chrome")), None)
+    if not pchrome:
+        raise TestError("项目页应含 Chrome 行（继承系统）：%r" % [r["name"] for r in prows])
+    if "继承系统" not in pchrome["name"]:
+        raise TestError("项目页 Chrome 行缺「继承系统」归属标注：%r" % pchrome["name"])
+    if not pchrome["hasInput"]:
+        raise TestError("项目页 Chrome 应含可编辑输入（项目级覆盖，留空=继承）：%r" % prows)
 
 
 # ══════════════════════════════════════════════════════════
@@ -853,11 +882,19 @@ def case_c_removed_items():
 
 
 # ══════════════════════════════════════════════════════════
-# E. 记忆库类别增删 + 提示词编辑（本波重点：41 I-66；2026-09-26 双编辑入口）
-#    E1 「新增类别」→ 出现在清单 + 内容编辑**弹框**（TextEditDialog）保存即关（回读 data-memory-read）
-#    E2 行内【编辑内容】→ 弹框内容正确/取消不落库 + 「删除类别」仅自定义可见 + 二次确认后消失
-#    E3 data-memory-delete 直调 → {ok,id} + 广播 data-memory-refresh(op=delete)（贴原始 payload）
-#    E4 行内【编辑提示词】→ 弹框（出厂默认回填/来源提示/保存落 capability/system/memory/<类别>.md/重置回落；OP-04）
+# E. 记忆类别增删 + 提示词编辑（MEMORY-UI-1，2026-11-02：记忆配置迁 memory 插件页）
+#    旧「项目设置 → 上下文管理」页签内的记忆配置已整体迁出（见 A2）；E1/E2/E4 改在
+#    memory 插件配置页断言：`preview-tab-open {kind:'plugin-page',plugin:'memory',page:'config'}`
+#    → PluginPageHost iframe（`.pph-frame`，src=/plugins/memory/webui/config.html，同源可穿透）。
+#    DOM 契约 = chonkpilot-plugins/memory/src/webui/config.html：
+#      类别表 #cats（td0=类别名 / td1=级别 / td2=token / 启用 checkbox[data-cat] /
+#      操作按钮 data-op=content|prompt|clear|delete）、#new_cat+#add_cat、#save/#reload/#flush、
+#      消息 #msg；内容/提示词弹框 = 插件自有 `.mask > .dlg`（data-act=reset|cancel|ok，非主窗
+#      .dialog-shell）。
+#    E1 「新增类别」→ 行出现 + 「内容」弹框保存即关（回读 data-memory-read）
+#    E2 「内容」弹框（内容正确/取消不落库）+ 删除仅自定义可见 + 二次确认后消失
+#    E3 data-memory-delete 直调 → {ok,id} + 广播 data-memory-refresh(op=delete)（不变）
+#    E4 「提示词」弹框（内置默认回填/来源提示/保存落 capability/system/memory/<类别>.md/恢复默认回落）
 #    F  设置页无「MCPServerConfig」死项（源：I-64 已删死结构）
 # ══════════════════════════════════════════════════════════
 
@@ -877,84 +914,131 @@ def poll(fn, max_wait=8, interval=0.3):
     return False
 
 
+def mem_iframe_js(inner):
+    """构造在 memory 插件配置页 iframe 内执行的 JS（**返回 JS 字符串**，由调用方 ev() 执行；
+    与 panel_js 同约定——不得在 helper 内部二次 eval）。
+    iframe 匹配：`.pph-frame` 且 src 含 `/plugins/memory/webui/config.html`（PLUGIN-UI-1
+    统一路由 `/plugins/<id>/<entry>`）且可见。iframe 同源（sandbox 含 allow-same-origin）。"""
+    return """(()=>{const f=[...document.querySelectorAll('iframe.pph-frame')]
+      .find(x=>((x.getAttribute('src')||'').includes('/plugins/memory/webui/config.html'))
+                &&x.getBoundingClientRect().width>0);
+      if(!f)return 'no-frame';const d=f.contentDocument;if(!d)return 'no-doc';%s})()""" % inner
+
+
+def open_mem_plugin_page():
+    """打开 memory 插件配置页（预览页签）并等类别表渲染出**预置数据行**。
+
+    两段等待（2026-11-04 E1/E2/E4 flaky 收口）：
+      ① 等 `.pph-frame`（src 含 /plugins/memory/webui/config.html）内 `#cats tr` 出现 ——
+         PluginPageHost 就绪前置检查（usePluginReadiness）：插件 status 非 running / 台账未到 /
+         探活 404 时不挂 iframe 只显示占位；首开落在占位态 → ~15s 后**整页重开一次**自愈
+         （重挂 PluginPageHost → 重新探活，自动重试预算也随重挂刷新）；
+      ② `#cats` 本身就是 `<tbody>`（config.html:94），行是其直接子节点 —— 选择器必须是
+         `#cats tr`（旧主仓页面 DOM 的 `#cats tbody tr` 永远匹配 0 行，2026-11-04 根因）；
+         且须等到预置类别行真实渲染（config-load rpc 异步回填）。
+    """
+    def _open():
+        c.mq_emit("preview-tab-close-all")
+        time.sleep(0.5)
+        c.mq_emit("preview-tab-open", {"kind": "plugin-page", "plugin": "memory",
+                                       "page": "config", "title": "记忆沉淀设置"})
+
+    def _wait_rows(max_wait):
+        end = time.time() + max_wait
+        while time.time() < end:
+            rows = mem_rows()
+            if any(r.get("cat") in PRESET_MEMORY_CATEGORIES for r in rows):
+                return True
+            time.sleep(0.5)
+        return False
+
+    _open()
+    if not _wait_rows(15):
+        _open()  # 占位态自愈：整页重开一次
+        if not _wait_rows(30):
+            srcs = ev("[...document.querySelectorAll('iframe')].map(x=>x.getAttribute('src')||'')")
+            inner = ev(mem_iframe_js(
+                "const m=d.getElementById('msg');const cb=d.getElementById('cats');"
+                "return {rs:d.readyState,msg:m?m.textContent:'',cats:cb?cb.children.length:-1};"))
+            raise TestError("memory 插件配置页类别表未渲染出预置行（iframe 内部=%s；iframe src=%r）"
+                            % (json.dumps(inner, ensure_ascii=False), srcs))
+    time.sleep(0.3)
+
+
 def mem_rows():
-    """记忆类别表行：[{cat, hasPrompt, hasEdit, hasDel}]（2026-09-26：每行两个编辑入口）。
-    2026-09-27：原生表 → 自研 Table 组件（.b-table）。"""
-    return ev(panel_js(".project-config-panel", """
-const rows=[...R.querySelectorAll('.b-table tbody tr')];
+    """memory 插件配置页类别表行：[{cat, level, tokens, enabled, hasEdit, hasPrompt, hasClear, hasDel}]。
+    （键名沿用旧口径：hasEdit=【内容】入口、hasPrompt=【提示词】入口。）"""
+    r = ev(mem_iframe_js("""
+const rows=[...d.querySelectorAll('#cats tr')];
 return rows.map(r=>{const tds=[...r.querySelectorAll('td')];
-  const sp=tds[0]?tds[0].querySelector('span'):null;
-  const cat=sp?sp.textContent.trim():(tds[0]?tds[0].innerText.trim():'');
-  const btns=[...r.querySelectorAll('button')].map(b=>b.textContent.trim());
-  return {cat:cat, hasPrompt:btns.includes('编辑提示词'),
-          hasEdit:btns.includes('编辑内容'), hasDel:btns.includes('删除')};});""")) or []
+  const tn=tds[0]?[...tds[0].childNodes].find(n=>n.nodeType===3):null;
+  const btns=[...r.querySelectorAll('button[data-op]')].map(b=>b.dataset.op);
+  const cb=r.querySelector('input[data-cat]');
+  return {cat:((tn?tn.textContent:(tds[0]?tds[0].textContent:''))||'').trim(),
+          level:((tds[1]||{}).textContent||'').trim(),
+          tokens:((tds[2]||{}).textContent||'').trim(),
+          enabled:!!(cb&&cb.checked),
+          hasEdit:btns.includes('content'), hasPrompt:btns.includes('prompt'),
+          hasClear:btns.includes('clear'), hasDel:btns.includes('delete')};});"""))
+    return r if isinstance(r, list) else []
 
 
 def mem_ensure_ui(name):
-    """点「新增类别」→ promptInput 弹窗填名 → 确认；等待行出现。"""
-    r = ev(panel_js(".project-config-panel",
-                    "const b=[...R.querySelectorAll('.mem-table-head button')].find(x=>x.textContent.trim()==='新增类别');"
-                    "if(!b)return 'no-btn';b.click();return 'ok';"))
+    """#new_cat 填名 → 点 #add_cat（插件 rpc category-save）→ 等行出现。"""
+    r = ev(mem_iframe_js("d.getElementById('new_cat').value=%s;"
+                         "d.getElementById('add_cat').click();return 'ok';" % json.dumps(name)))
     if r != "ok":
-        raise TestError("未找到「新增类别」按钮：%s" % r)
-    if not wait_vis(".dialog-shell", 6):
-        raise TestError("「新增类别」输入弹窗未打开")
-    time.sleep(0.4)
-    fr = ev("(function(){const R=[...document.querySelectorAll('.dialog-shell')].find(e=>e.getBoundingClientRect().width>0);"
-            "if(!R)return 'no-dialog';const inp=R.querySelector('.dialog-body input.b-input');if(!inp)return 'no-input';"
-            "Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(inp,%s);"
-            "inp.dispatchEvent(new Event('input',{bubbles:true}));"
-            "inp.dispatchEvent(new Event('change',{bubbles:true}));return 'ok';})()" % json.dumps(name))
-    if fr != "ok":
-        raise TestError("「新增类别」弹窗填名失败：%s" % fr)
-    cr = ev("(function(){const R=[...document.querySelectorAll('.dialog-shell')].find(e=>e.getBoundingClientRect().width>0);"
-            "if(!R)return 'no-dialog';const b=[...R.querySelectorAll('.dialog-body button.b-btn--primary')]"
-            ".find(x=>x.getBoundingClientRect().width>0);if(!b)return 'no-confirm';b.click();return 'ok';})()")
-    if cr != "ok":
-        raise TestError("「新增类别」确认点击失败：%s" % cr)
-    if not poll(lambda: any(r["cat"] == name for r in mem_rows()), 8):
-        raise TestError("新增类别 %r 未出现在清单：%r" % (name, [r["cat"] for r in mem_rows()]))
+        raise TestError("「新增类别」操作失败（iframe）：%s" % r)
+    if not poll(lambda: any(r0["cat"] == name for r0 in mem_rows()), 10):
+        raise TestError("新增类别 %r 未出现在清单：%r" % (name, [r0["cat"] for r0 in mem_rows()]))
 
 
-def click_row_btn(name, label):
-    """点记忆类别清单中「类别名 = name」行内文字为 label 的按钮；成功 → True。"""
-    r = ev(panel_js(".project-config-panel", """
-const rows=[...R.querySelectorAll('.b-table tbody tr')];
-const row=rows.find(r=>{const td=r.querySelector('td');const sp=td?td.querySelector('span'):null;
-  return ((sp?sp.textContent:(td?td.innerText:''))||'').trim()===%s;});
+def click_row_btn(name, op):
+    """点「类别名 = name」行内 data-op=<op>（content|prompt|clear|delete）按钮；成功 → True。"""
+    r = ev(mem_iframe_js("""
+const row=[...d.querySelectorAll('#cats tr')].find(r=>{
+  const td=r.querySelector('td');const tn=td?[...td.childNodes].find(n=>n.nodeType===3):null;
+  return ((tn?tn.textContent:(td?td.textContent:''))||'').trim()===%s;});
 if(!row)return 'no-row';
-const b=[...row.querySelectorAll('button')].find(x=>x.textContent.trim()===%s);
-if(!b)return 'no-btn';b.click();return 'ok';""" % (json.dumps(name), json.dumps(label))))
+const b=row.querySelector('button[data-op=%s]');if(!b)return 'no-btn';b.click();return 'ok';"""
+                          % (json.dumps(name), json.dumps(op))))
     return r == "ok"
 
 
-def click_userpref_btn(label):
-    """点「用户偏好」行（唯一带 `.mem-token` 的 .switch-row）文字为 label 的按钮；成功 → True。"""
-    r = ev(panel_js(".project-config-panel", """
-const row=[...R.querySelectorAll('.switch-row')].find(x=>x.querySelector('.mem-token'));
+def click_userpref_btn(op):
+    """点「用户偏好」行（唯一级别=用户偏好 的 user 级类别）内 data-op=<op> 按钮；成功 → True。"""
+    r = ev(mem_iframe_js("""
+const row=[...d.querySelectorAll('#cats tr')].find(r=>{
+  const tds=r.querySelectorAll('td');return ((tds[1]||{}).textContent||'').trim()==='用户偏好';});
 if(!row)return 'no-row';
-const b=[...row.querySelectorAll('button')].find(x=>x.textContent.trim()===%s);
-if(!b)return 'no-btn';b.click();return 'ok';""" % json.dumps(label)))
+const b=row.querySelector('button[data-op=%s]');if(!b)return 'no-btn';b.click();return 'ok';"""
+                          % json.dumps(op)))
     return r == "ok"
 
 
 def mem_delete_row(name):
-    """点某自定义行「删除」→ 二次确认（断言文案）→ 确认后行消失。"""
-    if not click_row_btn(name, "删除"):
-        raise TestError("点击类别 %r 删除失败（行或删除按钮缺失）" % name)
-    if not wait_vis(".dialog-shell", 6):
-        raise TestError("删除类别的二次确认弹窗未打开")
-    time.sleep(0.4)
-    body = ev("(function(){const R=[...document.querySelectorAll('.dialog-shell')].find(e=>e.getBoundingClientRect().width>0);"
-              "return R?R.querySelector('.dialog-body').innerText:'';})()") or ""
-    if "删除类别" not in body or name not in body:
-        raise TestError("删除确认文案不符（应含「删除类别」+ 类别名）：%r" % body[:120])
-    cr = ev("(function(){const R=[...document.querySelectorAll('.dialog-shell')].find(e=>e.getBoundingClientRect().width>0);"
-            "if(!R)return 'no-dialog';const b=[...R.querySelectorAll('.dialog-body button.b-btn--primary')]"
-            ".find(x=>x.getBoundingClientRect().width>0);if(!b)return 'no-confirm';b.click();return 'ok';})()")
-    if cr != "ok":
-        raise TestError("删除二次确认点击失败：%s" % cr)
-    if not poll(lambda: not any(r["cat"] == name for r in mem_rows()), 8):
+    """点某自定义行 data-op=delete → 原生 confirm 二次确认（断言文案）→ 确认后行消失。
+
+    宿主 PluginPageHost 的 iframe sandbox 不含 allow-modals → 原生 confirm 调用被浏览器拒绝；
+    测试以 window.confirm stub（记录文案并返回 true）完成「确认」路径（不改产品代码）。
+    """
+    r = ev(mem_iframe_js("""
+const w=d.defaultView;   /* stub 必须落在 iframe 自己的 window（裸 window=主窗，confirm 在 iframe 全局解析） */
+w.__lastConfirm=null;w.confirm=function(t){w.__lastConfirm=String(t);return true;};
+const row=[...d.querySelectorAll('#cats tr')].find(r=>{
+  const td=r.querySelector('td');const tn=td?[...td.childNodes].find(n=>n.nodeType===3):null;
+  return ((tn?tn.textContent:(td?td.textContent:''))||'').trim()===%s;});
+if(!row)return 'no-row';
+const b=row.querySelector('button[data-op=delete]');if(!b)return 'no-btn';b.click();return 'ok';"""
+                          % json.dumps(name)))
+    if r != "ok":
+        raise TestError("点击类别 %r 删除失败：%s" % (name, r))
+    if not poll(lambda: (ev(mem_iframe_js("return d.defaultView.__lastConfirm;")) or "") != "", 6):
+        raise TestError("删除类别未触发二次确认（confirm）")
+    body = ev(mem_iframe_js("return d.defaultView.__lastConfirm;")) or ""
+    if "删除" not in body or name not in body:
+        raise TestError("删除确认文案不符（应含「删除」+ 类别名）：%r" % body[:120])
+    if not poll(lambda: not any(r0["cat"] == name for r0 in mem_rows()), 10):
         raise TestError("删除确认后类别 %r 仍在清单" % name)
 
 
@@ -965,10 +1049,10 @@ def _mem_cleanup(name):
         pass
 
 
-# ── 内容编辑弹框（TextEditDialog）操作助手 ──────────────────
-# 2026-09-24：记忆内容编辑已由「页内联编辑器」迁为**弹框**（useMemoryCategories.showContentEditor
-# → TextEditDialog，bodyClass = `text-edit-dialog-body`）→ 本套件 E1/E2 按弹框口径断言，
-# 与 run_memory_ctx UI-7 同口径（选点 = `.dialog-shell` 内含 `.text-edit-dialog-body` 的可见弹框）。
+# ── 主窗 TextEditDialog 弹框操作助手（A2「总结提示词」弹框口径）──────────
+# MEMORY-UI-1：记忆类别内容/提示词编辑弹框已随记忆配置迁至 memory 插件页（插件自有
+# `.mask>.dlg`，见下方 pdlg_* 助手）；主窗 TextEditDialog 弹框现仅 A2「总结提示词」使用
+# （useContextSummary.showPromptEditor → bodyClass = `text-edit-dialog-body`）。
 
 TE_DLG = ".text-edit-body"
 
@@ -1022,64 +1106,127 @@ def dlg_hint():
 
 
 def close_stray_dialogs():
-    """关闭任何残留可见弹框（点 X），避免上一用例弹框外溢到下一用例（E1 → E2 级联）。"""
+    """关闭任何残留弹框：主窗 .dialog-shell（点 X）+ memory 插件页 .mask（点取消），
+    避免上一用例弹框外溢到下一用例（E1 → E2 级联）。"""
     for _ in range(3):
         if vcount(".dialog-shell") == 0:
-            return
+            break
         r = ev("(function(){const R=[...document.querySelectorAll('.dialog-shell')]"
                ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no';"
                "const b=R.querySelector('.dialog-btn-close');if(!b)return 'no-btn';"
                "b.dispatchEvent(new MouseEvent('click',{bubbles:true}));return 'ok';})()")
         if r != "ok":
+            break
+        time.sleep(0.4)
+    for _ in range(3):
+        r = ev(mem_iframe_js("const m=d.querySelector('.mask');if(!m)return 'no';"
+                             "const b=m.querySelector('button[data-act=cancel]');"
+                             "if(!b)return 'no-btn';b.click();return 'ok';"))
+        if r != "ok":
             return
         time.sleep(0.4)
 
 
+# ── memory 插件页「内容/提示词」弹框（插件自有 .mask>.dlg）操作助手 ─────────
+# MEMORY-UI-1：弹框 = memory 插件 webui 自绘（.mask 遮罩 + .dlg 面板：h3 标题 + textarea +
+# data-act=reset|cancel|ok 按钮），**不是**主窗 .dialog-shell。
+
+def pdlg_title():
+    return ev(mem_iframe_js(
+        "const g=d.querySelector('.mask .dlg h3');return g?g.textContent.trim():'';")) or ""
+
+
+def pdlg_textarea_value():
+    return ev(mem_iframe_js(
+        "const t=d.querySelector('.mask .dlg textarea');return t?t.value:null;"))
+
+
+def pdlg_set_textarea(value):
+    return ev(mem_iframe_js(
+        "const t=d.querySelector('.mask .dlg textarea');if(!t)return 'no-ta';t.value=%s;"
+        "t.dispatchEvent(new Event('input',{bubbles:true}));return 'ok';" % json.dumps(value)))
+
+
+def pdlg_btn(act):
+    """点插件弹框内 data-act=<act>（ok=保存 / cancel=取消 / reset=恢复默认）；成功 → 'ok'。"""
+    return ev(mem_iframe_js(
+        "const b=d.querySelector('.mask .dlg button[data-act=%s]');if(!b)return 'no-btn';"
+        "b.click();return 'ok';" % json.dumps(act)))
+
+
+def pdlg_has_btn(act):
+    """插件弹框内是否存在 data-act=<act> 按钮（**不点击**）。"""
+    return ev(mem_iframe_js(
+        "return !!d.querySelector('.mask .dlg button[data-act=%s]');" % json.dumps(act))) is True
+
+
+def pdlg_hint():
+    return ev(mem_iframe_js(
+        "const h=d.querySelector('.mask .dlg .hint');return h?h.textContent.trim():null;"))
+
+
+def wait_pdlg_open(max_wait=10):
+    end = time.time() + max_wait
+    while time.time() < end:
+        if ev(mem_iframe_js("return !!d.querySelector('.mask .dlg textarea');")) is True:
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def wait_pdlg_gone(max_wait=10):
+    end = time.time() + max_wait
+    while time.time() < end:
+        if ev(mem_iframe_js("return !!d.querySelector('.mask');")) is False:
+            return True
+        time.sleep(0.3)
+    return False
+
+
 def case_e1_memory_add_and_edit():
-    """E1 记忆库「新增类别」→ 新类别出现 + **内容编辑弹框**（TextEditDialog）内保存
-    → 保存即关 + data-memory-read 回读（2026-09-24 弹框化；与 run_memory_ctx UI-7 同口径）。
+    """E1 memory 插件配置页「新增类别」（MEMORY-UI-1 迁移后口径）→ 新类别入清单
+    + 「内容」弹框（插件自有 .mask>.dlg）保存即关 + data-memory-read 回读。
     """
     name = "ui-mem-%d" % int(time.time())
     content = "ui 记忆内容 %d\n第二行" % int(time.time())
     snap = _h.snapshot_prj_config(c, ["memory.enabled"])
     try:
         close_stray_dialogs()
-        prj_save("memory.enabled", "true")  # 新增入口需记忆库启用
-        open_page("settings-project", ".project-config-panel")
-        click_tab("上下文管理", ".project-config-panel")
+        prj_save("memory.enabled", "true")  # 新增入口需记忆库启用（关闭态子项禁用）
+        open_mem_plugin_page()
         shot("e1-memory-before.png")
         # 预置类别在列（8 项）
         cats = [r["cat"] for r in mem_rows()]
         for p in PRESET_MEMORY_CATEGORIES:
             if p not in cats:
                 raise TestError("预置类别缺失：%r（实际 %r）" % (p, cats))
-        # 新增（点「新增类别」→ 填名 → 确认）→ 类别入清单 + 自动打开内容编辑弹框
+        # 新增（#new_cat → #add_cat）→ 类别入清单
         mem_ensure_ui(name)
         shot("e1-memory-added.png")
         row = next((r for r in mem_rows() if r["cat"] == name), None)
         if not row:
             raise TestError("新类别未出现在清单")
-        # 2026-09-26：每类别行并存两个编辑入口（提示词 / 内容）
+        # 每类别行并存两个编辑入口（提示词 / 内容）
         if not (row["hasPrompt"] and row["hasEdit"]):
-            raise TestError("类别行须并存【编辑提示词】与【编辑内容】：%r" % row)
-        # 弹框已开（标题 = 类别名 → 证明开的是该类别的内容编辑弹框）
-        if not wait_vis(TE_DLG, 10):
-            raise TestError("新增后未弹出内容编辑弹框（TextEditDialog）")
-        title = dlg_title()
-        if title != name:
-            raise TestError("内容编辑弹框标题=%r，期望类别名 %r" % (title, name))
-        # 新类别默认空内容
-        ta0 = dlg_textarea_value()
-        if ta0 != "":
-            raise TestError("新类别弹框内容应为空：%r" % ta0)
-        # 写入内容 → 点弹框【保存】→ **保存即关**
-        sr = dlg_set_textarea(content)
+            raise TestError("类别行须并存【提示词】与【内容】入口：%r" % row)
+        # 「内容」弹框（标题 = 记忆内容 · <类别名>）
+        if not click_row_btn(name, "content"):
+            raise TestError("点类别 %r 行【内容】失败" % name)
+        if not wait_pdlg_open(10):
+            raise TestError("点击【内容】未弹出编辑弹框（插件 .mask>.dlg）")
+        title = pdlg_title()
+        if name not in title:
+            raise TestError("内容编辑弹框标题=%r，应含类别名 %r" % (title, name))
+        # 新类别默认空内容（category-content rpc 异步回填）
+        if not poll(lambda: pdlg_textarea_value() == "", 6):
+            raise TestError("新类别弹框内容应为空：%r" % pdlg_textarea_value())
+        # 写入内容 → 点弹框【保存】（data-act=ok）→ 保存即关
+        sr = pdlg_set_textarea(content)
         if sr != "ok":
             raise TestError("写入弹框内容失败：%s" % sr)
-        cr2 = dlg_btn("保存")
-        if cr2 != "ok":
-            raise TestError("点击弹框【保存】失败：%s" % cr2)
-        if not wait_gone(TE_DLG, 10):
+        if pdlg_btn("ok") != "ok":
+            raise TestError("点击弹框【保存】失败")
+        if not wait_pdlg_gone(10):
             raise TestError("保存后内容编辑弹框未自动关闭")
         # 回读落库（内容正确 + 类别级别）
         rr = c.req("data-memory-read", {"data": {"category": name}})
@@ -1095,8 +1242,8 @@ def case_e1_memory_add_and_edit():
 
 
 def case_e2_memory_delete_ui():
-    """E2 自定义类别：行内【编辑】→ 内容编辑弹框（内容正确 + 取消不落库）+【删除】仅自定义可见
-    + 二次确认弹框后消失（预置类别无删除入口）（2026-09-24 弹框口径；与 UI-7 同口径）。
+    """E2 自定义类别（MEMORY-UI-1 插件页口径）：「内容」弹框（内容正确 + 取消不落库）
+    + 删除仅自定义可见 + 二次确认（confirm）后消失；预置类别无删除入口。
     """
     name = "ui-mem-del-%d" % int(time.time())
     seed = "临时"
@@ -1105,8 +1252,7 @@ def case_e2_memory_delete_ui():
         close_stray_dialogs()
         prj_save("memory.enabled", "true")
         c.req("data-memory-save", {"data": {"category": name, "content": seed}})
-        open_page("settings-project", ".project-config-panel")
-        click_tab("上下文管理", ".project-config-panel")
+        open_mem_plugin_page()
         rows = mem_rows()
         # 预置类别：两个编辑入口齐备、无删除
         for p in PRESET_MEMORY_CATEGORIES:
@@ -1125,25 +1271,25 @@ def case_e2_memory_delete_ui():
             raise TestError("自定义类别 %r 缺编辑入口：%r" % (name, crow))
         if not crow["hasDel"]:
             raise TestError("自定义类别 %r 应有删除入口" % name)
-        # 弹框口径复核：点该行【编辑内容】→ 弹框（标题 = 类别名 + 内容 = 已存内容）→【取消】不落库
-        if not click_row_btn(name, "编辑内容"):
-            raise TestError("类别 %r 行缺【编辑内容】按钮" % name)
-        if not wait_vis(TE_DLG, 10):
-            raise TestError("点【编辑内容】未弹出内容编辑弹框（TextEditDialog）")
-        title = dlg_title()
-        if title != name:
-            raise TestError("内容编辑弹框标题=%r，期望类别名 %r" % (title, name))
-        got = dlg_textarea_value()
-        if (got or "").strip() != seed:
-            raise TestError("弹框内容与已存内容不符：got=%r want=%r" % (got, seed))
-        if dlg_btn("取消") != "ok":
+        # 「内容」弹框：标题含类别名 + 内容 = 已存内容；【取消】（data-act=cancel）不落库
+        if not click_row_btn(name, "content"):
+            raise TestError("类别 %r 行缺【内容】按钮" % name)
+        if not wait_pdlg_open(10):
+            raise TestError("点【内容】未弹出编辑弹框（插件 .mask>.dlg）")
+        title = pdlg_title()
+        if name not in title:
+            raise TestError("内容编辑弹框标题=%r，应含类别名 %r" % (title, name))
+        if not poll(lambda: (pdlg_textarea_value() or "").strip() == seed, 6):
+            raise TestError("弹框内容与已存内容不符：got=%r want=%r" % (pdlg_textarea_value(), seed))
+        if pdlg_btn("cancel") != "ok":
             raise TestError("内容编辑弹框缺【取消】按钮")
-        if not wait_gone(TE_DLG, 10):
+        if not wait_pdlg_gone(10):
             raise TestError("点【取消】后弹框未关闭")
         rr = c.req("data-memory-read", {"data": {"category": name}})
         if ((rr or {}).get("data") or {}).get("content", "").strip() != seed:
             raise TestError("【取消】不应落库（内容已变）")
         shot("e2-memory-delete-before.png")
+        # 删除：二次确认（confirm stub 记录文案）→ 行消失
         mem_delete_row(name)
         shot("e2-memory-delete-after.png")
         if any(r["cat"] == name for r in mem_rows()):
@@ -1184,14 +1330,14 @@ def case_e3_memory_delete_datamsg():
 
 
 def case_e4_memory_prompt_edit():
-    """E4 记忆类别沉淀提示词（OP-04 文件化，2026-10-06：每类别「提示词编辑」+「内容编辑」两个弹框）：
+    """E4 memory 插件配置页「提示词」弹框（OP-04 文件化 + MEMORY-UI-1 迁移后口径）：
 
-    行内【编辑提示词】→ 弹框（复用 TextEditDialog）
-      · 未自定义 → 回填**后端下发的有效值**（出厂文件，非空）+ 来源提示「当前为内置默认」、**无**【重置】；
-      → 改内容 →【保存】→ 弹框自动关闭 → prompt 域键 `memory_prompt.<类别名>` 有效值 == 自定义值，
-        且落盘 `<workdir>/.chonkpilot/capability/system/memory/<类别名>.md`；
-      → 再次打开 → 来源提示「当前为自定义」+【重置】+ 回填自定义值；
-      →【重置】→ 弹框关闭 → **覆盖文件被删除**（有效值回落出厂默认）→ 再开显示「当前为内置默认」。
+    「提示词」弹框（插件自有 .mask>.dlg）
+      · 未自定义 → 回填**后端下发的有效值**（出厂文件，非空）+ 来源提示「当前为系统内置」、**无**【恢复默认】；
+      → 改内容 →【保存】（data-act=ok）→ 弹框自动关闭 → prompt 域键 `memory_prompt.<类别名>`
+        有效值 == 自定义值，且落盘 `<workdir>/.chonkpilot/capability/system/memory/<类别名>.md`；
+      → 再次打开 → 来源提示「自定义覆盖」+【恢复默认】（data-act=reset）+ 回填自定义值；
+      →【恢复默认】→ 弹框关闭 → **覆盖文件被删除**（有效值回落出厂默认）→ 再开显示「当前为系统内置」。
 
     「用户偏好」（唯一 user 级类别）同口径，落**用户级**文件
     `<userRoot>/capability/system/memory/用户偏好.md`（此处以 prompt 域有效值 + 文件双断言）。
@@ -1219,32 +1365,31 @@ def case_e4_memory_prompt_edit():
         drop_prompt(key)
         drop_prompt(up_key)
         prj_save("memory.enabled", "true")
-        open_page("settings-project", ".project-config-panel")
-        click_tab("上下文管理", ".project-config-panel")
+        open_mem_plugin_page()
         # ① 行内两个编辑入口并存
         row = next((r for r in mem_rows() if r["cat"] == cat), None)
         if not row:
             raise TestError("预置类别 %r 未渲染" % cat)
         if not (row["hasPrompt"] and row["hasEdit"]):
-            raise TestError("类别行须并存【编辑提示词】/【编辑内容】：%r" % row)
-        # ② 打开提示词弹框：未自定义 → 回填有效值（出厂文件）+ 来源提示「内置默认」+ 无【重置】
-        if not click_row_btn(cat, "编辑提示词"):
-            raise TestError("点击【编辑提示词】失败（行/按钮缺失）")
-        if not wait_vis(TE_DLG, 10):
-            raise TestError("提示词编辑弹框未打开（TextEditDialog）")
-        hint0 = dlg_hint() or ""
-        if "内置默认" not in hint0:
-            raise TestError("未自定义应显示「当前为内置默认」来源提示：%r" % hint0)
-        if not (dlg_textarea_value() or "").strip():
+            raise TestError("类别行须并存【提示词】/【内容】入口：%r" % row)
+        # ② 打开提示词弹框：未自定义 → 回填有效值（出厂文件）+ 来源提示「系统内置」+ 无【恢复默认】
+        if not click_row_btn(cat, "prompt"):
+            raise TestError("点击【提示词】失败（行/按钮缺失）")
+        if not wait_pdlg_open(10):
+            raise TestError("提示词编辑弹框未打开（插件 .mask>.dlg）")
+        hint0 = pdlg_hint() or ""
+        if "系统内置" not in hint0:
+            raise TestError("未自定义应显示「当前为系统内置」来源提示：%r" % hint0)
+        if not (pdlg_textarea_value() or "").strip():
             raise TestError("未自定义应回填出厂默认提示词（内容为空）")
-        if dlg_has_btn("重置"):
-            raise TestError("未自定义不应显示【重置】（无可清除项）")
-        # ③ 改内容 → 保存 → 弹框自动关闭
-        if dlg_set_textarea(sentinel) != "ok":
+        if pdlg_has_btn("reset"):
+            raise TestError("未自定义不应显示【恢复默认】（无可清除项）")
+        # ③ 改内容 → 保存（data-act=ok）→ 弹框自动关闭
+        if pdlg_set_textarea(sentinel) != "ok":
             raise TestError("写入提示词弹框失败")
-        if dlg_btn("保存") != "ok":
+        if pdlg_btn("ok") != "ok":
             raise TestError("提示词弹框缺【保存】按钮")
-        if not wait_gone(TE_DLG, 10):
+        if not wait_pdlg_gone(10):
             raise TestError("保存后提示词弹框未自动关闭")
         # ④ 回读：prompt 域有效值 == 自定义值 + 项目级文件落盘（文件面证据）
         if not poll(lambda: prompt_val(key) == sentinel, 8):
@@ -1253,75 +1398,75 @@ def case_e4_memory_prompt_edit():
         if not os.path.isfile(prj_file):
             raise TestError("自定义提示词未落盘项目级文件：%s" % prj_file)
         print("    [E4] prompt %s 有效值 = %r；文件已落盘 %s" % (key, sentinel, prj_file))
-        # ⑤ 再次打开：来源提示「自定义」+【重置】+ 内容 = 自定义值
-        if not click_row_btn(cat, "编辑提示词"):
-            raise TestError("再次点击【编辑提示词】失败")
-        if not wait_vis(TE_DLG, 10):
+        # ⑤ 再次打开：来源提示「自定义覆盖」+【恢复默认】+ 内容 = 自定义值
+        if not click_row_btn(cat, "prompt"):
+            raise TestError("再次点击【提示词】失败")
+        if not wait_pdlg_open(10):
             raise TestError("提示词弹框未再次打开")
-        hint1 = dlg_hint() or ""
-        if "自定义" not in hint1:
-            raise TestError("已自定义应显示「当前为自定义」来源提示：%r" % hint1)
-        if (dlg_textarea_value() or "") != sentinel:
-            raise TestError("已自定义应回填自定义值：%r" % dlg_textarea_value())
-        if not dlg_has_btn("重置"):
-            raise TestError("已自定义须显示【重置】按钮")
-        # ⑥ 重置 → 弹框关闭 → 覆盖文件删除（有效值回落出厂默认，仍非空）
-        if dlg_btn("重置") != "ok":
-            raise TestError("点击【重置】失败")
-        if not wait_gone(TE_DLG, 10):
-            raise TestError("重置后提示词弹框未关闭")
+        hint1 = pdlg_hint() or ""
+        if "自定义" not in hint1 or "覆盖" not in hint1:
+            raise TestError("已自定义应显示「当前为项目/用户级自定义覆盖」来源提示：%r" % hint1)
+        if (pdlg_textarea_value() or "") != sentinel:
+            raise TestError("已自定义应回填自定义值：%r" % pdlg_textarea_value())
+        if not pdlg_has_btn("reset"):
+            raise TestError("已自定义须显示【恢复默认】按钮")
+        # ⑥ 恢复默认 → 弹框关闭 → 覆盖文件删除（有效值回落出厂默认，仍非空）
+        if pdlg_btn("reset") != "ok":
+            raise TestError("点击【恢复默认】失败")
+        if not wait_pdlg_gone(10):
+            raise TestError("恢复默认后提示词弹框未关闭")
         if not poll(lambda: not os.path.isfile(prj_file), 8):
-            raise TestError("重置后覆盖文件未删除：%s" % prj_file)
+            raise TestError("恢复默认后覆盖文件未删除：%s" % prj_file)
         if not (prompt_val(key) or "").strip():
-            raise TestError("重置后有效值不应为空（应回落出厂默认）：%r" % prompt_val(key))
-        # ⑦ 再开 → 回落出厂默认（来源提示 + 内容非空 + 无【重置】）
-        if not click_row_btn(cat, "编辑提示词"):
-            raise TestError("重置后【编辑提示词】不可用")
-        if not wait_vis(TE_DLG, 10):
-            raise TestError("重置后提示词弹框未打开")
-        hint2 = dlg_hint() or ""
-        if "内置默认" not in hint2:
-            raise TestError("重置后应回落「当前为内置默认」：%r" % hint2)
-        if not (dlg_textarea_value() or "").strip():
-            raise TestError("重置后应回填出厂默认提示词")
+            raise TestError("恢复默认后有效值不应为空（应回落出厂默认）：%r" % prompt_val(key))
+        # ⑦ 再开 → 回落出厂默认（来源提示 + 内容非空 + 无【恢复默认】）
+        if not click_row_btn(cat, "prompt"):
+            raise TestError("恢复默认后【提示词】不可用")
+        if not wait_pdlg_open(10):
+            raise TestError("恢复默认后提示词弹框未打开")
+        hint2 = pdlg_hint() or ""
+        if "系统内置" not in hint2:
+            raise TestError("恢复默认后应回落「当前为系统内置」：%r" % hint2)
+        if not (pdlg_textarea_value() or "").strip():
+            raise TestError("恢复默认后应回填出厂默认提示词")
         shot("e4-memory-prompt.png")
-        # 收尾：关闭本弹框（否则 ⑧ 的用户偏好弹框会被 dlg_* 助手取到「首个」旧弹框）
-        if dlg_btn("取消") != "ok" or not wait_gone(TE_DLG, 6):
+        # 收尾：关闭本弹框（否则 ⑧ 的用户偏好弹框互扰）
+        if pdlg_btn("cancel") != "ok" or not wait_pdlg_gone(6):
             raise TestError("关闭项目类别提示词弹框失败")
 
         # ⑧ 「用户偏好」（唯一 user 级）同口径 → 落**用户级**文件
         drop_prompt(up_key)  # 归零：确保从「未自定义」起步
         time.sleep(0.8)
-        if not click_userpref_btn("编辑提示词"):
-            raise TestError("用户偏好行缺【编辑提示词】入口")
-        if not wait_vis(TE_DLG, 10):
+        if not click_userpref_btn("prompt"):
+            raise TestError("用户偏好行缺【提示词】入口")
+        if not wait_pdlg_open(10):
             raise TestError("用户偏好提示词弹框未打开")
-        if "内置默认" not in (dlg_hint() or ""):
-            raise TestError("用户偏好未自定义应显示「当前为内置默认」：%r" % dlg_hint())
-        if dlg_set_textarea(sentinel) != "ok" or dlg_btn("保存") != "ok":
+        if "系统内置" not in (pdlg_hint() or ""):
+            raise TestError("用户偏好未自定义应显示「当前为系统内置」：%r" % pdlg_hint())
+        if pdlg_set_textarea(sentinel) != "ok" or pdlg_btn("ok") != "ok":
             raise TestError("用户偏好提示词保存失败")
-        if not wait_gone(TE_DLG, 10):
+        if not wait_pdlg_gone(10):
             raise TestError("用户偏好提示词弹框未自动关闭")
         if not poll(lambda: prompt_val(up_key) == sentinel, 8):
             raise TestError("用户偏好提示词未生效：got=%r" % prompt_val(up_key))
         if not os.path.isfile(up_file):
             raise TestError("用户偏好自定义提示词未落**用户级**文件：%s" % up_file)
         print("    [E4] prompt %s 有效值 = %r；用户级文件已落盘" % (up_key, sentinel))
-        # 重置 → 覆盖文件清除（回落出厂默认）
-        if not click_userpref_btn("编辑提示词"):
-            raise TestError("用户偏好【编辑提示词】再次打开失败")
-        if not wait_vis(TE_DLG, 10):
+        # 恢复默认 → 覆盖文件清除（回落出厂默认）
+        if not click_userpref_btn("prompt"):
+            raise TestError("用户偏好【提示词】再次打开失败")
+        if not wait_pdlg_open(10):
             raise TestError("用户偏好提示词弹框未再次打开")
-        if not dlg_has_btn("重置"):
-            raise TestError("用户偏好已自定义须显示【重置】")
-        if dlg_btn("重置") != "ok":
-            raise TestError("用户偏好【重置】点击失败")
-        if not wait_gone(TE_DLG, 10):
-            raise TestError("用户偏好重置后弹框未关闭")
+        if not pdlg_has_btn("reset"):
+            raise TestError("用户偏好已自定义须显示【恢复默认】")
+        if pdlg_btn("reset") != "ok":
+            raise TestError("用户偏好【恢复默认】点击失败")
+        if not wait_pdlg_gone(10):
+            raise TestError("用户偏好恢复默认后弹框未关闭")
         if not poll(lambda: not os.path.isfile(up_file), 8):
-            raise TestError("用户偏好重置后覆盖文件未删除：%s" % up_file)
+            raise TestError("用户偏好恢复默认后覆盖文件未删除：%s" % up_file)
         if not (prompt_val(up_key) or "").strip():
-            raise TestError("用户偏好重置后有效值不应为空（应回落出厂默认）")
+            raise TestError("用户偏好恢复默认后有效值不应为空（应回落出厂默认）")
         shot("e4-memory-userpref-prompt.png")
     finally:
         close_stray_dialogs()

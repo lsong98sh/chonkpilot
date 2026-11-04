@@ -1,0 +1,10 @@
+{
+  "placeholder": "Find in conversation",
+  "prev": "Previous match",
+  "next": "Next match",
+  "close": "Close find bar",
+  "no_result": "No matches",
+  "not_enabled": "Conversation index is not enabled",
+  "older_hint": "This match is older — keep loading earlier messages",
+  "loading": "Searching…"
+}

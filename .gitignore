@@ -5,9 +5,10 @@
 # ============================================================================
 
 # ── 1. 构建产物（仓库根，由 build-*.ps1 产出）──────────────────────────────
-# dist/{desktop,other,plugins}：exe / 引擎 / zvec_c_api.dll /
-# capability / scenarios / config.json —— 全部由构建脚本投放
+# dist/：chonkpilot.exe · chonkpilot-remote-server.exe(+.db) · themes/ · capability/
+# build/plugin-apps/：插件 staging（build-plugins.ps1 产出，不入库）
 /dist/
+/build/
 
 # ── 2. 前端构建投放物（go:embed 入口，由 build 脚本生成）────────────────────
 # 源 = 仓库级 src/frontend；唯一产物 = src/desktop/frontend/dist（桌面壳 go:embed 落点）
@@ -124,3 +125,7 @@ ehthumbs.db
 # //go:embed 副本（唯一源在原处，不入库）；仅 `.gitkeep` 占位入库，保证 clean clone 可编译。
 /src/lib/mcp-server/server/contracts/*
 !/src/lib/mcp-server/server/contracts/.gitkeep
+
+# 本机构建/临时产物
+/.diff_tmp.txt
+/src/desktop/*.syso

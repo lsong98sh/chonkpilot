@@ -114,9 +114,9 @@ test('fmtElapsedMs / fmtTime：时间格式化（非法 → 空串）', () => {
 // ── ② 视图分派（chat / main）────────────────────────────────────────
 
 test('parseViewRoute：`#chat` + session-id → 对话窗口；其余 → 主窗口', () => {
-  assert.deepEqual(parseViewRoute('', ''), { view: VIEW_MAIN, sessionId: '' })
-  assert.deepEqual(parseViewRoute('?session-id=s1', '#chat'), { view: VIEW_CHAT, sessionId: 's1' })
-  assert.deepEqual(parseViewRoute('?session-id=s1', ''), { view: VIEW_MAIN, sessionId: '' })
+  assert.deepEqual(parseViewRoute('', ''), { view: VIEW_MAIN, sessionId: '', dialogId: '' })
+  assert.deepEqual(parseViewRoute('?session-id=s1', '#chat'), { view: VIEW_CHAT, sessionId: 's1', dialogId: '' })
+  assert.deepEqual(parseViewRoute('?session-id=s1', ''), { view: VIEW_MAIN, sessionId: '', dialogId: '' })
 })
 
 // ── ③ 源码接线守卫 ────────────────────────────────────────────────

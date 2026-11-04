@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -32,12 +34,20 @@ type inboxAddReq struct {
 	Effort         any    `json:"effort,omitempty"`
 	ScenarioID     string `json:"scenario_id,omitempty"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// Source = 入队来源（可选）。`mobile`（H5/远程接入）与空（桌面）语义一致：
+	// 均可排队 / 插话；仅用于前端标识来源。
+	Source string `json:"source,omitempty"`
+	// Insert = 用户显式「插话」意向（2026-11-01）：true → 登记 `type=insert` pending，
+	// 当前会话处于可插入相位（有在飞工具）时把**全部意向项一次性批量插入**；否则保持 pending
+	// 等相位。缺省 / false → `next_turn` 排队等本轮结束。
+	Insert bool `json:"insert,omitempty"`
 }
 
-// inboxIDReq 是 discard / promote 载荷。
+// inboxIDReq 是 discard / revert / promote 载荷（promote 支持 ids[] 多选）。
 type inboxIDReq struct {
-	InstanceID string `json:"instance_id"`
-	ID         string `json:"id"`
+	InstanceID string   `json:"instance_id"`
+	ID         string   `json:"id"`
+	IDs        []string `json:"ids,omitempty"`
 }
 
 // inboxListReq 是 llm-inbox-list 载荷。
@@ -227,6 +237,9 @@ func (s *Server) inboxSetStatus(id, status string) {
 		it.Status = status
 		s.inboxRememberLocked(it)
 	}
+	if status != sessioninbox.StatusPending {
+		delete(s.inboxQueued, id) // 终态 → 不再需要「已投递待消费」标记
+	}
 	s.inboxMu.Unlock()
 }
 
@@ -245,7 +258,13 @@ func (s *Server) inboxHasPendingNextTurn(sessionID string) bool {
 
 // ── 方法面 handler ──────────────────────────────────────────────────────
 
-// onInboxAdd 统一发送入口：按当前相位分类 insert / next_turn 并落库。
+// onInboxAdd 统一发送入口（2026-11-01 语义调整）：
+//   - 无运行轮 → `next_turn` 落库后立即消费，起新一轮；
+//   - 有运行轮 + `insert=true`（用户显式「插话」）→ 登记 `insert` 意向（pending），
+//     相位可插入时把该会话**全部意向项一次性批量插入**；否则等相位（由轮内 ticker 重试）；
+//   - 有运行轮 + 缺省 → `next_turn` 排队，本轮结束自动消费。
+//
+// 不再按相位自动插话（原 ClassifyAdd 行为）：插话是用户显式动作。
 func (s *Server) onInboxAdd(_ context.Context, _ string, v *mq.Value) error {
 	var req inboxAddReq
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
@@ -269,7 +288,8 @@ func (s *Server) onInboxAdd(_ context.Context, _ string, v *mq.Value) error {
 	tc := s.turnBySessionForAdd(req.InstanceID, req.Session)
 	typ := string(sessioninbox.NextTurn)
 	turnID := ""
-	if tc != nil && sessioninbox.ClassifyAdd(tc.inboxPhase()) == sessioninbox.Insert {
+	// 插话意向只在**有运行轮**时有效（无轮 = 直接起新一轮）。
+	if req.Insert && tc != nil {
 		typ = string(sessioninbox.Insert)
 		turnID = tc.req.Turn
 	}
@@ -277,7 +297,7 @@ func (s *Server) onInboxAdd(_ context.Context, _ string, v *mq.Value) error {
 	id, err := s.inboxAppend(req.InstanceID, facade.InboxAppendRequest{
 		SessionID: req.Session, TurnID: turnID, Type: typ,
 		LLM: req.LLM, Content: req.Content, Think: req.Think, Effort: req.Effort,
-		ScenarioID: req.ScenarioID, IdempotencyKey: req.IdempotencyKey,
+		ScenarioID: req.ScenarioID, IdempotencyKey: req.IdempotencyKey, Source: req.Source,
 	})
 	if err != nil {
 		logf("[chonkpilot-server] llm-inbox-add 落库失败（session=%s）: %v\n", req.Session, err)
@@ -287,24 +307,18 @@ func (s *Server) onInboxAdd(_ context.Context, _ string, v *mq.Value) error {
 	item := facade.InboxItem{
 		ID: id, SessionID: req.Session, TurnID: turnID, Type: typ,
 		LLM: req.LLM, Content: req.Content, ScenarioID: req.ScenarioID,
-		Status: sessioninbox.StatusPending, IdempotencyKey: req.IdempotencyKey,
+		Status: sessioninbox.StatusPending, IdempotencyKey: req.IdempotencyKey, Source: req.Source,
 	}
 	s.inboxRemember(item)
+	s.publishInboxChanged(req.InstanceID, req.Session, "added", []string{id})
 	if typ == string(sessioninbox.Insert) {
-		if tc.pushInbox(item) {
-			v.Result = map[string]any{"ok": true, "id": id, "type": string(sessioninbox.Insert)}
-			return nil
-		}
-		// 入插入帧失败（队列满 / 轮次刚关）→ 落库同步降级 next_turn，避免留下"insert 却永不被消费"。
-		_ = s.inboxUpdate(req.InstanceID, id, "", string(sessioninbox.Degrade(sessioninbox.Insert)), "")
-		item.Type = string(sessioninbox.NextTurn)
-		item.TurnID = ""
-		s.inboxRemember(item)
-		v.Result = map[string]any{"ok": true, "id": id, "type": string(sessioninbox.NextTurn)}
+		// 相位满足 → 该会话全部意向项一次性批量投递（本次新增项也在其中）。
+		s.flushInsertIntents(tc)
+		v.Result = map[string]any{"ok": true, "id": id, "type": typ}
 		return nil
 	}
-	// 未进入插入帧（无运行轮 / 流式期）：等本轮结束或无轮时由 consumeNextTurn 消费。
-	v.Result = map[string]any{"ok": true, "id": id, "type": "next_turn"}
+	// 未进入插入帧（排队 / 无运行轮）：等本轮结束或无轮时由 consumeNextTurn 消费。
+	v.Result = map[string]any{"ok": true, "id": id, "type": typ}
 	if tc == nil {
 		// 无运行轮 → 立即以该条起新一轮（设计 §3.3「done / 无 turn → 立即消费」）。
 		go s.consumeNextTurn(req.InstanceID, req.Session)
@@ -370,58 +384,179 @@ func (s *Server) onInboxDiscard(_ context.Context, _ string, v *mq.Value) error 
 		v.Result = map[string]any{"ok": false}
 		return nil
 	}
-	v.Result = map[string]any{"ok": true}
 	s.inboxSetStatus(req.ID, sessioninbox.StatusDiscarded)
+	s.inboxUnqueue(req.ID)
+	item, _ := s.inboxLookup(req.ID)
+	s.publishInboxChanged(req.InstanceID, item.SessionID, "discarded", []string{req.ID})
+	v.Result = map[string]any{"ok": true}
 	return nil
 }
 
-// onInboxPromote 把 next_turn 提升为 insert（「立刻插入」）。
-// 仅当该会话存在运行轮且处于可插入相位（当前帧有在飞工具）时生效；否则保持 next_turn。
+// onInboxPromote 登记「插话」意向（`next_turn → insert`，2026-11-01）：
+//   - 支持 `id` 或 `ids[]`（多选插话）；
+//   - 相位可插入 → 该会话**全部**意向项一次性批量插入；否则保持 pending 等相位；
+//   - 无运行轮 → 起新一轮消费全部 pending（重启后「继续」）。
 func (s *Server) onInboxPromote(_ context.Context, _ string, v *mq.Value) error {
 	var req inboxIDReq
 	_ = json.Unmarshal(v.Payload, &req)
-	item, ok := s.inboxLookup(req.ID)
-	if req.ID == "" || !ok {
+	ids := req.IDs
+	if req.ID != "" && !slices.Contains(ids, req.ID) {
+		ids = append([]string{req.ID}, ids...)
+	}
+	if len(ids) == 0 {
 		v.Result = map[string]any{"ok": false, "type": "next_turn"}
 		return nil
 	}
-	if item.Status != sessioninbox.StatusPending {
-		// 已消费 / 已撤回 → 不可再提升（消息已落库或已明确丢弃）。
-		v.Result = map[string]any{"ok": false, "type": item.Type}
+	okAll := true
+	anyInsert := false
+	sessionID := ""
+	for _, id := range ids {
+		item, ok := s.inboxLookup(id)
+		if !ok || item.Status != sessioninbox.StatusPending {
+			// 已消费 / 已撤回 → 不可再登记意向（消息已落库或已明确丢弃）。
+			okAll = false
+			continue
+		}
+		sessionID = item.SessionID
+		// 用户显式插话 = 用户动作 → 重置 next_run 连续计数（NEXTRUN-1 §3.3.3）。
+		s.resetNextRunCount(req.InstanceID, item.SessionID)
+		if item.Type == string(sessioninbox.Insert) {
+			anyInsert = true // 已是意向 → 幂等
+			continue
+		}
+		if err := s.inboxUpdate(req.InstanceID, id, "", string(sessioninbox.Promote(sessioninbox.NextTurn)), ""); err != nil {
+			logf("[chonkpilot-server] llm-inbox-promote 失败（id=%s）: %v\n", id, err)
+			okAll = false
+			continue
+		}
+		item.Type = string(sessioninbox.Insert)
+		s.inboxRemember(item)
+		anyInsert = true
+	}
+	if sessionID == "" {
+		for _, id := range ids {
+			if it, ok := s.inboxLookup(id); ok {
+				sessionID = it.SessionID
+				break
+			}
+		}
+	}
+	if sessionID == "" {
+		v.Result = map[string]any{"ok": false, "type": "next_turn"}
 		return nil
 	}
-	// 用户显式提升 = 用户动作 → 重置 next_run 连续计数（NEXTRUN-1 §3.3.3）。
-	s.resetNextRunCount(req.InstanceID, item.SessionID)
-	tc := s.turnBySessionForAdd(req.InstanceID, item.SessionID)
+	s.publishInboxChanged(req.InstanceID, sessionID, "promoted", ids)
+	tc := s.turnBySessionForAdd(req.InstanceID, sessionID)
 	if tc == nil {
 		// 无运行轮（重启后用户点「继续」）：以该会话全部 pending 项起新一轮（仍不自动发送——
 		// 由用户显式动作触发）。返回 ok 表示已受理。
-		go s.consumeNextTurn(req.InstanceID, item.SessionID)
-		v.Result = map[string]any{"ok": true, "type": item.Type}
+		go s.consumeNextTurn(req.InstanceID, sessionID)
+		v.Result = map[string]any{"ok": true, "type": string(sessioninbox.Insert)}
 		return nil
 	}
-	if !sessioninbox.CanPromote(item.Status, sessioninbox.Kind(item.Type), tc.inboxPhase()) {
-		v.Result = map[string]any{"ok": false, "type": item.Type}
-		return nil
+	// 相位满足 → 全部意向项批量投递（不满足则由轮内 ticker 在相位到达时重试）。
+	s.flushInsertIntents(tc)
+	typ := string(sessioninbox.NextTurn)
+	if anyInsert {
+		typ = string(sessioninbox.Insert)
 	}
-	if err := s.inboxUpdate(req.InstanceID, req.ID, "", string(sessioninbox.Promote(sessioninbox.NextTurn)), ""); err != nil {
-		logf("[chonkpilot-server] llm-inbox-promote 失败（id=%s）: %v\n", req.ID, err)
-		v.Result = map[string]any{"ok": false, "type": string(sessioninbox.NextTurn)}
-		return nil
-	}
-	item.Type = string(sessioninbox.Insert)
-	item.TurnID = tc.req.Turn
-	if !tc.pushInbox(item) {
-		// 入帧失败 → 落库回滚为 next_turn（否则留下"insert 却永不被消费"的行）。
-		_ = s.inboxUpdate(req.InstanceID, req.ID, "", string(sessioninbox.Degrade(sessioninbox.Insert)), "")
-		item.Type = string(sessioninbox.NextTurn)
-		s.inboxRemember(item)
-		v.Result = map[string]any{"ok": false, "type": string(sessioninbox.NextTurn)}
-		return nil
-	}
-	s.inboxRemember(item)
-	v.Result = map[string]any{"ok": true, "type": string(sessioninbox.Insert)}
+	v.Result = map[string]any{"ok": okAll, "type": typ}
 	return nil
+}
+
+// onInboxRevert 取消插话意向（`insert → next_turn`，仍 pending；2026-11-01）：
+// 仅当该项仍 pending 且为 insert 意向时生效（已消费 / 已删除 → 不可取消）。
+func (s *Server) onInboxRevert(_ context.Context, _ string, v *mq.Value) error {
+	var req inboxIDReq
+	_ = json.Unmarshal(v.Payload, &req)
+	if req.ID == "" {
+		v.Result = map[string]any{"ok": false, "type": string(sessioninbox.NextTurn)}
+		return nil
+	}
+	item, ok := s.inboxLookup(req.ID)
+	if !ok || item.Status != sessioninbox.StatusPending || item.Type != string(sessioninbox.Insert) {
+		v.Result = map[string]any{"ok": false, "type": string(sessioninbox.NextTurn)}
+		return nil
+	}
+	if err := s.inboxUpdate(req.InstanceID, req.ID, "", string(sessioninbox.Degrade(sessioninbox.Insert)), ""); err != nil {
+		logf("[chonkpilot-server] llm-inbox-revert 失败（id=%s）: %v\n", req.ID, err)
+		v.Result = map[string]any{"ok": false, "type": string(sessioninbox.Insert)}
+		return nil
+	}
+	item.Type = string(sessioninbox.NextTurn)
+	s.inboxRemember(item)
+	s.inboxUnqueue(req.ID)
+	s.publishInboxChanged(req.InstanceID, item.SessionID, "reverted", []string{req.ID})
+	v.Result = map[string]any{"ok": true, "type": string(sessioninbox.NextTurn)}
+	return nil
+}
+
+// flushInsertIntents 把握手会话的全部 pending `insert` 意向一次性投递给运行轮（2026-11-01 批量插话）：
+//   - 相位不可插入 / 无运行轮 → 不动（等轮内 ticker 重试或轮末降级为 next_turn）；
+//   - 已投递过的项（`inboxQueued`）跳过，避免 ticker 重复投递；
+//   - 引擎侧按 FIFO 连续消费 → 同一插入帧内逐条落 messages、一次 LLM 请求（见 agent chat engine）。
+func (s *Server) flushInsertIntents(tc *turnCtx) {
+	if tc == nil || !tc.insertable() {
+		return
+	}
+	sessionID := tc.req.Session
+	s.inboxMu.Lock()
+	if s.inboxQueued == nil {
+		s.inboxQueued = map[string]bool{}
+	}
+	bucket := s.inboxPending[sessionID]
+	items := make([]facade.InboxItem, 0, len(bucket))
+	for id, typ := range bucket {
+		if typ != string(sessioninbox.Insert) || s.inboxQueued[id] {
+			continue
+		}
+		if it, ok := s.inboxIndex[id]; ok {
+			items = append(items, it)
+		}
+	}
+	// 排序 = (created_at, id)：内存 remember 的项（onInboxAdd 直记 / 测试夹具）可能不带
+	// CreatedAt；主键 = `I`+UTC秒+微秒+随机（字典序即时间序）→ tie-break 保证合并顺序
+	// 确定（FIFO），不随 map 遍历随机。
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt != items[j].CreatedAt {
+			return items[i].CreatedAt < items[j].CreatedAt
+		}
+		return items[i].ID < items[j].ID
+	})
+	for _, it := range items {
+		s.inboxQueued[it.ID] = true
+	}
+	s.inboxMu.Unlock()
+	if len(items) == 0 {
+		return
+	}
+	for _, it := range items {
+		if !tc.pushInbox(it) {
+			// 队列满 / 轮次刚关 → 撤回本次投递标记，等下一次 ticker 重试。
+			s.inboxUnqueue(it.ID)
+			break
+		}
+	}
+}
+
+// inboxUnqueue 摘除「已投递待消费」标记（消费 / 撤回 / 取消意向时调用）。
+func (s *Server) inboxUnqueue(id string) {
+	if id == "" {
+		return
+	}
+	s.inboxMu.Lock()
+	delete(s.inboxQueued, id)
+	s.inboxMu.Unlock()
+}
+
+// publishInboxChanged 广播 inbox 变更（桌面 / H5 两端实时刷新；61 `session-inbox-changed`）。
+func (s *Server) publishInboxChanged(instanceID, session, action string, ids []string) {
+	if session == "" {
+		return
+	}
+	s.publish("inbox-changed", map[string]any{
+		"instance_id": instanceID, "session": session, "action": action, "ids": ids,
+	})
 }
 
 // turnBySessionForAdd 定位该会话的运行轮（带 instance 归属）。

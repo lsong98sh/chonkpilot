@@ -29,7 +29,16 @@
             <Icon name="close" :size="12" />
           </button>
         </div>
-        <div v-if="recentDirs.length === 0" class="b-dropdown-item is-disabled">
+        <!-- 默认工作区：**末尾固定一条**（非 recent 记录，不写 recent_dirs / flash-recents.json） -->
+        <div
+          v-if="showDefaultDir"
+          class="b-dropdown-item recent-row recent-row-default"
+          @click="select(defaultDir)"
+        >
+          <Icon name="folder" :size="13" />
+          <span class="recent-item" :title="defaultDir">{{ $t('toolbar.default_workspace') }}</span>
+        </div>
+        <div v-if="recentDirs.length === 0 && !showDefaultDir" class="b-dropdown-item is-disabled">
           {{ $t('toolbar.no_recent_dirs') }}
         </div>
       </div>
@@ -40,11 +49,15 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Icon } from '@ckfw/components/icon/index.js'
-import { loadRecentDirs, removeRecent, openDirAndRefresh } from '../workdirActions'
+import { loadRecentDirsInfo, removeRecent, openDirAndRefresh } from '../workdirActions'
 
 const triggerRef = ref(null)
 const recentDirs = ref([])
+const defaultDir = ref('')
 const show = ref(false)
+
+// 默认工作区固定排在末尾；已在最近列表中出现则不重复渲染
+const showDefaultDir = computed(() => !!defaultDir.value && !recentDirs.value.includes(defaultDir.value))
 
 const popperStyle = computed(() => {
   const el = triggerRef.value
@@ -60,7 +73,9 @@ const popperStyle = computed(() => {
 })
 
 async function refresh() {
-  recentDirs.value = await loadRecentDirs()
+  const info = await loadRecentDirsInfo()
+  recentDirs.value = info.dirs
+  defaultDir.value = info.defaultDir
 }
 
 function toggle() {

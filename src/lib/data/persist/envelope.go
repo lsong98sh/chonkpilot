@@ -260,6 +260,9 @@ func (s *Service) handleSession(action string, payload []byte) {
 			SessionID:       sid,
 			DialogID:        f.DialogID,
 			ParentSessionID: f.ParentSessionID,
+			Kind:            f.Kind,
+			Title:           f.Title,
+			Origin:          f.Origin,
 		})
 		if err != nil {
 			failf("%v", err)

@@ -47,12 +47,14 @@ export const EventNames = {
   llmReceive: 'llm-receive', // 后端 → 前端：LLM 流增量（桥 mqTypeMap：session-receive → llm-receive；payload.type 二次分子主题 text/reason/tool-call）
   llmComplete: 'llm-complete', // 后端 → 前端：一轮终结（队列出队的唯一 ack；payload 含 turn_id/status）
   llmCancel: 'llm-cancel', // 前端 → 后端：取消当前轮（{session, turn}，21-llm-server；替代 CancelChat RPC）
-  // INBOX（中途插话 / 等下一轮，2026-10-17）：所有"非空闲"发送先落 prjusr inbox，
-  // 由 llm-server 按相位分类 insert / next_turn（61 §4.3；设计 docs/agent-chat/中途插话设计方案.md）
-  llmInboxAdd: 'llm-inbox-add', // 前端 → 后端：统一发送入口 {instance_id, session, llm, content, think?, effort?, scenario_id?}
-  llmInboxList: 'llm-inbox-list', // 前端 → 后端：读回 pending 项（队列指示器 / 重启拉回）
-  llmInboxDiscard: 'llm-inbox-discard', // 前端 → 后端：撤回 / 删除一条 inbox 项
-  llmInboxPromote: 'llm-inbox-promote', // 前端 → 后端：next_turn → insert「立刻插入」
+  // INBOX（中途插话 / 等下一轮，2026-10-17；2026-11-01 语义调整）：所有发送先落 prjusr inbox，
+  // `insert=true` = 用户显式插话（可插入相位批量插入），缺省 = 排队下一轮（61 §4.3）
+  llmInboxAdd: 'llm-inbox-add', // 前端 → 后端：统一发送入口 {instance_id, session, llm, content, think?, effort?, scenario_id?, insert?}
+  llmInboxList: 'llm-inbox-list', // 前端 → 后端：读回 pending 项（inbox 一览 / 重启拉回）
+  llmInboxDiscard: 'llm-inbox-discard', // 前端 → 后端：删除 / 撤回一条 inbox 项
+  llmInboxPromote: 'llm-inbox-promote', // 前端 → 后端：登记插话意向（next_turn → insert；id / ids[]）
+  llmInboxRevert: 'llm-inbox-revert', // 前端 → 后端：取消插话意向（insert → next_turn）
+  inboxChanged: 'session-inbox-changed', // 后端 → 前端：inbox 变更广播（{instance_id, session, action, ids}）→ 两端刷新
   askUser: 'ask-user', // 后端 → 前端：LLM ask_user 提问（{ask_id, question, options?, custom?, session, turn, expires_at}；替代 tool-pair{user_ask}）
   askReply: 'ask-user-reply', // 用户回答 ask_user（前端 → 后端；{ask_id, answer, custom}；替代 ask-reply，附录 A）
 
@@ -95,7 +97,7 @@ export const EventNames = {
   messageQueue: 'message-queue', // 入队（LLM 忙碌时）：InputBox → MessageList 队列，仅前端处理，不发送
   messageCancel: 'message-cancel',
   chatQueueRestore: 'chat-queue-restore', // 写回 textarea（MessageList canceled 简化 / 撤回 → InputBox 前置）
-  chatQueueAction: 'chat-queue-action', // 队列项操作（InputBox popover → MessageList：{id, action:'recall'|'delete'}）
+  chatQueueAction: 'chat-queue-action', // inbox 项操作（InputBox popover → MessageList：{id, action:'insert'|'revert'|'delete'|'recall'}）
   // 消息列表项（列表组件多实例，payload 带 id 按实例过滤）
   msgToggleCollapse: 'msg-toggle-collapse',
   msgCopyText: 'msg-copy-text',
@@ -268,7 +270,7 @@ export const EventNames = {
   langSelect: 'lang-select',
   // windowToggle / guiWindowStatus / guiWindowResize / windowMaximizedChanged
   // （窗口 chrome：顶栏移动 / 边缘 resize / 最大化同步）随窗口组件迁入 framework 分片。
-  guiWindowOpenChat: 'gui.window.open-chat', // 打开/激活纯对话窗口（多窗口；幂等）：payload {session_id}
+  guiWindowOpenChat: 'gui.window.open-chat', // 打开/激活纯对话窗口（多窗口；幂等）：payload {session_id, dialog_id?}（G-105：带 dialog_id 直开该 dialog）
   guiWindowList: 'gui.window.list', // 查已开**对话窗口**（仅 chat；主窗口不入注册表）：payload {}
   guiWindowClosed: 'gui.window.closed', // 宿主 → 前端：对话窗口关闭广播 {window_id, session_id}（解除入口占用）
   guiWindowSetTitle: 'gui.window.set-title', // **仅独立对话窗口**：标题随会话摘要变化更新：payload {title}

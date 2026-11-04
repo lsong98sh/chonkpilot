@@ -22,6 +22,14 @@ export const OUT_TOKEN_MAX = 1000000
 export const CTX_TOKEN_MAX = 1000000000
 export const TOOL_ITER_MAX = 2000
 export const TIMEOUT_MAX = 600 // responseTimeout / streamTimeout（>0）
+// LLM 能力档位（D-65）：双维度各 0~5，一位小数（步进 0.1）；0 = 不具备。
+export const LLM_CAPABILITY_MIN = 0
+export const LLM_CAPABILITY_MAX = 5
+export const LLM_CAPABILITY_STEP = 0.1
+// 能力双维度键（2026-11-04 用户口径）：reasoning = 推理能力 / vision = 识图能力。
+export const LLM_CAPABILITY_DIMS = ['reasoning', 'vision']
+// 旧声明式 `capabilities` 具备 → 档位映射值（旧口径无档位信息 → 中位档 3.0；与后端读侧同口径）。
+export const LLM_CAPABILITY_LEGACY_DIM = 3
 
 // 聊天输入 / 附件（已拍板）。
 export const MAX_CHAT_CHARS = 16384
@@ -81,6 +89,48 @@ export function intInRange(v, min, max) {
   if (v === '' || v === null || v === undefined) return true
   const n = Number(v)
   return Number.isInteger(n) && n >= min && n <= max
+}
+
+// LLM 能力档位（D-65）：0~5 的一位小数（步进 0.1）；空 = 未填（未声明档位，允许）。
+export function isValidCapability(v) {
+  if (v === '' || v === null || v === undefined) return true
+  const n = Number(v)
+  if (!Number.isFinite(n) || n < LLM_CAPABILITY_MIN || n > LLM_CAPABILITY_MAX) return false
+  return Math.abs(n * 10 - Math.round(n * 10)) < 1e-9
+}
+
+// 能力双维度归一：非数字 / 缺项 → 0，越界 → 夹到 0~5（读侧容错；写侧仍由 isValidCapability 把关）。
+export function normalizeCapability(cap) {
+  const pick = (v) => {
+    const n = Number(v)
+    if (!Number.isFinite(n)) return 0
+    return Math.min(LLM_CAPABILITY_MAX, Math.max(LLM_CAPABILITY_MIN, n))
+  }
+  const src = cap && typeof cap === 'object' ? cap : {}
+  return { reasoning: pick(src.reasoning), vision: pick(src.vision) }
+}
+
+// 由能力双维度**派生**旧声明式 `capabilities`（档位 > 0 即含该项）——与后端
+// `DeriveLLMCapabilities` 同口径：ChatPanel 截图门控等旧读侧契约继续可用。
+export function deriveCapabilities(cap) {
+  const dims = normalizeCapability(cap)
+  const out = []
+  if (dims.reasoning > 0) out.push('reasoning')
+  if (dims.vision > 0) out.push('vision')
+  return out
+}
+
+// 旧声明式 `capabilities` → 能力双维度（具备 = 中位档 3.0；与后端读侧 `capabilityLegacyDim` 同口径）。
+// 传入 null（记录完全未声明能力）→ 推理按中位档 3.0、识图 0（与新增默认一致，避免存量记录在
+// auto 模式下被判「不具备」而失去候选资格）；显式空数组 → 两项均 0。
+export function capabilityFromLegacyCaps(caps) {
+  if (!Array.isArray(caps)) {
+    return { reasoning: LLM_CAPABILITY_LEGACY_DIM, vision: 0 }
+  }
+  return {
+    reasoning: caps.includes('reasoning') ? LLM_CAPABILITY_LEGACY_DIM : 0,
+    vision: caps.includes('vision') ? LLM_CAPABILITY_LEGACY_DIM : 0,
+  }
 }
 
 // 附件：单文件大小 + 单条数量（前端提示与拦截；后端另有上限复核）。

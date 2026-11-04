@@ -8,9 +8,7 @@ module github.com/chonkpilot/chonkpilot-gwadapter
 
 go 1.26.0
 
-require (
-	github.com/modelcontextprotocol/go-sdk v1.7.0
-)
+require github.com/modelcontextprotocol/go-sdk v1.7.0
 
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
@@ -24,7 +22,6 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
-
 
 // 开发期依赖策略（2026-10-29）：同机跨仓依赖一律本地 replace；正式发版时统一切回版本号并删除本节。
 replace github.com/lsong98sh/chonkpilot-plugin-framework => ../../../../chonkpilot-framework/plugin/src
@@ -40,4 +37,17 @@ require github.com/lsong98sh/chonkpilot-framework/host v0.0.0
 
 replace github.com/lsong98sh/chonkpilot-agent => ../../../../chonkpilot-agent
 
-require github.com/lsong98sh/chonkpilot-agent v0.0.0
+replace github.com/lsong98sh/chonkpilot-agent/chat => ../../../../chonkpilot-agent/chat/src
+
+replace github.com/lsong98sh/chonkpilot-agent/gateway => ../../../../chonkpilot-agent/gateway/src
+
+replace github.com/lsong98sh/chonkpilot-agent/router => ../../../../chonkpilot-agent/router/src
+
+replace github.com/lsong98sh/chonkpilot-agent/session => ../../../../chonkpilot-agent/session/src
+
+replace github.com/lsong98sh/chonkpilot-agent/types => ../../../../chonkpilot-agent/types/src
+
+require (
+	github.com/lsong98sh/chonkpilot-agent v0.0.0 // indirect
+	github.com/lsong98sh/chonkpilot-agent/gateway v0.0.0-00010101000000-000000000000
+)

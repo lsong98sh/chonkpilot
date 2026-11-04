@@ -1,9 +1,12 @@
 package server
 
 import (
+	"math"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 )
 
@@ -94,14 +97,268 @@ func (s *Server) loadUserConfig(instanceID string) (map[string]any, error) {
 // 空 name → nil（回落 exe flags）；命中 usr llms → 记录配置；未命中 → **内置兜底保留名**（D-30，仅 echo）；
 // 其余（近似名 / 已失效名 / 未配置）→ nil（保持既有「未命中即回落 exe flags」语义不变）。
 // 供 loadLLMProvider（llm-start / llm-simple）与子系统级入口 promptOptimiseSpec 共用同一折算口径。
+//
+// D-65：保留名 `auto` 先解析为**默认 LLM**（`resolveAutoLLMName`）再取记录 —— 首次调用永不把
+// `auto` 当模型名下发；同档次候选切换只走轮次路径（见 turn.go / router `AutoCandidates`）。
 func providerFromConfig(cfg map[string]any, selectedModel string) *llmProviderCfg {
 	if selectedModel == "" {
 		return nil
 	}
-	if p := providerFromLLMs(cfg, selectedModel); p != nil {
+	name := resolveAutoLLMName(cfg, selectedModel)
+	if p := providerFromLLMs(cfg, name); p != nil {
 		return p
 	}
-	return builtinFallbackProvider(selectedModel)
+	return builtinFallbackProvider(name)
+}
+
+// ── auto 档位调度（D-65，2026-11-04 用户拍板）──────────────────────────────
+
+// autoLLMName 是 auto 档位调度的保留 LLM 名：会话 / 场景把 llm 名写成 `auto` 时，首次解析到
+// **默认 LLM**（usr `defaultLLM`），可重试失败后在**同档次**候选间切换 provider（见 router
+// `CallOptions.AutoCandidates`）。
+const autoLLMName = "auto"
+
+// autoTierDelta 是「同档次」的能力值半径（±0.5，**含端点**）。
+const autoTierDelta = 0.5
+
+// isAutoLLMName 判定 llm 名是否保留名 `auto`（大小写不敏感；其余名字原样参与解析）。
+func isAutoLLMName(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), autoLLMName)
+}
+
+// resolveAutoLLMName 把 `auto` 解析为默认 LLM 名（usr `defaultLLM` → `llms[].name`）：
+// 非 auto 原样返回；auto 且默认值未配置 / 仍为 auto → ""（= 系统默认，exe 启动参数）。
+func resolveAutoLLMName(cfg map[string]any, name string) string {
+	if !isAutoLLMName(name) {
+		return name
+	}
+	if cfg == nil {
+		return ""
+	}
+	def := data.LLMRefName(cfg["defaultLLM"], cfg["llms"])
+	if def == "" || isAutoLLMName(def) {
+		return ""
+	}
+	return def
+}
+
+// capabilityDims 是一条 `llms` 记录的能力双维度（D-65 口径更新 2026-11-04）：各 0~5、一位小数，
+// 0 = 不具备。`Reasoning` = 推理能力（auto 档位基准）；`Vision` = 识图能力（图像感知替换的依据）。
+type capabilityDims struct {
+	Reasoning float64
+	Vision    float64
+}
+
+// capabilityLegacyDim 是旧 `capabilities:["reasoning","vision"]` 声明式数组 → 档位的映射值：
+// 旧口径只表达「具备 / 不具备」、无档位信息 → 具备即映射为中位档 3.0（与新增表单初值一致）。
+const capabilityLegacyDim = 3.0
+
+// capabilityValueValid 判定单个档位是否合法读值（0~5；越界脏值按「未声明」处理）。
+func capabilityValueValid(v float64) bool {
+	return !math.IsNaN(v) && v >= 0 && v <= 5
+}
+
+// llmCapabilityDims 取一条 `llms` 记录的能力双维度。
+// declared=false = 该记录**未声明任何能力信息**（`capability` 与 `capabilities` 均缺省）→ 调用方按
+// 「未声明」处理（档位基准回落默认 LLM / 不参与调度，兼容存量配置）。
+//
+// 读侧兼容（旧数据）：只有 `capabilities:["reasoning","vision"]` 而无 `capability` 时，出现哪一项即
+// 视为「具备」→ 映射为 capabilityLegacyDim；`capabilities: []`（显式空数组）→ 两项均 0（不具备）。
+func llmCapabilityDims(llm map[string]any) (capabilityDims, bool) {
+	if raw, ok := llm["capability"]; ok && raw != nil {
+		obj, _ := raw.(map[string]any)
+		if obj == nil {
+			return capabilityDims{}, false // 形态非法（写侧已拒绝）→ 按未声明处理，不阻断调度
+		}
+		var d capabilityDims
+		if v, ok := configFloat(obj, "reasoning"); ok && capabilityValueValid(v) {
+			d.Reasoning = v
+		}
+		if v, ok := configFloat(obj, "vision"); ok && capabilityValueValid(v) {
+			d.Vision = v
+		}
+		return d, true
+	}
+	if raw, ok := llm["capabilities"]; ok && raw != nil {
+		var d capabilityDims
+		switch caps := raw.(type) {
+		case []any:
+			for _, item := range caps {
+				d = dimsWithLegacyCap(d, str(item))
+			}
+		case []string:
+			for _, item := range caps {
+				d = dimsWithLegacyCap(d, item)
+			}
+		default:
+			return capabilityDims{}, false
+		}
+		return d, true
+	}
+	return capabilityDims{}, false
+}
+
+// dimsWithLegacyCap 把旧声明式能力名折进档位（具备 → capabilityLegacyDim；未知名忽略）。
+func dimsWithLegacyCap(d capabilityDims, capName string) capabilityDims {
+	switch strings.ToLower(strings.TrimSpace(capName)) {
+	case "reasoning":
+		d.Reasoning = capabilityLegacyDim
+	case "vision":
+		d.Vision = capabilityLegacyDim
+	}
+	return d
+}
+
+// capabilityDimsOfLLM 取指定 provider 名（`llms` 记录）的能力双维度；未命中 / 未声明 → ok=false。
+func capabilityDimsOfLLM(cfg map[string]any, name string) (capabilityDims, bool) {
+	if cfg == nil || name == "" {
+		return capabilityDims{}, false
+	}
+	for _, item := range asAnySlice(cfg["llms"]) {
+		llm, _ := item.(map[string]any)
+		if llm == nil {
+			continue
+		}
+		if strings.TrimSpace(str(llm["name"])) != name {
+			continue
+		}
+		return llmCapabilityDims(llm)
+	}
+	return capabilityDims{}, false
+}
+
+// autoCandidates 计算 auto 模式下的「同档次」候选 provider 名（有序 = usr `llms` 顺序；
+// **不含首选** base，也不含显式 0 的 LLM）。
+//
+// 口径（D-65，2026-11-04：基准 = **reasoning** 维度）：
+//   - 基准 = 默认 LLM（base）的 `reasoning`；同档 = |reasoning − 基准| ≤ 0.5（**含端点**）；
+//   - 显式 `reasoning: 0` = 不具备 → 不参与（既不作首选也不作候选）；
+//   - **缺省（未配置 capability）= 按默认 LLM 的能力值** → 天然同档（不让存量配置全部失效）；
+//   - 基准未声明档位（默认 LLM 未配置能力值 / base 为空 = 系统默认）→ 不做档位限制，全部
+//     可用（reasoning>0 或未声明）provider 都是候选（顺序 = 配置顺序）。
+func autoCandidates(cfg map[string]any, base string) []string {
+	if cfg == nil {
+		return nil
+	}
+	baseDims, baseDeclared := capabilityDimsOfLLM(cfg, base)
+	baseReasoning, baseDeclared := baseDims.Reasoning, baseDeclared && baseDims.Reasoning > 0
+	var out []string
+	for _, item := range asAnySlice(cfg["llms"]) {
+		llm, _ := item.(map[string]any)
+		if llm == nil {
+			continue
+		}
+		name := strings.TrimSpace(str(llm["name"]))
+		if name == "" || name == base {
+			continue
+		}
+		dims, declared := llmCapabilityDims(llm)
+		if declared && dims.Reasoning <= 0 {
+			continue // 显式 0 = 不具备 → 不参与调度
+		}
+		if baseDeclared && declared {
+			if math.Abs(dims.Reasoning-baseReasoning) > autoTierDelta+1e-9 {
+				continue // 不同档次
+			}
+		}
+		// baseDeclared && !declared → 缺省 = 按默认 LLM 的能力值 → 同档；
+		// !baseDeclared → 基准未声明档位 → 不做档位限制。
+		out = append(out, name)
+	}
+	return out
+}
+
+// autoVisionCandidates 计算 auto 模式「图像感知」的首选替换候选（有序 = 最优在前）：
+//   - 触发前提：默认 LLM **不具备识图能力**（`vision` 未声明 / 0）——已具备 → nil（无需替换）；
+//   - 候选条件：`vision > 0`（必须显式具备）、`reasoning > 0`、且 `reasoning` 在默认值 ±0.5
+//     （含端点；默认值未声明档位时不限档，与 autoCandidates 同口径）；
+//   - 排序：先按 `|reasoning − 默认值|` 升序，再按 `vision` 降序，最后按配置顺序。
+//
+// 宿主另需把名字折算为调用快照（`Server.autoImageFallbacks`）；本函数只做纯配置判定。
+func autoVisionCandidates(cfg map[string]any, base string) []string {
+	if cfg == nil {
+		return nil
+	}
+	baseDims, baseDeclared := capabilityDimsOfLLM(cfg, base)
+	if baseDeclared && baseDims.Vision > 0 {
+		return nil // 默认 LLM 已具备识图能力 → 无需替换
+	}
+	baseReasoning, baseReasoningDeclared := baseDims.Reasoning, baseDeclared && baseDims.Reasoning > 0
+	type visionCand struct {
+		name     string
+		distance float64
+		vision   float64
+		order    int
+	}
+	var cands []visionCand
+	for i, item := range asAnySlice(cfg["llms"]) {
+		llm, _ := item.(map[string]any)
+		if llm == nil {
+			continue
+		}
+		name := strings.TrimSpace(str(llm["name"]))
+		if name == "" || name == base {
+			continue
+		}
+		dims, declared := llmCapabilityDims(llm)
+		if !declared || dims.Vision <= 0 || dims.Reasoning <= 0 {
+			continue // 未声明 = 不具备识图能力；显式 0 同理
+		}
+		distance := 0.0
+		if baseReasoningDeclared {
+			distance = math.Abs(dims.Reasoning - baseReasoning)
+			if distance > autoTierDelta+1e-9 {
+				continue // 不同档次
+			}
+		}
+		cands = append(cands, visionCand{name: name, distance: distance, vision: dims.Vision, order: i})
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if math.Abs(cands[i].distance-cands[j].distance) > 1e-9 {
+			return cands[i].distance < cands[j].distance
+		}
+		if math.Abs(cands[i].vision-cands[j].vision) > 1e-9 {
+			return cands[i].vision > cands[j].vision
+		}
+		return cands[i].order < cands[j].order
+	})
+	out := make([]string, 0, len(cands))
+	for _, c := range cands {
+		out = append(out, c.name)
+	}
+	return out
+}
+
+// autoImageFallbacks 把「图像感知」候选名折算为**调用快照**（spec + 该 provider 专属参数）：
+// 首次调用若需替换，llm 侧整体切换到该快照（协议 / baseUrl / apiKey / model / 采样参数 / 思考力度）。
+//
+// 第二个返回值 needsVision = 默认 LLM **不具备识图能力**（auto 模式下遇到含图像请求才需要替换）；
+// 它与「候选为空」一起用于降级留痕（无合格候选 → 仍用默认 LLM，不阻断本轮）。
+func (s *Server) autoImageFallbacks(cfg map[string]any, base string, req StartReq) (fallbacks []ImageFallback, needsVision bool) {
+	baseDims, baseDeclared := capabilityDimsOfLLM(cfg, base)
+	needsVision = !baseDeclared || baseDims.Vision <= 0
+	names := autoVisionCandidates(cfg, base)
+	if len(names) == 0 {
+		return nil, needsVision
+	}
+	out := make([]ImageFallback, 0, len(names))
+	for _, name := range names {
+		pcfg := providerFromLLMs(cfg, name)
+		if pcfg == nil {
+			continue
+		}
+		think, effort := resolveThinkEffort(pcfg, req)
+		out = append(out, ImageFallback{
+			Name:           name,
+			Spec:           s.specFor(pcfg),
+			Model:          pcfg.Model,
+			Temperature:    pcfg.Temperature,
+			MaxOutputToken: pcfg.MaxOutputToken,
+			Think:          think,
+			Effort:         effort,
+		})
+	}
+	return out, needsVision
 }
 
 // providerFromLLMs 从已读 usr 配置对象取 provider name 对应的记录配置：命中返回配置；

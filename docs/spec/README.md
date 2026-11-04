@@ -14,7 +14,7 @@
 > | `src/lib/go-webview2` | **独立仓 `chonkpilot-webview2`**（2026-10-25 剥离；本地克隆与主仓同级，`replace` 指向） |
 > | `src/plugin-<name>`（含 `plugin/instance`） | `src/plugins/plugin-<name>`（**历史**：`src/plugins/` 已整体迁出 → 同级仓 `chonkpilot-plugins/<name>/`） |
 > | `src/codegraph`（引擎 exe） | `src/plugins/codegraph`（**历史** → `chonkpilot-plugins/codegraph`） |
-> | `src/vfts`（引擎 exe） | `src/plugins/vfts`（**历史** → `chonkpilot-plugins/codegraph/engines/vfts`） |
+> | `src/vfts`（引擎 exe） | `src/plugins/vfts`（**历史** → `chonkpilot-plugins/codegraph/src/engines/vfts`） |
 >
 > **可直接执行**的路径（测试/构建命令、脚本与用例文件）已**就地订正**，见 [50 §5.1–§5.3](50-testing/50-测试体系.md) · [51](50-testing/51-FP与测试映射.md) · [52](50-testing/52-test-port驱动.md) · [29 §10](20-modules/29-codegraph.md) · [28](20-modules/28-plugins.md) · [71 §1.3/§5.2](70-conventions/71-编程规范.md) · [64](60-reference/64-配置项一览.md)；[42](40-roadmap/42-决策记录.md) §2 / [41](40-roadmap/41-未决项登记.md) §2–§3 属**历史行**，按上表阅读。
 
@@ -67,7 +67,7 @@ docs/spec/
 │   ├── 23-工程与部署拓扑.md            工程拓扑 / 装配 / 部署形态
 │   ├── 24-多窗口模型设计方案.md         主窗口 + 纯对话窗口（多窗口模型 / 路由 / 数据 / 任务分解 MW）（🔵 设计定稿，待实施）
 │   ├── 25-MCP与场景分层模型.md          MCP / Agent / 场景 三层职责（能力面 · 场景面 · chat 面；提示词三层拼接 · 工具面语义 · agent 退出资产面 · 场景独立根）（🔵 设计定稿，待实施）
-│   └── 26-h5-app.md                    H5 远程访问（chonkpilot-app）：影子连接绑定 PC 的 instance · 空闲发送 / 运行中停止 · 不排队（🚧 初稿，待评审）
+│   └── 26-remote.md                    Remote 远程接入：Remote 插件 + Remote Server + H5 · 会话列表（继续/新建/筛选）· 空闲发送 / 运行中停止（🚧 设计稿，待确认）
 ├── 20-modules/                        ← 每个模块的设计（统一模板）
 │   ├── 20-gui.md                      宿主 + bridge + 前端（含预览区 renderType 映射）
 │   ├── 21-llm-server.md               会话 / LLM 服务层
@@ -77,7 +77,7 @@ docs/spec/
 │   ├── 25-mcp-server.md               MCP 契约服务（四原语）
 │   ├── 26-mcp-gateway.md              MCP 网关聚合
 │   ├── 27-mcp-tools.md                工具层（executor，spawn-on-call）
-│   ├── 28-plugins.md                  插件体系（file / browser / desktop / task / mcp / websearch / memory / history / codegraph）
+│   ├── 28-plugins.md                  插件体系（file / browser / desktop / task / mcp / web / memory / history / codegraph）
 │   ├── 29-codegraph.md                codegraph（独立 mcp-server）
 │   ├── 2B-vfts.md                     vfts（全文检索索引，独立 mcp-server）
 │   ├── 2C-UI插件.md                   插件 UI 扩展（iframe view / 预览页 / 管理页 / 状态栏；✅ 已落地）

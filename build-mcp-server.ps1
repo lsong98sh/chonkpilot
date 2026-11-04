@@ -13,11 +13,11 @@
 #       ├── resources/   # 资源契约（*.resource.md；按 core|go|ui 分级嵌套）
 #       ├── agents/      # 智能体契约（*.agent.md；扁平）
 #       ├── system/      # 非原语系统文档（如 summary.md；OP-01/OP-02，2026-10-06）
-#       └── executors/   # 执行器（仅 chonkpilot-web-executor.exe；其余能力随插件投放）
+#       └── executors/   # （已退场，2026-10-31 D-72：无内置执行器；能力随插件投放）
 #
 # 源（出厂数据唯一源 = src/initdata）：契约 = src/initdata/capability/{prompts,tools,resources,skills,agents,system}
 #   （2026-10-01 P2 扁平化：删除旧 knowledge/ 归并层）；
-#   exe 外壳 = src/others/mcp-server（lib = src/lib/mcp-server）+ executor = src/lib/mcp-tools。
+#   exe 外壳 = src/others/mcp-server（lib = src/lib/mcp-server）；executor 已全部退场（D-72）。
 #
 # 注（2026-10-28 P2-3）：脚本执行（`script_run` → `task_run`）已随 task 插件迁出主仓，
 #   `chonkpilot-script-executor.exe` 不再产出。
@@ -31,15 +31,15 @@ $env:GOPROXY = "https://goproxy.cn,direct"
 $env:GOTOOLCHAIN = "local"
 
 # 结束运行中的旧实例（编译前清理，释放 exe 占用）：本脚本重建 mcp-server / core-mcp-server /
-# self-tools 与 2 个 executor，同目录 gateway 共用本 capability，故一并清理。
+# self-tools，同目录 gateway 共用本 capability，故一并清理。
 # 2026-10-21（GATEWAY-2/L3）：meta/domain（含 ask-user / tool-result / tool-stop / next-run /
 #   subchat-open / subchat-finish）已进程内化，9 个 executor 不再产出，从清理列表移除。
-foreach ($name in @("chonkpilot-core-executor", "chonkpilot-filesys-executor", "chonkpilot-script-executor", "chonkpilot-web-executor", "chonkpilot-desktop-executor", "chonkpilot-browser-executor", "chonkpilot-mcp-server", "chonkpilot-core-mcp-server", "chonkpilot-mcp-gateway", "chonkpilot-self-tools")) {
+# 2026-10-31（D-72）：最后一个内置 executor（web-exec）也退场。
+foreach ($name in @("chonkpilot-core-executor", "chonkpilot-filesys-executor", "chonkpilot-script-executor", "chonkpilot-web-executor", "chonkpilot-desktop-executor", "chonkpilot-browser-executor", "chonkpilot-mcp-server", "chonkpilot-core-mcp-server", "chonkpilot-mcp-gateway")) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$tools = Join-Path $root "src\lib\mcp-tools"
 $cmd = Join-Path $root "src\others\mcp-server"
 $initCap = Join-Path $root "src\initdata\capability"
 $dist = Join-Path $root "dist\other"
@@ -77,14 +77,12 @@ try {
     Write-Host "    ok: chonkpilot-mcp-server.exe"
 } finally { Pop-Location }
 
-Write-Host "==> [1.5/3] build self-tools + core-mcp-server (P6 / 2026-10-19)"
+Write-Host "==> [1.5/3] build core-mcp-server (P6 / 2026-10-19)"
 $msDir = Join-Path $root "src\lib\mcp-server"
 Push-Location $msDir
 try {
-    go build -o (Join-Path $dist "chonkpilot-self-tools.exe") .\cmd\self-tools
-    if ($LASTEXITCODE -ne 0) { throw "build self-tools failed" }
-    Write-Host "    ok: chonkpilot-self-tools.exe"
-    # 2026-10-19：工具唯一前门（一工具一 executor），由 server 拉起常驻。
+    # 2026-11-02：self-tools 已退役（桌面单体不再拉起，全仓无 spawn 点）；core-mcp-server 仅保留给
+    # 独立 gateway 部署（build-mcp-gateway.ps1 以 --stdio 下游接入）。
     go build -o (Join-Path $dist "chonkpilot-core-mcp-server.exe") .\cmd\core-mcp-server
     if ($LASTEXITCODE -ne 0) { throw "build core-mcp-server failed" }
     Write-Host "    ok: chonkpilot-core-mcp-server.exe"
@@ -126,28 +124,10 @@ New-Item -ItemType Directory -Force -Path $serverToolsDst | Out-Null
 Copy-Item (Join-Path $domainToolsSrc "*.tool.md") $serverToolsDst -Force
 Write-Host "    ok: capability/tools/server ($((Get-ChildItem $serverToolsDst -Filter *.tool.md -File | Measure-Object).Count) files)"
 
-Write-Host "==> [3/3] build executors -> capability/executors/ (chonkpilot-mcp-tools)"
-$execDir = Join-Path $cap "executors"
-New-Item -ItemType Directory -Force -Path $execDir | Out-Null
-Push-Location $tools
-try {
-    # 内置执行器统一落 capability/executors/；契约 *.tool.md 的 runtime 相对 md 写 ../../executors/<cat>.exe
-    # 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 删 filesys / browser / desktop / core 四个 executor。
-    # 2026-10-25（PLUGIN-SPLIT-1）：file 域 11 工具随 file 插件迁出主仓 → 删 tools-exec
-    #   （执行体 = 插件的 MCP server；契约随插件投放到 <pluginRoot>/tools/file/）。
-    # 2026-10-28（P2-3）：脚本执行（script_run → task_run）随 task 插件迁出主仓 → 删 script-exec
-    #   （执行体 = task 插件的 MCP server；契约 go:embed 在插件内）。
-    # 只剩一个执行器 → 直接构建（不再用 `foreach (@(@(a,b)))`：PowerShell 会把单元素嵌套数组拍平，
-    # 导致 $pair 拿到两个字符串、$pair[0] 变成 'c'）。
-    $exeName = "chonkpilot-web-executor.exe"
-    go build -o (Join-Path $execDir $exeName) "./cmd/web-exec"
-    if ($LASTEXITCODE -ne 0) { throw "build $exeName failed" }
-    Write-Host "    ok: $exeName (executors)"
-} finally { Pop-Location }
+Write-Host "==> [3/3] executors 已全部退场（2026-10-31 D-72）：不产出 capability/executors/"
 
-Write-Host "==> verify executors (--help 从磁盘读契约：<exeDir>/capability/tools/<cat>/)"
-& (Join-Path $execDir "chonkpilot-web-executor.exe") --help | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "web executor --help failed" }
+# 注（D-72，2026-10-31）：`src/lib/mcp-tools`（`chonkpilot-web-executor.exe` + internal/{cli,fetch,fileops}）
+# 整体退场——web 三工具随 `web` 插件、file 随 `file` 插件、task_run 随 `task` 插件，本层已无出厂契约绑定。
 
 # 注（PLUGIN-SPLIT-1）：browser / desktop 常驻引擎已随插件迁入 chonkpilot-plugins
 # （<id>/engine），由 build-plugins.ps1 直接构建，本脚本不再产出。

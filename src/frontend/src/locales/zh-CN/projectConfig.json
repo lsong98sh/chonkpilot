@@ -102,6 +102,7 @@
   "context_async": "压缩在每轮结束后异步执行，同一会话的压缩互斥进行，不会重复触发。",
   "context_tip_cache_billing": "如果你的provider完全按照token计价，不进行cache命中计价，建议减少保持轮为 1",
   "context_tip_compress_llm": "上下文压缩，记忆提取使用默认LLM，如需使用特定LLM，敬请期待",
+  "context_memory_moved": "记忆沉淀配置已迁移到插件配置页：配置 → 插件维护 → 记忆沉淀 → 配置。",
   "memory_section": "记忆配置",
   "memory_enabled": "启用记忆库",
   "memory_enabled_hint": "开启后每轮会话结束异步沉淀记忆到类别文件；关闭则完全不沉淀。",

@@ -110,13 +110,6 @@ func (s *Server) loadExecConfig(instanceID string) {
 		}
 	}
 	s.mcpCfg.SetRuntime(timeoutSec, maxConcurrency, chromePath, skipDirs)
-	// core-mcp-server（2026-10-19）：同一份执行配置推送给进程外工具前门。
-	s.mu.Lock()
-	sink := s.coreRuntimeSink
-	s.mu.Unlock()
-	if sink != nil {
-		sink(s.mcpCfg.RuntimeSnapshot())
-	}
 }
 
 // prjExecConfigKeys 是运行期热生效的执行配置 prj 键（loadExecConfig 读取）：
@@ -233,10 +226,10 @@ func (s *Server) applyToolSandbox(raw string) {
 	s.mcpCfg.SetToolSandbox(cfg.Executors, cfg.MCPs)
 }
 
-// securityRules 读该实例的 prj `security-*`（信任目录）并换算为安全目录规则集
-// （`{dir, writable}`，语义 = 可读 / 可写目录且**递归**）。
-// 契约（14 §2.3）：一条目录 = 一个 persist key（不透明 id），value = JSON 字符串
-// `{"dir","writable"}`；list 返回平铺 map（已剥 `security-` 前缀）。
+// securityRules 读该实例的 prj `security-*`（可写白名单）并换算为安全目录规则集
+// （`{dir}`，语义 = 可写目录且**递归**；读不受限——Low IL 只限写）。
+// 契约（14 §2.3）：一条目录 = 一个 persist key（不透明 id），value = JSON 字符串 `{"dir"}`；
+// list 返回平铺 map（已剥 `security-` 前缀）。旧值 `{dir,writable}` 兼容读入（writable 忽略）。
 // 返回 (规则集, 读取是否成功)：读取失败 → ok=false（调用方保留现值，不误清空）；
 // 单条 value 解析失败 → 跳过该条并记日志（不影响其余条目）。
 func (s *Server) securityRules(instanceID string) ([]mcpgateway.SandboxRule, bool) {
@@ -265,6 +258,7 @@ func (s *Server) securityRules(instanceID string) ([]mcpgateway.SandboxRule, boo
 			logf("[chonkpilot-server] securityRules: 条目 %s 解析失败（跳过）: %q\n", k, raw)
 			continue
 		}
+		r.Writable = true // C1：白名单即"可写"，旧值 writable 一律忽略
 		rules = append(rules, r)
 	}
 	return rules, true
@@ -328,13 +322,29 @@ func (s *Server) gatewaySandboxRules() []mcpgateway.SandboxRule {
 // 快照恒填（开关由 usr `tool_sandbox.mcps` 决定、在 gateway stdio spawn 时按 MCP 名查询）；
 // 目录快照变化 → 条目 diff → 重注册/重连，使新允许目录在下一次 spawn 生效。
 func (s *Server) applyGatewaySandboxDirs(entries []mcpgateway.ServerEntry) {
+	rules := s.gatewaySandboxRules()
+	// C3：同步刷新 gateway 的白名单快照（`_meta.chonkpilot.sandbox` 用它下发；插件 MCP
+	// 不经 servers/register 拿 SandboxDirs，故必须有这条实时通道）。
+	s.sandboxMu.Lock()
+	s.sandboxRules = rules
+	s.sandboxMu.Unlock()
 	if len(entries) == 0 {
 		return
 	}
-	rules := s.gatewaySandboxRules()
 	for i := range entries {
 		entries[i].SandboxDirs = rules
 	}
+}
+
+// sandboxRulesForGateway 返回当前可写白名单快照（gateway `SetSandboxDirsProvider` 的回调）。
+// 空 = 未初始化（gateway 侧只用 work_dir 内置默认）。
+func (s *Server) sandboxRulesForGateway(_ string) []mcpgateway.SandboxRule {
+	s.sandboxMu.RLock()
+	defer s.sandboxMu.RUnlock()
+	if len(s.sandboxRules) == 0 {
+		return nil
+	}
+	return s.sandboxRules
 }
 
 // onPrjSecurityRefresh prj-security 域 save/delete 广播（data-prj-security-refresh，**既有主题**，

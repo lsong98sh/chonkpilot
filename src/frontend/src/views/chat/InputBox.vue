@@ -1,5 +1,60 @@
 <template>
   <div class="input-box">
+    <!-- INBOX 摘要条（2026-11-01）：输入框上方一行，展示**第一条**排队 / 插话项（超长省略号）；
+         点击向上弹出**全量** inbox 列表（该会话全部 pending 项，桌面与手机两端共享，不按来源过滤）。
+         每行末尾三个图标按钮：插话 / 取消插话 · 删除 · 撤回编辑（= 删除 + 内容回填输入框）。 -->
+    <div v-if="queueCount > 0" class="inbox-bar">
+      <Popover placement="top-start" :width="400" :close-on-content-click="false">
+        <template #reference>
+          <div class="inbox-bar-line" :title="rawText(firstInboxItem)">
+            <Icon name="lightning" :size="13" />
+            <span class="inbox-bar-text">{{ itemPreview(firstInboxItem) }}</span>
+            <span class="inbox-bar-count">{{ queueCount }}</span>
+            <Icon name="top" :size="12" />
+          </div>
+        </template>
+        <div class="inbox-popover">
+          <div class="inbox-pop-head">{{ $t('chat.inbox_title', { count: queueCount }) }}</div>
+          <div v-if="queueItems.length === 0" class="queue-empty">{{ $t('chat.queue_empty') }}</div>
+          <div
+            v-for="it in queueItems"
+            :key="it.id"
+            class="inbox-item"
+            :class="{ 'is-intent': it.inboxType === 'insert' }"
+          >
+            <span class="inbox-item-source">{{ sourceLabel(it) }}</span>
+            <span class="inbox-item-content" :title="rawText(it)">{{ itemPreview(it) }}</span>
+            <span class="inbox-item-actions">
+              <Button
+                text
+                size="mini"
+                :title="it.inboxType === 'insert' ? $t('chat.inbox_cancel_insert') : $t('chat.inbox_insert')"
+                v-mq:[EventNames.chatQueueAction].click="{ id: it.id, action: it.inboxType === 'insert' ? 'revert' : 'insert' }"
+              >
+                <Icon :name="it.inboxType === 'insert' ? 'circle-close' : 'lightning'" :size="13" />
+              </Button>
+              <Button
+                text
+                size="mini"
+                :title="$t('chat.queue_delete')"
+                v-mq:[EventNames.chatQueueAction].click="{ id: it.id, action: 'delete' }"
+              >
+                <Icon name="delete" :size="13" />
+              </Button>
+              <Button
+                text
+                size="mini"
+                :title="$t('chat.queue_recall')"
+                v-mq:[EventNames.chatQueueAction].click="{ id: it.id, action: 'recall' }"
+              >
+                <Icon name="edit" :size="13" />
+              </Button>
+            </span>
+          </div>
+        </div>
+      </Popover>
+    </div>
+
     <!-- 附件区：图片缩略图 + 文件 chip（上传中显示状态，就绪后可删除） -->
     <div v-if="attachments.length" class="attach-list">
       <div v-for="(a, i) in attachments" :key="a.uid || i" class="attach-chip" :class="['attach-' + a.kind, { pending: a.pending }]">
@@ -54,69 +109,33 @@
 
     <!-- 富文本输入区（contenteditable 自研轻量，不引入重型编辑器库）：
          普通文本自动增高；Enter 发送，Shift/Ctrl/Alt/Meta+Enter 换行；
-         粘贴/拖入图片 → 附件；拖入文件 → chip；data-drop-target 供文件树拖入路径插入 -->
-    <div
-      ref="editRef"
-      class="b-textarea--autosize richtext-input"
-      contenteditable="true"
-      data-drop-target="chat-input"
-      :data-placeholder="$t('chat.input_placeholder')"
-      @input="onEdit"
-      @keydown="handleKeydown"
-      @paste="onPaste"
-      @drop.prevent="onDrop"
-      @dragover.prevent
-    ></div>
+         粘贴/拖入图片 → 附件；拖入文件 → chip；data-drop-target 供文件树拖入路径插入
+         （2026-11-02 起输入框右上角趴一只小猫：下巴压在输入框上边框、身体被输入框遮住，
+          输入框右侧露出一小节尾巴；睁眼/闭眼两张图交替 = 眨眼） -->
+    <div class="input-area">
+      <div class="cat-peek" aria-hidden="true">
+        <img class="cat-face" :src="catSrc" alt="" draggable="false" />
+      </div>
+      <div
+        ref="editRef"
+        class="b-textarea--autosize richtext-input"
+        contenteditable="true"
+        data-drop-target="chat-input"
+        :data-placeholder="$t('chat.input_placeholder')"
+        @input="onEdit"
+        @keydown="handleKeydown"
+        @paste="onPaste"
+        @drop.prevent="onDrop"
+        @dragover.prevent
+      ></div>
+      <div class="cat-tail" aria-hidden="true"></div>
+    </div>
     <!-- INPUTVAL-1：单条消息 ≤16K 字符（contenteditable 无 maxlength → 输入/粘贴时截断 + 可见提示）。 -->
     <div v-if="overLimit" class="input-limit">{{ limitText }}</div>
 
     <div class="input-actions">
       <div class="input-actions-left">
         <slot name="controls" />
-        <!-- 待发队列指示器：LLM 忙碌时入队的消息计数；点击展开 popover 列表（单项可撤回/删除） -->
-        <Popover v-if="queueCount > 0" placement="top-end" :width="320">
-          <template #reference>
-            <div class="queue-indicator">
-              <Icon name="chat-dot-square" :size="14" />
-              <span class="queue-badge">{{ queueCount }}</span>
-            </div>
-          </template>
-          <div class="queue-popover">
-            <div v-if="queueItems.length === 0" class="queue-empty">{{ $t('chat.queue_empty') }}</div>
-            <div v-for="it in queueItems" :key="it.id" class="queue-item">
-              <span class="queue-item-label">{{ itemLabel() }}</span>
-              <span class="queue-item-content" :title="rawText(it)">{{ itemPreview(it) }}</span>
-              <span class="queue-item-actions">
-                <!-- INBOX：next_turn 项可「立刻插入」（等下一轮 → 立即插入） -->
-                <Button
-                  v-if="it.inboxType === 'next_turn'"
-                  text
-                  size="mini"
-                  title="立刻插入"
-                  v-mq:[EventNames.chatQueueAction].click="{ id: it.id, action: 'insert' }"
-                >
-                  ⤵
-                </Button>
-                <Button
-                  text
-                  size="mini"
-                  :title="$t('chat.queue_recall')"
-                  v-mq:[EventNames.chatQueueAction].click="{ id: it.id, action: 'recall' }"
-                >
-                  ↩
-                </Button>
-                <Button
-                  text
-                  size="mini"
-                  :title="$t('chat.queue_delete')"
-                  v-mq:[EventNames.chatQueueAction].click="{ id: it.id, action: 'delete' }"
-                >
-                  ✕
-                </Button>
-              </span>
-            </div>
-          </div>
-        </Popover>
       </div>
       <div class="input-actions-right">
         <template v-if="loading">
@@ -182,6 +201,14 @@ const text = ref('')
 const attachments = ref([])
 const editRef = ref(null)
 
+// 输入框上沿的小猫（静态图，源 `image/cat1.png` / `image/cat2.png`，构建前投放 public）：
+// cat1 = 睁眼、cat2 = 闭眼 → 定时切到闭眼 160ms 再切回 = 眨眼。
+const CAT_OPEN = '/cat1.png'
+const CAT_BLINK = '/cat2.png'
+const catSrc = ref(CAT_OPEN)
+let catBlinkInterval = null
+let catBlinkTimer = null
+
 // ── prompt 选择（知识库 `*.prompt.md`，25 §7）──
 // 单选（文档未明示多选 → 置单选，属可扩展点）；选中后内容**并入 user 消息文本**（零契约变更），
 // HTML 上以 `/<prompt-name>` 的 tag 显示（可移除）；发送 / 入队后随输入区一并清空（一次性注入）。
@@ -215,11 +242,18 @@ const limitText = computed(() => t('fieldRules.messageTooLong', { len: charLen(t
 const canSend = computed(() => !overLimit.value && !uploading.value &&
   !!(text.value.trim() || attachments.value.length || hasPromptContent.value))
 
-// popover 列表项预览：每行一条（类型前缀 + 内容截断）；队列只承载用户消息（附录 A）
-function itemLabel() {
-  return '✉'
+// 摘要条展示**第一条** inbox 项（按服务端 created_at 升序，由 syncInbox 保序）。
+const firstInboxItem = computed(() => props.queueItems[0] || null)
+
+// 来源标识（桌面 / 手机 / 模型自动接续）：两端共享同一 inbox，不按来源过滤。
+function sourceLabel(it) {
+  const s = it?.payload?.source || it?.source || ''
+  if (s === 'mobile') return t('chat.inbox_source_mobile')
+  if (s === 'llm') return t('chat.inbox_source_llm')
+  return t('chat.inbox_source_desktop')
 }
 
+// popover 列表项预览：每行一条（内容截断 + 省略号）
 function itemPreview(it) {
   const content = formatItemText(it)
   return content.length > 40 ? content.slice(0, 40) + '…' : content
@@ -227,7 +261,7 @@ function itemPreview(it) {
 
 // 原始文本（title 提示完整内容）
 function rawText(it) {
-  return it.payload?.text || it.type
+  return it?.payload?.text || it?.type || ''
 }
 
 // ── 编辑区 ──
@@ -254,7 +288,8 @@ function autoResize() {
   const el = editRef.value
   if (!el) return
   el.style.height = 'auto'
-  const minH = 40
+  // 最小高度 = 3 行正文（行高 20px）+ 上下内边距 10px
+  const minH = 70
   const maxH = 240
   const h = el.scrollHeight
   el.style.height = Math.min(Math.max(h, minH), maxH) + 'px'
@@ -503,6 +538,11 @@ onMounted(() => {
   unsubQueueRestore = mq.on(EventNames.chatQueueRestore, onQueueRestore)
   unsubInsertAttachment = mq.on(EventNames.chatInsertAttachment, onInsertAttachment)
   nextTick(() => autoResize())
+  // 小猫眨眼：每 4s 闭眼 160ms（两个定时器在卸载时都要清，避免组件销毁后仍改状态）。
+  catBlinkInterval = setInterval(() => {
+    catSrc.value = CAT_BLINK
+    catBlinkTimer = setTimeout(() => { catSrc.value = CAT_OPEN }, 160)
+  }, 4000)
 })
 
 onUnmounted(() => {
@@ -510,31 +550,88 @@ onUnmounted(() => {
   if (unsubChatSend) unsubChatSend()
   if (unsubQueueRestore) unsubQueueRestore()
   if (unsubInsertAttachment) unsubInsertAttachment()
+  if (catBlinkInterval) clearInterval(catBlinkInterval)
+  if (catBlinkTimer) clearTimeout(catBlinkTimer)
 })
 </script>
 
 <style scoped>
 .input-box {
-  padding: 8px;
+  /* 右侧多留 6px：给输入框右侧「露出的猫尾巴」腾出不被裁的空间 */
+  padding: 8px 14px 8px 8px;
   border-top: 1px solid var(--border);
 
   flex-shrink: 0;
+}
+
+/* 输入区（小猫 / 尾巴的定位容器）：猫与尾巴均为**绝对定位**，不占布局、不撑开输入区 */
+.input-area {
+  position: relative;
+}
+
+/* 小猫：只显示露在输入框上沿以上的头（下巴切在上边框线上），身体部分被裁掉 → 等同被输入框遮住。
+   `bottom: 100%` 使可见区域的底边与输入框上边框重合；z-index 低于输入框（白底压住身体）。
+   绝对定位向上浮出：与上方「提示词行」的右侧空区重叠，但不改变任何元素位置。
+   **宽度只留头部包围盒**（原图 512x477 中头部占 x=38..364，按 110px 渲染即 8..78px）：
+   容器 70px + 图片左移 8px，消除原图右侧 30px 空白 → 猫头右缘 = 输入框右边框 - 2px。 */
+.cat-peek {
+  position: absolute;
+  right: 2px;
+  bottom: 100%;
+  width: 70px;
+  height: 46px;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+/* 原图 512x477（透明底）：宽 110 → 高 102.5，上沿 46px 恰好切在下巴处 */
+.cat-face {
+  position: absolute;
+  left: -8px;
+  top: 0;
+  width: 110px;
+  height: auto;
+  -webkit-user-drag: none;
+}
+
+/* 尾巴：同一张图取右下角尾巴区域（原图 368,272 起的 144x153），压在输入框右侧、
+   内侧一半被输入框白底遮住 → 只露出一小节。
+   `top` 为到输入框**上边框**的固定距离（不用 50%：输入框长高时尾巴不能跟着往下跑）。
+   `right` 与 `.cat-peek` 同向平移 4px（6px → 2px），保证头与尾巴仍是同一只猫。 */
+.cat-tail {
+  position: absolute;
+  right: -16px;
+  top: 6px;
+  width: 31px;
+  height: 33px;
+  background-image: url('/cat1.png');
+  background-repeat: no-repeat;
+  background-size: 110px auto;
+  background-position: -79px -58.4px;
+  pointer-events: none;
+  z-index: 0;
 }
 
 .b-textarea--autosize {
   width: 100%;
   padding: 5px 11px;
   border: 1px solid var(--border);
-  border-radius: var(--border-radius);
+  /* 圆角比全局 --border-radius(4px) 略大：猫咪趴边的视觉更柔和 */
+  border-radius: 10px;
   font-size: var(--font-size-sm);
-  background: var(--bg-primary, #fff);
+  /* 内部白底：同时作为遮挡猫身/尾巴内侧的不透明层（故需 z-index 高于 .cat-peek / .cat-tail） */
+  background: #fff;
+  position: relative;
+  z-index: 1;
   color: var(--text-primary);
   outline: none;
   transition: border-color 0.2s;
   box-sizing: border-box;
   line-height: 20px;
   font-family: inherit;
-  min-height: 40px;
+  /* 最小高度 = 3 行正文（20px × 3）+ 上下内边距 10px */
+  min-height: 70px;
   max-height: 240px;
 }
 .b-textarea--autosize:focus {
@@ -736,48 +833,65 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.queue-indicator {
-  position: relative;
-  display: inline-flex;
+/* INBOX 摘要条（输入框上方一行；点击向上弹出全量列表） */
+.inbox-bar {
+  margin-bottom: 4px;
+}
+
+.inbox-bar-line {
+  display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
+  gap: 6px;
+  padding: 3px 8px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 6px;
   font-size: 12px;
   color: var(--accent);
   cursor: pointer;
   user-select: none;
 }
 
-.queue-indicator .queue-badge {
+.inbox-bar-line:hover {
+  background: var(--bg-hover, #f0f0f0);
+}
+
+.inbox-bar-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inbox-bar-count {
+  flex-shrink: 0;
   min-width: 16px;
   height: 16px;
   line-height: 16px;
   text-align: center;
   border-radius: 8px;
-  /* 实心填充：文字用主题最底层色（light = 纯白，与历史 #fff 一致；dark/nord = 深色） */
   background: var(--accent);
   color: var(--bg-secondary);
   font-size: 11px;
   padding: 0 4px;
 }
 
-.queue-popover {
+.inbox-popover {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-height: 240px;
+  gap: 2px;
+  max-height: 320px;
   overflow-y: auto;
 }
 
-.queue-empty {
+.inbox-pop-head {
   font-size: 12px;
   color: var(--text-muted, #999);
-  padding: 4px 0;
+  padding: 2px 4px 4px;
 }
 
-.queue-item {
+.inbox-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -785,16 +899,23 @@ onUnmounted(() => {
   border-radius: 4px;
 }
 
-.queue-item:hover {
+.inbox-item:hover {
   background: var(--bg-hover, #f0f0f0);
 }
 
-.queue-item-label {
-  flex-shrink: 0;
-  font-size: 12px;
+/* 已登记插话意向：左侧强调色条 */
+.inbox-item.is-intent {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.queue-item-content {
+.inbox-item-source {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted, #999);
+  min-width: 28px;
+}
+
+.inbox-item-content {
   flex: 1;
   min-width: 0;
   font-size: 12px;
@@ -804,12 +925,17 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.queue-item-actions {
+.inbox-item-actions {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 2px;
-  font-size: 13px;
   color: var(--text-muted, #999);
+}
+
+.queue-empty {
+  font-size: 12px;
+  color: var(--text-muted, #999);
+  padding: 4px 0;
 }
 </style>

@@ -61,7 +61,7 @@ func TestToolsTimeoutPassthrough(t *testing.T) {
 // 必须列 `frontMethodSubjects`（同名映射），否则 `PublishEvent` 静默丢弃（前端按钮无反应）。
 // 下行事件（`subchat-opened` / `subchat-state`）无需登记：`eventType` 原名直通。
 func TestFrontMethodSubchatWiring(t *testing.T) {
-	for _, typ := range []string{msgkeys.TopicSubchatList, msgkeys.TopicSubchatFinish, msgkeys.TopicSubchatContinue} {
+	for _, typ := range []string{msgkeys.TopicSubchatList, msgkeys.TopicSubchatFinish, msgkeys.TopicSubchatContinue, msgkeys.TopicSessionRunningList} {
 		subj, ok := frontMethodSubjects[typ]
 		if !ok {
 			t.Fatalf("frontMethodSubjects 缺少 %s：前端上行将被静默丢弃", typ)

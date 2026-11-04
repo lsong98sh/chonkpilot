@@ -8,53 +8,29 @@ package session
 
 import (
 	"errors"
-	"fmt"
-	"strconv"
-	"strings"
 
-	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 )
 
-// nextRunCountKey 是 sessions 行的计数器键名。
-const nextRunCountKey = "next_run_count"
+// next_run 计数器的存储语义（判上限 + 自增 / 归零 / 减一）实现唯一 = 会话组件
+// （`component.NextRun*`，P4-2 批次 B，2026-10-31）；本包只保留输入校验。
 
 // SessionNextRunCheckAndAdd 判上限 + 自增（单事务）。已达上限 / 关闭（max<=0）→ 不增。
+//
+// P4-2 批次 B（2026-10-31）：实现体切到会话组件（`componentNextRunCheckAndAdd`）。
 func (s *Service) SessionNextRunCheckAndAdd(req facade.SessionNextRunCheckAndAddRequest) (facade.SessionNextRunCheckAndAddResponse, error) {
 	if req.SessionID == "" {
 		return facade.SessionNextRunCheckAndAddResponse{}, errors.New("session: id required")
+	}
+	if req.DialogID == "" {
+		return facade.SessionNextRunCheckAndAddResponse{}, kernel.ErrDialogRequired
 	}
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SessionNextRunCheckAndAddResponse{}, err
 	}
-	db, release, err := s.contentDB(prj, req.DialogID)
-	if err != nil {
-		return facade.SessionNextRunCheckAndAddResponse{}, err
-	}
-	defer release()
-	count, allowed, notFound := 0, false, false
-	if err := db.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
-		if len(rec) == 0 {
-			notFound = true
-			return nil
-		}
-		cur := recordInt(rec[nextRunCountKey])
-		if req.Max <= 0 || cur >= req.Max {
-			count, allowed = cur, false
-			return nil // 不写：判定与自增同事务，拒绝时不产生任何变更
-		}
-		cur++
-		count, allowed = cur, true
-		rec[nextRunCountKey] = cur
-		return rec
-	}); err != nil {
-		return facade.SessionNextRunCheckAndAddResponse{}, err
-	}
-	if notFound {
-		return facade.SessionNextRunCheckAndAddResponse{}, fmt.Errorf("session not found: %s", req.SessionID)
-	}
-	return facade.SessionNextRunCheckAndAddResponse{Count: count, Allowed: allowed}, nil
+	return s.componentNextRunCheckAndAdd(prj, req)
 }
 
 // SessionNextRunReset 计数器归零（会话不存在 → 幂等成功）。
@@ -62,28 +38,14 @@ func (s *Service) SessionNextRunReset(req facade.SessionNextRunResetRequest) (fa
 	if req.SessionID == "" {
 		return facade.SessionNextRunResetResponse{}, errors.New("session: id required")
 	}
+	if req.DialogID == "" {
+		return facade.SessionNextRunResetResponse{}, kernel.ErrDialogRequired
+	}
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SessionNextRunResetResponse{}, err
 	}
-	db, release, err := s.contentDB(prj, req.DialogID)
-	if err != nil {
-		return facade.SessionNextRunResetResponse{}, err
-	}
-	defer release()
-	if err := db.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
-		if len(rec) == 0 {
-			return nil // 会话不存在 → 幂等成功（不建残行）
-		}
-		if recordInt(rec[nextRunCountKey]) == 0 {
-			return nil // 已是 0：不写键（保持「仅 > 0 才写键」的行形状）
-		}
-		delete(rec, nextRunCountKey)
-		return rec
-	}); err != nil {
-		return facade.SessionNextRunResetResponse{}, err
-	}
-	return facade.SessionNextRunResetResponse{OK: true}, nil
+	return s.componentNextRunReset(prj, req)
 }
 
 // SessionNextRunGet 读当前计数（会话不存在 / 未写键 → 0）。
@@ -91,24 +53,14 @@ func (s *Service) SessionNextRunGet(req facade.SessionNextRunGetRequest) (facade
 	if req.SessionID == "" {
 		return facade.SessionNextRunGetResponse{}, errors.New("session: id required")
 	}
+	if req.DialogID == "" {
+		return facade.SessionNextRunGetResponse{}, kernel.ErrDialogRequired
+	}
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SessionNextRunGetResponse{}, err
 	}
-	db, release, err := s.contentDB(prj, req.DialogID)
-	if err != nil {
-		return facade.SessionNextRunGetResponse{}, err
-	}
-	defer release()
-	var rec data.Record
-	ok, err := db.Table("sessions").Get(req.SessionID, &rec)
-	if err != nil {
-		return facade.SessionNextRunGetResponse{}, err
-	}
-	if !ok {
-		return facade.SessionNextRunGetResponse{Count: 0}, nil
-	}
-	return facade.SessionNextRunGetResponse{Count: recordInt(rec[nextRunCountKey])}, nil
+	return s.componentNextRunGet(prj, req)
 }
 
 // SessionNextRunDec 计数器补偿 -1（inbox 落库失败回滚本次自增；不小于 0）。
@@ -116,56 +68,12 @@ func (s *Service) SessionNextRunDec(req facade.SessionNextRunDecRequest) (facade
 	if req.SessionID == "" {
 		return facade.SessionNextRunDecResponse{}, errors.New("session: id required")
 	}
+	if req.DialogID == "" {
+		return facade.SessionNextRunDecResponse{}, kernel.ErrDialogRequired
+	}
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SessionNextRunDecResponse{}, err
 	}
-	db, release, err := s.contentDB(prj, req.DialogID)
-	if err != nil {
-		return facade.SessionNextRunDecResponse{}, err
-	}
-	defer release()
-	count := 0
-	if err := db.Table("sessions").UpdateIn(req.SessionID, func(rec data.Record) data.Record {
-		if len(rec) == 0 {
-			return nil
-		}
-		cur := recordInt(rec[nextRunCountKey])
-		if cur <= 0 {
-			count = 0
-			return nil
-		}
-		cur--
-		count = cur
-		if cur == 0 {
-			delete(rec, nextRunCountKey) // 归零即删键（行形状与「从未计数」一致）
-		} else {
-			rec[nextRunCountKey] = cur
-		}
-		return rec
-	}); err != nil {
-		return facade.SessionNextRunDecResponse{}, err
-	}
-	return facade.SessionNextRunDecResponse{Count: count}, nil
-}
-
-// recordInt 解析会话行的数值列（bbolt JSON 回读可能是 float64 / int / 字符串）。
-func recordInt(v any) int {
-	switch t := v.(type) {
-	case nil:
-		return 0
-	case float64:
-		return int(t)
-	case int:
-		return t
-	case int64:
-		return int(t)
-	case string:
-		n, err := strconv.Atoi(strings.TrimSpace(t))
-		if err != nil {
-			return 0
-		}
-		return n
-	}
-	return 0
+	return s.componentNextRunDec(prj, req)
 }

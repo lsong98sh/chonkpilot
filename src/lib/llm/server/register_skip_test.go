@@ -1,5 +1,6 @@
 // P6（2026-10-19）：外部工具模式（cfg.SkipTools）下 RegisterContracts 只注册资产，
-// 不注册工具 —— 系统级 app 根的可执行工具由外部进程 chonkpilot-self-tools 承接。
+// 不注册工具 —— 工具由外部进程（独立 gateway 的 core-mcp-server）承接。
+// 2026-11-02：桌面单体已退出该模式（self-tools 退役；此处仅保留 cfg.SkipTools 行为回归）。
 package server
 
 import (

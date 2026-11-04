@@ -61,6 +61,7 @@
     "agent": { "type": "string", "desc": "参与者 agent 标识（群聊：参与者名单 / 发言者 / 参与者状态；SUBCHAT-3 阶段 E，群聊方案 §10 C2/C3）" },
     "agents": { "type": "array", "desc": "智能体清单" },
     "answers": { "type": "array", "desc": "ask_user 回答集合（🗑 旧目标态字段；实现已改扁平 answer）" },
+    "action": { "type": "string", "desc": "动作标识（如 session-inbox-changed 的 added/promoted/reverted/discarded/consumed）" },
     "answer": { "type": "string", "desc": "ask_user 回答（单选=选中值或自定义文本；多选=以「、」拼接）" },
     "answered": { "type": "bool", "desc": "该题是否已作答（续答回显）" },
     "custom": { "type": "any", "desc": "自定义答案文本（ask-user-reply，string）或是否允许自定义（session-ask，bool）" },
@@ -104,6 +105,7 @@
     "data_dir": { "type": "string", "desc": "数据根目录" },
     "deleted": { "type": "int", "desc": "删除条数" },
     "deleted_at": { "type": "string", "desc": "删除时间" },
+    "default_dir": { "type": "string", "desc": "默认工作区目录（内置 workspace；gui.recent.list 用到时仅作菜单末尾展示，不写入最近列表）" },
     "description": { "type": "string", "desc": "描述" },
     "dest_dir": { "type": "string", "desc": "目标目录" },
     "dict_dir": { "type": "string", "desc": "vfts 系统级词典目录" },
@@ -139,6 +141,7 @@
     "hit": { "type": "string", "desc": "窗口边缘命中区（gui.window.resize：left/right/top/bottom/topleft/topright/bottomleft/bottomright）" },
     "hot": { "type": "bool", "desc": "热加载" },
     "inbox_id": { "type": "string", "desc": "inbox 项标识（同 id 幂等）" },
+    "insert": { "type": "bool", "desc": "插话意向（llm-inbox-add：true = 登记插话，可插入相位时批量插入当前轮；缺省 = 排队下一轮）" },
     "id": { "type": "string", "desc": "标识" },
     "idempotency_key": { "type": "string", "desc": "幂等键（inbox 消费去重）" },
     "ids": { "type": "array", "desc": "标识集合" },
@@ -343,7 +346,7 @@
     "planned": [
       {
         "family": "plugin-*",
-        "topics": ["plugin-list", "plugin-registered", "plugin-unregistered", "plugin-status", "plugin-set-enabled", "plugin-command", "plugin-config-get", "plugin-config-set", "plugin-config-changed", "plugin-call", "plugin-ui-event"],
+        "topics": ["plugin-list", "plugin-registered", "plugin-unregistered", "plugin-status", "plugin-set-enabled", "plugin-command", "plugin-config-get", "plugin-config-set", "plugin-config-changed", "plugin-call", "plugin-event"],
         "source": "docs/plugin-platform/插件与MCP统一设计方案.md §10.2 · docs/spec/40-roadmap/49-待实现项.md PLUGIN-1",
         "refs": ["docs/spec/20-modules/28-plugins.md"],
         "status": "已实现（PLUGIN-1，2026-10-23）",
@@ -424,12 +427,16 @@
       "topic": "gui.window.open-chat",
       "face": "gui",
       "direction": "client->gui",
-      "payload": { "session_id": { "type": "string", "required": true } },
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false }
+      },
       "result": {
         "ok": { "type": "bool", "required": true },
         "window_id": { "type": "string", "required": false },
         "activated": { "type": "bool", "required": false }
-      }
+      },
+      "notes": "dialog_id 可选（G-105 · 2026-11-03）：带 → 宿主跳过 session→dialog 反查、直接以该 dialog 建/激活窗口（窗口 URL 追加 dialog-id 查询串，前端 chat 窗口据此直连该 dialog）；不带 → 行为完全不变（前端既有反查路径，向后兼容）。服务 crontab 等所属 dialog 不进顶层会话列表的会话。"
     },
     {
       "topic": "gui.window.list",
@@ -497,7 +504,10 @@
       "face": "gui",
       "direction": "client->gui",
       "payload": {},
-      "result": { "dirs": { "type": "array", "required": true } }
+      "result": {
+        "dirs": { "type": "array", "required": true },
+        "default_dir": { "type": "string", "required": false }
+      }
     },
     {
       "topic": "gui.recent.remove",
@@ -1433,13 +1443,15 @@
         "purpose": { "type": "string", "required": false },
         "goal": { "type": "string", "required": false },
         "playbook": { "type": "string", "required": false },
-        "convergence": { "type": "string", "required": false }
+        "convergence": { "type": "string", "required": false },
+        "title": { "type": "string", "required": false },
+        "origin": { "type": "string", "required": false }
       },
       "result": {
         "ok": { "type": "bool", "required": true },
         "dialog_id": { "type": "string", "required": false }
       },
-      "notes": "幂等建会话（已存在不覆盖）。`kind`/`lifecycle`/`agent`/`scenario_id`/`llm`/`purpose`（单聊方案 §3.2/§5.4）与 `goal`/`playbook`/`convergence`（群聊方案 §18.2，SUBCHAT-3 阶段 F）均为**可选**：**仅非空才写键**（普通会话行形状零变化）。注：server 侧建子聊天/群聊经**进程内门面**直调（不经本消息），本处仅登记消息面 payload 形状。P3-4c（2026-10-24）：一树一库生效时根会话可缺 `dialog_id` → 确定性建对话并**回带**；旧布局不写键。"
+      "notes": "幂等建会话（已存在不覆盖）。`kind`/`lifecycle`/`agent`/`scenario_id`/`llm`/`purpose`（单聊方案 §3.2/§5.4）与 `goal`/`playbook`/`convergence`（群聊方案 §18.2，SUBCHAT-3 阶段 F）均为**可选**：**仅非空才写键**（普通会话行形状零变化）。注：server 侧建子聊天/群聊经**进程内门面**直调（不经本消息），本处仅登记消息面 payload 形状。P3-4c（2026-10-24）：一树一库生效时根会话可缺 `dialog_id` → 确定性建对话并**回带**；旧布局不写键。P4（2026-11-03，C11）：只增 `title`（会话标题；根会话自举时同时作为新建 `dialogs.title`）与 `origin`（执行主体，`scheduler` = 定时任务，不冒充用户）；定时任务专用 `kind` = `crontab`（根会话）/ `crontab_task`（每任务子会话）。"
     },
     {
       "topic": "data-session-ensure-turn",
@@ -2010,14 +2022,16 @@
         "think": { "type": "any", "required": false },
         "effort": { "type": "any", "required": false },
         "scenario_id": { "type": "string", "required": false },
-        "idempotency_key": { "type": "string", "required": false }
+        "idempotency_key": { "type": "string", "required": false },
+        "source": { "type": "string", "required": false },
+        "insert": { "type": "bool", "required": false }
       },
       "result": {
         "ok": { "type": "bool", "required": true },
         "id": { "type": "string", "required": true },
         "type": { "type": "string", "required": true }
       },
-      "notes": "**INBOX（2026-10-17）新增**：中途插话/等下一轮的统一发送入口。服务端按当前 phase 分类：`toolPending`/`awaitJoin` → `insert`（立即插入并消费）；`streaming`/无运行轮 → `next_turn`（等本轮结束或重启后「继续」）。见 `docs/agent-chat/中途插话设计方案.md` §3.3 / §5.1.1。"
+      "notes": "**INBOX（2026-10-17）新增**；**2026-11-01 语义调整**：统一发送入口，**不再按相位自动插话**—— `insert=true`（用户显式「插话」）→ 登记插话意向（`type=insert` pending），处于可插入相位（`toolPending`/`awaitJoin`）时**该会话全部意向项一次性批量插入**（DB 逐条落 messages，一次 LLM 请求）；否则保持 pending 等相位。`insert` 缺省/false → `next_turn` 排队等本轮结束。无运行轮 → 立即消费起新一轮。`source`：`mobile` = H5/远程接入（可插话），空 = 桌面。见 `docs/agent-chat/中途插话设计方案.md` §3.3 / §5.1.1。"
     },
     {
       "topic": "llm-inbox-list",
@@ -2052,12 +2066,29 @@
       "busTopic": "inbox-promote",
       "payload": {
         "instance_id": { "type": "string", "required": true },
+        "id": { "type": "string", "required": false },
+        "ids": { "type": "array", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "type": { "type": "string", "required": true }
+      },
+      "notes": "**2026-11-01 扩展**：登记「插话」意向（`next_turn → insert`，pending 保留）。可携带 `id` 或 `ids[]`（多选插话）。处于可插入相位 → 该会话**全部**意向项一次性批量插入；否则保持 pending 等相位。无运行轮 → 起新一轮消费全部 pending（重启后「继续」）。"
+    },
+    {
+      "topic": "llm-inbox-revert",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "inbox-revert",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
         "id": { "type": "string", "required": true }
       },
       "result": {
         "ok": { "type": "bool", "required": true },
         "type": { "type": "string", "required": true }
-      }
+      },
+      "notes": "**2026-11-01 新增**：取消插话意向（`insert → next_turn`，仍 pending）。用于「插话」点击后的撤销（未真正插入时有效）。"
     },
     {
       "topic": "llm-cancel",
@@ -2292,20 +2323,6 @@
       }
     },
     {
-      "topic": "session-compress",
-      "face": "server",
-      "direction": "server->client",
-      "event": {
-        "instance_id": { "type": "string", "required": true },
-        "session": { "type": "string", "required": true },
-        "last_turn": { "type": "string", "required": true },
-        "snapshot_turn": { "type": "string", "required": true },
-        "dialog_id": { "type": "string", "required": false },
-        "max_context_token": { "type": "int", "required": false },
-        "max_output_token": { "type": "int", "required": false }
-      }
-    },
-    {
       "topic": "session-ask",
       "face": "server",
       "direction": "server->client",
@@ -2337,6 +2354,18 @@
       }
     },
     {
+      "topic": "session-inbox-changed",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "action": { "type": "string", "required": true },
+        "ids": { "type": "array", "required": false }
+      },
+      "notes": "**2026-11-01 新增**：inbox 变更广播（桌面 / H5 两端实时刷新全量列表）。`action` = added（新增排队/插话意向）/ promoted（登记插话意向）/ reverted（取消意向）/ discarded（删除或撤回）/ consumed（被消费落 messages）。前端收到后按 `session` 重拉 `llm-inbox-list`。"
+    },
+    {
       "topic": "session-new",
       "face": "server",
       "direction": "server->client",
@@ -2359,6 +2388,14 @@
         "purpose": { "type": "string", "required": false }
       },
       "notes": "单聊 §5.2 / §10 Q1：instance_id = 发起该子聊天的窗口实例（父窗口）→ 桥按精确相等过滤天然投给它；purpose = gateway 注入的 tool_call_display_name（§5.4），缺省不带。"
+    },
+    {
+      "topic": "session-running-list",
+      "face": "server",
+      "direction": "client->server",
+      "payload": {},
+      "result": { "list": { "type": "array", "required": true } },
+      "notes": "**2026-11-03 新增**：当前**在跑轮次的会话清单**（只读内存快照，读 server `busy` 注册表，**不落库**）。list 每项 = `{session_id, turn, instance_id}`（本进程全部窗口；前端按自己的会话列表过滤）。供会话列表做运行中标识：窗格打开时拉一次 + 低频轮询对齐，`session-turn-start` / `session-complete` 可作即时增量。主题为无点分单段 kebab（桥 `frontMethodSubjects` 同名白名单放行）。"
     },
     {
       "topic": "subchat-list",
@@ -2883,6 +2920,37 @@
     },
 
     {
+      "topic": "vfts.session.query",
+      "face": "vfts",
+      "direction": "client->plugin",
+      "notes": "会话内查找：查会话正文索引（仅主会话 user/assistant 文本），hits 按 ts 升序。2026-11-01 SESSION-FTS 新增。",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "session_id": { "type": "string", "required": true },
+        "query": { "type": "string", "required": true },
+        "limit": { "type": "int", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "results": { "type": "array", "required": false },
+        "reason": { "type": "string", "required": false },
+        "error": { "type": "string", "required": false }
+      }
+    },
+    {
+      "topic": "vfts.session.reindex",
+      "face": "vfts",
+      "direction": "client->plugin",
+      "notes": "重建当前项目全部会话索引（后台执行，立即回执 started）。2026-11-01 SESSION-FTS 新增。",
+      "payload": {
+        "instance_id": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "started": { "type": "bool", "required": true }
+      }
+    },
+    {
       "topic": "project-config-open",
       "face": "frontend-local",
       "direction": "frontend-local",
@@ -2899,6 +2967,188 @@
         "tab": { "type": "string", "required": false }
       },
       "result": {}
+    }
+  ],
+  "udsMethods": [
+    {
+      "method": "plugin/v1/data.kv.get",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（SANDBOX-WRITE-1 P6）",
+      "notes": "插件私有键值读；键空间 = (插件 id, work_dir, user)。user 缺省 = 当前 OS 用户；显式跨用户默认拒绝（auth_required）。不暴露 bbolt 句柄 / 路径（C8/C18）。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "user": { "type": "string", "required": false },
+        "key": { "type": "string", "required": true }
+      },
+      "result": {
+        "found": { "type": "bool", "required": true },
+        "key": { "type": "string", "required": true },
+        "value": { "type": "any", "required": false }
+      }
+    },
+    {
+      "method": "plugin/v1/data.kv.set",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（SANDBOX-WRITE-1 P6；ttl_seconds = G-104，2026-11-03）",
+      "notes": "写键值；key = [A-Za-z0-9._-]{1,64}；value = 任意 JSON，上限 64 KiB（value_too_large，不截断）。ttl_seconds > 0 生效（相对当前时间的存活秒数），缺省 / 0 = 永不过期；负数 → args_invalid。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "user": { "type": "string", "required": false },
+        "key": { "type": "string", "required": true },
+        "value": { "type": "any", "required": true },
+        "ttl_seconds": { "type": "int", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "key": { "type": "string", "required": true },
+        "size": { "type": "int", "required": true },
+        "ttl_seconds": { "type": "int", "required": false }
+      }
+    },
+    {
+      "method": "plugin/v1/data.kv.del",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（SANDBOX-WRITE-1 P6）",
+      "notes": "删键值；不存在 → deleted=false（不报错）。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "user": { "type": "string", "required": false },
+        "key": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "key": { "type": "string", "required": true },
+        "deleted": { "type": "bool", "required": true }
+      }
+    },
+    {
+      "method": "plugin/v1/data.kv.list",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（SANDBOX-WRITE-1 P6）",
+      "notes": "列举键（prefix 过滤；limit 缺省 100 / 上限 1000）。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "user": { "type": "string", "required": false },
+        "prefix": { "type": "string", "required": false },
+        "limit": { "type": "int", "required": false }
+      },
+      "result": {
+        "keys": { "type": "array", "required": true },
+        "count": { "type": "int", "required": true }
+      }
+    },
+    {
+      "method": "plugin/v1/data.kv.del-prefix",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（G-104）",
+      "notes": "前缀批量删除：只作用于当前 (插件 id, work_dir, user) 命名空间；prefix 必填非空（空前缀 → args_invalid，防误删全量）；返回实际删除条数 deleted。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "user": { "type": "string", "required": false },
+        "prefix": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "prefix": { "type": "string", "required": true },
+        "deleted": { "type": "int", "required": true }
+      }
+    },
+    {
+      "method": "plugin/v1/data.bucket.ensure",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（SANDBOX-WRITE-1 P6）",
+      "notes": "建桶（C18：建桶走能力端点，任务/插件不直接开库）；幂等（created=false 表示已存在）；新建必写审计。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "user": { "type": "string", "required": false },
+        "name": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "bucket": { "type": "object", "required": true },
+        "created": { "type": "bool", "required": true }
+      }
+    },
+    {
+      "method": "plugin/v1/data.bucket.list",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（SANDBOX-WRITE-1 P6）",
+      "notes": "列举桶元数据（name / created_at / created_by；不含路径 / 句柄）。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "user": { "type": "string", "required": false }
+      },
+      "result": {
+        "buckets": { "type": "array", "required": true },
+        "count": { "type": "int", "required": true }
+      }
+    },
+    {
+      "method": "plugin/v1/data.bucket.query",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（G-104）",
+      "notes": "桶内查询（只读）：桶 = <桶目录>/records.jsonl（一行一条 {id, key?, value, created_at?}，追加写）。items 按追加顺序返回；total = 命中 prefix 的总条数（分页前）；prefix 匹配 key（空则 id）；limit 缺省 50 / 上限 500，offset 负数按 0；桶不存在 → not_found；不写审计（跨用户除外）。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "user": { "type": "string", "required": false },
+        "name": { "type": "string", "required": true },
+        "prefix": { "type": "string", "required": false },
+        "limit": { "type": "int", "required": false },
+        "offset": { "type": "int", "required": false }
+      },
+      "result": {
+        "items": { "type": "array", "required": true },
+        "total": { "type": "int", "required": true }
+      }
+    },
+    {
+      "method": "plugin/v1/prj.users.list",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（SANDBOX-WRITE-1 P6）",
+      "notes": "某 work_dir 有哪些用户（C16）：只返回 user 标识与基础元数据（只 stat / 数文件，不打开库、不读会话内容）；每次调用写审计。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true }
+      },
+      "result": {
+        "work_dir": { "type": "string", "required": true },
+        "users": { "type": "array", "required": true },
+        "count": { "type": "int", "required": true }
+      }
+    },
+    {
+      "method": "plugin/v1/session.export",
+      "face": "plugin-bridge",
+      "transport": "uds",
+      "direction": "plugin->host",
+      "since": "2026-11-03（SANDBOX-WRITE-1 P6；G-103 导出已实施同日）",
+      "notes": "会话只读导出（G-103）：JSON 内联返回（不落文件），导出体含 session_id / dialog_id / exported_at / session / turns（各自嵌套 messages）；session_id 必填；user 缺省 = 当前 OS 用户，显式跨用户按 G-102 矩阵（仅历史记录读取类）放行 + 审计；会话不存在 → not_found。",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "user": { "type": "string", "required": false },
+        "session_id": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "export": { "type": "any", "required": true }
+      }
     }
   ]
 }

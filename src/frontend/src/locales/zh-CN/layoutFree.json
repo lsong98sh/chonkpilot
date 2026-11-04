@@ -18,11 +18,13 @@
     "statusMemory": "记忆提取详情",
     "statusCompress": "上下文压缩详情",
     "langSwitcher": "语言切换",
+    "ckStore": "CK Store",
     "layoutProfiles": "布局",
     "dslStepsNoJob": "未指定作业（jobId），请在区域设置里配置参数"
   },
   "container": {
     "viewMissing": "该 view 暂未实现（{key}）",
+    "viewStarting": "插件视图启动中…（{key}）",
     "emptyRegion": "空白区域",
     "emptyRegionHint": "在「内容设置 → 布局编辑」里为该区域选择 view，或改为 tab 容器",
     "leafToolbarTitle": "该区域挂载了自定义工具栏",
@@ -123,6 +125,13 @@
     "notReadyTimeoutHint": "页面加载超时，插件可能尚未就绪。",
     "notReadyErrorHint": "页面加载失败，插件可能尚未就绪。",
     "notReadyStatus": "当前状态：{status}",
+    "notInstalledHint": "没有找到该插件（未安装或已被移除）。",
+    "statusMissing": "未安装",
+    "statusStarting": "启动中",
+    "statusRunning": "运行中",
+    "statusError": "启动失败",
+    "statusStopped": "已停止",
+    "statusDisabled": "已禁用",
     "autoRetryExhausted": "自动重试已达 {n} 次，可点击「重试」手动再试。",
     "retry": "重试"
   }

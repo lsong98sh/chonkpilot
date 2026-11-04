@@ -19,6 +19,12 @@ func TestIsLocalRuntimeKey(t *testing.T) {
 		{"opened-files", true},
 		{"history.status.s-root", true},
 		{"history.timeline.s-root", true},
+		// 插件 prjusr 层配置（G-82①）：`plugins.<id>.prjusr.<field>` 落 prjusr。
+		{"plugins.codegraph.prjusr.exts", true},
+		{"plugins.codegraph.prjusr.skip-dirs", true},
+		// 插件 prj 层配置（团队共享）仍落 prj。
+		{"plugins.codegraph.exts", false},
+		{"plugins.codegraph.vfts.encoding", false},
 		// 团队共享配置仍落 prj（不得被前缀误伤）。
 		{"memory.enabled", false},
 		{"memory.min-turn-tokens", false},

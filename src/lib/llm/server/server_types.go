@@ -62,6 +62,11 @@ type Options struct {
 	// PRODSIM-1：单产物只有 desktop；本地认证域（AuthDBPath / UserDataRoot / AllowRegister /
 	// ProjectRoots）已整体删除（认证将来统一到 registry）。
 	Form string
+
+	// InstanceManager 是**共用实例视图**（可选；nil = 本包自建 `instance.New(bus)`）。
+	// P5 步骤 1（SANDBOX-WRITE-1 C15）：入口装配器把**同一份**视图注入 workspace（工作区管理器），
+	// 使 `instance-register/exit` 的投影全进程只有一份（不再各自登记）。
+	InstanceManager *instance.Manager
 }
 
 // Server 是 LLM 会话服务（调度器）实例。
@@ -92,14 +97,6 @@ type Server struct {
 	mcpCfg    *mcpms.Config   // 内嵌 mcp-server 执行配置（instance-register 后注入 usr/prj 配置）
 	stack     *assembly.Stack // 入口装配器产物（RB-5 L5：能力源 + 执行配置 + gateway 的持有者）
 	gw        gwRuntime       // 内嵌 gateway（RB-5 L1：窄接口，不持具体类型；nil = DisableMCP）
-	// coreRuntimeSink（2026-10-19）：core-mcp-server 的执行配置推送出口（nil = 未启用 core）。
-	// 在 usr/prj 执行配置热生效后调用，载荷 = mcpms.Config 的 RuntimeConfig 快照。
-	coreRuntimeSink func(mcpms.RuntimeConfig)
-	// toolExecMu / toolExec（2026-10-19）：core-mcp-server 内部执行面（插件委托执行）。
-	// 由宿主在 core 就绪后注入；nil = 插件用本地引擎（CLI / core 不可用）。
-	toolExecMu sync.RWMutex
-	toolExec   hook.ToolExec
-
 	mu       sync.Mutex
 	filterMu sync.RWMutex
 	filters  *pluginbridge.FilterChain
@@ -125,6 +122,10 @@ type Server struct {
 	inboxIndex    map[string]facade.InboxItem
 	inboxPending  map[string]map[string]string // session_id → (inbox_id → type)：仅 pending 项
 	inboxTerminal []string                     // 终态项 id 的 FIFO（上限 inboxTerminalKeep，超出淘汰最旧）
+	// inboxQueued：已投递到某运行轮 `inboxCh`、等引擎消费的插话项（id → true）。
+	// 批量插话（2026-11-01）：相位满足时把该会话全部 pending insert 一次性投递；本表防重复投递
+	// （消费 / 撤回 / 相位退回时摘除）。与 inboxIndex 同锁（inboxMu）。
+	inboxQueued map[string]bool
 	// taskTurnIndex：task_id → 等待该网关任务的运行 turn（键 = instKey(instance, task_id)）。
 	// onGatewayTaskDone 据此 O(1) 定位等待 turn，免去按 s.mu 全表扫描 s.turns + 逐 turn 加锁探测
 	// pending。与 tc.frames 的 pending 同步维护（登记 pending 时写入 / 消费回执 / 轮次收尾时摘除）。
@@ -171,6 +172,11 @@ type Server struct {
 	mcpReconcileMu sync.Mutex
 	mcpMu          sync.Mutex
 	mcpApplied     map[string]mcpgateway.ServerEntry
+
+	// sandboxRules 是 gateway 可写白名单快照（C3：经 `_meta.chonkpilot.sandbox` 下发给内置插件）。
+	// 在每次 applyGatewaySandboxDirs（启动 / 实例注册 / prj-security 变更）时刷新。
+	sandboxMu    sync.RWMutex
+	sandboxRules []mcpgateway.SandboxRule
 
 	// noticeSeen 是插件失败提示判重表（同轮同类只提示一次，见 pluginnotice.go）。
 	noticeSeen *noticeDedup

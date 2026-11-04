@@ -29,7 +29,7 @@ class TestError(AssertionError):
 # 背景（已知抖动，用户核准加重试）：满负载批量跑时 WebView2 UI 线程偶发 starvation →
 # 驱动指令（`/eval` 及其之上的 `/click` `/input` `/text` `/html` `/exists` `/console`；服务端
 # 统一走 `doEval`→`EvalWithResult`，见 `src/lib/gui/testserver.go:226`）派发的 ExecuteScript
-# 在预算内拿不到调度 → 抛 `ExecuteScript timed out`（`src/lib/go-webview2/webview.go:645`：
+# 在预算内拿不到调度 → 抛 `ExecuteScript timed out`（`chonkpilot-webview2/webview.go:675`：
 # 派发到 UI 线程 + 等回调，超时即报错）→ 断言脚崩溃（批内偶发红、单跑全绿）。
 # 就绪探测早有 `harness.wait_probe` 容忍瞬时错误（[42 §2 (148)]），**断言期**的驱动调用此前没有。
 #

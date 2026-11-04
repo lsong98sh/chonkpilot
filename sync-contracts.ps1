@@ -32,7 +32,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 # 发行目标 -> capability 目录
 $allTargets = [ordered]@{
     "other" = Join-Path $root "dist\other\capability"
-    "desktop" = Join-Path $root "dist\desktop\capability"
+    "desktop" = Join-Path $root "dist\capability"
 }
 $targetNames = @()
 foreach ($d in $Dist) {

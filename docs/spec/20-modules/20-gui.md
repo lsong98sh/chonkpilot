@@ -1,9 +1,9 @@
 # 20 · src/lib/gui（宿主实现）+ src/desktop（唯一宿主壳）
 
-> **唯一宿主 = `src/desktop`（`FormDesktop`）**，embed 落点 = `src/desktop/frontend/dist`。宿主含：**日志窗口**（隐藏、`HideOnClose`、不注册 instance）+ **项目主窗口映射表**（`OpenProject` / `Projects` / `ActivateProject`）+ 托盘（`src/lib/core/tray`）+ `/api/log/tail`。
+> **唯一宿主 = `src/desktop`（`FormDesktop`）**，embed 落点 = `src/desktop/frontend/dist`。宿主含：**日志窗口**（隐藏、`HideOnClose`、不注册 instance）+ **项目主窗口映射表**（`OpenProject` / `Projects` / `ActivateProject`）+ 托盘（`src/lib/core/tray`）+ `/api/log/tail`（`source` = `host` | `plugin:<id>`）+ `/api/log/sources`（日志源列表：宿主 + 已有 `plugin.log` 的插件）；日志窗口支持**日志源切换 + 行级关键字过滤 + 按项目过滤**（PLUGIN-LOG-1：行内 `wd=<workdir>` 标签，下拉从当前日志文本收集，纯前端过滤；宿主按该标签把插件日志镜像落盘到 `<workDir>/.chonkpilot/users/<OS 用户名>/logs/plugins/<id>.log`，见 [28 §5.1](28-plugins.md)）。
 > 状态：✅ 与代码一致
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [11-MQ与消息](../10-architecture/11-MQ与消息.md) · [23-filesys](23-filesys.md)
-> 代码目录：**客户端能力** = `src/lib/gui/`（窗口工厂 / `bridge/` / registry / testserver / 日志 + `internal/` + `models/`）；**单体装配宿主** = `src/lib/gui/host/`（内嵌 server→persist→filesys / 插件 / 桥接线；入口 `host.Main(distFS, Options{Form})`，依赖方向 `host → gui` **单向**）。**壳** = `src/desktop/`（只嵌前端 dist + 传形态 + 调 `host.Main`），`frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。
+> 代码目录：**客户端能力** = `src/lib/gui/`（窗口工厂 / `bridge/` / registry / testserver / 日志 + `internal/` + `models/`）；**单体装配宿主** = `src/lib/gui/host/`（内嵌 server→persist→filesys / 插件 / 桥接线；入口 `host.Main(distFS, Options{Form}, activations)`，依赖方向 `host → gui` **单向**；`activations` = 第二实例激活命令通道，见 [49 §2.22.6](../40-roadmap/49-待实现项.md)）。**壳** = `src/desktop/`（只嵌前端 dist + 传形态 + 单例判定与激活命令收发 + 调 `host.Main`），`frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。
 
 ---
 
@@ -181,8 +181,8 @@
 
 ## 7. 依赖
 
-- **上游**：`src/lib/core`(mq/paths) · `src/lib/llm`(server) · `src/lib/filesys` · `chonkpilot-plugin-framework`（宿主运行时 `host/*`）· `jchv/go-webview2`（本地 `src/lib/go-webview2`）。
-- **indirect**：`src/lib/data` · `chonkpilot-mcp-gateway`（独立仓） · `src/lib/mcp-server`。
+- **上游**：`src/lib/core`(mq/paths) · `src/lib/llm`(server) · `src/lib/filesys` · `chonkpilot-framework/plugin`（宿主运行时 `host/*`）· `jchv/go-webview2`（本地 `src/lib/go-webview2`）。
+- **indirect**：`src/lib/data` · `chonkpilot-agent/gateway`（独立仓） · `src/lib/mcp-server`。
 - **下游**：无（终端应用）。
 
 ---
@@ -194,8 +194,8 @@
 | 无 HTTP server | WebView2 `WebResourceRequested` 虚拟源拦截 | 免端口、免监听、资源不落盘 |
 | 前端资源 no-cache | 强制 `no-cache, no-store, must-revalidate` | WebView2 会持久缓存旧页面 |
 | Frameless 保留 WS_THICKFRAME | 无原生标题栏；`WS_THICKFRAME` **只保留最大化 / 贴靠等原生行为** | frameless 下 WebView2 子窗铺满客户区 → `WM_NCHITTEST` 恒 `HTCLIENT`，**系统层无边缘 resize 命中区**（WIN-1 / G-59） |
-| 窗口 resize（frameless 主窗口） | 前端边缘命中 → `gui.window.resize{hit}` → 宿主 `StartResize(HT*)` 进入系统原生 resize 模态循环 | 系统无命中区，只能由前端补命中：`components/shell/WindowResizeHandles.vue` 渲染 8 条透明命中条（4 边 6px / 4 角 12px，`-webkit-app-region: no-drag`），`mousedown` 发消息；`guiDo` 把方位映射为 `HTLEFT(10)…HTBOTTOMRIGHT(17)` 后调 `webview2.WindowResizer.StartResize`（`src/lib/gui/bridge/guimsg.go` / `window.go`；设计见同级仓 `chonkpilot-webview2` 的 `FORK.md` P4）。**仅 frameless 装配**；对话窗口（原生标题栏/边框）不装配 → 明确失败。 |
-| 窗口移动（frameless 主窗口） | 顶栏非交互区 `mousedown` → 位移 >4px 后发 `gui.window.resize{hit:'caption'}` → 宿主 `WM_NCLBUTTONDOWN(HTCAPTION)` 进入系统移动模态循环 | **WebView2 `app-region` 在本项目自绘 frameless 窗口上实测不触发**（`ICoreWebView2Settings9.IsNonClientRegionSupportEnabled=true` 已生效仍无拖拽区）→ 与 resize 同链路显式进入系统循环（`ChonkTopBar.vue` 阈值判定保留单击/双击；`guimsg.go` 的 `caption → 2(HTCAPTION)`）。CSS 仍保留 `app-region: drag/no-drag` 仅作语义标记。**2026-10-17 修** |
+| 窗口 resize（frameless 主窗口） | 前端边缘命中 → `gui.window.resize{hit}` → 宿主 `StartResize(HT*)` 进入系统原生 resize 模态循环 | 系统无命中区，只能由前端补命中：`components/shell/WindowResizeHandles.vue` 渲染 8 条透明命中条（4 边 6px / 4 角 12px，`-webkit-app-region: no-drag`），`mousedown` 发消息；`guiDo` 把方位映射为 `HTLEFT(10)…HTBOTTOMRIGHT(17)` 后调 `webview2.WindowResizer.StartResize`（`src/lib/gui/bridge/guimsg.go` / `window.go`；设计见同级仓 `chonkpilot-webview2` 的 `FORK.md` P4）。**仅 frameless 装配**；对话窗口（原生标题栏/边框）不装配 → 明确失败。**🆕 最大化时禁用（2026-11-04）**：宿主 `StartResize` 包装层对最大化窗口直接忽略（权威守卫）；前端命中发送与 resize 光标同步关闭（`useWindowMaximized` composable，WindowResizeHandles / ChonkTopBar / WindowControls 共用）。 |
+| 窗口移动（frameless 主窗口） | 顶栏非交互区 `mousedown` → 位移 >4px 后发 `gui.window.resize{hit:'caption'}` → 宿主 `WM_NCLBUTTONDOWN(HTCAPTION)` 进入系统移动模态循环 | **WebView2 `app-region` 在本项目自绘 frameless 窗口上实测不触发**（`ICoreWebView2Settings9.IsNonClientRegionSupportEnabled=true` 已生效仍无拖拽区）→ 与 resize 同链路显式进入系统循环（`ChonkTopBar.vue` 阈值判定保留单击/双击；`guimsg.go` 的 `caption → 2(HTCAPTION)`）。CSS 仍保留 `app-region: drag/no-drag` 仅作语义标记。**2026-10-17 修**；**🆕 最大化时禁用（2026-11-04，同上宿主权威守卫 + 前端 `onDragMove` 拦截）** |
 | `--test-port` 仅 127.0.0.1 | 外部脚本驱动端点 | 测试专用，见 [52-test-port驱动](../50-testing/52-test-port驱动.md) |
 
 ---
@@ -203,7 +203,8 @@
 ## 9. 场景与边界
 
 - **窗口恢复归一化**：`normalizeWindowRect`（主显示器工作区 clamp、完全屏外居中、保证标题栏 ≥80px 可见）。
-- **最大化同步**：`window-maximized-changed` 事件 → 前端切图标。
+- **窗口几何落盘权威校正（2026-11-04）**：`gui.ui.save{window}` 落盘几何/最大化标记一律以宿主 `GetWindowPlacement` 为准（`windowNormalPlacement` → `windowSaveEntries`）——最大化时 `NormalPosition` = 最大化前**还原边界**（禁把最大化尺寸当默认启动尺寸）；`maximized` 精确（`ShowCmd==SW_SHOWMAXIMIZED`）；最小化按 `maximized=false` 记录（退出改正常）。启动恢复（`applyWindowPlacement`）：`maximized=true → SW_SHOWMAXIMIZED`（重启恢复最大化）、否则恒 `SW_RESTORE`（启动不最小化）。
+- **最大化同步**：`window-maximized-changed` 事件 → 前端切图标；最大化状态由 `useWindowMaximized` composable 统一跟踪（初始查询 + resize 兜底 + 事件同步），消费方 = WindowControls / WindowResizeHandles / ChonkTopBar。
 - **`/show` 路径越界防护**：`fileserver.withinDir`（Windows 大小写不敏感），`DataDirs` 为额外放行根。
 - **防环**：本实例刚发布的主题（1s 窗口）不再回发前端。
 - **多窗口（🔵 待实施）**：窗口 ↔ `instance` **1:1**（窗 = 视口，instance = 运行态+消息归属+数据根绑定）；**`instance` 不做业务隔离**（同 `work_dir` 多 instance 共用同一 prjusr 库 → 会话列表/历史**共享**）。**关闭语义**：关任一窗口仅销毁该窗口 + 发该实例 `instance-exit`；**主窗口关闭 = 退出本进程**（其余窗口一并关闭）。**几何**：主窗口 `window.*`/`layout.*`（prjusr）；**对话窗口不持久化几何**（每次默认位置）。**不变量**：进程内 instance 数 = 窗口数（非「1 进程 1 instance」），见 [20-实例隔离与后端分离](../10-architecture/20-实例隔离与后端分离.md)。
@@ -350,7 +351,7 @@
 
 | 元素 | 规则 / 取值 | light | dark | nord | 阈值 | 改前 |
 |---|---|---|---|---|---|---|
-| 弱化文字 `--text-muted` | 对 `--bg-primary`（token 值：light `#6b7280` / dark `#a6adc8` / nord `#93a8c8`） | **4.59** | **7.37** | **5.16** | ≥4.5 | light `#6c757d` 4.45 · dark `#6c7086` 3.36 · nord `#81a1c1` 4.64（dark 不可读、nord 余量过小） |
+| 弱化文字 `--text-muted` | 对 `--bg-primary`（token 值：light `#6b7280` / dark `#a6adc8` / nord `#a0b5d4`） | **4.59** | **7.37** | **5.98** | ≥4.5 | light `#6c757d` 4.45 · dark `#6c7086` 3.36 · nord `#81a1c1` 4.64（dark 不可读、nord 余量过小）；**2026-11-01**：nord 状态栏面 `--bg-secondary #3b4252` 上原 `#93a8c8` 仅 4.16 → 提到 `#a0b5d4`（该面 4.82） |
 | inline code | `--text-primary` on `--bg-tertiary` | **13.01** | **12.97** | **7.49** | ≥4.5 | 原 `color: black` + 浅色底（dark/nord 不可读） |
 | 工具卡头 `.section-header` | `--text-secondary` on `--bg-tertiary` | **6.90** | **8.42** | **6.39** | ≥4.5 | 原硬编码浅色字（`#b8860b`/`#1565c0`/`#2e7d32`/`#7b1fa2`）+ 浅色底 |
 | 状态徽标 `.status-badge` | `--text-primary` on `color-mix(--语义 22%, --bg-tertiary)`（5 类徽标 × 3 主题，取最低） | **9.63** | **7.18** | **4.83** | ≥4.5 | 原硬编码彩色字（`#e65100`/`#2e7d32`/`#c62828`…） |
@@ -596,7 +597,7 @@
 
 | 层 | 落点 | 职责 |
 |----|------|------|
-| 机制层（子系统） | 平台基座 `chonkpilot-framework/host/web/src/layout-free/`（TOPO-1；主仓经 `@ckfw/layout-free/**` 引用） | 复制并入的**纯前端子系统**（组件 `Lf*` 命名域 + 80 个 `lf-*` 主题）；**不认识宿主** —— mq / dialog / icon / split / 视图组件全部经 `deps.js` **注入**（去重，§3.10）。门面 = `engine.js#createLayoutEngine`（`install(app)` / `state` / `actions` / `renderLayout` / `renderBar` / `editing` / `selectedNodeId` / `validate`） |
+| 机制层（子系统） | 平台基座 `chonkpilot-framework/host/web/src/layout-free/`（TOPO-1；主仓经 `@ckfw/layout-free/**` 引用） | 复制并入的**纯前端子系统**（组件 `Lf*` 命名域；内部交互一律直调 `stores/actions.js`，**无 `lf-*` 主题**）；**不认识宿主** —— mq / dialog / icon / split / 视图组件全部经 `deps.js` **注入**（去重，§3.10）。门面 = `engine.js#createLayoutEngine`（`install(app)` / `state` / `actions` / `renderLayout` / `renderBar` / `editing` / `selectedNodeId` / `validate`） |
 | 适配层 | 主仓 `src/frontend/src/layout/` + 平台基座 `chonkpilot-framework/host/web/src/layout/`（TOPO-1）：`views.registry.js`（区块注册表；**唯一 view 注册 API** `registerViews(entries, source)`，viewKey ↔ 组件实例/module 由此关联）/ `openView.js`（按注册表 `host` 声明分发打开，**无独立翻译表**）/ `persist.js`（`layout.free` ↔ `gui.ui.save`·`gui.init-data`）/ `theme.css` / `i18n.js` / `bar-views/`（栏视图 + STB-1 长任务条目；长任务详情页组件在 `src/frontend/src/views/status/`）/ `ChonkLayout.vue`·`ChonkTopBar.vue`·`ChonkStatusBar.vue`·`barActions.js`；`layout/index.js#setupLayoutEngine(app)` 在 `main.js` 的 pinia / mqPlugin **之后**、`mount` 之前调用 |
 | 状态层 | `src/frontend/src/stores/selection.js` | **跨 view 共享状态唯一真相源**（Pinia）：`workDir` / `activeFile` / `activeSession` / `activeTask` / `explorerMode` / `activeSelection`；由 `selectionSubscribers.js` **订阅既有主题**写入，各 view 改读 store（见 [17-前端状态与MQ §9](../10-architecture/17-前端状态与MQ.md)） |
 
@@ -605,20 +606,28 @@
 - `views/layout/MainLayout.vue` **双分支**：`freeMode`（**默认 `true`**；`?layout=legacy` 回退）→ `<ChonkLayout>` 渲染 `layout.free` 文档树（顶栏 / 状态栏为条目化 `ChonkTopBar` / `ChonkStatusBar`）；**旧硬编码分支保留、不删除**。
 - **18 类条目 + 默认文档**（`persist.js#defaultLayoutDoc`）：`topToolbar` / `statusbar` / `toolbars` / `drawers`；栏条目 `kind` = `button` / `menu` / `view`；**窗口控件（最小化/最大化/关闭）** 与品牌 / 拖拽区 = 容器外壳**固定件，不进配置**（§4.2）。
 - **view 承载 = 注册表声明（2026-10-30 定稿）**：一个 view 的承载方式由它自己的定义声明（`host: 'layout' | 'bar' | 'dialog' | 'preview'`，插件 view 另有 `containers`），打开逻辑 `openView(viewKey)` **按声明分发**。**禁止**再维护「viewKey → 目标页 / 具体 Vue」的白名单翻译层（原 `layout/commands.js` 的 `PREVIEW_TAB_TARGETS` 及 4 类语法糖归一**已删除**）。长任务详情（`status-memory` / `status-compress`）声明 `host:'preview'`，点击状态条目 → `preview-tab-open{kind}`（跨模块，走 MQ 合法）。
-- **MQ 边界（2026-10-30 定稿）**：**MQ 只用于跨模块 / 跨进程边界**（如状态栏条目 → 预览区页签、前端 → 后端、插件 ↔ 宿主）。**同一前端进程内的组件协作不走 MQ**——用 props / 回调 / store 动作（容器内部页签切换、编辑器草稿、弹层开关等）。机制层 `lf-*` 主题按此原则逐步收敛：本轮只保证**新代码**遵守，既有主题的清退另行立项（[41](../40-roadmap/41-未决项登记.md)）。
-- **布局文档内的命令模型（机制层）**：栏 / 菜单条目可声明 `command`（`open-tabs` / `open-drawer` / `toggle-drawer` / `close-tabs-active` / `publish-mq`），由 `layout-free/utils/commands.js#commandToMq` 转成 `lf-*` 主题执行；机制层不认识宿主主题（**不校验主题存在性**，适配层保证「只用既有主题」）。这是**写在布局文档里的声明式数据**，不属于「viewKey → 具体 Vue」翻译表。
+- **MQ 边界（2026-10-30 定稿；2026-10-31 G-89 全量落地）**：**MQ 只用于跨模块 / 跨进程边界**（如状态栏条目 → 预览区页签、前端 → 后端、插件 ↔ 宿主）。**同一前端进程内的组件协作不走 MQ**——用 props / 回调 / store 动作（容器内部页签切换、编辑器草稿、弹层开关等）。**G-89 完成态（2026-10-31）**：机制层 91 个 `lf-*` 主题**全部清退**（批次 1 = 运行期命令 / 页签操作 20 个；批次 2 = 设计态编辑 / 纯 UI 行为 71 个）→ 统一由 `layout-free/stores/actions.js` 直调 config / edit / runtime store；`layout-free/events/event-names.js` 与 `stores/mqCommands.js` **已删除**（[41 G-89](../40-roadmap/41-未决项登记.md)）。
+- **布局文档内的命令模型（机制层）**：栏 / 菜单条目可声明 `command`（`open-tabs` / `open-drawer` / `toggle-drawer` / `close-tabs-active` / `toggle-area-visible` / `publish-mq`），由 `layout-free/utils/commands.js#runCommand` 执行——**内部命令直调域动作**（G-89），仅 `publish-mq` 仍发布**既有宿主主题**；机制层不认识宿主主题（**不校验主题存在性**，适配层保证「只用既有主题」）。这是**写在布局文档里的声明式数据**，不属于「viewKey → 具体 Vue」翻译表。
 - **栏视图（裁决 2）**：状态栏 / 顶栏的实时 / 条件 / 动态项做成 `kind:'view'` 的 **栏视图条目**（`layout/bar-views/`：`SearchBoxView`·`RecentDirsView`·`ChromeWarnView`·`LogoutView`·`MemoryTokenView`·`QueueStatusView`（legacy 兼容）·`IndexBadgeView`·`MemoryStatusView`·`CompressStatusView`·`LangSwitcherView` + `WindowControls` + **`LayoutProfilesView`（布局档案下拉）**；新建对话框内容 = `LayoutNewDialog`）；**不新增 `valueExpr`/`badgeKey`/`when` 协议**（条件显示由组件自持 `v-if`）。**长任务详情页**（`status-memory` / `status-compress`，STB-1）声明 `host:'preview'`，由状态栏条目的 `openView` 在 preview 功能页打开；索引进度已归插件（PLUGIN-UI-2，`status-index` / `index-badge` 不存在）。
 - **区块保活**：机制层「**全量渲染 + `v-show`**」——显隐 / 切页签**不卸载**组件（会话 / 页签 / 流式状态留在组件内）；仅配置**删除节点**才卸载。
-- **区域显隐（WIN-025，2026-10-21 / UILAYOUT-2）**：节点 `visible`（缺省可见）+ `hideLocked`（不允许直接隐藏，祖先连带不受限）；叶子与容器同权，容器隐藏时子节点 `visible` 原样保留；隐藏用子区 `v-show` 保活，**不参与**尺寸分配与分割条渲染；`LfLayoutSplit` 的 `measure/commit` 只对可见子区计算，并在**隐藏瞬间**把当前占比写回 `sizes[i]`（显示时按快照先占份额）；`validate()` 要求至少一个「有效可见」叶子（自身与所有祖先可见），单例占用继续计入隐藏区域。编辑器入口 = 区域 / 容器设置开关 + 树眼睛 + 右键；运行态入口 = **用户可配置命令**（`publish-mq → lf-area-toggle-visible`，默认不预置按钮）。
+- **区域显隐（WIN-025，2026-10-21 / UILAYOUT-2）**：节点 `visible`（缺省可见）+ `hideLocked`（不允许直接隐藏，祖先连带不受限）；叶子与容器同权，容器隐藏时子节点 `visible` 原样保留；隐藏用子区 `v-show` 保活，**不参与**尺寸分配与分割条渲染；`LfLayoutSplit` 的 `measure/commit` 只对可见子区计算，并在**隐藏瞬间**把当前占比写回 `sizes[i]`（显示时按快照先占份额）；`validate()` 要求至少一个「有效可见」叶子（自身与所有祖先可见），单例占用继续计入隐藏区域。编辑器入口 = 区域 / 容器设置开关 + 树眼睛 + 右键；运行态入口 = **内部命令 `toggle-area-visible`**（`{ nodeId, viewKey? }`，直调 `stores/actions.js#toggleAreaVisible` 写 live 并落盘；默认不预置按钮，G-89 起不再借 `publish-mq` 发内部主题）。
 - **视图池（WIN-027，2026-10-21）**：运行时单例 view 由 `LfViewPool` **各挂载一次**；`LfViewHost` 运行态只渲染槽位并注册 DOM 目标，池用 `<Teleport :to>` 搬 DOM；切换布局 = 槽位变化（实例不销毁），新布局中不存在的 view 落池内「停车场」隐藏保活。切换时做 FLIP 位移 + 淡入（≈200ms，尊重 `prefers-reduced-motion`）。**设计态**：`LfViewHost` **一律渲染骨架**（图标 + 名称），不挂真实组件 —— 消除单例双开。
 - **布局档案（WIN-026，2026-10-21 / UILAYOUT-2）**：`layout.profiles`（JSON 字符串数组 `{id,name,doc,createdAt,updatedAt}`，上限 10 条、名称唯一）+ `layout.activeProfile`（当前档案 id），`layout.free` 仍为当前生效文档；均落 prjusr、经既有 `gui.ui.save` / `gui.init-data`。**种子两套** = `seed:dev`（开发）/ `seed:simple`（简洁，只有一个聊天框），初始化时写入 DB，之后与用户档案**同权**（可改名 / 编辑 / 删除）；「恢复初始布局」按保留 ID 覆盖名称与内容。顶栏 `layout-profiles` 下拉负责列出 / 切换 / 新建（复制自或空白）/ 编辑当前 / 重命名 / 删除 / 恢复初始布局。**保存 ≠ 应用**：编辑非当前档案只写档案，点列表项才切换；编辑当前档案保存即应用 + 更新当前档案。
 - **持久化（§3.9）**：只写 `prjusr` 的 **`layout.*`** 子键（`gui.ui.save`；退出兜底 `sendBeacon('/publish')`）；读取经 `gui.init-data` 的 `layout` 子对象。子键 = **`layout.free`**（当前生效文档）· **`layout.profiles`**（档案数组 JSON 字符串）· **`layout.activeProfile`**（当前档案 id）。**旧 7 字段迁移已随 UILAYOUT-2-A 删除**（`?layout=legacy` / 旧硬编码分支 / 旧尺寸键迁移一并移除，存量旧键不再读取）。消息面**零增删**（[61](../60-reference/61-消息一览.md)）。
+- **顶栏分区与条目（UI-FIX-1，2026-11-02 用户定稿；文档 `DOC_VERSION=7`）**：左区 = 打开 / 最近（箭头）/ 配置（设置菜单，含插件维护）；中区 = 全局搜索；右区 = 场景 / 主题 / 语言 / 会话 / **任务详情** / 布局（**一律图标**，hover 给 tooltip；菜单条目在 `style='icon'` 时不渲染文字与 caret）。窗口控件仍为外壳固定件。`parseFreeDoc` 的 **v7 迁移**把旧文档 `topToolbar.items` 整体替换为新默认条目（保留 `background`/`zoneBackground`）。
+- **「任务详情」= 任务区整块显隐**：默认栏条目命令改为内部命令 `toggle-area-visible{nodeId:'split_left_bottom'}`（容器级显隐，任务树 + 任务详情一起显示/隐藏），不再开右侧抽屉；`toggle-area-visible` 与配置校验均支持**容器节点**。
+- **顶栏三区宽度收敛（UI-FIX-1）**：`LfBarZones` 按容器实测宽等比压缩两侧定宽区（`ResizeObserver`），保证 `#right-extra`（最小化 / 最大化 / 关闭）永不被挤出窗口；持久化键升级为 `layout-free:bar-zones:v2:*`。
+- **输入框最小高度**：会话输入框（`InputBox.vue` 自研 contenteditable）最小高度 = **3 行正文**（`min-height: 70px` = 20px × 3 + 上下内边距 10px），`autoResize()` 同步。
+- **页签 label**：`TabBar` / `LfTabbedContainer` / 通用 `Tabs` 一律 `white-space: nowrap` + `min-width:0` + `text-overflow: ellipsis`（长 label 不换行，超出显示 `…`）。
+- **布局档案下拉**：`LayoutProfilesView` 弹层 **Teleport 到 body**（栏内 view / zone 都是 `overflow:hidden`，原地绝对定位会被裁剪 → 表现为「点击无效」）。
+- **插件状态栏徽标占位**：`PluginPageHost` 以容器查询（`@container (max-height:48px)`）走紧凑态 —— 徽标位（96×20）只显示 10px spinner，不渲染「加载中」文字/占位说明。
+- **记忆沉淀配置迁移（MEMORY-UI-1，2026-11-02）**：`项目配置 → 上下文` 不再承载记忆库 / 类别 / 提示词 / 立即沉淀；这些配置改由 **memory 插件配置页**（配置 → 插件维护 → 记忆沉淀 → 配置，`webui/config.html`）承载，读写仍是既有 `memory.*` prj 键 + `data-memory-*` / prompt 域，**零新增配置键 / 零改形**。上下文页只保留压缩配置与一行迁移提示。
 
 **尺寸口径（G-57）**：配置占比 `sizes`（持久化/权威）+ 运行态像素定尺（渲染）；拖拽只改像素、松手 `commit()` 写回占比；**配置 `sizes` 变化时**（重启回灌 / 编辑器保存）以配置为权威**幂等重量测**，用户拖拽产生的运行态**不被覆盖** —— 判据 = `LfLayoutSplit.vue#knownRatios`（[31 WIN-009/010 明细](../30-function-points/31-窗口与布局.md)）。禁止自触发渲染（[71 §7.3](../70-conventions/71-编程规范.md)）。
 
-**实现约定**：禁 `watch`/`watchEffect`/`$subscribe`（§4.2 / [17 §3](../10-architecture/17-前端状态与MQ.md)）；布局全域交互**只走 mq**（`v-mq`，与宿主指令**同协议**，见 [71 §7.4](../70-conventions/71-编程规范.md)）；弹窗走自研 `DialogShell`；`:style` 数字加 `'px'`。
+**实现约定**：禁 `watch`/`watchEffect`/`$subscribe`（§4.2 / [17 §3](../10-architecture/17-前端状态与MQ.md)）；**同进程组件协作走 props / 回调 / store 动作**，跨模块 / 跨进程边界才走 MQ（`v-mq`，与宿主指令**同协议**，见 [71 §7.4](../70-conventions/71-编程规范.md)）；弹窗走自研 `DialogShell`；`:style` 数字加 `'px'`。
 
-> ⚠️ **消息面（P6⑤）**：80 个 `lf-*` 主题登记在**机制层唯一事实源** `layout-free/events/event-names.js`（键名零前缀、值 `lf-*`）；宿主 `src/frontend/src/events/event-names.js` **不重复登记**（两文件为**不同命名域**，机制层经 `deps.js` 注入 mq，不走宿主主题表）。**是否把 `lf-*` 主题在宿主文件里做字面登记 = 待用户确认清单**（[41 G-58](../40-roadmap/41-未决项登记.md)），登记前**不改契约**。
+> ⚠️ **消息面（P6⑤ / G-89 完成态）**：机制层**不再有自己的 MQ 主题表** —— `layout-free/events/event-names.js` 已删除，内部交互直调 `stores/actions.js`。跨边界仍走宿主主题（`src/frontend/src/events/event-names.js` + framework 分片）。[61](../60-reference/61-消息一览.md) **零变更**。
 
 ### 12.21 错误呈现与可见重试（ERRUX-1 / RETRY-1，🆕 2026-10-17）
 
@@ -662,4 +671,48 @@
 | 未定义兜底 | `Icon.vue` 对未注册 name 渲染 `fallback`（默认 `·`，`opacity .45`，`title="未定义图标：<name>"`）并在 dev 下 `console.warn` 一次 —— **禁止**静默渲染为空白 |
 | 回归防线 | `src/frontend/test/iconRegistry.test.js`：静态扫描全仓 `<Icon\|LfIcon name="…">`、`icon: '…'`、`:name="'…'"`、`LfBarEditor.iconPresets`，任一名字不在 `icons.js` 即失败；并校验无重复键 / `viewBox` 合法 / 继承 `currentColor` |
 | 图标选择器 | `layout-free/components/icon/LfIconPicker.vue` = popup 面板 + 搜索，**每行固定 8 个**（单元格 30px），点击即选并收起；候选清单 = `Object.keys(icons)`（宿主经 `deps.iconNames` 注入），**不得**再内联 `icon-set.js` |
+
+### 12.24 会话列表「运行中」标识（🆕 2026-11-03）
+
+- **展示**：`views/sessions/SessionsPane.vue` 会话行 meta 行（`#id` 左侧）显示「运行中」徽标（小圆点 + `chat.session_running`），仅对有在跑轮次的会话显示。
+- **数据**：`session-running-list`（[61 §4.2](../60-reference/61-消息一览.md)）—— server **只读内存快照**（`busy` 注册表，键 `instKey(instance, session)`），**不落库**；返回 `{list:[{session_id,turn,instance_id}]}`（本进程全部窗口，前端按自己的会话列表过滤）。
+- **刷新**：窗格打开 / `load()` 时拉一次 + 4s 轮询（`RUNNING_POLL_MS`）。**不以** `session-turn-start` / `session-complete` 作唯一来源：二者带 `instance_id`，只投发起窗口 → 主窗口看不到其它对话窗口在跑的会话；轮询兜跨窗口一致性，窗格卸载即停。
+- **口径**：进程重启后运行态本就不保留（启动 `data-session-cleanup-stale` 把遗留 `running` 置 `interrupted`）→ 内存快照即权威。
+
+### 12.25 项目树（PM）门面与边界（SANDBOX-WRITE-1 P5 / C15，🆕 2026-11-03）
+
+> 权威模块文档：[2I-工作区管理](2I-工作区管理.md)（PM 的职责 / 接口 / 生命周期）· [23 §2](../10-architecture/23-工程与部署拓扑.md)（依赖方向）
+
+**四层模型**（PM 只存 ID + 关系 + 状态，不存消息 / 文件内容）：
+
+| 层 | 内容 | 归属 |
+|----|------|------|
+| L1 | `work_dir` + `user` → 数据访问面 | `workspace/layout`（prj 共享 / prjusr 按用户） |
+| L2 | instance(window) → 可见性 / 承载关系 | framework `runtime/instance.Manager`（**单源**，PM 委托） |
+| L3 | dialog → 该实例 / 项目下的对话 | 宿主窗口层 + 数据面 |
+| L4 | session → 对话内的会话（轮次挂此） | llm-server 运行态 + 数据面 |
+
+**门面（`workspace.Manager`，薄）**：`OpenProject / CreateWindow / Hide / Close / CreateDialog /
+CreateSession` → 委托 `ProjectOps` 端口；`Route / Mark` → MQ 分发策略唯一实现。
+
+**边界（硬约束）**：
+1. **PM 不持有窗口句柄**（否则无 GUI 形态跑不了）：窗口动作一律经 `ProjectOps`，GUI 宿主实现 =
+   `src/lib/gui/host/projectops.go`（`OpenProject` 直接复用唯一开窗实现 `openProjectAs`，不写第二套）。
+2. `create*` 是**薄门面**，业务动作仍走窗口工厂 / 既有 MQ。
+3. **实例视图单源**：入口装配器先建 `instance.Manager`，同时注入 `workspace` 与 `llm-server`；
+   PM 的 `Resolve` / `InstanceIDs` / 开闭判定全部读它。
+4. **路由单源**：`mqpolicy` 已收归 `workspace.Router` —— `gui/mqpolicy.WorkDirPolicy` 只做
+   `dispatch.Sink ↔ workspace.Sink` 转换（`SetRouter(app.Workspace.Router())`），规则不再有两份。
+5. **窗口 / 会话动作已全部接线（2026-11-03，[41 G-100](../40-roadmap/41-未决项登记.md) ✅）**：
+   - 框架导出薄动作 `gui.Env.{HideProject,CloseProject,OpenChatWindow,ProjectBridge}`
+     （与托盘 / `gui.window.open-chat` **同一实现**，零行为变更）；
+   - `CreateWindow`：`main` → `OpenProject(hidden=!visible)`；`chat` → `OpenChatWindow`（需 `params[session_id]`）；
+   - `CreateDialog / CreateSession` → 项目桥的**既有** `data-session-ensure-session`（根会话自举回带 `dialog_id`），零新增消息面；
+   - `gui/host/projectops.go` 依赖抽为 `projectWindowOps` 接口（仅为可测，生产仍传 `*gui.Env`）；
+     全部未接线分支已消失，`workspace.ErrOpsNotWired` 只在「装配未注入端口」时出现。
+6. **归属存储单源（[41 G-101](../40-roadmap/41-未决项登记.md) ✅）**：框架定义 `gui.OwnerStore`
+   （`OwnerOf/SetOwner/ClearOwnerIf/ForgetInstance`），主仓 `workspace.Manager` 实现并经
+   `Env.SetOwnerStore(app.Workspace)` 注入；注入后框架**不再自持副本**（`gui/owner.go` 的 map 仅作
+   测试 / 无 PM 形态的回落）。依赖方向仍为「框架不 import 主仓」，只是把存储反转给 PM。
+
 

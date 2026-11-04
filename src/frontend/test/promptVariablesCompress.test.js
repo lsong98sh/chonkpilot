@@ -83,10 +83,10 @@ test('挂载点：TextEditDialog / AgentEditor / PrimitivePanel / ScenarioWizard
   assert.match(w, /@insert="insertAgentVar"/, 'ScenarioWizardDialog 须在 agent 提示词挂变量按钮')
   assert.match(w, /@insert="insertMemoryVar"/, 'ScenarioWizardDialog 须在记忆提示词挂变量按钮')
 
-  // ContextConfig：总结提示词 + 记忆提示词（各 TextEditDialog 传 variables:true）
+  // ContextConfig：总结提示词（记忆提示词已随 MEMORY-UI-1 迁到 memory 插件配置页）
   const cc = read('views/settings/ContextConfig.vue')
   const flags = cc.match(/variables: true/g) || []
-  assert.equal(flags.length, 2, 'ContextConfig 须在总结提示词与记忆提示词两处开启变量按钮')
+  assert.equal(flags.length, 1, 'ContextConfig 须在总结提示词处开启变量按钮')
 })
 
 test('i18n：scenario.insert_variable / available_vars / chat.compressing 中英齐备', () => {

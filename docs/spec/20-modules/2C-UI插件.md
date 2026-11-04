@@ -2,11 +2,11 @@
 
 > 状态：✅ **已落地**（2026-10-28 重写；PLUGIN-1 · PLUGIN-UI-1 · PLUGIN-UI-2 · PLUGIN-INSTANCE-1）
 >
-> **本文口径变更**：原稿为「UI 插件扩展设计（🔵 规划中）」——`<PluginSlot location>` 插入点 + `ui-plugin-*` 消息族 + JSON 装配 + JS bundle 沙箱「12 种内容形态」的设计稿。**本期实现口径收敛为 iframe view**（[插件与MCP统一设计方案](../../plugin-platform/插件与MCP统一设计方案.md) §「2C 收敛」）：插件以 `plugin.json` 的 `ui.*` 声明视图 / 栏条目 / 动作按钮，前端统一用 **同源 iframe** 承载插件自持页面（`webui/*.html`），宿主**不装配插件内容、不执行插件 JS、不读插件业务状态键**。bundle / JSON 装配 / `PluginSlot` 插入点**本期不做**（见 §6）。
+> **本文口径变更**：原稿为「UI 插件扩展设计（🔵 规划中）」——`<PluginSlot location>` 插入点 + `ui-plugin-*` 消息族 + JSON 装配 + JS bundle 沙箱「12 种内容形态」的设计稿。**本期实现口径收敛为 iframe view**（[插件与MCP统一设计方案](../../plugin-platform/插件与MCP统一设计方案.md) §「2C 收敛」）：插件以 `manifest.json` 的 `ui.*` 声明视图 / 栏条目 / 动作按钮，前端统一用 **同源 iframe** 承载插件自持页面（`webui/*.html`），宿主**不装配插件内容、不执行插件 JS、不读插件业务状态键**。bundle / JSON 装配 / `PluginSlot` 插入点**本期不做**（见 §6）。
 >
 > 关联：[28-plugins](28-plugins.md) §3A（插件 UI 四通道与 instance 归属的**权威明细**）· [20-gui](20-gui.md)（布局与视图注册表）· [31-窗口与布局](../30-function-points/31-窗口与布局.md)（WIN-016 状态栏）· [61-消息一览](../60-reference/61-消息一览.md)（§7.2 `plugin-*`；§8 预留族）· [17-前端状态与MQ](../10-architecture/17-前端状态与MQ.md)
 >
-> 代码落点：前端包 `src/frontend/packages/plugin-ui/`（`PLUGIN-SPLIT-1 D-70 ②`，宿主零业务依赖）+ 宿主注入 `src/frontend/src/pluginHost.js`；视图注册表 `src/frontend/src/layout/{view-registry,views.registry,view-definitions,commands}.js`；后端 `src/lib/pluginhost/{mgr,bridge}`。
+> 代码落点：前端包 `src/frontend/packages/plugin-ui/`（`PLUGIN-SPLIT-1 D-70 ②`，宿主零业务依赖）+ 宿主注入 `src/frontend/src/pluginHost.js`；视图注册表 `src/frontend/src/layout/{view-registry,views.registry,view-definitions,commands}.js`；后端 `chonkpilot-framework/plugin/src/{mgr,bridge}`（宿主插件平台）。
 
 ---
 
@@ -30,9 +30,9 @@
 |------|------|
 | **iframe 唯一** | 插件 UI = 插件自己托管的 HTML/JS/CSS，宿主只提供 iframe 容器 + 通信信封；**没有** JSON 装配 / bundle 沙箱 / 组件注入 |
 | **同源可信** | iframe 与宿主**同源**且 `sandbox="allow-scripts allow-forms allow-same-origin"` —— 等价于「插件代码视为可信代码」（插件本就是本机 exe） |
-| **资源归插件** | 资源一律 `/plugins/<id>/<entry>` → UDS `plugin/v1/ui.asset.get` → 插件（`go:embed`）；宿主**不读插件目录、没有副本可兜底** |
+| **资源归插件** | 资源一律 `/plugins/<id>/<entry>`；来源由 manifest `ui.assets.mode` 决定：`bytes`（缺省，UDS `plugin/v1/ui.asset.get` + `go:embed`）/ `dir`（宿主直读插件目录，供 Python/Node 等无法 embed 的插件）/ `resource`（exe PE `RT_RCDATA`）；宿主**没有副本可兜底**（详见 [28 §3A.2](28-plugins.md)） |
 | **依赖单向** | 宿主**不读**插件业务键、**不为**插件业务写视图；插件状态由插件页/栏条目**自己拉**（见 [28 §3A.8](28-plugins.md)） |
-| **消息面零变更** | 插件 UI 复用既有 `plugin-*` 消息族（[61 §7.2](../60-reference/61-消息一览.md)）；`plugin-ui-event` 仅 2026-10-27 增**可选** `instance_id` |
+| **消息面零变更** | 插件 UI 复用既有 `plugin-*` 消息族（[61 §7.2](../60-reference/61-消息一览.md)）；`plugin-event` 仅 2026-10-27 增**可选** `instance_id` |
 | **事件驱动、无 watch** | 前端插件状态 = `plugin-list` 快照 + `plugin-registered/unregistered/status` 事件链写 `reactive` state（项目规则：composable + 零 watch/轮询） |
 
 ### 1.3 术语
@@ -47,9 +47,12 @@
 
 ---
 
-## 2. manifest 契约（`plugin.json` 的 `ui` 段）
+## 2. manifest 契约（`manifest.json` 的 `ui` 段；PLUGIN-LOAD-1 D12）
 
-> 校验实现：`src/lib/pluginhost/mgr/manifest.go`（加载期）；运行时增补：UDS `plugin.ui.register`（`mgr.registerUI` → 覆盖 `p.ui` 并重播 `plugin-registered`）。
+> `plugin.json` 只保留启动信息（`id/cmd/enabled/name/icon`）；完整 manifest（含本节的 `ui` 段）
+> 在 `manifest.json`，由插件进程在 `plugin.hello` 上报给宿主。
+
+> 校验实现：`chonkpilot-framework/plugin/src/mgr/manifest.go`（发现期只校验 ID；上报 manifest 只合并、不拒绝）；运行时增补：UDS `plugin.ui.register`（`mgr.registerUI` → 覆盖 `p.ui` 并重播 `plugin-registered`）。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -110,7 +113,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | URL | `pluginUIPageURL(id, entry)` + `?p=<pageId>[&instance_id=<宿主实例>][&t=<seq>]`（构造唯一入口 = `usePluginReadiness.src`；`t` 用于绕过宿主短缓存） |
 | iframe | `sandbox="allow-scripts allow-forms allow-same-origin"`、`referrerpolicy="no-referrer"` |
 | iframe → 宿主 | `postMessage({ckPlugin:1, id, type:'call', method, params})` → 宿主 `dispatch` → 回投 `{ckPlugin:1, id, type:'result', ok, result, errors}`；**来源校验** `e.source === iframe.contentWindow` |
-| 宿主 → iframe | `{ckPlugin:1, type:'event', topic, payload}`（来源 = `plugin-ui-event`，按 `id` 过滤）；`{ckPlugin:1, type:'theme', theme}`（主题快照，`load` 后推一次 + 主题变化再推，幂等不重建 iframe） |
+| 宿主 → iframe | `{ckPlugin:1, type:'event', topic, payload}`（来源 = `plugin-event`，按 `id` 过滤）；`{ckPlugin:1, type:'theme', theme}`（主题快照，`load` 后推一次 + 主题变化再推，幂等不重建 iframe） |
 | `ckMq` | 平台基座在**宿主窗口**挂唯一入口 `window.ckMq`（`@ckfw/plugin-ui/ckMq.js`，`installGlobalCkMq()`）；插件页一律 `const mq = window.top.ckMq.new(window)` 取受控实现 `{on, off, emit}`（**不裸暴露宿主 mq**）。**路由键 = 订阅方 window 引用**（`WeakMap<win, Map<topic, Set<cb>>>`），topic / payload **一律不带 plugin id**；`new(win)` 只接受宿主窗口的**直接子 frame**（`win !== window && win.parent === window`），非法 / 跨源**抛错**。`PluginPageHost` 在 iframe 重载 / 卸载 / `beforeunload` 调 `window.ckMq.release(contentWindow)` 统一退订（防回调打到已销毁的 frame） |
 
 `dispatch` 支持的 method（`method` → 实际通道）：
@@ -135,6 +138,8 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 
 流程：`status` 非 running → 占位（原因 `status`）；否则 HEAD 探活 → 404/异常 → 占位（`asset`）+ 自动重试；200 → 挂 iframe → `load` 前超时 → 占位（`timeout`）+ 自动重试；`error` → 占位。**手动「重试」不限次数、不占自动预算**。插件转 `running`（`subscribePluginChange` 事件）→ 自动重试（不轮询）。`stage === 'ready'` 后**不再**被降级事件拉回占位。
 
+> 🆕 2026-11-02（[PLUGIN-LOAD-1](../../plugin-platform/插件加载与UI就绪设计方案.md)，✅ 已实现）：占位只显示**状态文字**（`运行中 / 启动中 / 启动失败 / 已停止 / 已禁用 / 未安装`），**不加 detail 行**；台账里查不到该 `plugin_id` → 「未安装」；`starting` 即「启动中」（无启动预算，卡住就如实显示，用户自行 disable）。
+
 ### 3.5 打开路径（视图落点）
 
 | 入口 | 消息 | 落点 |
@@ -144,7 +149,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | 打开 view（`layout/openView.js#openView(viewKey)`） | 按**视图注册表声明**的承载方式分发，不另设「viewKey → 具体 Vue」翻译表：`host:'preview'` → `preview-tab-open{kind:viewKey}`；插件 view 的 `containers` 含 `preview` → `preview-tab-open{kind:'plugin-page', plugin, page}`；`host:'layout'`（布局区）/ `'bar'`（栏内嵌）/ `'dialog'` 不在此打开（由各自容器承载） |
 | 项目配置页（codegraph 配置） | `project-config-open{tab:'codegraph'}` | `ProjectConfig` 内直接复用 `PluginPageHost`（`pluginView('codegraph','config')`），**不新造容器** |
 
-**动作按钮（`ui.actions[]`）**：`PluginManagerPage` 渲染 → 便捷式 `view`+`container` 按容器打开本插件视图；命令式 `command` 原样交布局命令执行（与布局栏按钮同一 `commandToMq`）。
+**动作按钮（`ui.actions[]`）**：`PluginManagerPage` 渲染 → 便捷式 `view`+`container` 按容器打开本插件视图；命令式 `command` 原样交布局命令执行（与布局栏按钮同一 `utils/commands.js#runCommand`；G-89 起内部命令直调域动作，仅 `publish-mq` 走 MQ）。
 
 **栏条目（`ui.statusbar[]`）**：`pluginBarItems(zone)` → 带 `view` 的条目产 `{kind:'view', viewKey:'plugin:<id>:<view>', width/height ← default_size}`（复用布局 `LfBarItem` view 分支 → `PluginPageHost` iframe）；否则按 `command`（`target:plugin` → `plugin-command`；`open-view` → 预览/页签）产按钮。**不写入布局文档**（插件禁用即消失）。
 
@@ -152,9 +157,27 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 
 | 通道 | 入口 | 约束 |
 |---|---|---|
-| 资源 | `GET /plugins/<id>/<entry>` → UDS `plugin/v1/ui.asset.get` | 路径限定插件 `webui` 根内（`..`/`%2e`/反斜杠 → 403）；未命中 404；`Cache-Control: no-cache, no-store, must-revalidate`；缓存键 `(plugin_id, path, plugin_version)` |
+| 资源 | `GET /plugins/<id>/<entry>`；按 manifest `ui.assets.mode` 取：`bytes` 经 UDS `plugin/v1/ui.asset.get` / `dir` 直读插件目录 / `resource` 读 exe PE 资源段 | 路径限定在插件资源根内（`..`/`%2e`/反斜杠 → 403）；未命中 404；`Cache-Control: no-cache, no-store, must-revalidate`；缓存键 `(plugin_id, path, 版本分量)` |
 | 动作 | `POST /plugins/<id>/api/<action>` | 宿主不解析业务；校验「发起来源 id == 路径 `<id>`」（`X-CK-Plugin-Id` 白名单转发）；超时 + 错误信封 |
-| 配置 | 插件 → UDS `plugin/v1/config.project.{get,load,set,delete}` | 落 data 层（`plugins.<id>.*` 命名空间）；**不落插件自有文件、不双写旧宿主键** |
+| 配置 | 插件 → UDS `plugin/v1/config.{user,project,prjusr}.{get,load,set,delete}` | 落 data 层 usr / prj / prjusr（键 `plugins.<id>.*` / `plugins.<id>.prjusr.*`）；**不落插件自有文件、不双写旧宿主键**；**零新增 MQ 主题** |
+
+### 3.7 CK Store（前端状态读取；✅ 2026-11-02 已实现）
+
+> 权威设计 = [插件加载与UI就绪设计方案 §3.5](../../plugin-platform/插件加载与UI就绪设计方案.md)。
+> 实现：`src/frontend/src/utils/ckStore.js`（`installGlobalCkStore()` → `window.ckStore`）·
+> `src/frontend/src/layout/bar-views/CkStoreView.vue`（状态栏内置图标 + 抽屉）·
+> 示范 getter 在 `src/frontend/src/main.js` 注册（`workspace.current` / `chat.currentSession` / `preview.currentFile`）。
+
+| 项 | 约定 |
+|---|---|
+| 形态 | 前端全局 getter 仓库：组件/composable 注册 `key → () => value`；**值只在被调用时求值**，不存副本 |
+| 唯一读取方 | **插件 iframe**：`window.top.ckStore.get(key)`（同源）；**插件进程不支持**（需要上下文时由前端随消息载荷携带，后端不做按 workspace/对话的初始化） |
+| API | `register(key, getter)` / `unregister(key)` / `get(key)`；**只提供 get**，不做订阅/变更通知 |
+| 未注册 | 返回空（`null`），不抛错；宿主只记一条 debug 日志 |
+| 权限 | 无白名单（任何插件 iframe 可读任何 key） |
+| key 命名 | 字符串自由命名，**不维护登记表**；重复注册保留先注册者并告警 |
+| 作用域 | 每窗口一份（组件状态本身就是窗口内状态） |
+| 调试抽屉 | 状态栏内置图标 → 抽屉列出当前窗口已注册 key + 当前值（打开求值一次 + 手动「刷新」）；不做搜索/附加列/展开 |
 
 ---
 
@@ -170,7 +193,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | `plugin-registered` / `plugin-unregistered`（广播） | 事件链 upsert / 移除 → 注册/卸载插件视图 |
 | `plugin-status`（广播） | `{id,status,detail}` → 就绪态驱动 |
 | `plugin-command`（前端/宿主 → 插件） | 栏按钮 `target:plugin` 转发 |
-| `plugin-ui-event`（宿主 → 前端广播/定向） | `{id, topic, payload[, instance_id?]}` → `PluginPageHost` 转投 iframe 的 `event` 信封 |
+| `plugin-event`（宿主 → 前端广播/定向） | `{id, topic, payload[, instance_id?]}` → `PluginPageHost` 转投 iframe 的 `event` 信封 |
 
 > **零新增主题**：本文全部能力经上述既有主题 + UDS 能力面实现。
 

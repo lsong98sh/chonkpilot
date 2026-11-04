@@ -3,6 +3,8 @@
  *
  * 对话窗口由 URL 承载视图与会话绑定，形如：
  *   <appOrigin>/?session-id=<sid>#chat
+ * 可选 `dialog-id=<did>`（G-105，2026-11-03）：宿主带 dialog_id 直开时由 URL 透传，
+ * chat 窗口据此直连该 dialog（免 session→dialog 反查自举空库）。
  *
  * 判据（**不注入 `window.__ck.view`**，宿主零视图判断）：
  *   - `#chat` **且** 带 `session-id` → `ChatOnlyView`（仅 chat）；
@@ -28,14 +30,16 @@ export const LOG_HASH = '#log'
  * 解析 URL（search + hash）→ 视图分派结果。
  * @param {string} search `location.search`（含前导 `?`，可缺省）
  * @param {string} hash `location.hash`（含前导 `#`，可缺省）
- * @returns {{view: 'chat'|'log'|'main', sessionId: string}} sessionId 仅在 view=chat 时非空
+ * @returns {{view: 'chat'|'log'|'main', sessionId: string, dialogId: string}}
+ *   sessionId 仅在 view=chat 时非空；dialogId 可选（G-105），仅 view=chat 时透传，缺省 ''
  */
 export function parseViewRoute(search = '', hash = '') {
   const h = String(hash || '')
   // 日志窗口优先判定（无 session、不参与项目视图）。
-  if (h === LOG_HASH) return { view: VIEW_LOG, sessionId: '' }
+  if (h === LOG_HASH) return { view: VIEW_LOG, sessionId: '', dialogId: '' }
   const params = new URLSearchParams(String(search || ''))
   const sessionId = params.get('session-id') || ''
   const isChat = h === CHAT_HASH && sessionId !== ''
-  return { view: isChat ? VIEW_CHAT : VIEW_MAIN, sessionId: isChat ? sessionId : '' }
+  const dialogId = isChat ? (params.get('dialog-id') || '') : ''
+  return { view: isChat ? VIEW_CHAT : VIEW_MAIN, sessionId: isChat ? sessionId : '', dialogId }
 }

@@ -1142,8 +1142,9 @@ onMounted(() => {
     nextTick(() => saveFileTreeSnapshotDebounced())
   }))
 
-  // 前端近似判断窗口是否最大化（Windows 无浏览器 API 直读；精确值由后端
-  // 退出时 GetWindowPlacement 校正，此处用于 resize 中间态保存）。
+  // 前端近似判断窗口是否最大化（Windows 无浏览器 API 直读；落盘时后端经
+  // GetWindowPlacement 权威校正——还原边界与最大化标记一律以宿主为准，2026-11-04，
+  // 此处近似值仅作未接线宿主的回落）。
   const isMaximizedNow = () => {
     const sw = window.screen.availWidth
     const sh = window.screen.availHeight

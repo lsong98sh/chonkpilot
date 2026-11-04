@@ -106,7 +106,7 @@ Build(opts)
 
 ## 6. 依赖与边界
 
-- **上游依赖**：`github.com/chonkpilot/chonkpilot-lib`（`exedir`、`mq`）· `chonkpilot-mcp-server/server`（`DefaultConfig` / `RegisterContracts` / `Config`）· `chonkpilot-mcp-gateway/gateway`（`New` / `Params` / `ExecSink` / `ContractScanner` / `ServerEntry`）· `github.com/modelcontextprotocol/go-sdk/mcp`。
+- **上游依赖**：`github.com/chonkpilot/chonkpilot-lib`（`exedir`、`mq`）· `chonkpilot-mcp-server/server`（`DefaultConfig` / `RegisterContracts` / `Config`）· `chonkpilot-agent/gateway/src`（`New` / `Params` / `ExecSink` / `ContractScanner` / `ServerEntry`）· `github.com/modelcontextprotocol/go-sdk/mcp`。
 - **下游消费者**：`src/lib/llm/server`（`server.go` 装配期调 `assembly.Build`；`appToolNames` 薄别名转发 `assembly.AppToolNames`；`(*Server).Scan` 薄别名转发 `(*Stack).Scan`）。
 - **边界**：**不 import data**（配置读取仍归 llm-server）；**不拍板 transport**（spawned/proxied 判据归 mcp-gateway）。
 

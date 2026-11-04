@@ -11,8 +11,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
 )
 
-// setupBootstrapEnv 建隔离实例（无预置对话）。
-func setupBootstrapEnv(t *testing.T) (*Service, string, facade.Scope) {
+// setupBootstrapEnv 建隔离实例（无预置对话），返回服务 / 实例 id / Scope / usr 库路径。
+// usr 库注入临时路径（避免测试读写真实用户配置；G-99 开关即落该库）。
+func setupBootstrapEnv(t *testing.T) (*Service, string, facade.Scope, string) {
 	t.Helper()
 	dir := t.TempDir()
 	work, dataDir := filepath.Join(dir, "ws"), filepath.Join(dir, "dd")
@@ -26,13 +27,14 @@ func setupBootstrapEnv(t *testing.T) (*Service, string, facade.Scope) {
 	scope := facade.Scope{WorkDir: work, DataDir: dataDir}
 	data.Register(instID, work, dataDir)
 	t.Cleanup(func() { data.Unregister(instID) })
-	return New(kernel.NewBase(nil, kernel.Options{})), instID, scope
+	usrPath := filepath.Join(t.TempDir(), "usr.db")
+	return New(kernel.NewBase(nil, kernel.Options{UsrPath: usrPath})), instID, scope, usrPath
 }
 
 // TestEnsureBootstrapCreatesDialog：根会话缺 dialog_id → 确定性建对话并回带 id；
 // 幂等；后续调用带该 id 落在对话库。
 func TestEnsureBootstrapCreatesDialog(t *testing.T) {
-	svc, instID, scope := setupBootstrapEnv(t)
+	svc, instID, scope, _ := setupBootstrapEnv(t)
 	resp, err := svc.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: instID, Scope: scope, SessionID: "root-1",
 	})
@@ -84,7 +86,7 @@ func TestEnsureBootstrapCreatesDialog(t *testing.T) {
 
 // TestSessionListAndLatestDeriveFromDialogs：列表/最新由 dialogs 目录派生（带 dialog_id）。
 func TestSessionListAndLatestDeriveFromDialogs(t *testing.T) {
-	svc, instID, scope := setupBootstrapEnv(t)
+	svc, instID, scope, _ := setupBootstrapEnv(t)
 	a, err := svc.SessionEnsure(facade.SessionEnsureRequest{InstanceID: instID, Scope: scope, SessionID: "s-a"})
 	if err != nil {
 		t.Fatalf("ensure a: %v", err)
@@ -116,4 +118,113 @@ func TestSessionListAndLatestDeriveFromDialogs(t *testing.T) {
 // migratedDialogID 复算自举算法（测试断言用；算法本体在 sessionstore）。
 func migratedDialogID(sessionID string) string {
 	return sessionstore.MigratedDialogID(sessionID)
+}
+
+// setUsrConfig 直写 usr 库 config 表（落库形态 `{v: 字符串}`，与插件配置页写入一致）。
+func setUsrConfig(t *testing.T, usrPath, key, value string) {
+	t.Helper()
+	db, release, err := data.OpenSharedLayer(usrPath, data.LayerUsr)
+	if err != nil {
+		t.Fatalf("打开 usr 库: %v", err)
+	}
+	defer release()
+	if err := data.SetConfig(db, key, value); err != nil {
+		t.Fatalf("写 usr 配置 %s: %v", key, err)
+	}
+}
+
+// listIDs 取当前用户会话列表的 session_id 集合（保持顺序）。
+func listIDs(t *testing.T, svc *Service, instID string, scope facade.Scope) []string {
+	t.Helper()
+	list, err := svc.SessionList(facade.SessionListRequest{InstanceID: instID, Scope: scope})
+	if err != nil {
+		t.Fatalf("SessionList: %v", err)
+	}
+	out := make([]string, 0, len(list.List))
+	for _, s := range list.List {
+		out = append(out, s.ID)
+	}
+	return out
+}
+
+// assertListIDs 断言列表 id 集合逐项相等。
+func assertListIDs(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("会话列表不符：got=%v want=%v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("会话列表不符：got=%v want=%v", got, want)
+		}
+	}
+}
+
+// TestSessionListCrontabVisibilitySwitch（G-99）：开关缺省 / false / true / 非法值 四种口径。
+//
+// 语义：`plugins.crontab.show-in-session-list=true` → crontab 顶层对话进入用户会话列表；
+// 缺省 / false / 非 "true" → 维持排除（fail-closed）。「当前活动会话」回落**恒排除**。
+func TestSessionListCrontabVisibilitySwitch(t *testing.T) {
+	svc, instID, scope, usrPath := setupBootstrapEnv(t)
+	if _, err := svc.SessionEnsure(facade.SessionEnsureRequest{
+		InstanceID: instID, Scope: scope, SessionID: "crontab-deadbeef",
+		Kind: sessionstore.DialogKindCrontab, Title: "定时任务",
+	}); err != nil {
+		t.Fatalf("建 crontab 对话: %v", err)
+	}
+	if _, err := svc.SessionEnsure(facade.SessionEnsureRequest{
+		InstanceID: instID, Scope: scope, SessionID: "s-user", Title: "用户会话",
+	}); err != nil {
+		t.Fatalf("建用户对话: %v", err)
+	}
+
+	// ① 键缺失（缺省）→ 只显示用户会话。
+	assertListIDs(t, listIDs(t, svc, instID, scope), []string{"s-user"})
+
+	// ② 显式 false → 维持排除。
+	setUsrConfig(t, usrPath, crontabShowInSessionListKey, "false")
+	assertListIDs(t, listIDs(t, svc, instID, scope), []string{"s-user"})
+
+	// ③ true → crontab 对话一并返回（排在最近活动的用户会话之后）。
+	setUsrConfig(t, usrPath, crontabShowInSessionListKey, "true")
+	assertListIDs(t, listIDs(t, svc, instID, scope), []string{"s-user", "crontab-deadbeef"})
+
+	// ④ 非布尔值 → fail-closed（按不显示）。
+	setUsrConfig(t, usrPath, crontabShowInSessionListKey, "yes-please")
+	assertListIDs(t, listIDs(t, svc, instID, scope), []string{"s-user"})
+
+	// ⑤ 开关只作用于「列表」：活动位回落恒排除 crontab。
+	setUsrConfig(t, usrPath, crontabShowInSessionListKey, "true")
+	latest, err := svc.SessionLatest(facade.SessionLatestRequest{InstanceID: instID, Scope: scope})
+	if err != nil {
+		t.Fatalf("SessionLatest: %v", err)
+	}
+	if latest.SessionID != "s-user" {
+		t.Fatalf("活动位回落必须排除 crontab：%+v", latest)
+	}
+}
+
+// TestSessionListCrontabSwitchReadFailureClosed（G-99）：usr 库打不开 → 按 false 处理
+// （fail-closed 到「不显示」），列表调用本身不报错。
+func TestSessionListCrontabSwitchReadFailureClosed(t *testing.T) {
+	work, dataDir := t.TempDir(), t.TempDir()
+	instID := "ins-usr-unreadable"
+	scope := facade.Scope{WorkDir: work, DataDir: dataDir}
+	data.Register(instID, work, dataDir)
+	t.Cleanup(func() { data.Unregister(instID) })
+	// UsrPath 指向**目录** → bbolt 打开失败 → 开关读取失败。
+	svc := New(kernel.NewBase(nil, kernel.Options{UsrPath: t.TempDir()}))
+
+	if _, err := svc.SessionEnsure(facade.SessionEnsureRequest{
+		InstanceID: instID, Scope: scope, SessionID: "crontab-0a1b2c3d",
+		Kind: sessionstore.DialogKindCrontab, Title: "定时任务",
+	}); err != nil {
+		t.Fatalf("建 crontab 对话: %v", err)
+	}
+	if _, err := svc.SessionEnsure(facade.SessionEnsureRequest{
+		InstanceID: instID, Scope: scope, SessionID: "s-user", Title: "用户会话",
+	}); err != nil {
+		t.Fatalf("建用户对话: %v", err)
+	}
+	assertListIDs(t, listIDs(t, svc, instID, scope), []string{"s-user"})
 }

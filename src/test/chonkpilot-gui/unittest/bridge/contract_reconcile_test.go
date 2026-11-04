@@ -339,7 +339,7 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 		{"session-receive", "llm-receive", `{"instance_id":"inst-test","session":"s","turn":"t","type":"text","payload":{"text":"hi"}}`},
 		// 2026-10-24：session-complete 只增 work_dir / data_dir（memory 每轮沉淀的轮末触发载荷）。
 		{"session-complete", "llm-complete", `{"instance_id":"inst-test","session":"s","turn":"t","status":"complete","finish_reason":"stop","parents":[],"work_dir":"/w","data_dir":"/d"}`},
-		{"session-compress", "llm-compress", `{"instance_id":"inst-test","session":"s","last_turn":"t","snapshot_turn":"u"}`},
+		// 2026-10-31：session-compress 已退出消息面（压缩 = 内部方法面），桥不再有该映射。
 		// AskUser S1-3（2026-10-29）：session-ask 补齐 §0.6 必带的 dialog_id。
 		{"session-ask", "ask-user", `{"instance_id":"inst-test","ask_id":"a","dialog_id":"dlg-1","session":"s","turn":"t","expires_at":0,"question":"q"}`},
 		{"server-starting", "server-starting", `{"started_at":123}`},

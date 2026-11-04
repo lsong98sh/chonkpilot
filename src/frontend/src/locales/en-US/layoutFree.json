@@ -18,11 +18,13 @@
     "statusMemory": "Memory extraction details",
     "statusCompress": "Context compression details",
     "langSwitcher": "Language",
+    "ckStore": "CK Store",
     "layoutProfiles": "Layouts",
     "dslStepsNoJob": "No job specified (jobId) — configure params in area settings"
   },
   "container": {
     "viewMissing": "This view is not implemented yet ({key})",
+    "viewStarting": "Plugin view starting… ({key})",
     "emptyRegion": "Empty area",
     "emptyRegionHint": "Pick a view for this area in Content settings → Layout, or turn it into a tab container",
     "leafToolbarTitle": "This area mounts a custom toolbar",
@@ -123,6 +125,13 @@
     "notReadyTimeoutHint": "The page took too long to load. The plugin may not be ready yet.",
     "notReadyErrorHint": "The page failed to load. The plugin may not be ready yet.",
     "notReadyStatus": "Status: {status}",
+    "notInstalledHint": "This plugin was not found (not installed or removed).",
+    "statusMissing": "Not installed",
+    "statusStarting": "Starting",
+    "statusRunning": "Running",
+    "statusError": "Failed",
+    "statusStopped": "Stopped",
+    "statusDisabled": "Disabled",
     "autoRetryExhausted": "Automatic retry stopped after {n} attempts. Click Retry to try again.",
     "retry": "Retry"
   }

@@ -2,8 +2,8 @@
  * 栏条目「发布 MQ 动作」的宿主订阅者（UILAYOUT-1 裁决 1，2026-10-16）。
  *
  * 机制层（`layout-free/`）只负责把条目配置里的 `{topic, payload}` 通过 mq 发出去
- * （`utils/commands.js#commandToMq` 的 `publish-mq` 分支）；**由谁处理这些既有主题**属宿主侧策略
- * —— 本模块就是这份策略的落点，且**只引用既有宿主主题，零新增**。
+ * （`utils/commands.js#runCommand` 的 `publish-mq` 分支；G-89 起内部命令不再走 MQ）；
+ * **由谁处理这些既有主题**属宿主侧策略 —— 本模块就是这份策略的落点，且**只引用既有宿主主题，零新增**。
  *
  * legacy 分支（`Toolbar.vue`）已随 UILAYOUT-2-B 删除；本模块是唯一订阅点，不会双执行。
  *

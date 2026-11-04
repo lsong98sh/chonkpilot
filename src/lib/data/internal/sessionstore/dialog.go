@@ -27,6 +27,19 @@ import (
 // DialogTable 是 prjusr 内的对话目录表名。
 const DialogTable = "dialogs"
 
+// 对话类型（`dialogs.kind`）：
+//   - DialogKindMain    = 普通用户对话（缺省值）；
+//   - DialogKindCrontab = 定时任务顶层对话（SANDBOX-WRITE-1 P4 / C11；每项目 1 个）。
+const (
+	DialogKindMain    = "main"
+	DialogKindCrontab = "crontab"
+)
+
+// IsHiddenDialogKind 判定该对话类型是否**不进**顶层会话列表（C12）。
+func IsHiddenDialogKind(kind string) bool {
+	return kind == DialogKindCrontab
+}
+
 // DialogRow 是 `dialogs` 表的一行（列表展示用的可重建副本）。
 type DialogRow struct {
 	DialogID string `json:"dialog_id"`
@@ -114,13 +127,39 @@ func ListDialogs(catalog *data.DB) ([]DialogRow, error) {
 	if err != nil {
 		return nil, err
 	}
+	sortDialogs(out)
+	return out, nil
+}
+
+// ListVisibleDialogs 列出**可见**对话：缺省排除 `kind = crontab`（C12 / SANDBOX-WRITE-1 P4）。
+//
+// `includeCrontab` 由调用方按插件配置 `plugins.crontab.show-in-session-list` 决定（G-99）：
+// true → 定时任务顶层对话一并返回（进入用户会话列表）；false → 维持排除。
+// 最近活动 / 活动位回落恒传 false（crontab 会话不得成为「当前活动会话」缺省回落值）；
+// 启动对账仍用 ListDialogs（需看到全部行）。
+func ListVisibleDialogs(catalog *data.DB, includeCrontab bool) ([]DialogRow, error) {
+	rows, err := ListDialogs(catalog)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DialogRow, 0, len(rows))
+	for _, r := range rows {
+		if !includeCrontab && IsHiddenDialogKind(r.Kind) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// sortDialogs 按 updated_at 降序、dialog_id 升序稳定排序。
+func sortDialogs(out []DialogRow) {
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].UpdatedAt != out[j].UpdatedAt {
 			return out[i].UpdatedAt > out[j].UpdatedAt
 		}
 		return out[i].DialogID < out[j].DialogID
 	})
-	return out, nil
 }
 
 // ListDialogFiles 返回 prjusr 数据根下 `dialogs/` 目录里的库文件名（不含目录；目录缺失 = 空）。
@@ -231,6 +270,11 @@ func Reconcile(catalog *data.DB) (ReconcileResult, error) {
 			return res, err
 		}
 		want := DialogRow{DialogID: dialogID, File: name, Title: title, Kind: kind, MainSessionID: mainID, UpdatedAt: updated}
+		// C12（SANDBOX-WRITE-1 P4）：`kind = crontab` 是**保留类型** —— 库内主会话缺 kind
+		// （半创建 / 历史行）时不得把对账结果回落成 `main`，否则定时任务对话会出现在用户列表。
+		if exists && IsHiddenDialogKind(cur.Kind) && !IsHiddenDialogKind(want.Kind) {
+			want.Kind = cur.Kind
+		}
 		if !exists {
 			if err := PutDialog(catalog, want); err != nil {
 				return res, err

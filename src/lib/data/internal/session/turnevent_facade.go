@@ -7,7 +7,6 @@ package session
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -16,15 +15,11 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 )
 
+// 事件表在目录库（prjusr）；主键 = `<turn_id>/<seq 12 位零填充>`（实现唯一 = 会话组件）。
 const turnEventTable = "turn_events"
 
 // 编译期断言：Service 实现 TURN EVENT 门面面。
 var _ facade.TurnEventAPI = (*Service)(nil)
-
-// turnEventKey 生成事件主键（turn 内按 seq 字典序 = 数值序）。
-func turnEventKey(turnID string, seq uint64) string {
-	return fmt.Sprintf("%s/%012d", turnID, seq)
-}
 
 // terminalTurnStatus 报告 turns.status 是否终态（与 llm 侧实际写入值对齐）。
 func terminalTurnStatus(st string) bool {
@@ -53,36 +48,7 @@ func (s *Service) TurnEventAppend(req facade.TurnEventAppendRequest) (facade.Tur
 	if err != nil {
 		return facade.TurnEventAppendResponse{}, err
 	}
-
-	key := turnEventKey(req.TurnID, req.Seq)
-	var existing data.Record
-	if ok, err := prj.Table(turnEventTable).Get(key, &existing); err != nil {
-		return facade.TurnEventAppendResponse{}, err
-	} else if ok {
-		if got := kernel.Sval(existing["type"]); got != req.Type {
-			return facade.TurnEventAppendResponse{}, fmt.Errorf("turn-event: seq %d already used by %q (want %q)", req.Seq, got, req.Type)
-		}
-		return facade.TurnEventAppendResponse{OK: true}, nil // 幂等
-	}
-
-	at := req.At
-	if at == "" {
-		at = time.Now().UTC().Format(time.RFC3339Nano)
-	}
-	rec := data.Record{
-		"session_id": req.SessionID,
-		"turn_id":    req.TurnID,
-		"seq":        req.Seq,
-		"type":       req.Type,
-		"at":         at,
-	}
-	if len(req.Payload) > 0 {
-		rec["payload"] = req.Payload
-	}
-	if err := prj.Table(turnEventTable).Insert(key, rec); err != nil {
-		return facade.TurnEventAppendResponse{}, err
-	}
-	return facade.TurnEventAppendResponse{OK: true}, nil
+	return s.componentTurnEventAppend(prj, req)
 }
 
 // TurnEventCleanup 删除终态且超过保留天数的 turn 的事件。
@@ -131,29 +97,8 @@ func (s *Service) TurnEventCleanup(req facade.TurnEventCleanupRequest) (facade.T
 		return facade.TurnEventCleanupResponse{OK: true}, nil
 	}
 
-	// ② 删除这些 turn 的全部事件。
-	var keys []string
-	if err := prj.Table(turnEventTable).ForEach(func(k string, rec data.Record) error {
-		if oldTurns[kernel.Sval(rec["turn_id"])] {
-			keys = append(keys, k)
-		}
-		return nil
-	}); err != nil {
-		return facade.TurnEventCleanupResponse{}, err
-	}
-	// F-4（DATA-OPT-1 P4）：原实现逐行 `Delete`（每行一个写事务）→ **单事务批删**；键先收集再删
-	// （勿在 bbolt 遍历回调内改表）。失败整体回滚 → `deleted` 回 0（原实现返回已删条数，但那些行
-	// 已在库中删除；现语义 = 「要么全删、要么一条不删」）。
-	deleted := 0
-	err = prj.Update(func(tx *data.Tx) error {
-		for _, k := range keys {
-			if err := tx.Delete(turnEventTable, k); err != nil && !errors.Is(err, data.ErrNotFound) {
-				return err
-			}
-			deleted++
-		}
-		return nil
-	})
+	// ② 删除这些 turn 的全部事件（单事务批删；失败整体回滚 → deleted 回 0）。
+	deleted, err := s.componentTurnEventCleanup(prj, oldTurns)
 	if err != nil {
 		return facade.TurnEventCleanupResponse{OK: false}, err
 	}

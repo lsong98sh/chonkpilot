@@ -196,9 +196,34 @@ func newInboxLLM(t *testing.T) (*httptest.Server, *llmReqRec) {
 
 func inboxAddMQ(t *testing.T, s *Server, session, content string) map[string]any {
 	t.Helper()
-	v := s.bus.Emit(context.Background(), "inbox-add", jb(map[string]any{
+	return inboxAddMQSource(t, s, session, content, "")
+}
+
+// inboxAddMQSource 同 inboxAddMQ，可指定 source（`mobile` = H5 发送）。
+func inboxAddMQSource(t *testing.T, s *Server, session, content, source string) map[string]any {
+	t.Helper()
+	return inboxAddMQOpt(t, s, session, content, source, false)
+}
+
+// inboxAddInsertMQ 以**显式插话意向**（insert=true）发送（2026-11-01 语义：插话是用户动作）。
+func inboxAddInsertMQ(t *testing.T, s *Server, session, content string) map[string]any {
+	t.Helper()
+	return inboxAddMQOpt(t, s, session, content, "", true)
+}
+
+// inboxAddMQOpt 发送一条 inbox 项（source / insert 可配）。
+func inboxAddMQOpt(t *testing.T, s *Server, session, content, source string, insert bool) map[string]any {
+	t.Helper()
+	payload := map[string]any{
 		"instance_id": "ins-test", "session": session, "llm": "mock", "content": content,
-	})).Wait()
+	}
+	if source != "" {
+		payload["source"] = source
+	}
+	if insert {
+		payload["insert"] = true
+	}
+	v := s.bus.Emit(context.Background(), "inbox-add", jb(payload)).Wait()
 	if v.Err() != nil {
 		t.Fatalf("llm-inbox-add error: %v", v.Err())
 	}
@@ -264,7 +289,7 @@ func TestInboxInsertDuringToolPending(t *testing.T) {
 	sendMQ(t, s, "s-ins1", "t-ins1", "请用慢工具")
 	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
 
-	res := inboxAddMQ(t, s, "s-ins1", "【INS-001】插话A")
+	res := inboxAddInsertMQ(t, s, "s-ins1", "【INS-001】插话A")
 	if ok, _ := res["ok"].(bool); !ok || str(res["type"]) != "insert" {
 		t.Fatalf("工具等待期应分类为 insert：%+v", res)
 	}
@@ -293,6 +318,32 @@ func TestInboxInsertDuringToolPending(t *testing.T) {
 	}
 }
 
+// TestInboxMobileSourceNeverInsert（2026-11-01）：H5 / 远程接入发送 `source=mobile` 时，
+// 即使当前处于可插入相位（工具等待期）也**只入 next_turn**（手机端不支持插话），
+// 本轮结束后自动起新一轮消费。
+func TestInboxMobileSourceNeverInsert(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	startTurn(t, s, "s-mob1", "t-mob1")
+	rec := newInboxRec(t, s.bus)
+
+	sendMQ(t, s, "s-mob1", "t-mob1", "请用慢工具")
+	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
+	waitInsertable(t, s, "s-mob1")
+
+	res := inboxAddMQSource(t, s, "s-mob1", "【MOBILE-1】排队", "mobile")
+	if str(res["type"]) != "next_turn" {
+		t.Fatalf("mobile 源不得插话：%+v", res)
+	}
+	if n := rec.count("session-receive", textContains("插入回答")); n != 0 {
+		t.Fatalf("mobile 发送不得在飞轮次内被消费（got %d）", n)
+	}
+	// 本轮结束 → consumeNextTurn 消费 next_turn → 新轮（mock 默认回显「插入回答:<内容>」）。
+	reportTask(t, s, "tk-tc-main", "C1结果", "s-mob1", "t-mob1")
+	rec.wait(t, "session-complete", byTurn("t-mob1"), 8*time.Second)
+	rec.wait(t, "session-receive", textContains("插入回答:【MOBILE-1】排队"), 8*time.Second)
+}
+
 // TestInboxInsertNestedTool（INS-003 / S3）：插入轮自身可调用工具（嵌套），主轮保持挂起。
 func TestInboxInsertNestedTool(t *testing.T) {
 	llm, _ := newInboxLLM(t)
@@ -303,7 +354,7 @@ func TestInboxInsertNestedTool(t *testing.T) {
 	sendMQ(t, s, "s-ins3", "t-ins3", "请用慢工具")
 	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
 
-	res := inboxAddMQ(t, s, "s-ins3", "【INS-003】插话带工具")
+	res := inboxAddInsertMQ(t, s, "s-ins3", "【INS-003】插话带工具")
 	if str(res["type"]) != "insert" {
 		t.Fatalf("应为 insert：%+v", res)
 	}
@@ -330,7 +381,7 @@ func TestInboxAwaitJoin(t *testing.T) {
 
 	sendMQ(t, s, "s-ins4", "t-ins4", "请用慢工具")
 	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
-	inboxAddMQ(t, s, "s-ins4", "【INS-004】插话A")
+	inboxAddInsertMQ(t, s, "s-ins4", "【INS-004】插话A")
 	rec.wait(t, "session-receive", textContains("插入回答"), 5*time.Second)
 	// 插入已结束，原工具未回执 → 不得续轮
 	time.Sleep(150 * time.Millisecond)
@@ -352,7 +403,7 @@ func TestInboxJoinToolDoneFirst(t *testing.T) {
 	sendMQ(t, s, "s-ins5", "t-ins5", "请用慢工具")
 	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
 	// 插入轮慢速输出（约 750ms），给"回执夹在插入中间"留窗口
-	inboxAddMQ(t, s, "s-ins5", "【INS-005】插话慢")
+	inboxAddInsertMQ(t, s, "s-ins5", "【INS-005】插话慢")
 	rec.wait(t, "session-receive", textContains("插话"), 5*time.Second)
 	// 插入仍在流式 → 外层回执到达（清 pending，但栈顶是插入帧 → 不得续轮）
 	reportTask(t, s, "tk-tc-main", "C1结果", "s-ins5", "t-ins5")
@@ -378,11 +429,11 @@ func TestInboxReinsertAwaitJoin(t *testing.T) {
 	sendMQ(t, s, "s-ins6", "t-ins6", "请用慢工具")
 	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
 
-	inboxAddMQ(t, s, "s-ins6", "【INS-006】插话A")
+	inboxAddInsertMQ(t, s, "s-ins6", "【INS-006】插话A")
 	rec.wait(t, "session-receive", textContains("插入回答"), 5*time.Second)
 	// 已回到 awaitJoin（主帧 pending 非空）→ 可再插入
 	waitInsertable(t, s, "s-ins6")
-	res := inboxAddMQ(t, s, "s-ins6", "【INS-006】插话C")
+	res := inboxAddInsertMQ(t, s, "s-ins6", "【INS-006】插话C")
 	if str(res["type"]) != "insert" {
 		t.Fatalf("awaitJoin 应可再插入：%+v", res)
 	}
@@ -543,7 +594,7 @@ func TestInboxCancelGlobal(t *testing.T) {
 
 	sendMQ(t, s, "s-ins8", "t-ins8", "请用慢工具")
 	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
-	inboxAddMQ(t, s, "s-ins8", "【INS-008】插话A")
+	inboxAddInsertMQ(t, s, "s-ins8", "【INS-008】插话A")
 	rec.wait(t, "session-receive", textContains("插入回答"), 5*time.Second)
 
 	v := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
@@ -717,4 +768,126 @@ func TestInboxNextTurnBatchSkipsDiscarded(t *testing.T) {
 	if !seenKeep {
 		t.Fatalf("未撤回项应正常消费")
 	}
+}
+
+// TestInboxBatchInsertMerged（2026-11-01 BATCH-INSERT）：同一可插入窗口内登记的多条插话意向
+// 一次性批量插入 —— 每条各自落 messages（DB N 条），但**一次 LLM 请求**携带全部 user 消息。
+func TestInboxBatchInsertMerged(t *testing.T) {
+	llm, reqs := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
+	}))
+	t.Cleanup(data.Reset)
+	time.Sleep(50 * time.Millisecond)
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-bat"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+	startTurn(t, s, "s-bat", "t-bat")
+	rec := newInboxRec(t, s.bus)
+
+	sendMQ(t, s, "s-bat", "t-bat", "请用慢工具")
+	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
+	waitInsertable(t, s, "s-bat")
+
+	// 直接落 3 条 insert 意向（模拟「用户已点击插话、等待合并插入」）→ 轮内 ticker 会一并投递。
+	contents := []string{"【BATCH】A", "【BATCH】B", "【BATCH】C"}
+	tc := s.turnBySessionForAdd("ins-test", "s-bat")
+	for _, c := range contents {
+		res, err := dataRequest(s.bus, "data-inbox-append", withDialog(s, "s-bat", map[string]any{
+			"instance_id": "ins-test",
+			"data": map[string]any{
+				"session": "s-bat", "type": "insert", "content": c, "llm": "mock", "turn_id": tc.req.Turn,
+			},
+		}))
+		if err != nil {
+			t.Fatalf("append %q: %v", c, err)
+		}
+		s.inboxRemember(facade.InboxItem{ID: str(res["id"]), SessionID: "s-bat", Type: "insert", Content: c, Status: "pending"})
+	}
+
+	// 断言：存在**一次**请求同时携带 3 条 user 消息（= 合并为一次插入）。
+	deadline := time.Now().Add(8 * time.Second)
+	merged := false
+	for time.Now().Before(deadline) && !merged {
+		for _, turnMsgs := range reqs.snapshot() {
+			hit := map[string]bool{}
+			for _, m := range turnMsgs {
+				if m.Role != "user" {
+					continue
+				}
+				for _, c := range contents {
+					if strings.Contains(m.Content, c) {
+						hit[c] = true
+					}
+				}
+			}
+			if len(hit) == len(contents) {
+				merged = true
+				break
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if !merged {
+		t.Fatalf("多条插话应合并为一次 LLM 请求")
+	}
+	rec.wait(t, "session-receive", textContains("插入回答:【BATCH】C"), 5*time.Second)
+	// 全部意向项应已消费（DB 侧 consumed）。
+	for _, c := range contents {
+		found := false
+		for _, it := range s.mustPending("s-bat") {
+			if it.Content == c {
+				found = true
+			}
+		}
+		if found {
+			t.Fatalf("意向项应已消费：%q", c)
+		}
+	}
+	reportTask(t, s, "tk-tc-main", "C1结果", "s-bat", "t-bat")
+	rec.wait(t, "session-complete", byTurn("t-bat"), 8*time.Second)
+}
+
+// TestInboxRevertIntent（2026-11-01）：取消插话意向（insert → next_turn），不再插入当前轮。
+func TestInboxRevertIntent(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	startTurn(t, s, "s-rev1", "t-rev1")
+	rec := newInboxRec(t, s.bus)
+
+	sendMQ(t, s, "s-rev1", "t-rev1", "慢输出")
+	rec.wait(t, "session-receive", func(m map[string]any) bool { return str(m["type"]) == "text" }, 5*time.Second)
+	// 流式期登记插话意向：不可插入 → 保持 pending 意向。
+	res := inboxAddInsertMQ(t, s, "s-rev1", "【REVERT】不应插入")
+	if str(res["type"]) != "insert" {
+		t.Fatalf("应登记为 insert 意向：%+v", res)
+	}
+	id := str(res["id"])
+	// 取消意向 → next_turn（仍 pending）。
+	v := s.bus.Emit(context.Background(), "inbox-revert", jb(map[string]any{
+		"instance_id": "ins-test", "id": id,
+	})).Wait()
+	if v.Err() != nil {
+		t.Fatalf("inbox-revert: %v", v.Err())
+	}
+	r, _ := v.Result.(map[string]any)
+	if ok, _ := r["ok"].(bool); !ok || str(r["type"]) != "next_turn" {
+		t.Fatalf("取消意向应回退 next_turn：%+v", r)
+	}
+	if cur, ok := s.inboxLookup(id); !ok || cur.Type != "next_turn" || cur.Status != "pending" {
+		t.Fatalf("取消后应为 pending next_turn：%+v ok=%v", cur, ok)
+	}
+	rec.wait(t, "session-complete", byTurn("t-rev1"), 5*time.Second)
+	// 本轮结束 → next_turn 在新一轮被消费（不丢用户输入）。
+	rec.wait(t, "session-receive", textContains("插入回答:【REVERT】不应插入"), 8*time.Second)
+}
+
+// mustPending 读该会话 pending 项（测试助手；失败直接报错）。
+func (s *Server) mustPending(session string) []facade.InboxItem {
+	items, err := s.inboxList("ins-test", session, "pending")
+	if err != nil {
+		return nil
+	}
+	return items
 }

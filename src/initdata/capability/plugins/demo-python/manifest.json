@@ -1,0 +1,56 @@
+{
+  "schema": "chonkpilot.plugin/v1",
+  "id": "demo-python",
+  "name": "Python 演示插件",
+  "version": "1.0.0",
+  "description": "插件规范全功能演示（Python 标准库实现）：通道 / MCP / 配置 / iframe RPC / 事件 / 私有数据 / 推送 / 状态 / 退出",
+  "icon": "terminal",
+  "publisher": "chonkpilot",
+  "product": false,
+  "runtime": {
+    "mode": "managed",
+    "exe": "python",
+    "args": ["-u", "plugin.py"],
+    "autostart": false,
+    "restart": { "backoff_ms": 1000, "max_backoff_ms": 20000, "max_fails": 2 },
+    "health": { "interval_ms": 15000, "timeout_ms": 3000, "fail_threshold": 3 },
+    "stop": { "grace_ms": 5000 }
+  },
+  "channel": { "transport": "uds", "addr": "" },
+  "mcp": {
+    "mode": "http",
+    "namespace": "-",
+    "hot_tools": ["demo_echo"],
+    "timeout_sec": 60,
+    "category": "demo",
+    "origin": "builtin"
+  },
+  "config": {
+    "scope": "plugin"
+  },
+  "ui": {
+    "assets": { "mode": "dir", "root": "webui", "version": "1.0.0" },
+    "views": [
+      {
+        "id": "config",
+        "title": "Python 演示插件",
+        "icon": "terminal",
+        "entry": "webui/config.html",
+        "containers": ["preview", "tab", "drawer", "dialog"],
+        "default_size": { "width": 720, "height": 560 }
+      }
+    ],
+    "menus": [
+      { "location": "plugin", "label": "Python 演示", "icon": "terminal", "view": "config" }
+    ],
+    "rpc": ["echo", "stats", "llm", "bridge", "counter.reset"]
+  },
+  "permissions": {
+    "data": ["storage.self"],
+    "hooks": [],
+    "llm": {},
+    "session": [],
+    "ui": { "containers": ["preview", "tab", "drawer", "dialog", "statusbar"] },
+    "network": []
+  }
+}

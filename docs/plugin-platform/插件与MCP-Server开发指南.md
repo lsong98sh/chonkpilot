@@ -3,15 +3,16 @@
 > 适用：ChonkPilot `PLUGIN-1` 插件平台。**本文是插件开发与实现的唯一操作手册**；设计背景见
 > [插件与MCP统一设计方案](插件与MCP统一设计方案.md)。
 > 状态：🟡 随实现同步（2026-10-22 起；2026-10-23 对齐实际 SDK / pluginmgr / 数据面并补 §14/§15）。
-> 示例与代码以**同级仓 `chonkpilot-plugins/*`** 为准（2026-10-24 起主仓 `src/plugins/` 已整体迁出；SDK/宿主运行时 = `chonkpilot-plugin-framework`）。
+> 示例与代码以**同级仓 `chonkpilot-plugins/*`** 为准（2026-10-24 起主仓 `src/plugins/` 已整体迁出；SDK/宿主运行时 = `chonkpilot-framework/plugin`）。
 
 ---
 
 ## 1. 五分钟接入（Go）
 
 ```text
-capability/plugins/hello/
-  plugin.json
+plugins/hello/
+  plugin.json              # 极简启动信息
+  manifest.json            # 完整 manifest（插件自读上报）
   chonkpilot-hello.exe
   webui/config.html        # 可选
 ```
@@ -73,7 +74,19 @@ func main() {
 > `OnRequest(name, fn)` 处理 `plugin.ui.rpc` / `plugin.command` · `Call` / `CallInto` 调宿主能力面 ·
 > `DataRead` / `DataWrite` 业务数据面 · `ReportStatus(state, detail)` · `Config()` 读配置 · `Run(ctx)` 主循环。
 
-`plugin.json`：
+`plugin.json`（极简启动信息，PLUGIN-LOAD-1 D12）：
+
+```json
+{
+  "id": "hello",
+  "cmd": ["chonkpilot-hello.exe"],
+  "enabled": true,
+  "name": "Hello",
+  "icon": "plug"
+}
+```
+
+`manifest.json`（完整 manifest：由插件进程自读并在 `plugin.hello` 上报；宿主只校验 `id`）：
 
 ```json
 {
@@ -81,7 +94,6 @@ func main() {
   "id": "hello",
   "name": "Hello",
   "version": "1.0.0",
-  "runtime": { "mode": "managed", "exe": "chonkpilot-hello.exe" },
   "mcp": { "mode": "http", "namespace": "-", "hot_tools": ["hello_say"], "category": "demo" },
   "ui": {
     "views": [
@@ -93,7 +105,7 @@ func main() {
 }
 ```
 
-把这套目录放到 `<exeDir>/capability/plugins/hello/`（或用户级 `~/.chonkpilot/capability/plugins/hello/`），
+把这套目录放到 `<exeDir>/plugins/hello/`（或用户级 `~/.chonkpilot/plugins/hello/`），
 启动主程序即可在「插件」页看到它。
 
 ---
@@ -103,9 +115,10 @@ func main() {
 ### 2.1 目录
 
 ```text
-<级别根>/capability/plugins/<id>/
-  plugin.json      # 必填
-  <exe>            # runtime.mode=managed 必填
+<级别根>/plugins/<id>/
+  plugin.json      # 必填：极简启动信息（id / cmd / enabled / name / icon）
+  manifest.json    # 必填：完整 manifest（插件自读，hello 上报）
+  <exe>            # 可选：缺省按 chonkpilot-plugin-<id>.exe 约定
   webui/           # 可选：iframe 页面（只读静态资源）
   README.md        # 可选
 ```
@@ -114,34 +127,38 @@ func main() {
 
 | 级别 | 路径 |
 |------|------|
-| app | `<exeDir>/capability/plugins/<id>/` |
-| user | `~/.chonkpilot/capability/plugins/<id>/` |
-| project | `<workDir>/.chonkpilot/capability/plugins/<id>/` |
-| prjusr | `<prjusr 数据根>/capability/plugins/<id>/` |
+| app | `<exeDir>/plugins/<id>/` |
+| user | `~/.chonkpilot/plugins/<id>/` |
+| project | `<workDir>/.chonkpilot/plugins/<id>/` |
+| prjusr | `<prjusr 数据根>/plugins/<id>/` |
 
 插件私有数据：`<dataDir>/plugins/<id>/`（宿主创建并通过 env 注入）。
 
-### 2.2 manifest 字段（`plugin.json`）
+### 2.2 字段
+
+**`plugin.json`（极简；宿主发现期唯一读取源，只校验 ID）**
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `schema` | ✅ | 固定 `chonkpilot.plugin/v1` |
-| `id` | ✅ | `^[a-z][a-z0-9-]{1,31}$`，必须等于目录名 |
-| `name` / `version` / `description` / `icon` / `publisher` | | UI 展示 |
+| `id` | | 目录名；写了必须一致 |
+| `cmd` | | 启动命令：字符串或数组（exe + args）；缺省 `chonkpilot-plugin-<id>.exe` |
+| `enabled` | | 缺省 true；仍以 `<数据根>/plugins/enabled.json`（设置页开关）为最终开关 |
+| `name` / `icon` | | 上报前 UI 展示用（上报后以 manifest 为准） |
+
+**`manifest.json`（完整 manifest；插件进程自读，`plugin.hello.manifest` 上报）**
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `id` | ✅ | 必须等于插件 id（宿主只校验这一项） |
+| `schema` / `name` / `version` / `description` / `icon` / `publisher` | | UI 展示 |
 | `product` | | `true` = 产品插件（受信；`origin=builtin`） |
-| `runtime.mode` | | `managed`（默认，宿主 spawn）/ `external`（用户自行拉起） |
-| `runtime.exe` | managed ✅ | 相对插件目录；禁止绝对路径 / `..` |
-| `runtime.args` / `runtime.env` | | 静态参数 / 环境变量（**不放密钥**） |
-| `runtime.autostart` | | 默认 true |
-| `runtime.restart` | | `{backoff_ms,max_backoff_ms,max_fails}`（默认 1000/30000/3） |
+| `runtime.restart` | | `{backoff_ms,max_backoff_ms,max_fails}`（宿主默认 1000/30000/3，上报值 hello 后生效） |
 | `runtime.health` | | `{interval_ms,timeout_ms,fail_threshold}`（默认 15000/3000/3）；宿主周期性反向 `plugin.sys.ping`，连续失败达阈值即 kill（由守护退避重启）。SDK 已内置应答 |
 | `runtime.stop` | | `{grace_ms}`（默认 5000） |
-| `channel.transport` | | `uds`（默认）/ `tcp` |
-| `channel.addr` | | 空 = 宿主注入 `CHONKPILOT_PLUGIN_ADDR` |
 | `mcp.mode` | | `http`（默认）/ `tools` / `none` |
 | `mcp.namespace` | | `"-"` = 原样（默认）；其他值 = 前缀 |
 | `mcp.hot_tools` | | 缺省 `["*"]`；工具名数组 |
-| `mcp.timeout_sec` | | 缺省 120 |
+| `mcp.timeout_sec` | | 缺省 60 |
 | `mcp.category` / `mcp.origin` | | 缺省 `plugin` / `user`；产品插件填 `builtin` |
 | `mcp.tools[]` | `tools` 模式 ✅ | `{name,description,schema,hot,idempotent}` |
 | `config.fields[]` | | `{key,type,default,secret,required,min,max,label}` |
@@ -158,7 +175,7 @@ func main() {
 
 **硬规则**
 
-1. `id` 必须等于目录名；否则该插件跳过（`status=error`）。
+1. `plugin.json` 若写 `id` 必须等于目录名（宿主只校验 ID）；上报的 `manifest.id` 必须等于插件 id，否则 hello 失败、进程退出。
 2. `mcp.mode` **不得为 `stdio`**：插件进程由宿主独占管理，stdlib 会再 spawn 一份并独立 kill。
 3. `mcp.mode=http` 上报的 `url` 必须是 `http://127.0.0.1:<port>`，并带 token。
 4. `webui` 资源只从插件目录 `webui/` 读取；`entry` 不得含 `..`。
@@ -168,7 +185,7 @@ func main() {
 
 ## 3. 生命周期与环境变量
 
-宿主按 `runtime` spawn，注入：
+宿主按 `plugin.json` 的 `cmd` spawn，注入：
 
 | 环境变量 | 说明 |
 |----------|------|
@@ -193,7 +210,7 @@ disabled ──启用──> starting ──hello+register──> running ──
 degraded = 插件自报（plugin.status.report），不触发重启
 ```
 
-- `runtime.mode=managed` 才 spawn；`external` 只等外部进程连上（状态停在 `starting`）。
+- 插件一律由宿主 spawn（`external` 模式已删除，2026-11-02 / PLUGIN-LOAD-1 D14）。
 - 退出：宿主先发 `plugin.shutdown`（ctl），`runtime.stop.grace_ms` 内未退则 `Process.Kill`。
 
 **注意**：宿主每次 spawn 都会注入全新 `ADDR`；插件不得缓存旧地址。
@@ -241,7 +258,7 @@ plugin.ready    {}                                 → {ok}        # 可选：�
 | `plugin.mcp.register` / `plugin.mcp.unregister` | 登记 MCP（§5） |
 | `plugin.ui.register` | 登记视图/菜单/状态栏（§7） |
 | `plugin.status.report` | `{state,detail}`（`running`/`degraded`/`error`） |
-| `plugin.publish` | 仅 `plugin-ui-event`（推给自己的 iframe） |
+| `plugin.publish` | 仅 `plugin-event`（推给自己的 iframe） |
 | `plugin/v1/data.read` / `plugin/v1/data.write` | 统一业务数据面（§6.1） |
 
 业务能力（白名单映射到既有 MQ 主题，未列出不可达）：
@@ -258,6 +275,22 @@ plugin.ready    {}                                 → {ok}        # 可选：�
 | 工具 | `tools.list/call/wait/timeout/register/unregister` · `tool.notify` |
 | 资产 | `prompts.list/get` · `resources.list/read` · `servers.list/get/register/unregister` · `gateway.check` |
 | 运维 | `memory.flush` · `vfts.reindex` · `vfts.dict.set` · `prompt.optimise` |
+| 宿主策略 | `instance.resolve{work_dir}`（→ `{found, instance_id?}`）· `sandbox.resolve{work_dir}`（→ `{writable_dirs}`；定时任务等**无 tools/call 上下文**的场景用）· `workdir.ensure{work_dir, hidden?}`（→ `{instance_id, work_dir, opened}`；未打开的项目由宿主**隐藏打开**并等 `instance-register` ≤12s；超时/失败回明确错误） |
+
+> **项目已打开保证（SANDBOX-WRITE-1 P3，2026-11-03）**：后台类插件（定时任务等）在需要项目数据面/
+> 用户白名单之前调 `plugin/v1/workdir.ensure{work_dir, hidden:true}`：
+> - 已打开 → 返回主实例 id（`opened=false`，不建窗）；
+> - 未打开 → 宿主隐藏打开项目（C13/C17：正常打开流程——`instance-register` / `workdir-opened` /
+>   通知各插件 / 索引照常，只是窗口不显示）→ 等 `instance-register` → `opened=true`；
+> - 失败/超时 → **明确错误**：调用方应「本轮跳过 + 记错 + 下轮重试」，**不要把任务置为失效**。
+>
+> **写隔离（SANDBOX-WRITE-1，2026-11-03）**：插件处理写操作时可从两处拿「可写白名单」——
+> ① 工具调用上下文 `CallContext.Sandbox`（= gateway 下发的 `_meta.chonkpilot.sandbox{enabled, writable_dirs}`）；
+> ② 无调用上下文时（如定时任务执行前）调 `plugin/v1/sandbox.resolve{work_dir}`（先用 `workdir.ensure`
+> 保证项目已打开 → 才能拿到用户配置的 prj `security-*`，否则只有内置默认项）。
+> 拿到后按白名单做写路径校验（`chonkpilot-util/sandbox.Policy.AllowsPath`）或对脚本子进程施加
+> Low IL + Job（`scriptrun.Options.Sandbox`，执行前先 `sandbox.EnsureLowILCached`）。
+> **拿不到策略 → fail-open**（不阻断业务，但必须在自身状态/运行记录里写明原因）。
 
 > **未声明权限 = 拒绝**（`permission_denied`）。方法名与 payload 以本文为准，新增须同步
 > `docs/spec/60-reference/61-消息一览.md` 或协议附录。
@@ -448,6 +481,20 @@ parent.postMessage({ ckPlugin: 1, id: "r1", type: "call", method: "config.get", 
 允许方法：`config.get` / `config.set` / `config.reset` / `data.read` / `data.write` /
 `rpc`（白名单 = `ui.rpc`）/ `open-url` / `close` / `log`。
 
+#### 7.2.1 实例归属与定向投递（PLUGIN-INSTANCE-1）
+
+- **前端取法**：宿主打开插件页时 URL 带 `?p=<page>&instance_id=<承载窗口实例>`；插件页首帧读取该参数。
+  `instance_id` **不是凭据**，可用于 URL。**禁止**把它当插件自身的 `instance_id`（插件握手拿到的是
+  `plugin:<id>:<n>` 命名空间，两者不可混用）。
+- **后端取法**：
+  - **有来源**（事件 / 工具调用 / 订阅回调）：直接用消息里的 `instance_id`；
+  - **无来源**（定时任务等）：`plugin/v1/instance.resolve{work_dir}` 解析**同 workdir 的主窗口实例**
+    （SDK：`ResolveMainInstance`），未命中返回 false。
+- **定向推送**：`plugin.publish` 增**可选** `instance_id`（SDK：`PublishTo` / `PublishUI`）；
+  宿主广播时提升到顶层 `{id, instance_id?, topic, payload}`，缺省 = 广播；无来源场景用
+  `PublishForWorkDir(workDir, topic, payload)`，未命中 → 丢弃并记日志（**不回落广播**）。
+- UI 事件不排队、不重放：目标窗口关闭期间的事件丢失；投递目标只覆盖承载窗口所在实例。
+
 ### 7.3 状态栏
 
 ```json
@@ -461,7 +508,7 @@ parent.postMessage({ ckPlugin: 1, id: "r1", type: "call", method: "config.get", 
 ### 7.4 插件维护卡片（`ui.actions`）
 
 插件维护视图（工具栏「插件」按钮 / 设置菜单「插件维护」→ `preview-tab-open{kind:'plugin-manager'}`）
-为每个插件渲染一张卡片：**名称 / 版本 / 状态**、**启动命令**（`runtime.exe + args`；external = 连接地址）、
+为每个插件渲染一张卡片：**名称 / 版本 / 状态**、**启动命令**（`plugin.json.cmd`），
 **说明**（`description`）、**启用开关**、**配置按钮**（仅当注册了 `ui.views` 中 `id=config` 的视图）、
 以及插件自己注册的**动作按钮**（如「索引进度」打开进度详情）。
 
@@ -578,15 +625,16 @@ iframe config.set
 | 主程序 | `.\build-desktop.ps1` |
 
 ```text
-dist/desktop/capability/plugins/<id>/
-  plugin.json          # 源：src/initdata/capability/plugins/<id>/plugin.json
-  chonkpilot-<id>.exe  # 源：dist/plugin-apps/<id>/（build-plugins.ps1 产出）
+dist/plugins/<id>/
+  plugin.json          # 源：src/initdata/capability/plugins/<id>/plugin.json（极简）
+  manifest.json        # 源：src/initdata/capability/plugins/<id>/manifest.json（完整，插件自读）
+  chonkpilot-<id>.exe  # 源：build/plugin-apps/<id>/（build-plugins.ps1 产出）
   webui/               # 源：src/initdata/capability/plugins/<id>/webui/
   zvec_c_api.dll       # 仅 codegraph：必须与 exe 同目录（vfts 引擎运行时加载）
 ```
 
-- `build-plugins.ps1` → staging `dist/plugin-apps/<id>/`；`build-desktop.ps1` 步骤 4.5 先复制
-  manifest/webui 到 `dist/desktop/capability/plugins/<id>/`，再调 `build-plugins.ps1` 把 exe 覆盖进去。
+- `build-plugins.ps1` → staging `build/plugin-apps/<id>/`；`build-desktop.ps1` 步骤 4.5 先复制
+  plugin.json / manifest.json / webui 到 `dist/plugins/<id>/`，再调 `build-plugins.ps1` 把 exe 覆盖进去。
 - codegraph 插件 = codegraph 引擎 + vfts 引擎合并（CGO：tree-sitter + zvec），构建脚本已注入 zvec 头/库路径。
 - 禁止把插件私有数据 / 密钥写入产物目录。
 
@@ -601,8 +649,8 @@ dist/desktop/capability/plugins/<id>/
 5. 崩溃 → 退避重启 → 工具面恢复。
 6. 配置保存 → 重启后仍生效；密钥只显示掩码。
 7. iframe 页打开、`config.get/set`、`rpc` 正常；未授权方法被拒。
-8. 宿主重启 → `plugin-list` 快照立即可用；`runtime.mode=external` 的插件停在 `starting`
-   直到外部进程连上（连上后 `plugin.mcp.register` 即转 `running`）。
+8. 宿主重启 → `plugin-list` 快照立即可用；插件重新 spawn 后经 hello 上报 manifest 收敛
+   （hello → `plugin.mcp.register` → `running`）。
 9. 杀进程 → 退避重启（`restart.max_fails` 内）；连续 `health` ping 失败同样触发重启。
 
 ---
@@ -611,9 +659,9 @@ dist/desktop/capability/plugins/<id>/
 
 | 插件 | 说明 |
 |------|------|
-| `chonkpilot-plugins/websearch` | 三个 web 工具共用一个配置页：`web_search` / `web_fetch`（HTML→文本）/ `web_download`（目录/上限/白名单） |
+| `chonkpilot-plugins/web` | 三个联网工具共用一个配置页：`web_search`（DeepSeek 检索）/ `web_fetch`（DeepSeek 抓取 Markdown）/ `web_download`（本地直连：原始内容或下载；重定向可配） |
 | `chonkpilot-plugins/codegraph` | codegraph + vfts 合一（`OnMCPServer` 复用引擎 `RegisterTools`；配置页经 `tool.call` 直调） |
-| ~~`chonkpilot-plugins/compress`~~ | **压缩已内建（非插件）**：会话侧压缩内核（`chonkpilot-session`）+ `llm/server` 编排；无插件运行时形态 |
+| ~~`chonkpilot-plugins/compress`~~ | **压缩已内建（非插件）**：会话侧压缩内核（`chonkpilot-agent/session`）+ `llm/server` 编排；无插件运行时形态 |
 | `chonkpilot-plugins/browser` | 浏览器插件：桥接层 + 同目录引擎 exe（WebView2，UDS `start/stop/operation`），按实例复用 context；**不注册 MCP 工具**（原 `browser_run` 已删除） |
 | `chonkpilot-plugins/desktop` | 桌面插件：同构（Win32/UIA 引擎）；**不注册 MCP 工具**（原 `desktop_run` 已删除） |
 | `chonkpilot-plugins/file` | 文件系列 11 工具：解析 `tools/file/*.tool.md` 契约 → 注册 MCP 工具 → 进程内 `toolset.Dispatch`；默认参数（purpose/encoding/targets 上限）可配 |
@@ -654,7 +702,7 @@ dist/desktop/capability/plugins/<id>/
 |----|--------|------|
 | L1 纯函数 | manifest 校验 / 配置合并与掩码 / `DataTopic` 闭集 | 表驱动，无进程 |
 | L2 进程内 | 桩插件（`pluginsdk` 连同一个进程内桥）→ 注册 → MCP 登记 | `plugin-list` 出现 `running`；`tools/list` 含工具；禁用后工具消失 |
-| L3 进程外 | 真 exe（websearch / codegraph / compress） | 崩溃退避重启；配置落盘后重启仍生效；`_meta.chonkpilot` 透传 |
+| L3 进程外 | 真 exe（web / codegraph / compress） | 崩溃退避重启；配置落盘后重启仍生效；`_meta.chonkpilot` 透传 |
 | L4 UI | iframe 打开 / `config.get/set` / `rpc` / 未授权方法 | postMessage 应答 `ok`；拒绝项返回错误文案 |
 
 本地手工验收（无自动化时）：
@@ -662,7 +710,7 @@ dist/desktop/capability/plugins/<id>/
 ```powershell
 # 1) 构建
 .\build-plugins.ps1 ; .\build-desktop.ps1
-# 2) 启动后：插件页应出现 websearch / codegraph / compress / file / task / mcp / browser / desktop
+# 2) 启动后：插件页应出现 web / codegraph / compress / file / task / mcp / browser / desktop
 # 3) 关掉某个插件 exe（任务管理器）→ 观察 status 从 running → starting → running
 # 4) 改配置（密钥只显示掩码）→ 重启 → 值保留；插件日志见 <dataDir>/plugins/<id>/logs/plugin.log
 ```
@@ -705,6 +753,6 @@ p.Run(context.Background())
 | `browser` / `desktop` | `engineclient` + helpers | 动作映射 + context 复用（各约 120 行） |
 | `task` | `p.LLM` + `DataWrite` + helpers | 命令执行与输出限流（约 100 行） |
 | `mcp` | `tools.list` / `tools.call` + helpers | 检索/加载/调用编排（约 150 行） |
-| `websearch` | `p.Config` + helpers | DeepSeek 检索 / HTML→文本 / 下载限额（业务） |
+| `web` | `p.Config` + helpers | DeepSeek 检索 / DeepSeek 抓取 / 本地直连（原始内容或下载，重定向可配） |
 | `codegraph` | `OnMCPServer` + 引擎 `RegisterTools` | 引擎装配（约 40 行） |
 | `compress` | `p.LLM` + `DoCompress` | DTO 映射（业务） |

@@ -570,28 +570,13 @@ func TestTurnAsyncPending(t *testing.T) {
 	}
 }
 
-// TestLLMCompressEvent（C2 端到端）：唯一终态 llm-complete → 写快照（snapshot_turn=本轮）
-// → 发 llm-compress（载荷含 instance_id/work_dir/data_dir/session/last_turn/snapshot_turn）。
-func TestLLMCompressEvent(t *testing.T) {
+// TestTurnWritesSnapshot（C2 端到端）：唯一终态 llm-complete → 写快照（snapshot_turn=本轮）。
+// 压缩自 2026-10-31 起为内部方法面（`session-compress` 已从消息面移除），此处只断言快照落库。
+func TestTurnWritesSnapshot(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-comp", "t1")
-
-	var compressEv map[string]any
-	var compressMu sync.Mutex
-	compSub, err := s.bus.On("session-compress", 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var m map[string]any
-		_ = json.Unmarshal(v.Payload, &m)
-		compressMu.Lock()
-		compressEv = m
-		compressMu.Unlock()
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer compSub.Unsubscribe()
 
 	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-comp", "turn": "t1",
@@ -600,39 +585,6 @@ func TestLLMCompressEvent(t *testing.T) {
 	evs := collectTurn(t, s.bus, "t1", 10*time.Second)
 	if lastComplete(evs) == nil {
 		t.Fatalf("no complete: %+v", evs)
-	}
-	// llm-compress 事件（MQ 异步派发，轮询）
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		compressMu.Lock()
-		got := compressEv != nil
-		compressMu.Unlock()
-		if got {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	compressMu.Lock()
-	ev := compressEv
-	compressMu.Unlock()
-	if ev == nil {
-		t.Fatal("no llm-compress event")
-	}
-	if ev["session"] != "s-comp" || ev["last_turn"] != "t1" || ev["snapshot_turn"] != "t1" {
-		t.Fatalf("compress payload wrong: %+v", ev)
-	}
-	if ev["instance_id"] != "ins-test" || ev["work_dir"] != testWorkDir {
-		t.Fatalf("compress payload missing instance/work_dir: %+v", ev)
-	}
-	// 未配置 provider（无 max_context_token / max_output_token）→ **不带**这两个可选键（与旧载荷逐字节等价）；
-	// 载荷字段已统一 snake_case（口径 Z4）——旧名（camelCase `maxContextToken` / 更早 `window`）**不得再出现**。
-	for _, k := range []string{
-		"max_context_token", "max_output_token",
-		"maxContextToken", "maxOutputToken", "window",
-	} {
-		if _, ok := ev[k]; ok {
-			t.Fatalf("未配置 provider 不应带键 %q: %+v", k, ev)
-		}
 	}
 
 	// 快照已落库（经 persist data-snapshot-get 断言）：snapshot_turn = t1，history 含本轮用户消息
@@ -650,64 +602,6 @@ func TestLLMCompressEvent(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("snapshot missing user msg: %+v", snap)
-	}
-}
-
-// TestLLMCompressEventCarriesContextTokens（口径 Z3/Z4，2026-09-25）：provider 配置
-// maxContextToken / maxOutputToken → session-compress 载荷携带 **snake_case** 同义字段
-// `max_context_token` / `max_output_token`（兜底归并的真窗口 + 输出预留）；
-// 未配置则不带键（见 TestLLMCompressEvent 的缺省断言）。
-func TestLLMCompressEventCarriesContextTokens(t *testing.T) {
-	rec, srv := newProviderServer(t)
-	s := newTestServer(t, srv)
-	registerProviderInstance(t, s)
-	saveTestLLMProvider(t, s, map[string]any{
-		"name": "prov-ctx", "baseUrl": srv.URL, "model": "m1",
-		"maxContextToken": 128000, "maxOutputToken": 4096,
-	})
-
-	var compressEv map[string]any
-	var compressMu sync.Mutex
-	compSub, err := s.bus.On("session-compress", 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var m map[string]any
-		_ = json.Unmarshal(v.Payload, &m)
-		compressMu.Lock()
-		compressEv = m
-		compressMu.Unlock()
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer compSub.Unsubscribe()
-
-	startTurnLLM(t, s, "s-ctx", "t-ctx", "prov-ctx", "on", "high")
-	sendAndWait(t, s, "s-ctx", "t-ctx", "hello ctx")
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		compressMu.Lock()
-		got := compressEv != nil
-		compressMu.Unlock()
-		if got {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	compressMu.Lock()
-	ev := compressEv
-	compressMu.Unlock()
-	if ev == nil {
-		t.Fatal("no llm-compress event")
-	}
-	if got, ok := ev["max_context_token"].(float64); !ok || int(got) != 128000 {
-		t.Fatalf("max_context_token=%v want 128000（provider maxContextToken 透传）", ev["max_context_token"])
-	}
-	if got, ok := ev["max_output_token"].(float64); !ok || int(got) != 4096 {
-		t.Fatalf("max_output_token=%v want 4096（provider maxOutputToken 透传）", ev["max_output_token"])
-	}
-	if n := rec.count(); n == 0 {
-		t.Fatal("provider 端点未被请求")
 	}
 }
 

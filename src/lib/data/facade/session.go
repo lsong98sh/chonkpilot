@@ -24,6 +24,8 @@ package facade
 //
 // 不变量（单聊方案 §3.2）：`kind ∈ {sub_chat, sub_session, group_chat, work_session}` ⟺
 // `parent_id != ""`；`kind ∈ {sub_chat, group_chat}` ⟹ 才有 agent / scenario_id / llm / lifecycle。
+// **例外（P4 / C11）**：`kind = crontab` 是**顶层**定时任务根会话（`parent_id == ""`），
+// 其子会话 `kind = crontab_task`（`parent_id` = 根会话 id）。
 //
 // **`work_session` 与 `sub_session` 不是同物**（群聊方案 §5 术语提示）：前者 = agent 的私有工作区
 // （`parent_id` = **群聊会话**），后者 = dsl_run 的 LLM 步骤派生（走任务执行树）；
@@ -33,7 +35,18 @@ const (
 	SessionKindGroupChat   = "group_chat"
 	SessionKindWorkSession = "work_session"
 	SessionKindSubSession  = "sub_session"
+	// SessionKindCrontab 是**定时任务对话的根会话**类型（SANDBOX-WRITE-1 P4 / C11）：
+	// 每个项目 1 个顶层对话（`dialogs.kind = "crontab"`）+ 1 个根会话（id = `crontab-xxxxxxxx`，
+	// `parent_id = ""`）。该 kind 的对话**不进**顶层会话列表（C12）。
+	SessionKindCrontab = "crontab"
+	// SessionKindCrontabTask 是**定时任务子会话**类型：每任务 1 个，`parent_id` = 根会话 id。
+	// 不属于「子聊天」体系（不进 `SessionSubChats*`），仅供定时任务审计 / 任务详情页展示。
+	SessionKindCrontabTask = "crontab_task"
 )
+
+// 会话执行主体标识（`sessions.origin`，SANDBOX-WRITE-1 P4 / C11）：空 = 用户会话；
+// SessionOriginScheduler = 定时任务（`crontab`）调度器创建 / 驱动的会话（**不冒充用户**）。
+const SessionOriginScheduler = "scheduler"
 
 // 子聊天生命周期（`sessions.lifecycle`，三态；单聊方案 §3.4.4 / D24）——**仅子聊天**有意义：
 //   - SessionLifecycleChatting = 进行中（`subchat_open` 建会话时初值）；
@@ -84,6 +97,9 @@ type Session struct {
 	Goal        string `json:"goal,omitempty"`
 	Playbook    string `json:"playbook,omitempty"`
 	Convergence string `json:"convergence,omitempty"`
+	// Origin 执行主体标识（P4 / C11）：空 = 用户会话；`scheduler` = 定时任务驱动。
+	// **仅非空才落库**（普通会话行形状零变化）。
+	Origin string `json:"origin,omitempty"`
 	// Snapshot 该会话的快照（领域形态：messages + turn）。
 	// **nil = 该会话从未写过快照**（存储侧无 history/snapshot_turn 两列）——
 	// 与"有快照但为空"（非 nil 且 Messages 为空）是两件不同的事，故用指针保真。
@@ -272,6 +288,11 @@ type SessionEnsureRequest struct {
 	Goal        string `json:"goal,omitempty"`
 	Playbook    string `json:"playbook,omitempty"`
 	Convergence string `json:"convergence,omitempty"`
+	// Title 会话标题（P4 / C11；空 = 取 SessionID，与既有行为一致）。根会话自举时**同时**作为
+	// 新建对话的标题（`dialogs.title`）。
+	Title string `json:"title,omitempty"`
+	// Origin 执行主体标识（P4 / C11；空 = 用户会话）。非空才写 `sessions.origin`。
+	Origin string `json:"origin,omitempty"`
 }
 
 // SessionEnsureResponse 是幂等建会话出参。

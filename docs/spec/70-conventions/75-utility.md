@@ -10,7 +10,9 @@
 
 `chonkpilot-util` 是**全仓共用的无状态 utility**：只做「输入 → 输出」，不持库、不缓存、不起 goroutine、不读写文件系统、不依赖任何业务包。
 
-它是**单一实现**：同一语义不允许在业务包再写一份。`ignore` 只是其中一个子包（gitignore 纯内核），不是整个库的名字。
+它是**单一实现**：同一语义不允许在业务包再写一份。`ignore` 只是其中一个子包（gitignore），不是整个库的名字。
+
+例外：少量**跨仓复用的有状态 / I/O 实现**（如命令执行、进程属性、托盘窗口、gitignore I/O 外壳）也收在本仓（见 §3.1）——它们不满足「纯函数」约束，但仍遵守**单一实现**，不得在业务包另写一份。
 
 ---
 
@@ -23,6 +25,8 @@
 | 确定性环境常量（`os.UserHomeDir` / `TempDir`） | 文件/网络 IO、DB、MQ |
 | 标准库 | `time.Now`、随机源（需要时由调用方传入） |
 | 纯状态机谓词 | 任何「记住上次」的逻辑 |
+
+**依赖白名单（唯一例外）**：`golang.org/x/text` —— 纯 Go 编码表（无 cgo / 无 `init` 副作用），**仅 `encodingx` 使用**（2026-10-31 用户口径：编码识别 / 转 UTF-8 必须单源进 util，不允许各仓各写一份）。其余第三方依赖仍禁止，`go run ./cmd/utilguard` 会拦截。
 
 **禁止聚合入口包**：调用方必须 import 具体子包。聚合包会把全部 `init` 与重依赖一起拉进 exe。
 
@@ -38,8 +42,9 @@
 | `pathx` | 路径 | `ExpandHome` / `ResolveDir` / `Resolve` / `SanitizeInstance` / `Within` / `Same` / `ToLogical` / `FromLogical` |
 | `namex` | 文件名 | `Sanitize` / `ReplaceIllegal` / `EnsureExt` / `SafeExt` / `ExtAllowed` |
 | `glob` | 通配匹配 | `Match` / `MatchAny` / `MatchCSV`（支持 `**`） |
-| `ignore` | gitignore 纯内核 | `Parse` / `Match` / `MatchesAny` / `LastMatch` / `BuiltinRules` / `DefaultRules` |
+| `ignore` | gitignore 完整实现（纯内核 + I/O 外壳；实例 API） | `Parse` / `Match` / `MatchesAny` / `LastMatch` / `BuiltinRules` / `DefaultRules` / `New` / `Matcher.Ignored` / `Matcher.WalkDir` / `WalkDir` / `ConfigOptions` |
 | `textx` | 文本/行/二进制 | `SplitLines` / `CountLines` / `NormalizeNewlines` / `IsBinary` / `HasUTF16BOM` / `EstimateTokens` |
+| `encodingx` | 编码识别/解码/编码（依赖白名单 `golang.org/x/text`） | `Normalize` / `BOMName` / `Decode` / `Encode` / `Candidates` / `Confidence` / `DecodeAuto` / `AutoName` / `DisplayName` / `Visible` / `Sample` / `IsUTF8Text` / `LooksLikeChinese` |
 | `jsonval` | JSON 取值 | `Str` / `Int` / `Bool` / `Unwrap` / `UnwrapMap` / `MergeMissing` / `Clone` / `Lookup` |
 | `configkit` | 配置脚手架 | `IntPtr` / `NormalizeInt` / `NormalizeBool` / `SaveEntries` / `ExplicitKeys` / `ExplicitKeysInOrder` / `IsKnownKey` |
 | `mqmatch` | MQ 主题匹配 | `Match` / `MatchTokens` / `Split` |
@@ -53,6 +58,17 @@
 | `jsonschemax` | JSON Schema | `NormalizeObject` |
 
 完整签名与说明见仓根 `chonkpilot-util/CATALOG.md`（自动生成，勿手改）。
+
+### 3.1 IO / 有状态共享实现（例外，仍单源）
+
+> 2026-10-31 上收：判据 = 跨 ≥2 仓 / 安全相关 / 易错。以下包**不满足** §2 的纯函数约束，但属于「全仓唯一实现」，业务包不得再写一份。
+
+| 子包 | 职责 | 说明 |
+|------|------|------|
+| `pathutil` | 工具参数路径（R-11）/ 宿主 CHONKPILOT_* 环境 | `Resolve` / `TempRoot` / `HostEnv`；依赖 `pathx` |
+| `winproc` | Windows 进程创建属性（隐藏控制台 / Job Object / `KillTree`） | spawn 子进程的安全与体验基线 |
+| `scriptrun` | 多 runtime 命令执行（超时杀进程树 / 输出上限 / env） | `task_run` 与 `crontab` 共用；依赖 `pathutil` + `winproc` |
+| `trayconsole` | Windows 托盘 + 控制台式输出窗口 | browser / desktop 引擎共用 |
 
 ---
 
@@ -90,9 +106,9 @@
 
 新增 `chonkpilot-util/cmd/utilguard`：扫描所有同级仓（排除 old / old2 / webview2 / util 自身），检查：
 
-- 函数名黑名单：`firstNonEmpty`、`splitRules`、`splitList`、`splitComma`、`parseHiddenDirs`、`sanitizeInstance`、`sanitizePluginID`、`sanitizeIDSeg`、`sanitizeFilename`、`truncRunes`、`truncateEventMsg`、`countLines`、`isBinary`、`IsBinaryBytes`、`HasUTF16BOM`、`samePath`、`matchSubject`、`matchTokens`、`normalizeExts`、`newExtSet`、`intPtr`、`atoiSafe`、`isTruthy`。
+- 函数名黑名单：`firstNonEmpty`、`splitRules`、`splitList`、`splitComma`、`parseHiddenDirs`、`sanitizeInstance`、`sanitizePluginID`、`sanitizeIDSeg`、`sanitizeFilename`、`truncRunes`、`truncateEventMsg`、`countLines`、`isBinary`、`IsBinaryBytes`、`HasUTF16BOM`、`samePath`、`matchSubject`、`matchTokens`、`normalizeExts`、`newExtSet`、`intPtr`、`atoiSafe`、`isTruthy`；编码域：`DecodeText`、`detectEncoding`、`decodeByName`、`encodeByName`、`normalizeEncoding`、`scoreDecoded`、`sortCandidates`、`confidenceOf`、`sampleOf`、`looksLikeUTF8`、`encodeUTF16`、`stripUTF16BOM`、`utf16OrderOf`、`hasVisible`、`EncodingName`、`encodeFor`、`looksLikeChinese`。
 - 特征实现：`RuneCountInString … / 2`、`IndexByte(…, 0)`、`FieldsFunc` 分号列表、`EqualFold + filepath.Clean`。
-- 依赖方向：util 自身只允许标准库。
+- 依赖方向：util 自身只允许标准库 + 白名单 `golang.org/x/text`（仅 `encodingx`，见 §2）。
 - 已委托 util 的薄封装自动放行。
 
 命令（在 `chonkpilot-util` 仓根）：
@@ -106,14 +122,14 @@ go run ./cmd/gencatalog -check          # 校验 CATALOG 是否过期
 
 迁移期用 `utilguard-baseline.txt` 冻结存量，只拦新增；存量随重构逐步清零（棘轮）。
 
-**当前存量（2026-10-29 收尾后）**：**0 条**。7 个插件的 `normalizeInt` / `saveEntries` / `explicitKeys` 已全部改为 `configkit` 薄封装（`ExplicitKeysInOrder` 保留各插件 `allKeys` 声明序）；`settingsOf` 是插件各自的 schema 字段映射（字段集不同），不属于通用 utility，已从黑名单移除。
+**当前存量（2026-10-31 收尾后）**：**0 条**。7 个插件的 `normalizeInt` / `saveEntries` / `explicitKeys` 已全部改为 `configkit` 薄封装（`ExplicitKeysInOrder` 保留各插件 `allKeys` 声明序）；`settingsOf` 是插件各自的 schema 字段映射（字段集不同），不属于通用 utility，已从黑名单移除。**编码域 3 处旧实现已上收**：`file` 插件 `fileops`/`filetool`、主仓 `mcp-tools/internal/fileops`、vfts 引擎（`server/charenc.go` 只留索引策略）→ 统一 `encodingx`。
 
 ---
 
 ## 7. 新增子包的流程
 
 1. 在 `chonkpilot-util/<pkg>/` 建 `doc.go`（中文职责 + 英文关键词）与实现。
-2. 只依赖标准库；禁止 `init` 与包级可变变量。
+2. 只依赖标准库（白名单见 §2）；禁止 `init` 与包级可变变量。
 3. 写 table-driven 单测（`package <pkg>_test`）。
 4. 运行 `gofmt -w`、`go test ./...`、`go run ./cmd/gencatalog`。
 5. 把该包加入本文第 3 节、`README.md` 与 utilguard 黑名单（如有旧实现）。

@@ -1,0 +1,7 @@
+{
+  "id": "crontab",
+  "cmd": ["chonkpilot-plugin-crontab.exe"],
+  "enabled": true,
+  "name": "定时任务",
+  "icon": "clock"
+}

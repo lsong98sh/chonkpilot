@@ -18,6 +18,7 @@ import (
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/chonkpilot/chonkpilot-workspace"
+	wslayout "github.com/chonkpilot/chonkpilot-workspace/layout"
 	"github.com/sgtdi/fswatcher"
 )
 
@@ -446,7 +447,7 @@ func (dw *dirWatcher) processBatch() {
 	}
 	// 一次解析 work_dir 真实路径，本批复用（避免逐事件/逐目录重复「逐段 Readlink」）；
 	// dirs 携带各刷新目录的**真实路径**（解析一次），pubDirChanged 直接复用不再二次解析。
-	baseReal := workspace.Real(dw.workDir)
+	baseReal := wslayout.Real(dw.workDir)
 	dirs := make(map[string]string)
 	putDir := func(dir, dirReal string) {
 		if _, ok := dirs[dir]; !ok {
@@ -460,8 +461,8 @@ func (dw *dirWatcher) processBatch() {
 		}
 		op := operation(path, ev.types)
 		// 事件路径真实路径本事件内解析一次复用（越界复检 + pubChanged + 目录刷新 3 处旧调用合一）。
-		pathReal := workspace.Real(path)
-		inWorkDir := workspace.WithinLexical(dw.workDir, path) && workspace.WithinLexical(baseReal, pathReal)
+		pathReal := wslayout.Real(path)
+		inWorkDir := wslayout.WithinLexical(dw.workDir, path) && wslayout.WithinLexical(baseReal, pathReal)
 		dw.pubChanged(path, op, inWorkDir)
 		fi, statErr := os.Lstat(path)
 		isDir := statErr == nil && fi.IsDir()
@@ -474,12 +475,12 @@ func (dw *dirWatcher) processBatch() {
 			// fswatcher 把重命名新旧名均映射为 EventRename（无 Create）→ 同样需刷新父目录。
 			if hasEventType(ev.types, fswatcher.EventCreate) || hasEventType(ev.types, fswatcher.EventRename) {
 				parent := filepath.Dir(path)
-				putDir(parent, workspace.Real(parent))
+				putDir(parent, wslayout.Real(parent))
 			}
 			putDir(path, pathReal)
 		} else {
 			parent := filepath.Dir(path)
-			putDir(parent, workspace.Real(parent))
+			putDir(parent, wslayout.Real(parent))
 		}
 	}
 	for dir, dirReal := range dirs {
@@ -550,7 +551,7 @@ func (dw *dirWatcher) pubChanged(abs, op string, inWorkDir bool) {
 func (dw *dirWatcher) pubDirChanged(dir, dirReal, baseReal string) {
 	// 复验：目录真实路径须仍在 work_dir 内（防经符号链接 / 目录联接广播根外目录的 children 清单）。
 	// dirReal / baseReal 由调用方预先解析复用（见 processBatch），避免逐目录重复「逐段 Readlink」。
-	if !workspace.WithinLexical(dw.workDir, dir) || !workspace.WithinLexical(baseReal, dirReal) {
+	if !wslayout.WithinLexical(dw.workDir, dir) || !wslayout.WithinLexical(baseReal, dirReal) {
 		return
 	}
 	children := listDirNodes(dir, dw.hiddenDirs())

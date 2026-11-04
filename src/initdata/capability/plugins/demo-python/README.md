@@ -38,7 +38,7 @@ capability/plugins/demo-python/
 | 私有数据面 | `counter_get/counter_add` | `plugin/v1/data.read|write` + `storage.self`（需 manifest 授权） |
 | **LLM 桥** | `llm_call()` / 工具 `demo_llm` / rpc `llm` | `plugin/v1/llm.step`：插件不持有 apiKey，提示词经通道转发 |
 | **传输可选 UDS / TCP** | `Bridge.__init__` | `ADDR` 裸路径 = AF_UNIX；`tcp://host:port` = TCP（同一帧协议） |
-| 反向推送 | `publish()` → `plugin.publish` | 只允许 `plugin-ui-event`，前端 `ckPlugin.onEvent` 接收 |
+| 反向推送 | `publish()` → `plugin.publish` | 只允许 `plugin-event`，前端 `ckPlugin.onEvent` 接收 |
 | 状态上报 | `plugin.status.report` | `running` / `degraded`（开 `flaky` 可演练） |
 | 健康应答 | `plugin.sys.ping` | 宿主 `runtime.health` 周期性反向 ping |
 | 优雅退出 | `plugin.shutdown` | 宿主先发 ctl，`grace_ms` 内未退则 kill |

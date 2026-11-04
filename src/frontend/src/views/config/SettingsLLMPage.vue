@@ -78,6 +78,7 @@ import { dialog } from '@ckfw/components/dialog/index.js'
 import Icon from '@ckfw/components/icon/Icon.vue'
 import { getUserConfig, saveUserConfig } from '../../api/config'
 import { DEFAULT_LLM } from '../../config/defaults'
+import { normalizeCapability, capabilityFromLegacyCaps } from '../../utils/fieldRules'
 import { loadFailedText, savedText, saveFailedText, APPLY_INSTANT } from '../../utils/settingsFeedback'
 import { useUnsavedMark } from '../../composables/useUnsavedMark'
 import mq from '@ckfw/utils/mq.js'
@@ -120,6 +121,9 @@ const llmColumns = computed(() => [
   { label: t('config.llm.model'), prop: 'model', minWidth: 120 },
   { label: t('config.llm.baseUrl'), prop: 'baseUrl', minWidth: 160 },
   { label: t('config.llm.maxToolIterations'), prop: 'maxToolIterations', width: 90 },
+  // 能力双维度（D-65，2026-11-04）：推理 / 识图各 0~5（0 = 不具备）；旧记录按 capabilities 映射展示。
+  { label: t('config.llm.capabilityReasoning'), prop: 'capabilityReasoning', width: 90 },
+  { label: t('config.llm.capabilityVision'), prop: 'capabilityVision', width: 90 },
   { label: t('config.table.operation'), type: 'action', width: 180, align: 'center' },
 ])
 
@@ -221,8 +225,23 @@ async function saveDefaultsTab() {
   }
 }
 
-// 一览行 = usr llms（带 _index 供编辑/删除）。
-const llmRows = computed(() => llms.value.map((it, i) => ({ ...it, _index: i })))
+// 一览行 = usr llms（带 _index 供编辑/删除）。能力双维度（D-65）就地折算为展示列：
+// `capability{reasoning,vision}` 优先；旧记录只有 `capabilities` 时按「具备 = 3.0」映射；都没声明 → 「—」。
+function capabilityText(it) {
+  if (it && it.capability && typeof it.capability === 'object') {
+    const dims = normalizeCapability(it.capability)
+    return { reasoning: dims.reasoning.toFixed(1), vision: dims.vision.toFixed(1) }
+  }
+  if (it && Array.isArray(it.capabilities) && it.capabilities.length) {
+    const dims = capabilityFromLegacyCaps(it.capabilities)
+    return { reasoning: dims.reasoning.toFixed(1), vision: dims.vision.toFixed(1) }
+  }
+  return { reasoning: '—', vision: '—' }
+}
+const llmRows = computed(() => llms.value.map((it, i) => {
+  const cap = capabilityText(it)
+  return { ...it, _index: i, capabilityReasoning: cap.reasoning, capabilityVision: cap.vision }
+}))
 
 async function loadConfig() {
   try {
@@ -276,9 +295,17 @@ function openEditor(data, index) {
   }), { title: t('config.llm.editTitle'), width: 640, height: 620, bodyClass: 'form-dialog-body', minimizable: false, closable: true })
 }
 
-function addLLM() { openEditor({ ...DEFAULT_LLM }, -1) }
+// 编辑态快照（深拷贝能力对象：弹窗内改档位不污染列表 / DEFAULT_LLM 常量）。
+function cloneLLM(it) {
+  if (it && it.capability && typeof it.capability === 'object') {
+    return { ...it, capability: { ...it.capability } }
+  }
+  return { ...it }
+}
 
-function editLLM(index) { openEditor({ ...llms.value[index] }, index) }
+function addLLM() { openEditor(cloneLLM(DEFAULT_LLM), -1) }
+
+function editLLM(index) { openEditor(cloneLLM(llms.value[index]), index) }
 
 async function deleteLLM(index) {
   if (llms.value.length <= 1) {

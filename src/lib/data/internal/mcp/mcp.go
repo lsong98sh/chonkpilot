@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/internal/capfs"
@@ -60,24 +61,32 @@ func (s *Service) mcpLevelsFor(instanceID string, scope facade.Scope) []capfs.Le
 }
 
 // mcpRootForWrite 解析写入目标级（app / user / project / prjusr 四级均可写）。
-// 缺省 user；project 需 workDir 非空（否则回落 user）；prjusr 需 prjUsrCapRoot 非空（否则回落 user）；
-// app 需系统级根可解析（否则回落 user）。
-func (s *Service) mcpRootForWrite(level, workDir, prjUsrCapRoot string) (string, string) {
+//
+// 级别语义（D-54，2026-10-31）：**空 = 用户级**（保持原有缺省）；非空必须是四级之一——
+// 未知级别 / 该级当前不可用（project 缺 work_dir、prjusr 缺项目私有根、app 根不可解析）
+// 一律**返回错误**，禁止静默回落 user 级（回落可能误删 / 误写用户级同名项）。
+func (s *Service) mcpRootForWrite(level, workDir, prjUsrCapRoot string) (string, string, error) {
 	switch level {
+	case "", capfs.KindUser:
+		return capfs.KindUser, capfs.McpUserRoot(s.UsrPath), nil
 	case capfs.KindApp:
 		if root, err := capfs.McpSystemRoot(s.AppDir); err == nil {
-			return capfs.KindApp, root
+			return capfs.KindApp, root, nil
 		}
+		return "", "", errors.New("app 级不可用：无法解析系统级 MCP 根")
 	case capfs.KindProject:
-		if workDir != "" {
-			return capfs.KindProject, capfs.McpProjectRoot(workDir)
+		if workDir == "" {
+			return "", "", errors.New("project 级不可用：当前实例未绑定 work_dir")
 		}
+		return capfs.KindProject, capfs.McpProjectRoot(workDir), nil
 	case capfs.KindPrjUsr:
-		if prjUsrCapRoot != "" {
-			return capfs.KindPrjUsr, capfs.McpsRoot(prjUsrCapRoot)
+		if prjUsrCapRoot == "" {
+			return "", "", errors.New("prjusr 级不可用：当前实例未解析项目私有根")
 		}
+		return capfs.KindPrjUsr, capfs.McpsRoot(prjUsrCapRoot), nil
+	default:
+		return "", "", errors.New("未知的级别 " + strconv.Quote(level) + "（可选：app / user / project / prjusr）")
 	}
-	return capfs.KindUser, capfs.McpUserRoot(s.UsrPath)
 }
 
 // mcpFromMap 把文件字段 map（补 name/level）转门面 DTO。
@@ -204,11 +213,18 @@ func (s *Service) McpSave(req facade.McpSaveRequest) (facade.McpSaveResponse, er
 	}
 	workDir := s.WorkDirLoose(req.InstanceID, req.Scope)
 	prjUsrCap := s.prjUsrCapRoot(req.InstanceID, req.Scope)
-	kind, root := s.mcpRootForWrite(srv.Level, workDir, prjUsrCap)
+	kind, root, err := s.mcpRootForWrite(srv.Level, workDir, prjUsrCap)
+	if err != nil {
+		return facade.McpSaveResponse{}, err
+	}
 	srv.Level = kind
 	// 改名/移级：先删旧文件（不同名或不同级别）
 	if req.OldName != "" && (req.OldName != srv.Name || req.OldLevel != kind) {
-		if oldKind, oldRoot := s.mcpRootForWrite(req.OldLevel, workDir, prjUsrCap); req.OldLevel == "" || oldKind == req.OldLevel {
+		oldKind, oldRoot, err := s.mcpRootForWrite(req.OldLevel, workDir, prjUsrCap)
+		if err != nil {
+			return facade.McpSaveResponse{}, err
+		}
+		if req.OldLevel == "" || oldKind == req.OldLevel {
 			// 尽力清理旧定义；失败（越界 / IO）留痕，但不阻断新写入（best-effort 语义不变，A-42）。
 			if err := capfs.DeleteMcpFile(oldRoot, req.OldName); err != nil && s.Warnf != nil {
 				s.Warnf("mcp: 删除旧定义 %s/%s 失败：%v", oldRoot, req.OldName, err)
@@ -229,6 +245,12 @@ func (s *Service) McpDelete(req facade.McpDeleteRequest) (facade.McpDeleteRespon
 	}
 	workDir := s.WorkDirLoose(req.InstanceID, req.Scope)
 	prjUsrCap := s.prjUsrCapRoot(req.InstanceID, req.Scope)
+	// D-54：显式 level 必须是四级之一（未知值报错，禁止回落 user 级误删同名项）。
+	if req.Level != "" {
+		if _, _, err := s.mcpRootForWrite(req.Level, workDir, prjUsrCap); err != nil {
+			return facade.McpDeleteResponse{}, err
+		}
+	}
 	levels := s.mcpLevelsFor(req.InstanceID, req.Scope)
 	order := capfs.PriorityOrder()
 	if req.Level != "" {
@@ -251,7 +273,11 @@ func (s *Service) McpDelete(req facade.McpDeleteRequest) (facade.McpDeleteRespon
 	}
 	// 指定级别删除（order = 单级）时，未命中也要尝试该级根（层级可能不在 levels 内，如 prjusr 未解析）
 	if !deleted && req.Level != "" {
-		if _, root := s.mcpRootForWrite(req.Level, workDir, prjUsrCap); capfs.McpFileExists(root, req.Name) {
+		_, root, err := s.mcpRootForWrite(req.Level, workDir, prjUsrCap)
+		if err != nil {
+			return facade.McpDeleteResponse{}, err
+		}
+		if capfs.McpFileExists(root, req.Name) {
 			if err := capfs.DeleteMcpFile(root, req.Name); err != nil {
 				return facade.McpDeleteResponse{}, err
 			}

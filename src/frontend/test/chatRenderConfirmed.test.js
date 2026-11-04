@@ -48,7 +48,10 @@ test('① sessionMessages：「加载中」占位是独立状态，loadMessages 
   assert.match(src, /const pendingStatus = ref\(/, 'pendingStatus 须为独立 ref')
   const load = fnBody(src, 'async function loadMessages(sessionId, dialogId = \'\')')
   assert.doesNotMatch(load, /pending/, 'loadMessages（历史整体替换）不得改动 pending')
-  assert.match(load, /messages\.value = res\.messages\.map\(dbMsgToView\)/, '历史回填仍整体替换 messages')
+  // 历史回填仍整体替换 messages；2026-10-31 起额外保留「加载期间本地新增」条目
+  // （乐观 user 气泡 / 流式 assistant 段），避免历史快照晚到把它们冲掉。
+  assert.match(load, /const hist = res\.messages\.map\(dbMsgToView\)/, '历史回填仍整体替换 messages')
+  assert.match(load, /m\.localOnly/, 'loadMessages 须保留 localOnly 本地新增条目（竞态保护）')
   // 真实内容 / 终态一律收起占位
   assert.match(fnBody(src, 'function handleToken(data)'), /hidePending\(\)/, 'handleToken 须收起占位')
   assert.match(fnBody(src, 'function handleDone()'), /hidePending\(\)/, 'handleDone 须收起占位')

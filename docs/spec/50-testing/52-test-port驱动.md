@@ -8,12 +8,12 @@
 
 ## 1. 结论先行：可以实现
 
-本地 fork 的 go-webview2（`src/lib/go-webview2/webview.go`）已具备两条能力，**无需 Chromium CDP / playwright**：
+本地 fork 的 go-webview2（同级仓 `chonkpilot-webview2/webview.go`）已具备两条能力，**无需 Chromium CDP / playwright**：
 
 | 能力 | 接口 | 位置 |
 |---|---|---|
-| 同步执行 JS 并返回 JSON 结果 | `ScriptEval.EvalWithResult(script, timeout)` | `src/lib/go-webview2/webview.go#L626-L665` |
-| 页面截图（PNG） | `Screenshot(timeout)` | `src/lib/go-webview2/webview.go#L667-L705` |
+| 同步执行 JS 并返回 JSON 结果 | `ScriptEval.EvalWithResult(script, timeout)` | `chonkpilot-webview2/webview.go#L675-L701` |
+| 页面截图（PNG） | `Screenshot(timeout)` | `chonkpilot-webview2/webview.go#L711-L741` |
 
 "模拟输入、点击"与"获取 DOM"本质都是**在页面里执行 JS**（`el.click()` / `el.value=...; dispatchEvent(input)` / `el.textContent`），`EvalWithResult` 一条通道全覆盖。只需新增一个真实 TCP listener（`--test-port`）把外部指令转发成 JS eval。
 
@@ -23,7 +23,7 @@
 - **监听**：`127.0.0.1:2345`，**不绑定 `0.0.0.0`**，杜绝局域网访问
 - **默认关闭**：不传 `--test-port` 则完全不启动，发布包行为不变
 - **生命周期**：与 IDE 同生共死 —— webview 创建成功后启动 `http.Server`，程序退出前 `Shutdown`
-- **线程模型**：HTTP handler 在 net/http goroutine 中调用 `EvalWithResult`（其内部 `Dispatch` 到 WebView2 UI 线程执行并阻塞等回调，无死锁，见 `src/lib/go-webview2/webview.go#L630-L632` 注释）；**并发请求用互斥锁串行化**（UI 线程单飞）
+- **线程模型**：HTTP handler 在 net/http goroutine 中调用 `EvalWithResult`（其内部 `Dispatch` 到 WebView2 UI 线程执行并阻塞等回调，无死锁，见 `chonkpilot-webview2/webview.go#L684-L691`）；**并发请求用互斥锁串行化**（UI 线程单飞）
 - **页面就绪门控**：首次导航完成前（复用现有 `SetNavigationCompletedCallback`），`/eval` 返回 503 `page not ready`
 - **日志**：走 `a.logger`（测试请求与结果 Debug 级）
 
@@ -112,7 +112,7 @@ fork 的 edge 层**未封装**原生 ConsoleMessage 事件（仅有 WebMessageRe
 
 要点：
 
-- **注入时机**：`w.Init`（= `AddScriptToExecuteOnDocumentCreated`）——每个文档创建时执行，页面重载/子 iframe 都生效；与 `src/lib/go-webview2/webview.go#L726` 的 Bind 注入脚本共存（独立 IIFE）
+- **注入时机**：`w.Init`（= `AddScriptToExecuteOnDocumentCreated`）——每个文档创建时执行，页面重载/子 iframe 都生效；控制台捕获脚本是**独立 IIFE**，不与其他注入耦合（fork 已无 `Bind` 注入）
 - **仅测试模式注入**：`--test-port` 未指定时不注入，生产行为零影响
 - **读取**：`/console` 端点内部走 `EvalWithResult('JSON.stringify(window.__chonkConsole.entries)')`
 - **覆盖范围**：① `console.*`（业务日志/前端报错）；② `window` 级未捕获异常与 Promise rejection（`[uncaught]`/`[unhandledrejection]` 前缀）——**Vue 初始化错误三类路径全覆盖**：render/setup/mount 阶段走 `console.error`（Vue 3 未设 errorHandler 时默认行为）、bundle/动态 chunk 加载失败走 `unhandledrejection`、script 级加载错误走 `window.onerror`。WebView2 网络/渲染层原生日志（如证书错误）不在捕获范围（fork 无该事件，需求面不涉及）

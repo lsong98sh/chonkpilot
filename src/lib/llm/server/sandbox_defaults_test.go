@@ -12,6 +12,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/lockfile"
 )
 
@@ -59,14 +60,14 @@ func TestGatewaySandboxRulesDefaults(t *testing.T) {
 	}
 }
 
-// TestGatewaySandboxRulesUserEntryKept（G-75）：用户 security-* 条目保留（可写与只读都在），
-// 规则集无重复（同目录+同可写性去重）。
+// TestGatewaySandboxRulesUserEntryKept（G-75 / C1）：用户 security-* 条目保留且**一律视为可写**
+// （只写白名单：旧值 writable=false 被忽略），规则集无重复（同目录去重）。
 func TestGatewaySandboxRulesUserEntryKept(t *testing.T) {
 	s := newTestServer(t, httptest.NewServer(http.NotFoundHandler()))
 	registerG75Instance(t, s, "ins-g75b")
 
-	userRO := t.TempDir()
-	userRW := t.TempDir()
+	userA := t.TempDir()
+	userB := t.TempDir()
 	set := func(key, dir string, writable bool) {
 		t.Helper()
 		v := fmt.Sprintf(`{"dir":%q,"writable":%v}`, dir, writable)
@@ -79,47 +80,40 @@ func TestGatewaySandboxRulesUserEntryKept(t *testing.T) {
 			t.Fatalf("ConfigKVSet(%s): %v", key, err)
 		}
 	}
-	set("sec-ro", userRO, false)
-	set("sec-rw", userRW, true)
+	set("sec-a", userA, false) // 旧值：只读 → C1 起忽略，仍按可写
+	set("sec-b", userB, true)
 
 	rules := s.gatewaySandboxRules()
-	var roFound, rwFound bool
-	dup := 0
+	var aFound, bFound bool
 	seen := map[string]int{}
 	for _, r := range rules {
-		k := strings.ToLower(r.Dir)
-		if r.Writable {
-			k += "|w"
-		} else {
-			k += "|r"
+		seen[strings.ToLower(r.Dir)]++
+		if strings.EqualFold(r.Dir, userA) && r.Writable {
+			aFound = true
 		}
-		seen[k]++
-		if strings.EqualFold(r.Dir, userRO) && !r.Writable {
-			roFound = true
-		}
-		if strings.EqualFold(r.Dir, userRW) && r.Writable {
-			rwFound = true
+		if strings.EqualFold(r.Dir, userB) && r.Writable {
+			bFound = true
 		}
 	}
 	for _, n := range seen {
 		if n > 1 {
-			dup += n - 1
+			t.Fatalf("规则集存在重复条目: %+v", rules)
 		}
 	}
-	if !roFound || !rwFound {
-		t.Fatalf("用户 security 条目缺失（ro=%v rw=%v）: %+v", roFound, rwFound, rules)
+	if !aFound || !bFound {
+		t.Fatalf("用户 security 条目缺失或未视为可写（a=%v b=%v）: %+v", aFound, bFound, rules)
 	}
-	if dup != 0 {
-		t.Fatalf("规则集存在重复条目: %+v", rules)
-	}
-	// 可写视图含用户可写目录（等价原 sandbox.WritableRoots 口径：只取 writable=true）。
-	found := false
-	for _, r := range rules {
-		if r.Writable && strings.TrimSpace(r.Dir) != "" && strings.EqualFold(r.Dir, userRW) {
-			found = true
+	// WritableRoots（gateway 侧）应含两条用户目录。
+	roots := mcpgateway.WritableRoots(rules)
+	hit := func(dir string) bool {
+		for _, r := range roots {
+			if strings.EqualFold(r, dir) {
+				return true
+			}
 		}
+		return false
 	}
-	if !found {
-		t.Fatalf("WritableRoots 缺用户可写目录: %+v", rules)
+	if !hit(userA) || !hit(userB) {
+		t.Fatalf("WritableRoots 缺用户目录: %+v", roots)
 	}
 }

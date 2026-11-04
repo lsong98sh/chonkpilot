@@ -9,7 +9,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
+	"github.com/chonkpilot/chonkpilot-data/facade"
 	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/bridge"
 )
 
@@ -21,6 +23,14 @@ import (
 // 桥不再自持实例登记副本（2026-10-29 内存单源化）。
 func (s *Server) InstanceManager() pluginbridge.InstanceView {
 	return s.im
+}
+
+// MainInstanceForWorkDir 按 `work_dir` 反查**主窗口实例 id**（SANDBOX-WRITE-1 P3）：
+// 供宿主「隐藏打开」门面（`plugin/v1/workdir.ensure`）判定「项目是否已在册」并在隐藏建窗后
+// 等待 `instance-register`。口径 = 共通实例视图 `s.im`（`instance.Manager.MainInstanceForWorkDir`，
+// 同 work_dir 且 `parent_instance` 为空；未命中 → ("", false)）。
+func (s *Server) MainInstanceForWorkDir(workDir string) (string, bool) {
+	return s.im.MainInstanceForWorkDir(workDir)
 }
 
 // SetPluginRegistry 把 server 原子能力注册到插件桥（在插件桥 Start 之后调用）。
@@ -209,4 +219,127 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		text, isErr := s.runSubChatFinish(tc)
 		return map[string]any{"text": text, "is_error": isErr}, nil
 	})
+
+	// ── 定时任务会话归属（SANDBOX-WRITE-1 P4 / C11，2026-11-03）────────────────
+	//
+	// crontab 插件**不直接开库**（C8）：经这三个能力建会话 / 建轮次 / 收轮次，落库仍由 persist
+	// 数据面完成。层级 = 项目根会话（kind=crontab，parent_id=""）→ 任务子会话
+	// （kind=crontab_task，parent_id=根会话）→ 每轮一个 turn。
+	//
+	// **建完 `rememberDialog`**（父/子会话 → dialog）：与 subchat.go 同口径 —— 该路径不经
+	// sessionStore 自动学 `dialog_id`，不记则后续 turn/message 写入缺 `dialog_id` 被拒。
+	// 执行主体标记 `origin=scheduler`（审计 / UI；**不冒充用户**）。
+	reg.Register("plugin/v1/session.ensure", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
+		var in struct {
+			InstanceID      string `json:"instance_id"`
+			WorkDir         string `json:"work_dir"`
+			SessionID       string `json:"session_id"`
+			ParentSessionID string `json:"parent_session_id"`
+			DialogID        string `json:"dialog_id"`
+			Kind            string `json:"kind"`
+			Title           string `json:"title"`
+			Origin          string `json:"origin"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, err
+		}
+		sessionID := strings.TrimSpace(in.SessionID)
+		if sessionID == "" {
+			return nil, &pluginbridge.Error{Code: "args_invalid", Msg: "session_id 必填"}
+		}
+		if s.cfg == nil {
+			return nil, &pluginbridge.Error{Code: "internal", Msg: "数据门面不可用（无法建会话）"}
+		}
+		instanceID := s.resolveInstanceForWorkDir(in.InstanceID, in.WorkDir)
+		if instanceID == "" {
+			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "未找到该项目的主窗口实例（请先 workdir.ensure）"}
+		}
+		resp, err := s.cfg.SessionEnsure(facade.SessionEnsureRequest{
+			InstanceID:      instanceID,
+			Scope:           s.cfgScope(instanceID),
+			DialogID:        strings.TrimSpace(in.DialogID),
+			SessionID:       sessionID,
+			ParentSessionID: strings.TrimSpace(in.ParentSessionID),
+			Kind:            strings.TrimSpace(in.Kind),
+			Title:           in.Title,
+			Origin:          strings.TrimSpace(in.Origin),
+		})
+		if err != nil {
+			return nil, &pluginbridge.Error{Code: "session_ensure_failed", Msg: err.Error()}
+		}
+		// 子会话沿用根会话的对话；根会话自举后由服务端回带 dialog_id —— 两者都记进备忘。
+		s.rememberDialog(instanceID, sessionID, resp.DialogID)
+		return map[string]any{"ok": true, "session_id": sessionID, "dialog_id": resp.DialogID}, nil
+	})
+	reg.Register("plugin/v1/session.ensure-turn", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
+		var in struct {
+			InstanceID string `json:"instance_id"`
+			WorkDir    string `json:"work_dir"`
+			SessionID  string `json:"session_id"`
+			DialogID   string `json:"dialog_id"`
+			TurnID     string `json:"turn_id"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(in.SessionID) == "" || strings.TrimSpace(in.TurnID) == "" {
+			return nil, &pluginbridge.Error{Code: "args_invalid", Msg: "session_id / turn_id 必填"}
+		}
+		instanceID := s.resolveInstanceForWorkDir(in.InstanceID, in.WorkDir)
+		if instanceID == "" {
+			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "未找到该项目的主窗口实例"}
+		}
+		dialogID := strings.TrimSpace(in.DialogID)
+		if dialogID == "" {
+			dialogID = s.dialogOf(instanceID, in.SessionID)
+		}
+		if err := newSessionStore(s.bus, instanceID).EnsureTurnInDialog(in.TurnID, in.SessionID, dialogID); err != nil {
+			return nil, &pluginbridge.Error{Code: "turn_ensure_failed", Msg: err.Error()}
+		}
+		return map[string]any{"ok": true, "turn_id": in.TurnID, "session_id": in.SessionID, "dialog_id": dialogID}, nil
+	})
+	reg.Register("plugin/v1/session.complete-turn", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
+		var in struct {
+			InstanceID   string `json:"instance_id"`
+			WorkDir      string `json:"work_dir"`
+			TurnID       string `json:"turn_id"`
+			DialogID     string `json:"dialog_id"`
+			Status       string `json:"status"`
+			FinishReason string `json:"finish_reason"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(in.TurnID) == "" {
+			return nil, &pluginbridge.Error{Code: "args_invalid", Msg: "turn_id 必填"}
+		}
+		status := strings.TrimSpace(in.Status)
+		if status == "" {
+			status = "done"
+		}
+		instanceID := s.resolveInstanceForWorkDir(in.InstanceID, in.WorkDir)
+		if instanceID == "" {
+			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "未找到该项目的主窗口实例"}
+		}
+		if err := newSessionStore(s.bus, instanceID).CompleteTurnInDialog(in.TurnID, strings.TrimSpace(in.DialogID), status, in.FinishReason); err != nil {
+			return nil, &pluginbridge.Error{Code: "turn_complete_failed", Msg: err.Error()}
+		}
+		return map[string]any{"ok": true}, nil
+	})
+}
+
+// resolveInstanceForWorkDir 解析能力调用应归属的实例 id（P4）：显式 `instance_id` 优先；
+// 否则按 `work_dir` 取主窗口实例（crontab 执行前先经 `workdir.ensure`，正常情况下必然命中）。
+func (s *Server) resolveInstanceForWorkDir(instanceID, workDir string) string {
+	if id := strings.TrimSpace(instanceID); id != "" {
+		return id
+	}
+	wd := strings.TrimSpace(workDir)
+	if wd == "" || s.im == nil {
+		return ""
+	}
+	if id, ok := s.im.MainInstanceForWorkDir(wd); ok {
+		return id
+	}
+	return ""
 }

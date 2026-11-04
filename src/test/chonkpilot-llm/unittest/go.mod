@@ -45,7 +45,6 @@ require (
 
 replace github.com/chonkpilot/chonkpilot-assembly => ../../../lib/assembly
 
-replace github.com/chonkpilot/chonkpilot-mcp-tools => ../../../lib/mcp-tools
 
 // TURNRUN-1 批次 2：契约类型仓 + 两个独立仓（本地克隆与主仓同级）——开发期本地 replace。
 
@@ -64,4 +63,21 @@ require github.com/lsong98sh/chonkpilot-framework/host v0.0.0
 
 replace github.com/lsong98sh/chonkpilot-agent => ../../../../../chonkpilot-agent
 
-require github.com/lsong98sh/chonkpilot-agent v0.0.0 // indirect
+replace github.com/lsong98sh/chonkpilot-agent/chat => ../../../../../chonkpilot-agent/chat/src
+
+replace github.com/lsong98sh/chonkpilot-agent/gateway => ../../../../../chonkpilot-agent/gateway/src
+
+replace github.com/lsong98sh/chonkpilot-agent/router => ../../../../../chonkpilot-agent/router/src
+
+replace github.com/lsong98sh/chonkpilot-agent/session => ../../../../../chonkpilot-agent/session/src
+
+replace github.com/lsong98sh/chonkpilot-agent/types => ../../../../../chonkpilot-agent/types/src
+
+require (
+	github.com/lsong98sh/chonkpilot-agent v0.0.0 // indirect
+	github.com/lsong98sh/chonkpilot-agent/chat v0.0.0-00010101000000-000000000000 // indirect
+	github.com/lsong98sh/chonkpilot-agent/gateway v0.0.0-00010101000000-000000000000 // indirect
+	github.com/lsong98sh/chonkpilot-agent/router v0.0.0-00010101000000-000000000000 // indirect
+	github.com/lsong98sh/chonkpilot-agent/session v0.0.0-00010101000000-000000000000 // indirect
+	github.com/lsong98sh/chonkpilot-agent/types v0.0.0 // indirect
+)

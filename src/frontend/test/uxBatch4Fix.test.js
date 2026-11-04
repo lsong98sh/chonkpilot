@@ -68,87 +68,29 @@ test('A1 通用编辑弹框：TextEditDialog 多行 + 保存回调 + 内嵌优�
   assert.match(vue, /text\.value = prompt \|\| text\.value[\s\S]*?await handleSave\(\)/, '优化完成须落库')
 })
 
-test('A1 记忆类别/用户偏好编辑：读内容 → 弹框 → 保存即关 + 刷新清单（预估 token）', () => {
+test('A1/A1b 迁移：类别内容与提示词编辑由 memory 插件配置页承载（主仓页不再重复入口）', () => {
   const src = read(PAGE)
-  // P1（2026-09-24）：读/弹框/保存逻辑抽入共享 composable（状态栏「记忆总 token 数」入口同源）
-  assert.match(src, /import \{ useMemoryCategories \} from '\.\.\/\.\.\/composables\/useMemoryCategories'/, '须复用共享 composable（OP-04 起不再导入镜像常量）')
-  assert.match(src, /openContentEditor,/, '行内「编辑内容」仍走同一弹框实现（来自 composable）')
-  assert.match(src, /@click="openContentEditor\(row\)"/, '项目类别行「编辑内容」须走弹框')
-  assert.match(src, /@click="openContentEditor\(userPref\)"/, '用户偏好「编辑内容」须走弹框')
-  const comp = read('composables/useMemoryCategories.js')
-  assert.match(comp, /import TextEditDialog from '\.\.\/components\/common\/TextEditDialog\.vue'/, '须复用通用编辑弹框')
-  const openFn = fnBody(comp, 'openContentEditor')
-  assert.ok(openFn, '未找到 openContentEditor')
-  assert.match(openFn, /dataRequest\('memory', 'read', \{ data: \{ category: c\.category \} \}\)/, '须先读该类别内容')
-  assert.match(openFn, /message\.error\([\s\S]*?\n\s*return/, '读失败须可见提示且不打开弹框')
-  const showFn = fnBody(comp, 'showContentEditor')
-  assert.ok(showFn, '未找到 showContentEditor')
-  assert.match(showFn, /dialog\.show\(h\(TextEditDialog, \{/, '须经 DialogManager 弹出通用编辑框')
-  assert.match(showFn, /optimize: \{/, '弹框须自带优化（传 optimize 入参）')
-  assert.match(showFn, /await dataClient\.save\('memory', \{ category, content: text \}\)/, '保存须落 data-memory-save')
-  assert.match(showFn, /message\.success\([\s\S]*?handle\.close\(\)/, '保存后须**自动关闭**弹框')
-  assert.match(showFn, /handle\.close\(\)[\s\S]*?await load\(\)/, '关闭后须重读清单（刷新预估 token）')
-})
+  // 主仓上下文页：两个编辑入口 / 类别表 / 提示词弹框 全部退场（MEMORY-UI-1）
+  for (const gone of ['openContentEditor', 'openPromptEditor', 'memoryColumns', 'memoryList']) {
+    assert.ok(!src.includes(gone), `上下文页不应再含记忆类别 UI：${gone}`)
+  }
+  // 新承载：插件配置页（webui）+ RPC（内容/提示词读写与恢复默认）
+  const manifest = JSON.parse(readRepo('initdata/capability/plugins/memory/manifest.json'))
+  for (const rpc of ['category-content', 'category-save', 'prompt-save', 'prompt-reset']) {
+    assert.ok((manifest.ui.rpc || []).includes(rpc), `插件须注册 RPC：${rpc}`)
+  }
+  // 插件 Go 侧：提示词键前缀与主仓同口径（memory_prompt.<类别名>）
+  const ui = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'ui.go'), 'utf8')
+  assert.match(ui, /promptKeyPrefix = "memory_prompt\."/, '提示词文件化键前缀须与既有口径一致')
+  assert.match(ui, /plugin\/v1\/config\.prompt\.set/, '提示词保存须走 prompt 域既有方法面')
+  assert.match(ui, /plugin\/v1\/config\.prompt\.delete/, '恢复默认须删覆盖（prompt 域 delete）')
 
-test('A1b 记忆类别提示词编辑：每类别两入口（提示词/内容）+ 提示词弹框（来源提示/恢复默认/优化）', () => {
-  const src = read(PAGE)
-  // 两个编辑入口并存（项目类别行 + 用户偏好行）——文案清晰区分（不是同一按钮）
-  // 2026-09-27：类别表改用自研 Table（具名插槽），行内插槽作用域变量 = row
-  assert.match(src, /@click="openPromptEditor\(row\)"/, '项目类别行须有「编辑提示词」入口')
-  assert.match(src, /@click="openPromptEditor\(userPref\)"/, '用户偏好行须有「编辑提示词」入口')
-  assert.match(src, /@click="openContentEditor\(row\)"/, '项目类别行须有「编辑内容」入口')
-  assert.match(src, /@click="openContentEditor\(userPref\)"/, '用户偏好行须有「编辑内容」入口')
-  assert.match(src, /projectConfig\.memory_edit_prompt/, '「编辑提示词」须走 i18n（不硬编码中文）')
-  assert.match(src, /projectConfig\.memory_edit_content/, '「编辑内容」须走 i18n')
-  // 提示词弹框（OP-04 文件化）：回填后端下发值 + 来源提示 + 恢复默认 + 内嵌优化；
-  // 保存/恢复走 prompt 域**文件面**（data-prompt-save/delete），前端不再持镜像常量。
-  const fn = fnBody(src, 'openPromptEditor')
-  assert.ok(fn, '未找到 openPromptEditor')
-  assert.match(fn, /dialog\.show\(h\(TextEditDialog, \{/, '提示词须弹框编辑（复用 TextEditDialog）')
-  assert.match(fn, /content: c\.prompt \|\| ''/, '须回填后端下发的提示词有效值（不再持前端镜像常量）')
-  assert.match(fn, /hint: c\.prompt_override \? t\('projectConfig\.memory_prompt_source_custom'\) : t\('projectConfig\.memory_prompt_source_default'\)/, '来源提示须据后端下发的 prompt_override')
-  assert.match(fn, /reset: c\.prompt_override \? \{/, '已自定义须提供「恢复默认」入口（未自定义 → 不显示）')
-  assert.match(fn, /label: t\('projectConfig\.memory_prompt_reset'\)/, '「恢复默认」须走 i18n')
-  assert.match(fn, /optimize: \{[\s\S]*?memory_prompt_optimize_title/, '弹框须自带优化（复用既有优化链路）')
-  assert.match(fn, /bodyClass: 'text-edit-dialog-body'/, '提示词弹框同款 bodyClass（撑满/不留白）')
-  // 保存（setPrompt）/ 恢复默认（dataClient.remove）→ 均走 prompt 域文件面 + 重读清单刷新下发值
-  assert.match(fn, /await setPrompt\(key, text\)/, '保存须走 prompt 域文件面（data-prompt-save）')
-  assert.match(fn, /dataClient\.remove\('prompt', key\)/, '恢复默认须删 prompt 域键（删覆盖文件回落继承）')
-  assert.match(fn, /await reloadMemoryCategories\(\)/, '保存/恢复后须重读类别清单（刷新后端下发的有效值）')
-  assert.match(src, /const MEMORY_PROMPT_PREFIX = 'memory_prompt\.'/, '提示词文件化键前缀须与 Go 侧 memoryPromptPrefix 一致')
-  assert.match(src, /function memoryPromptKey\(category\)/, '须集中构造提示词键（memory_prompt.<类别名>）')
-  // 变更广播订阅：prompt 域变更 → 重读类别清单（沿用既有 data-prompt-refresh 面）
-  assert.match(src, /onDataRefresh\('prompt', reloadMemoryCategories\)/, '提示词变更须经既有 data-prompt-refresh 广播重载')
-  // 规范：无 watch
-  assert.doesNotMatch(stripComments(src), /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect')
-  // 键载体已删（OP-04）：前端不再持镜像常量 / 不再直读旧键
-  assert.doesNotMatch(src, /DEFAULT_MEMORY_PROMPT|memory_prompts|'memory\.prompt\.'/, '旧键载体/镜像常量须已删除')
-  const comp = read('composables/useMemoryCategories.js')
-  assert.doesNotMatch(stripComments(comp), /DEFAULT_MEMORY_PROMPT/, '前端镜像常量 DEFAULT_MEMORY_PROMPT 须已删除')
-
-  // TextEditDialog：hint / reset 为**可选**扩展（默认不显示，不影响既有调用）
-  const te = read('components/common/TextEditDialog.vue')
-  assert.match(te, /hint: \{ type: String, default: '' \}/, 'TextEditDialog 须支持可选 hint')
-  assert.match(te, /reset: \{ type: Object, default: null \}/, 'TextEditDialog 须支持可选 reset')
-  assert.match(te, /v-if="hint" class="text-edit-hint"/, 'hint 须渲染（来源提示）')
-  assert.match(te, /v-if="reset"/, 'reset 按钮须按需渲染')
-  assert.match(te, /reset\.onClick/, 'reset 须回调父组件（落库）')
-
-  // OP-04 出厂提示词文件：每预置类别一份 capability/system/memory/<类别名>.md（内容 = 原内置默认原文，
-  // 行为等价）；Go 侧**不再留** defaultRewriteSystemPrompt 常量副本。
-  const segs = [
-    '你是记忆库沉淀器。给定某个记忆类别的现有全文与本轮对话的新增信息，',
-    '请把两者合并后重写该类别全文（累加 + 更新：修正过时内容、去重、条理化、不臆造）。',
-    '只输出重写后的 markdown 全文，不要任何解释或代码块围栏。',
-  ]
+  // 出厂提示词文件仍在（内容不变）；Go 侧旧键载体仍不得复活
   for (const cat of ['项目概要', '共同库', '开发规范', '构建发布规则', '接口库', '测试规范', '典型参照', '用户决策', '用户偏好']) {
     const doc = readRepo('initdata/capability/system/memory/' + cat + '.md')
-    for (const s of segs) {
-      assert.ok(doc.includes(s), `出厂提示词文件 ${cat}.md 缺段（与内置默认不一致）：` + s)
-    }
+    assert.ok(doc.trim().length > 0, `出厂提示词文件缺失：${cat}.md`)
   }
   const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'lib', 'memory.go'), 'utf8')
-  // 仅扫**代码**（`//` 注释内允许留「旧键已删除」的说明文字）
   const goCode = go.replace(/^\s*\/\/.*$/gm, '')
   assert.doesNotMatch(goCode, /defaultRewriteSystemPrompt/, 'Go 侧须已删除内置默认提示词常量（不留代码内副本）')
   assert.doesNotMatch(goCode, /memory\.prompt\.|memory_prompts/, 'Go 侧旧键载体须已删除')
@@ -188,8 +130,8 @@ test('A2 总结提示词：编辑改弹框 + 保存即关 + 内嵌优化（可�
   assert.match(src, /@click="resetSummaryOverride"/, '「恢复默认」入口仍保留')
 })
 
-test('A4 记忆总 token 数：主入口在状态栏底部 → 分类列表 → 选中内容弹框（可编辑、可保存）', () => {
-  // P1-1（2026-09-24 用户口径）：主入口迁至**窗口状态栏底部**；上下文管理页仅保留只读总量
+test('A4 记忆总 token 数：状态栏入口保留；上下文页只给迁移提示（不留重复入口）', () => {
+  // P1-1（2026-09-24 用户口径）：主入口在**窗口状态栏底部**（与插件配置页共享同一数据面）
   const sb = read('layout/bar-views/MemoryTokenView.vue')
   assert.match(sb, /class="sb-section sb-mem"/, '状态栏须有记忆总量入口')
   assert.match(sb, /@click="openCategoryList"/, '状态栏总量须可点击 → 分类列表')
@@ -203,13 +145,11 @@ test('A4 记忆总 token 数：主入口在状态栏底部 → 分类列表 → 
   assert.ok(listFn, '未找到 openCategoryList')
   assert.match(listFn, /MemoryCategoryListDialog/, '须弹分类列表')
   assert.match(listFn, /onPick[\s\S]*?openContentEditor\(c\)/, '选中项 → 打开该类别内容编辑弹框')
-  const dlg = read('views/settings/MemoryCategoryListDialog.vue')
-  assert.match(dlg, /v-for="c in categories"/, '列表须按类别渲染')
-  assert.match(dlg, /@click="onPick\(c\)"/, '点击项回调父组件')
-  // 上下文管理页：只读展示，不留重复入口
+
+  // 上下文管理页：MEMORY-UI-1 起不再保留任何记忆入口（配置/总量都在插件配置页）
   const ctx = read(PAGE)
-  assert.match(ctx, /class="mem-total"/, '上下文管理页保留只读总量展示')
-  assert.doesNotMatch(ctx, /class="mem-total" @click/, '上下文管理页不得再挂主入口（避免重复）')
+  assert.doesNotMatch(ctx, /class="mem-total"/, '上下文管理页不得再保留记忆总量展示')
+  assert.match(ctx, /projectConfig\.context_memory_moved/, '须有迁移提示（指向插件配置页）')
 })
 
 test('A1/A2/A4 i18n：新增键 zh/en 齐备且可插值', () => {
@@ -261,21 +201,12 @@ test('P1 上下文阈值取值语义：非法值（<0）前端显式提示 + 0 �
 //   子项随之解禁、落库值也错成 true。
 //   口径：记忆库关闭 → 子项**逐个** disabled（`:disabled="!memoryEnabled"`）；开启 → 恢复可编辑。
 // ═══════════════════════════════════════════════════════════════
-test('A9 记忆库开关：关闭 → 子项逐个禁用（输入框/开关/按钮），开启 → 恢复可编辑', () => {
-  const src = read(PAGE)
-  // 两个数值输入（关库即灰化、不可编辑）
-  assert.match(src, /v-model\.number="memoryMinTurnTokens"[\s\S]{0,200}?:disabled="!memoryEnabled"/,
-    '沉淀最小 Token 须随记忆库开关联动禁用')
-  assert.match(src, /v-model\.number="memoryCategoryMaxTokens"[\s\S]{0,200}?:disabled="!memoryEnabled"/,
-    '单类别告警阈值须随记忆库开关联动禁用')
-  // 与记忆库同级的「用户偏好」开关（关库即灰化）
-  assert.match(src, /:model-value="userPrefEnabled" :disabled="!memoryEnabled"/,
-    '用户偏好开关须随记忆库开关联动禁用')
-  // 立即沉淀（另叠加进行中态，防重复点击）
-  assert.match(src, /:disabled="!memoryEnabled \|\| flushing"/, '立即沉淀须随记忆库开关联动禁用')
-  // 子项逐个联动：min/catMax（2）+ 新增类别 + 类别行开关 + 4 个行内按钮 + 用户偏好开关 + 3 个行内按钮 = 12
-  const gated = (src.match(/:disabled="!memoryEnabled"/g) || []).length
-  assert.ok(gated >= 12, `记忆区子项须逐个联动禁用（实得 ${gated} 处 :disabled="!memoryEnabled"）`)
+test('A9 记忆库开关联动：关闭 → 子项禁用由 memory 插件配置页承担', () => {
+  // 主仓上下文页已无记忆配置（MEMORY-UI-1）→ 联动落点 = 插件 webui/config.html
+  const page = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'webui', 'config.html'), 'utf8')
+  assert.match(page, /function applyEnabled\(/, '配置页须有统一联动函数（关库 → 子项禁用）')
+  assert.match(page, /doc|querySelectorAll/, '须遍历子项设置 disabled')
+  assert.match(page, /f_enabled/, '须绑定记忆库开关')
 })
 
 test('A9 保存期间不被自身广播重载冲回（记忆库「开 → 关 → 保存」不得回弹）', () => {

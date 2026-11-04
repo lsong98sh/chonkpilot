@@ -12,6 +12,7 @@
 package session
 
 import (
+	"strings"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -19,6 +20,27 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
 )
+
+// crontabShowInSessionListKey 是 crontab 插件的「会话列表可见性」开关（G-99 / 方案 §5.5.4）：
+// usr 层插件配置，缺省 / 读取失败 / 非 "true" 一律按 false（fail-closed = 不显示）。
+const crontabShowInSessionListKey = "plugins.crontab.show-in-session-list"
+
+// showCrontabInSessionList 读「是否让 crontab 顶层对话进入用户会话列表」。
+//
+// fail-closed：usr 库打不开、键缺失、值非 "true" → false（维持排除）。插件配置页把布尔
+// 归一为 "true"/"false" 字符串落库，故这里只认 "true"（大小写不敏感）。
+func (s *Service) showCrontabInSessionList() bool {
+	db, release, err := s.UsrDB()
+	if err != nil {
+		return false
+	}
+	defer release()
+	raw, ok := data.GetConfig(db, crontabShowInSessionListKey)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(raw), "true")
+}
 
 // sessionEnsureProvisionDialog 根会话自举：确定性 dialog_id + 建库 + 写会话行 + 目录行。
 func (s *Service) sessionEnsureProvisionDialog(prj *data.DB, req facade.SessionEnsureRequest) (facade.SessionEnsureResponse, error) {
@@ -49,11 +71,15 @@ func (s *Service) sessionEnsureProvisionDialog(prj *data.DB, req facade.SessionE
 	if _, exists, err := sessionstore.GetDialog(prj, dialogID); err == nil && !exists {
 		kind := req.Kind
 		if kind == "" {
-			kind = "main"
+			kind = sessionstore.DialogKindMain
+		}
+		title := req.Title
+		if title == "" {
+			title = req.SessionID
 		}
 		if err := sessionstore.PutDialog(prj, sessionstore.DialogRow{
 			DialogID:      dialogID,
-			Title:         req.SessionID,
+			Title:         title,
 			Kind:          kind,
 			MainSessionID: req.SessionID,
 			UpdatedAt:     now,
@@ -68,8 +94,12 @@ func (s *Service) sessionEnsureProvisionDialog(prj *data.DB, req facade.SessionE
 }
 
 // sessionListDialogs 从 `dialogs` 目录派生会话列表（ID = 主会话 id）。
-func (s *Service) sessionListDialogs(prj *data.DB) ([]facade.Session, error) {
-	rows, err := sessionstore.ListDialogs(prj)
+//
+// C12（SANDBOX-WRITE-1 P4）：缺省**排除 `kind = crontab`** 的对话 —— 定时任务的顶层对话只在
+// crontab 插件的任务详情页查看，不进用户会话列表。G-99：插件配置
+// `plugins.crontab.show-in-session-list` 为 true 时一并返回（由 SessionList 传入）。
+func (s *Service) sessionListDialogs(prj *data.DB, includeCrontab bool) ([]facade.Session, error) {
+	rows, err := sessionstore.ListVisibleDialogs(prj, includeCrontab)
 	if err != nil {
 		return nil, err
 	}
@@ -93,9 +123,10 @@ func (s *Service) sessionListDialogs(prj *data.DB) ([]facade.Session, error) {
 	return out, nil
 }
 
-// latestDialogSession 返回最近更新对话的主会话（无目录行 → 空）。
+// latestDialogSession 返回最近更新对话的主会话（无目录行 / 仅有 crontab 对话 → 空）。
+// 恒排除 crontab（G-99：开关只作用于用户会话列表，不改变「当前活动会话」缺省回落）。
 func (s *Service) latestDialogSession(prj *data.DB) (sessionID, dialogID string) {
-	rows, err := sessionstore.ListDialogs(prj)
+	rows, err := sessionstore.ListVisibleDialogs(prj, false)
 	if err != nil || len(rows) == 0 {
 		return "", ""
 	}

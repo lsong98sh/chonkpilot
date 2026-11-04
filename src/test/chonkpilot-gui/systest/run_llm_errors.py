@@ -213,11 +213,13 @@ def case_empty_reply():
 # ── §一 网络连接预检 ───────────────────────────────────────
 
 def case_network_precheck():
-    """§一/S14：LLM 端点不可达 + retryCount=3 → 期望「预检命中、不重试、快速终结」。
+    """§一/ERR-002（2026-10-31 D-66 口径）：**监测系统网络状态**，不探测目标端点。
 
-    〔2026-10-23 口径〕该特性**当前未实现**（`probeBeforeRetry` 已不在代码中，[41 D-66]）→
-    本用例保留「终态收敛为 error」的稳定性断言，预检/无重试/耗时断言改为 **证据打印 + SKIP**，
-    待 D-66 拍板（重做预检 或 废止并回改 35/51）后恢复硬断言。
+    - 系统在线 + 端点不可达（127.0.0.1:9）→ 检测通过，按报文级重试（`llm-retry` ≥ 0 次均合法）；
+    - 系统断网 → 预检命中，不重试。
+
+    两种结果都以「终态收敛为 error」为准；精确分支由 L1（`router/retry_config_test.go` +
+    `server/netcheck_test.go`）守，本 L4 不真实断网。
     """
     backup = read_cfg()
     snap = _h.snapshot_user_config(c, ["llms", "defaultLLM", "retryCount"])
@@ -261,8 +263,9 @@ def case_network_precheck():
                 break
             time.sleep(1)
         retries = c.events_of("llm-retry", clear=True)
-        print("    [SKIP] 网络预检未实现（41 D-66）：首错耗时 %.1fs（期望 <15s）、"
-              "llm-retry=%d 次（期望 0）" % (elapsed, len(retries)), flush=True)
+        print("    [OK] ERR-002：首错耗时 %.1fs、llm-retry=%d 次"
+              "（系统在线 → 正常重试；系统断网 → 0 次、直接 network 终态）"
+              % (elapsed, len(retries)), flush=True)
         return
     finally:
         # 快照-还原（51 §6-8）：按跑前快照回原状（原本缺省 → 删键回落系统默认），
@@ -551,7 +554,7 @@ def main():
                                case_visible_retry_then_success)
     total += 1; ok += run_case("RETRY-1/ERRUX-1 重试耗尽 → 终态只在下方提示条（详情 + retry 次数）",
                                case_retry_exhaust_terminal_hint)
-    total += 1; ok += run_case("§一 网络连接预检（端点不可达不重试，无 llm-retry）", case_network_precheck)
+    total += 1; ok += run_case("§一 网络状态预检（系统在线 + 端点不可达 → 正常重试；断网按 L1）", case_network_precheck)
     total += 1; ok += run_case("S25 发送前校验 LLM 配置（llms 空 → 拦截 + 提示）", case_send_blocked_no_llm)
     errs = c.console()
     for e in errs.get("entries", []):

@@ -20,7 +20,7 @@
 |----|----|
 | 编译形态 | **纯 lib**（`package filesys`），无 `main`、无独立 exe |
 | 启动方 | `src/lib/gui/host`（desktop 宿主装配） |
-| 依赖 | `src/lib`(mq) + `src/lib/workspace`(PM) + `fswatcher` |
+| 依赖 | `src/lib`(mq) + `src/lib/workspace`(PM：实例视图 / 工作区事件) + `workspace/layout`（路径语义） + `fswatcher` |
 | 生命周期 | `New(bus, pm)` → `Start()`（订阅）→ `Stop()` |
 
 ---
@@ -55,7 +55,7 @@
   pm.Resolve(instance_id) → Space.WorkDir
   · 载荷 work_dir **一律不采信**（契约字段保留：越权方无法借 payload 把操作指到绑外目录）
   · instance_id 缺失 / 未登记 / 工作区已关闭 → 读/写 handler 追加 forbidden（**不回落载荷**）
-absPath(workDir, p) = workspace.AbsWithin（空=workDir；相对 → Join；词法 + 真实路径双重复检）
+absPath(workDir, p) = workspace/layout.AbsWithin（空=workDir；相对 → Join；词法 + 真实路径双重复检）
 越界：读/写 handler 追加 forbidden
 ```
 

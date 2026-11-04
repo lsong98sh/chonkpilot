@@ -20,7 +20,7 @@ DSL 用法：脚本默认注入只读环境变量 CHONKPILOT_WORKDIR（项目工
 
 【第三方工具接入（能力外溢）】进程外工具 / 插件无需嵌入本仓代码，即可复用本机 server 的同一套原子能力：
 - 接入：连接插件桥（UDS 优先；TCP 仅 127.0.0.1）→ `plugin.hello{id}` → 按需 `plugin.subscribe` → 调用 `plugin/v1/*`（请求带 `instance_id`）。
-- 能力面：会话/LLM（`session.start|send|cancel|list|history`、`llm.step`）· 工具（`tools.list` / `tools.call`，由 core-mcp-server 一工具一 exe 执行）· 文件与配置（`file.*` / `config.*` / `knowledge.*`）· 任务（`task.tree|tasks|stop`）· GUI（`gui.list|apply`）。
+- 能力面：会话/LLM（`session.start|send|cancel|list|history`、`llm.step`）· 工具（`tools.list` / `tools.call`；工具由各插件提供，桌面单体在 gateway 进程内注册）· 文件与配置（`file.*` / `config.*` / `knowledge.*`）· 任务（`task.tree|tasks|stop`）· GUI（`gui.list|apply`）。
 - LLM 兼容入口（llm-bridge）：**UDS `llm.sock`**（默认 `%LOCALAPPDATA%\chonkpilot\llm.sock`，`CHONK_LLM_UDS` 可覆盖；**不再监听 TCP**）上的 HTTP/1.1 入口 `/llm/<provider>/...` —— 按 OpenAI / Anthropic 协议原样转发到对应 provider，免 api-key。直连 UDS：Python（**仅 Linux/macOS**，CPython 在 Windows 无 `socket.AF_UNIX`）`httpx.HTTPTransport(uds=...)`、Node `socketPath`；**Windows 的 Python / 只支持 TCP 的 SDK** 请自建 loopback→UDS 字节级 proxy（demo：`capability/plugins/demo-python/llm_bridge_proxy.py`，`--listen 127.0.0.1:5669`，内置 WinSock 兜底），再把 LLM `base_url` 指向该 loopback 地址。
 - 外部工具若需与 LLM 工具面互通，用 `tools.register{handler_subject}` 声明回调主题，再由 `tools.call` 触发；不要绕过插件桥直连内部数据库。
 

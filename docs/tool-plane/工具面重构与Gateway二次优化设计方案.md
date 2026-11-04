@@ -398,7 +398,7 @@ inflight{ call_id, slot_id, instance, tool, started_at, phase, cancelled }
 2. **提示词骨架**——系统提示词 `assetGuide` 内置一段 ~25 行 Python 调用样板（UDS 连接 + 帧编解码），LLM 直接复制改写；
 3. ~~Python 客户端库~~ **暂不发布**——协议稳定后再出 pip 包；当前「文档 + 骨架」足够 LLM 写对。
 
-**WebView2 承载能力**（已核实仓库 fork `src/lib/go-webview2`）：
+**WebView2 承载能力**（已核实同级仓 fork `chonkpilot-webview2`）：
 
 | 能力 | 支持 | 落点 |
 |------|:---:|------|
@@ -672,7 +672,7 @@ gateway 结果                → chat.Inbox
 | L3 | 工具集成 | 9 个 `*-exec` + filesys/browser/desktop executor 合并为 **1 个内置 mcp-server**（file/asset/meta/llm 四组 handler 进程内，不再一工具一 exe）；每 handler `recover()` + 单工具超时 + `llm` 组配额。**〔2026-10-28 用户拍板〕「进程收敛」到此为止**：capability 目录节点**保持每节点一个 `core-mcp-server --stdio --root <folder>` 子进程**，不做「单进程多根」；L3 不再作为待办（见 [26 §9](../spec/20-modules/26-mcp-gateway.md)） | ✅ 收敛目标已完成 | §3.3 |
 | L4 | MCP 协议 v1 | 执行体改 MCP server 身份；`_meta` / progress / elicitation / cancelled | 🔵 | §3.4 |
 | L5 | Gateway 纯化 | 删 self 节点 / 契约扫描 / 资产 / `llmToolPick`；6 条 CI 检查 | 🔵 | §3.5 |
-| L6 | 池化 | 拆 `procSlot`/`connSlot`；`poolKey`/`poolSize`/`maxConcurrent`。**〔2026-10-28 用户拍板（订正）〕改为「动态池 · 不保留 free 池」**：不做 `poolSize` 预建、不做 free 队列与空闲 TTL；实例数按需从 0 涨到 `maxConcurrent`；**等待队列按 `(workdir, exe)` 分键**（不同项目互不排队）；一次调用结束 → **等最多 1s**，期间取到该键等待队列里的同键任务**直接移交实例**，1s 内没等到 → **销毁**。清理仅三条：1s 内无同键等待即销毁 / 进程自退即移出 / workdir 关闭或宿主退出整键清（Job Object 兜底）。`isolate` 保留，`poolKey`、`per-call` 档**不做** | ✅ 已完成（2026-10-28 实施：`chonkpilot-mcp-gateway/gateway/pool.go` 动态池 + `pool_test.go` 白盒用例；清理三条 / 1s 交接 / 按键等待队列均已落地） | §3.6 |
+| L6 | 池化 | 拆 `procSlot`/`connSlot`；`poolKey`/`poolSize`/`maxConcurrent`。**〔2026-10-28 用户拍板（订正）〕改为「动态池 · 不保留 free 池」**：不做 `poolSize` 预建、不做 free 队列与空闲 TTL；实例数按需从 0 涨到 `maxConcurrent`；**等待队列按 `(workdir, exe)` 分键**（不同项目互不排队）；一次调用结束 → **等最多 1s**，期间取到该键等待队列里的同键任务**直接移交实例**，1s 内没等到 → **销毁**。清理仅三条：1s 内无同键等待即销毁 / 进程自退即移出 / workdir 关闭或宿主退出整键清（Job Object 兜底）。`isolate` 保留，`poolKey`、`per-call` 档**不做** | ✅ 已完成（2026-10-28 实施：`chonkpilot-agent/gateway/src/pool.go` 动态池 + `pool_test.go` 白盒用例；清理三条 / 1s 交接 / 按键等待队列均已落地） | §3.6 |
 | L7 | 取消阶梯 | L0–L3 + 远程回退 L2 + `cascade-report` | 🔵 | §3.7 |
 | L8 | 通知路由 | `call_id → inflight` 映射 | 🔵 | §3.8 |
 | L9 | browser 插件 | ✅ 已完成（2026-10-21）：`internal/pluginhost`（会话池 + 三端点 + 10min 空闲回收）+ `internal/browserplugin`（WebView2 引擎：navigate/eval/click/fill/text/html/wait/screenshot/console_dump）+ `plugins/browser`（`-H windowsgui` + 托盘 + UDS）；`go test ./internal/pluginhost` 全绿 | ✅ | §3.9 |

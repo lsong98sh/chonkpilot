@@ -47,14 +47,20 @@ export async function pickAndOpenDir() {
   await openDirAndRefresh(path)
 }
 
-/** 读最近项目清单（失败 → 空数组）。 */
-export async function loadRecentDirs() {
+/** 读最近项目清单 + 默认工作区（`default_dir` 缺省为空串）。
+ *  默认工作区**只在菜单末尾展示**，不写入 recent_dirs / flash-recents.json。 */
+export async function loadRecentDirsInfo() {
   try {
     const res = await getRecentDirs()
-    return (res && res.dirs) || []
+    return { dirs: (res && res.dirs) || [], defaultDir: (res && res.default_dir) || '' }
   } catch (_) {
-    return []
+    return { dirs: [], defaultDir: '' }
   }
+}
+
+/** 读最近项目清单（失败 → 空数组）。 */
+export async function loadRecentDirs() {
+  return (await loadRecentDirsInfo()).dirs
 }
 
 /** 删除一条「最近项目」记录（仅删记录，不删目录 / 数据资产）。返回是否成功。 */

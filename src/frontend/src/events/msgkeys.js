@@ -158,6 +158,7 @@ export const MsgTopics = {
   llmInboxList: 'llm-inbox-list',
   llmInboxDiscard: 'llm-inbox-discard',
   llmInboxPromote: 'llm-inbox-promote',
+  llmInboxRevert: 'llm-inbox-revert',
   llmCancel: 'llm-cancel',
   askUserReply: 'ask-user-reply',
   toolRetry: 'tool-retry',
@@ -174,11 +175,12 @@ export const MsgTopics = {
   sessionComplete: 'session-complete',
   sessionRetry: 'session-retry',
   sessionInterrupted: 'session-interrupted',
-  sessionCompress: 'session-compress',
   sessionAsk: 'session-ask',
   sessionTurnStart: 'session-turn-start',
+  sessionInboxChanged: 'session-inbox-changed',
   sessionNew: 'session-new',
   subchatOpened: 'subchat-opened',
+  sessionRunningList: 'session-running-list',
   subchatList: 'subchat-list',
   subchatFinish: 'subchat-finish',
   subchatContinue: 'subchat-continue',
@@ -219,6 +221,8 @@ export const MsgTopics = {
   vftsDictGet: 'vfts.dict.get',
   vftsDictSet: 'vfts.dict.set',
   vftsReindex: 'vfts.reindex',
+  vftsSessionQuery: 'vfts.session.query',
+  vftsSessionReindex: 'vfts.session.reindex',
   projectConfigOpen: 'project-config-open',
   previewTabOpen: 'preview-tab-open',
 }
@@ -234,6 +238,7 @@ export const MsgClientTopics = {
 /** 通用字段键（全部字段名并集，跨主题共用）。 */
 export const FieldKeys = {
   accepted: 'accepted',
+  action: 'action',
   activated: 'activated',
   agent: 'agent',
   agents: 'agents',
@@ -279,6 +284,7 @@ export const FieldKeys = {
   custom: 'custom',
   data: 'data',
   data_dir: 'data_dir',
+  default_dir: 'default_dir',
   deleted: 'deleted',
   deleted_at: 'deleted_at',
   description: 'description',
@@ -320,6 +326,7 @@ export const FieldKeys = {
   include_closed: 'include_closed',
   include_snapshot: 'include_snapshot',
   init_git: 'init_git',
+  insert: 'insert',
   instance_id: 'instance_id',
   isError: 'isError',
   is_dir: 'is_dir',
@@ -327,7 +334,6 @@ export const FieldKeys = {
   key: 'key',
   keys: 'keys',
   kind: 'kind',
-  last_turn: 'last_turn',
   latency_ms: 'latency_ms',
   layout: 'layout',
   level: 'level',
@@ -337,8 +343,6 @@ export const FieldKeys = {
   llm: 'llm',
   logDir: 'logDir',
   match: 'match',
-  max_context_token: 'max_context_token',
-  max_output_token: 'max_output_token',
   maximized: 'maximized',
   mcpServers: 'mcpServers',
   mcp_server: 'mcp_server',
@@ -431,7 +435,6 @@ export const FieldKeys = {
   session_id: 'session_id',
   shadow: 'shadow',
   snapshot: 'snapshot',
-  snapshot_turn: 'snapshot_turn',
   source: 'source',
   spec_path: 'spec_path',
   start: 'start',
@@ -490,6 +493,7 @@ export const FieldKeys = {
 /** 字段语义字典（语义键 → 规范名；同语义唯一名，见 schema fieldDictionary）。 */
 export const FieldDict = {
   accepted: 'accepted',
+  action: 'action',
   activated: 'activated',
   agent: 'agent',
   agents: 'agents',
@@ -537,6 +541,7 @@ export const FieldDict = {
   custom: 'custom',
   data: 'data',
   data_dir: 'data_dir',
+  default_dir: 'default_dir',
   deleted: 'deleted',
   deleted_at: 'deleted_at',
   description: 'description',
@@ -587,6 +592,7 @@ export const FieldDict = {
   'init-selected-key': 'selectedKey',
   'init-tree-data': 'treeData',
   init_git: 'init_git',
+  insert: 'insert',
   instance_id: 'instance_id',
   is_dir: 'is_dir',
   items: 'items',
@@ -806,6 +812,7 @@ export const GuiWindowStatusKeys = {
 /** gui.window.open-chat 字段键（payload/result/event 合并去重）。 */
 export const GuiWindowOpenChatKeys = {
   activated: 'activated',
+  dialog_id: 'dialog_id',
   ok: 'ok',
   session_id: 'session_id',
   window_id: 'window_id',
@@ -856,6 +863,7 @@ export const GuiDirOpenKeys = {
 
 /** gui.recent.list 字段键（payload/result/event 合并去重）。 */
 export const GuiRecentListKeys = {
+  default_dir: 'default_dir',
   dirs: 'dirs',
 }
 
@@ -1495,11 +1503,13 @@ export const DataSessionEnsureSessionKeys = {
   lifecycle: 'lifecycle',
   llm: 'llm',
   ok: 'ok',
+  origin: 'origin',
   parent_session_id: 'parent_session_id',
   playbook: 'playbook',
   purpose: 'purpose',
   scenario_id: 'scenario_id',
   session_id: 'session_id',
+  title: 'title',
 }
 
 /** data-session-ensure-turn 字段键（payload/result/event 合并去重）。 */
@@ -1893,11 +1903,13 @@ export const LlmInboxAddKeys = {
   effort: 'effort',
   id: 'id',
   idempotency_key: 'idempotency_key',
+  insert: 'insert',
   instance_id: 'instance_id',
   llm: 'llm',
   ok: 'ok',
   scenario_id: 'scenario_id',
   session: 'session',
+  source: 'source',
   think: 'think',
   turn: 'turn',
   type: 'type',
@@ -1921,6 +1933,15 @@ export const LlmInboxDiscardKeys = {
 
 /** llm-inbox-promote 字段键（payload/result/event 合并去重）。 */
 export const LlmInboxPromoteKeys = {
+  id: 'id',
+  ids: 'ids',
+  instance_id: 'instance_id',
+  ok: 'ok',
+  type: 'type',
+}
+
+/** llm-inbox-revert 字段键（payload/result/event 合并去重）。 */
+export const LlmInboxRevertKeys = {
   id: 'id',
   instance_id: 'instance_id',
   ok: 'ok',
@@ -2095,17 +2116,6 @@ export const SessionInterruptedKeys = {
   turn: 'turn',
 }
 
-/** session-compress 字段键（payload/result/event 合并去重）。 */
-export const SessionCompressKeys = {
-  dialog_id: 'dialog_id',
-  instance_id: 'instance_id',
-  last_turn: 'last_turn',
-  max_context_token: 'max_context_token',
-  max_output_token: 'max_output_token',
-  session: 'session',
-  snapshot_turn: 'snapshot_turn',
-}
-
 /** session-ask 字段键（payload/result/event 合并去重）。 */
 export const SessionAskKeys = {
   answer: 'answer',
@@ -2131,6 +2141,14 @@ export const SessionTurnStartKeys = {
   turn: 'turn',
 }
 
+/** session-inbox-changed 字段键（payload/result/event 合并去重）。 */
+export const SessionInboxChangedKeys = {
+  action: 'action',
+  ids: 'ids',
+  instance_id: 'instance_id',
+  session: 'session',
+}
+
 /** session-new 字段键（payload/result/event 合并去重）。 */
 export const SessionNewKeys = {
   dialog_id: 'dialog_id',
@@ -2146,6 +2164,11 @@ export const SubchatOpenedKeys = {
   purpose: 'purpose',
   session_id: 'session_id',
   title: 'title',
+}
+
+/** session-running-list 字段键（payload/result/event 合并去重）。 */
+export const SessionRunningListKeys = {
+  list: 'list',
 }
 
 /** subchat-list 字段键（payload/result/event 合并去重）。 */
@@ -2500,6 +2523,25 @@ export const VftsDictSetKeys = {
 
 /** vfts.reindex 字段键（payload/result/event 合并去重）。 */
 export const VftsReindexKeys = {
+  instance_id: 'instance_id',
+  ok: 'ok',
+  started: 'started',
+}
+
+/** vfts.session.query 字段键（payload/result/event 合并去重）。 */
+export const VftsSessionQueryKeys = {
+  error: 'error',
+  instance_id: 'instance_id',
+  limit: 'limit',
+  ok: 'ok',
+  query: 'query',
+  reason: 'reason',
+  results: 'results',
+  session_id: 'session_id',
+}
+
+/** vfts.session.reindex 字段键（payload/result/event 合并去重）。 */
+export const VftsSessionReindexKeys = {
   instance_id: 'instance_id',
   ok: 'ok',
   started: 'started',

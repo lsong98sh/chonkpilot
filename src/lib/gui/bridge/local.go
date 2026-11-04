@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -241,13 +242,37 @@ func callSaveLayoutState(b *Bridge, ctx context.Context, params []json.RawMessag
 }
 
 // callSaveWindowState 保存窗口态：同 layout，map 逐键 → 一次批量 save（D-33）。
+//
+// 宿主权威校正（2026-11-04）：已接线 windowPlacement（GetWindowPlacement）时，几何与
+// 最大化标记一律以宿主为准 ——
+//   - 最大化时 NormalPosition = 最大化前的还原边界（前端 WebView2 读不到，会把最大化尺寸
+//     当普通尺寸落盘 → 下次启动以最大化尺寸作为默认尺寸，需求禁止）；
+//   - maximized = ShowCmd==SW_SHOWMAXIMIZED（精确值，替代前端屏幕尺寸近似 isMaximizedNow）；
+//   - 最小化时 ShowCmd=SW_SHOWMINIMIZED → 按 maximized=false + NormalPosition 记录
+//     （「最小化退出改正常」；启动恢复 applyWindowPlacement 对非最大化恒 SW_RESTORE，不最小化）。
+// 未接线（测试宿主等）回落前端上报几何（原行为）。
 func callSaveWindowState(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
+	_ = b.prjConfigSaveBatch(windowSaveEntries(b, params))
+	return nil, nil
+}
+
+// windowSaveEntries 计算 window.* 落盘键值（语义见 callSaveWindowState 注释）。
+func windowSaveEntries(b *Bridge, params []json.RawMessage) map[string]string {
 	entries := map[string]string{}
+	if b != nil && b.windowPlacement != nil {
+		if x, y, w, h, maximized, ok := b.windowPlacement(); ok && w > 0 && h > 0 {
+			entries["window.x"] = strconv.Itoa(x)
+			entries["window.y"] = strconv.Itoa(y)
+			entries["window.width"] = strconv.Itoa(w)
+			entries["window.height"] = strconv.Itoa(h)
+			entries["window.maximized"] = strconv.FormatBool(maximized)
+			return entries
+		}
+	}
 	for k, v := range mapParam(params, 0) {
 		entries["window."+k] = cfgScalar(v)
 	}
-	_ = b.prjConfigSaveBatch(entries)
-	return nil, nil
+	return entries
 }
 
 // callSaveUIState 保存 UI 偏好：theme/locale 属**用户级**（12-数据层，跨项目个人偏好），
@@ -364,7 +389,14 @@ func (b *Bridge) recentDirsList() []string {
 }
 
 func callGetRecentDirs(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
-	return json.Marshal(map[string]any{"dirs": b.recentDirsList()})
+	out := map[string]any{"dirs": b.recentDirsList()}
+	// 「默认工作区」只用于菜单末尾展示（`toolbar.default_workspace`）：**不写入** recent_dirs /
+	// flash-recents.json，也不参与启动默认值。目录不存在（从未创建过）→ 不回带（gui.dir.open
+	// 有存在性预检，缺失时点击只会报错）。
+	if d := models.DefaultWorkspaceDir(); d != "" && models.DirExists(d) {
+		out[msgkeys.GuiRecentListResultDefaultDir] = d
+	}
+	return json.Marshal(out)
 }
 
 // removeRecentDir 从最近目录记录中移除一条：读-改-写 usr config 自由键 recent_dirs。

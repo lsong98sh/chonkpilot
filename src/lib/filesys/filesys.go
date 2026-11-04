@@ -23,6 +23,7 @@ import (
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/chonkpilot/chonkpilot-workspace"
+	wslayout "github.com/chonkpilot/chonkpilot-workspace/layout"
 	"github.com/lsong98sh/chonkpilot-util/pathx"
 )
 
@@ -489,13 +490,13 @@ func (f *Filesys) onUnwatch(_ context.Context, _ string, _ *mq.Value) error { re
 // 实现唯一来源 = workspace（词法 + 符号链接/目录联接后的真实路径双重复检）。
 // 返回的仍是词法绝对路径（不替换为真实路径，保持对外 path 形状不变）。
 func absPath(wd, p string) (string, bool) {
-	return workspace.AbsWithin(wd, p)
+	return wslayout.AbsWithin(wd, p)
 }
 
-// withinWorkDirReal / resolveRealPath 是既有调用点的转发（唯一实现 = workspace）。
-func withinWorkDirReal(base, path string) bool { return workspace.Within(base, path) }
+// withinWorkDirReal / resolveRealPath 是既有调用点的转发（唯一实现 = workspace/layout）。
+func withinWorkDirReal(base, path string) bool { return wslayout.Within(base, path) }
 
-func resolveRealPath(p string) string { return workspace.Real(p) }
+func resolveRealPath(p string) string { return wslayout.Real(p) }
 
 // samePath 判定两个路径是否指向同一目录 / 文件：词法 Clean 后（大小写不敏感，兼容 Windows）相同，
 // 或解析符号链接 / 目录联接后的真实路径相同。

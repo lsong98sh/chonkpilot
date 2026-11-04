@@ -48,6 +48,7 @@ func SessionFromWire(row map[string]any) facade.Session {
 		Goal:         str(row["goal"]),
 		Playbook:     str(row["playbook"]),
 		Convergence:  str(row["convergence"]),
+		Origin:       str(row["origin"]),
 	}
 	if s.Kind == "" && s.ParentID != "" {
 		s.Kind = facade.SessionKindSubSession
@@ -86,6 +87,7 @@ func SessionToWire(s facade.Session) map[string]any {
 	put(row, "goal", s.Goal)
 	put(row, "playbook", s.Playbook)
 	put(row, "convergence", s.Convergence)
+	put(row, "origin", s.Origin)
 	if s.Snapshot != nil {
 		kern := data.SnapshotFromFacade(*s.Snapshot)
 		b, err := json.Marshal(kern.History)

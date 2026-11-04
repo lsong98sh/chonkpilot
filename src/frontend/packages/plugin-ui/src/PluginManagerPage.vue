@@ -253,7 +253,7 @@ function dispatchCommand(cmd) {
   min-height: 0;
   overflow: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
   gap: 12px;
   align-content: start;
   padding-bottom: 8px;
@@ -265,7 +265,7 @@ function dispatchCommand(cmd) {
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg-panel, var(--bg));
+  background: var(--panel-bg, var(--bg-primary));
   min-width: 0;
 }
 .pm-card.is-off {
@@ -391,7 +391,7 @@ function dispatchCommand(cmd) {
   height: 26px;
   padding: 0 8px;
   font-size: 12px;
-  color: var(--text);
+  color: var(--text-primary);
   background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;

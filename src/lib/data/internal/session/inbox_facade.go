@@ -9,7 +9,6 @@ package session
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -20,52 +19,18 @@ import (
 
 const inboxTable = "inbox_items"
 
-// inboxSourceLLM 是 `source` 的唯一合法取值（NEXTRUN-1 §3.4：模型经 `next_run` 登记）。
-const inboxSourceLLM = "llm"
+// inboxSourceLLM / inboxSourceMobile 是 `source` 的合法取值：
+//   - `llm`（NEXTRUN-1 §3.4：模型经 `next_run` 登记）；
+//   - `mobile`（2026-11-01：H5 / 远程接入发送，永不插话、只排队 next_turn）；
+//   - 空 = 桌面用户输入。
+const (
+	inboxSourceLLM    = "llm"
+	inboxSourceMobile = "mobile"
+)
 
-// inboxMaxPending 是单会话 pending 上限（设计 §4：每会话 ≤ 50）。
-const inboxMaxPending = 50
-
-// inboxRetention 是终态 inbox 行（consumed / discarded）的保留时长（设计 §5.2：7 天）。
-// pending 永不自动删（用户输入不得静默丢失）。
-const inboxRetention = 7 * 24 * time.Hour
-
-// errInboxScanHit 是「幂等键命中 → 提前结束扫描」的内部哨兵（仅本文件使用，不外泄；
-// 见 InboxAppend 的单次流式扫描）。
-var errInboxScanHit = errors.New("inbox: idempotency hit")
-
-// cleanupInboxTTL 删除超过保留期的终态 inbox 行（consumed / discarded）。
-//
-// 触发点 = 启动/首次 llm-start 的 TurnCleanupStale（`data-session-cleanup-stale`），
-// 不新增消息主题/定时器；启动清理尽力而为，失败仅告警、不阻断启动。
-// 时间基准优先 `updated_at`（终态落定时间），缺失回落 `created_at`。
-func (s *Service) cleanupInboxTTL(prj *data.DB, now time.Time) {
-	cutoff := now.Add(-inboxRetention)
-	var keys []string
-	if err := prj.Table(inboxTable).ForEach(func(k string, rec data.Record) error {
-		st := kernel.Sval(rec["status"])
-		if st != "consumed" && st != "discarded" {
-			return nil // pending 永不自动删
-		}
-		ts := kernel.Sval(rec["updated_at"])
-		if ts == "" {
-			ts = kernel.Sval(rec["created_at"])
-		}
-		t, err := time.Parse(time.RFC3339Nano, ts)
-		if err != nil || !t.Before(cutoff) {
-			return nil // 时间不可解析 → 保守保留（宁可留、不误删）
-		}
-		keys = append(keys, k)
-		return nil
-	}); err != nil && s.Warnf != nil {
-		s.Warnf("session: inbox TTL 清理扫描失败：%v", err)
-	}
-	for _, k := range keys {
-		if err := prj.Table(inboxTable).Delete(k); err != nil && !errors.Is(err, data.ErrNotFound) && s.Warnf != nil {
-			s.Warnf("session: inbox TTL 清理删除 %s 失败：%v", k, err)
-		}
-	}
-}
+// 收件箱的存储语义（幂等键扫描 / pending 上限 / 消费事务 / 终态 TTL）实现唯一 = 会话组件
+// （`component.Inbox*` 与 `component.CleanupStale`，P4-2 批次 A/B，2026-10-31）——
+// 本包只保留输入校验与 DTO 整形，不再保留并行实现。
 
 // InboxAppend 写入一条待处理发送。
 func (s *Service) InboxAppend(req facade.InboxAppendRequest) (facade.InboxAppendResponse, error) {
@@ -78,81 +43,18 @@ func (s *Service) InboxAppend(req facade.InboxAppendRequest) (facade.InboxAppend
 	if strings.TrimSpace(req.Content) == "" {
 		return facade.InboxAppendResponse{}, errors.New("inbox: content required")
 	}
-	_, db, release, err := s.openContentDB(req.InstanceID, req.Scope, req.DialogID)
+	// 来源标识（NEXTRUN-1 §3.4 / 2026-11-01 H5）：`llm` / `mobile`；空 = 桌面用户输入。
+	if req.Source != "" && req.Source != inboxSourceLLM && req.Source != inboxSourceMobile {
+		return facade.InboxAppendResponse{}, errors.New("inbox: source must be llm|mobile")
+	}
+	if req.DialogID == "" {
+		return facade.InboxAppendResponse{}, kernel.ErrDialogRequired
+	}
+	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.InboxAppendResponse{}, err
 	}
-	defer release()
-
-	// 幂等 + 上限（F-2，DATA-OPT-1 P4）：原实现是**两次无索引全扫**（幂等键 1 次 + pending 计数
-	// 1 次）。改为**单次流式扫描**同时完成两件事：
-	//   - 命中幂等键 → 立即返回既有行（与 `Query{Limit:1}` 的「桶序首条」逐项一致）；
-	//   - 未命中 → 累计本会话 pending 行数（与 `Where{session_id,status=pending}` 计数一致）。
-	pending := 0
-	idemHit := ""
-	err = db.Table(inboxTable).ForEach(func(k string, rec data.Record) error {
-		if kernel.Sval(rec["session_id"]) != req.SessionID {
-			return nil
-		}
-		if req.IdempotencyKey != "" && kernel.Sval(rec["idempotency_key"]) == req.IdempotencyKey {
-			idemHit = k
-			return errInboxScanHit // 命中即收（不再扫剩余行）
-		}
-		if kernel.Sval(rec["status"]) == "pending" {
-			pending++
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, errInboxScanHit) {
-		return facade.InboxAppendResponse{}, err
-	}
-	if idemHit != "" {
-		return facade.InboxAppendResponse{OK: true, ID: idemHit}, nil
-	}
-	if pending >= inboxMaxPending {
-		return facade.InboxAppendResponse{}, errors.New("inbox: full（每会话 pending 上限 50）")
-	}
-
-	key, err := kernel.NewInboxKey()
-	if err != nil {
-		return facade.InboxAppendResponse{}, err
-	}
-	rec := data.Record{
-		"session_id": req.SessionID,
-		"type":       req.Type,
-		"content":    req.Content,
-		"status":     "pending",
-		"created_at": time.Now().UTC().Format(kernel.RFC3339FixedNano),
-	}
-	if req.TurnID != "" {
-		rec["turn_id"] = req.TurnID
-	}
-	if req.LLM != "" {
-		rec["llm"] = req.LLM
-	}
-	if req.Think != nil {
-		rec["think"] = req.Think
-	}
-	if req.Effort != nil {
-		rec["effort"] = req.Effort
-	}
-	if req.ScenarioID != "" {
-		rec["scenario_id"] = req.ScenarioID
-	}
-	if req.IdempotencyKey != "" {
-		rec["idempotency_key"] = req.IdempotencyKey
-	}
-	// 来源标识（NEXTRUN-1 §3.4）：仅 `"llm"` 有意义；空 = 用户输入（不写键 → 行形状不变）。
-	if req.Source != "" {
-		if req.Source != inboxSourceLLM {
-			return facade.InboxAppendResponse{}, errors.New("inbox: source must be llm")
-		}
-		rec["source"] = req.Source
-	}
-	if err := db.Table(inboxTable).Insert(key, rec); err != nil {
-		return facade.InboxAppendResponse{}, err
-	}
-	return facade.InboxAppendResponse{OK: true, ID: key}, nil
+	return s.componentInboxAppend(prj, req)
 }
 
 // InboxList 按会话读 inbox 项（status 缺省 = pending，按 created_at 升序）。
@@ -160,45 +62,14 @@ func (s *Service) InboxList(req facade.InboxListRequest) (facade.InboxListRespon
 	if req.SessionID == "" {
 		return facade.InboxListResponse{}, errors.New("inbox: session_id required")
 	}
-	_, db, release, err := s.openContentDB(req.InstanceID, req.Scope, req.DialogID)
+	if req.DialogID == "" {
+		return facade.InboxListResponse{}, kernel.ErrDialogRequired
+	}
+	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.InboxListResponse{}, err
 	}
-	defer release()
-	status := req.Status
-	if status == "" {
-		status = "pending"
-	}
-	where := data.Record{"session_id": req.SessionID}
-	if status != "all" {
-		where["status"] = status
-	}
-	recs, _, err := db.Table(inboxTable).Query(data.Query{Where: where})
-	if err != nil {
-		return facade.InboxListResponse{}, err
-	}
-	sort.SliceStable(recs, func(i, j int) bool {
-		return kernel.Sval(recs[i]["created_at"]) < kernel.Sval(recs[j]["created_at"])
-	})
-	out := make([]facade.InboxItem, 0, len(recs))
-	for _, r := range recs {
-		out = append(out, facade.InboxItem{
-			ID:             kernel.Sval(r[data.KeyField]),
-			SessionID:      kernel.Sval(r["session_id"]),
-			TurnID:         kernel.Sval(r["turn_id"]),
-			Type:           kernel.Sval(r["type"]),
-			LLM:            kernel.Sval(r["llm"]),
-			Content:        kernel.Sval(r["content"]),
-			Think:          r["think"],
-			Effort:         r["effort"],
-			ScenarioID:     kernel.Sval(r["scenario_id"]),
-			Status:         kernel.Sval(r["status"]),
-			IdempotencyKey: kernel.Sval(r["idempotency_key"]),
-			CreatedAt:      kernel.Sval(r["created_at"]),
-			Source:         kernel.Sval(r["source"]),
-		})
-	}
-	return facade.InboxListResponse{OK: true, Items: out}, nil
+	return s.componentInboxList(prj, req)
 }
 
 // InboxCommit 原子消费一条 inbox（MOD-1 M6）：**同一 bbolt 写事务**内落 messages + 置 consumed。
@@ -214,11 +85,9 @@ func (s *Service) InboxCommit(req facade.InboxCommitRequest) (facade.InboxCommit
 	if req.TurnID == "" {
 		return facade.InboxCommitResponse{}, errors.New("inbox: turn_id required")
 	}
-	_, db, release, err := s.openContentDB(req.InstanceID, req.Scope, req.DialogID)
-	if err != nil {
-		return facade.InboxCommitResponse{}, err
+	if req.DialogID == "" {
+		return facade.InboxCommitResponse{}, kernel.ErrDialogRequired
 	}
-	defer release()
 	m := data.MessageFromFacade(req.Message)
 	// INPUTVAL-1 P0-4：与 MessageAppend 同口径（角色枚举 + 正文长度）。
 	if !messageRoleValid(m.Role) {
@@ -227,48 +96,14 @@ func (s *Service) InboxCommit(req facade.InboxCommitRequest) (facade.InboxCommit
 	if err := validateMessageContent(m.Role, m.Content); err != nil {
 		return facade.InboxCommitResponse{}, err
 	}
-	key := kernel.InboxMessageKey(req.InboxID)
-	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
-	sessionID := req.SessionID
-	err = db.Update(func(tx *data.Tx) error {
-		var inbox data.Record
-		ok, err := tx.Get(inboxTable, req.InboxID, &inbox)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return errors.New("inbox: not found")
-		}
-		if kernel.Sval(inbox["status"]) == "discarded" {
-			return errors.New("inbox: discarded")
-		}
-		if sessionID == "" {
-			sessionID = kernel.Sval(inbox["session_id"])
-		}
-		exists, err := tx.Exists("messages", key)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			rec := buildMessageRecord(req.TurnID, sessionID, now, m, req.ToolCallStatus, req.Brief, "", "", nil)
-			rec["inbox_id"] = req.InboxID
-			if err := tx.Insert("messages", key, rec); err != nil {
-				return err
-			}
-		}
-		if kernel.Sval(inbox["status"]) != "consumed" {
-			inbox["status"] = "consumed"
-			inbox["updated_at"] = now
-			if err := tx.Put(inboxTable, req.InboxID, inbox); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.InboxCommitResponse{}, err
 	}
-	return facade.InboxCommitResponse{OK: true, ID: key}, nil
+	// 消息行由门面构造（形状与 MessageAppend 共用 buildMessageRecord）；组件负责同事务落库 + 置 consumed。
+	rec := buildMessageRecord(req.TurnID, req.SessionID, time.Now().UTC().Format(kernel.RFC3339FixedNano),
+		m, req.ToolCallStatus, req.Brief, "", "", nil)
+	return s.componentInboxCommit(prj, req, rec)
 }
 
 // inboxStatusValid 判定 inbox 状态是否属既定三态（pending / consumed / discarded）。
@@ -281,11 +116,6 @@ func (s *Service) InboxUpdate(req facade.InboxUpdateRequest) (facade.InboxUpdate
 	if req.ID == "" {
 		return facade.InboxUpdateResponse{}, errors.New("inbox: id required")
 	}
-	_, db, release, err := s.openContentDB(req.InstanceID, req.Scope, req.DialogID)
-	if err != nil {
-		return facade.InboxUpdateResponse{}, err
-	}
-	defer release()
 	// 枚举白名单（INPUTVAL-1 P0-4）：写坏值会污染消费侧相位判定（pending/consumed/discarded、
 	// insert/next_turn），故写侧拒绝而非静默落库。
 	if req.Status != "" && !inboxStatusValid(req.Status) {
@@ -294,26 +124,12 @@ func (s *Service) InboxUpdate(req facade.InboxUpdateRequest) (facade.InboxUpdate
 	if req.Type != "" && req.Type != "insert" && req.Type != "next_turn" {
 		return facade.InboxUpdateResponse{}, fmt.Errorf("inbox: invalid type %q", req.Type)
 	}
-	if err := db.Table(inboxTable).UpdateIn(req.ID, func(cur data.Record) data.Record {
-		if len(cur) == 0 {
-			return nil
-		}
-		if req.Status != "" {
-			cur["status"] = req.Status
-		}
-		if req.Type != "" {
-			cur["type"] = req.Type
-		}
-		if req.TurnID != "" {
-			cur["turn_id"] = req.TurnID
-		}
-		if req.Content != "" {
-			cur["content"] = req.Content
-		}
-		cur["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
-		return cur
-	}); err != nil {
+	if req.DialogID == "" {
+		return facade.InboxUpdateResponse{}, kernel.ErrDialogRequired
+	}
+	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
+	if err != nil {
 		return facade.InboxUpdateResponse{}, err
 	}
-	return facade.InboxUpdateResponse{OK: true}, nil
+	return s.componentInboxUpdate(prj, req)
 }

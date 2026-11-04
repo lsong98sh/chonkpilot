@@ -46,6 +46,22 @@ class SendQueue {
     return b ? b.items.map((i) => i) : []
   }
 
+  // allItems 返回**全部** LLM 桶的待发条目（inbox 一览 = 该会话全量 pending 项，
+  // 不按 LLM / 来源过滤；2026-11-01）。按 created_at 升序（同刻回退 id 保序）。
+  allItems() {
+    const out = []
+    for (const key of Object.keys(this.buckets.value)) {
+      out.push(...this.buckets.value[key].items)
+    }
+    out.sort((a, b) => {
+      const ca = a.createdAt || ''
+      const cb = b.createdAt || ''
+      if (ca && cb && ca !== cb) return ca < cb ? -1 : 1
+      return 0
+    })
+    return out.map((i) => i)
+  }
+
   // canceled 简化：取出指定 LLM 桶中全部待发文本（写回 textarea 用），并从队列移除。
   takeTexts(llm) {
     const b = this.buckets.value[llm || '']
@@ -91,6 +107,8 @@ class SendQueue {
         type: 'message',
         llm,
         inboxType: it.type,
+        source: it.source || '',
+        createdAt: it.created_at || '',
         payload: {
           sessionId,
           text: it.content || '',
@@ -98,6 +116,7 @@ class SendQueue {
           thinkFlag: it.think || 'on',
           effortLevel: it.effort || 'high',
           scenarioId: it.scenario_id || '',
+          source: it.source || '',
         },
       })
     }

@@ -342,3 +342,56 @@ func withinDir(root, path string) bool {
 func imageErr(format string, a ...any) *LLMError {
 	return llmErr(ErrProtocol, fmt.Sprintf(format, a...))
 }
+
+// ── auto 图像感知（D-65 口径更新，2026-11-04）──────────────────────────────────
+
+// autoVisionKeywords 是「请求可能涉及识图」的文本关键词表（大小写不敏感；命中任一即视为含图像）。
+// 启发式信号：仅作**补充**（准确信号 = 附件图片引用）；词表集中于此，便于以后调整。
+var autoVisionKeywords = []string{"识图", "看图", "这张图", "这幅图", "根据图", "图中", "图片里"}
+
+// lastUserMessage 返回最后一条 role=user 的消息（无 → nil）。请求形态固定为「最后一条 user 消息
+// = 本轮用户输入」，故只看它（更早轮次的图片不计入本次判定）。
+func lastUserMessage(msgs []ChatMsg) *ChatMsg {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			return &msgs[i]
+		}
+	}
+	return nil
+}
+
+// messageHasImageRef 判定文本是否含**图片附件引用**（`![名](路径)`，扩展名为图片类型）。
+// 复用本文件的扩展名白名单（imageExtMime），不另写 MIME 表；路径是否落在数据根内由真实展开
+// （expandImages）决定，此处只按引用形态判定「用户带了图」。
+func messageHasImageRef(text string) bool {
+	for _, loc := range mdImageRe.FindAllStringSubmatchIndex(text, -1) {
+		ref := text[loc[4]:loc[5]]
+		if _, ok := imageExtMime[strings.ToLower(filepath.Ext(ref))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// textHintsImage 判定文本是否命中识图关键词表（大小写不敏感）。
+func textHintsImage(text string) bool {
+	lower := strings.ToLower(text)
+	for _, kw := range autoVisionKeywords {
+		if strings.Contains(lower, strings.ToLower(kw)) {
+			return true
+		}
+	}
+	return false
+}
+
+// requestHasImage 判定「本次请求含图像」（auto 图像感知的触发信号，两路任一命中）：
+//
+//	① 最后一条 user 消息含图片附件引用（准确信号）；
+//	② 该消息文本命中识图关键词（启发式，可能误判 —— 仅作补充）。
+func requestHasImage(msgs []ChatMsg) bool {
+	m := lastUserMessage(msgs)
+	if m == nil {
+		return false
+	}
+	return messageHasImageRef(m.Content) || textHintsImage(m.Content)
+}

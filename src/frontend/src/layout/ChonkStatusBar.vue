@@ -7,7 +7,7 @@
     <LfBarZones
       name="statusbar"
       :items="items"
-      :extra-items="pluginItems"
+      :extra-items="extraItems"
       :background="bar.background"
       :zone-background="bar.zoneBackground"
       :default-left-width="420"
@@ -29,12 +29,18 @@ const bar = computed(() =>
   engine ? engine.renderBar('statusbar') : { items: [], background: '', zoneBackground: {} },
 )
 const items = computed(() => bar.value.items ?? [])
+// 内置常驻条目（不写布局文档）：CK Store 抽屉入口（PLUGIN-LOAD-1 D17）
+const builtinItems = [
+  { id: 'sb_ckstore', kind: 'view', zone: 'right', viewKey: 'ck-store', width: 24, height: 20, tooltip: 'CK Store' },
+]
 // 插件状态栏条目（manifest ui.statusbar[]；不写入布局文档）
 const pluginItems = computed(() => [
   ...pluginBarItems('left'),
   ...pluginBarItems('center'),
   ...pluginBarItems('right'),
 ])
+// 附加条目顺序 = 插件条目 → 内置条目（内置图标贴最右）
+const extraItems = computed(() => [...pluginItems.value, ...builtinItems])
 </script>
 
 <style scoped>

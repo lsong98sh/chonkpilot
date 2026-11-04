@@ -200,7 +200,7 @@ func (s *Server) acceptLLMStart(ctx context.Context, _ string, v *mq.Value, rese
 		}
 	}
 
-	// TURNRUN-1 批次 1：跨进程互斥已由桌面进程单例（CreateMutexW）保证，
+	// TURNRUN-1 批次 1：跨进程互斥已由桌面进程单例（`singleinstance`：实例 UDS 独占 listen）保证，
 	// 进程内同 session 互斥由上方 `busy` 注册表承担 → 不再使用 session 文件锁。
 
 	// 落库：session + turn（幂等；监听时检查并落库，不重新分配）——continue 复用同一 turn，
@@ -382,5 +382,27 @@ func (s *Server) onLLMCancel(_ context.Context, _ string, v *mq.Value) error {
 	s.complete(tc, "interrupted", "interrupted", "")
 	tc.Close()
 	v.Result = map[string]any{"cancelled": true, "turn": req.Turn}
+	return nil
+}
+
+// onSessionRunningList 处理 `session-running-list`（61 §4.2，2026-11-03）：只读**内存快照** ——
+// 读 `busy` 注册表（`instKey(instance, session) → running turn`），返回当前在跑轮次的会话清单
+// `{list:[{session_id, turn, instance_id}]}`（本进程全部窗口；前端按自己的会话列表过滤）。
+//
+// **不落库**：进程重启后运行态本就不保留（遗留 `running` 由启动清理 `data-session-cleanup-stale`
+// 置 `interrupted`），故内存快照即权威。
+func (s *Server) onSessionRunningList(_ context.Context, _ string, v *mq.Value) error {
+	s.mu.Lock()
+	list := make([]map[string]any, 0, len(s.busy))
+	for key, turn := range s.busy {
+		instanceID, session := splitInstKey(key)
+		list = append(list, map[string]any{
+			"session_id":  session,
+			"turn":        turn,
+			"instance_id": instanceID,
+		})
+	}
+	s.mu.Unlock()
+	v.Result = map[string]any{"list": list}
 	return nil
 }

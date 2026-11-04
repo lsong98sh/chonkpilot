@@ -84,13 +84,7 @@ export async function refreshPlugins(retry = 5) {
       throw new Error((env?.errors || ['plugin-list failed']).join('; '))
     }
     const list = env.result?.plugins
-    if (Array.isArray(list)) {
-      state.plugins = list
-      for (const p of list) {
-        registerPluginViews(p)
-        notifyChange(p.id)
-      }
-    }
+    if (Array.isArray(list)) applySnapshot(list)
     state.ready = true
     state.error = ''
   } catch (e) {
@@ -98,6 +92,44 @@ export async function refreshPlugins(retry = 5) {
     // 后端（server/persist）可能尚未就绪：短退避重试，就绪后自然收敛。
     if (retry > 0) setTimeout(() => refreshPlugins(retry - 1), 800)
   }
+}
+
+/** 用全量快照替换本地台账，并同步视图注册表（plugin-list / plugin-refresh 共用）。 */
+function applySnapshot(list) {
+  state.plugins = list
+  for (const p of list) {
+    registerPluginViews(p)
+    notifyChange(p.id)
+  }
+}
+
+let refreshing = null
+
+/**
+ * 硬刷新（PLUGIN-LOAD-1 D2）：重扫插件根 + 差量收敛 + 拉起新插件，返回全量快照。
+ *
+ * 触发点 = 打开布局编辑框 / 新建布局对话框之前；并发调用复用同一在飞请求（单飞）。
+ * 失败 → **抛出**（D4：调用方关闭对话框并提示，不带着未收敛的插件清单继续编辑）。
+ */
+export function refreshPluginsHard() {
+  if (refreshing) return refreshing
+  refreshing = (async () => {
+    try {
+      const res = await mq.emit('plugin-refresh', {})
+      const env = res?.backend
+      if (!env || env.ok === false) {
+        throw new Error((env?.errors || ['plugin-refresh failed']).join('; '))
+      }
+      const list = env.result?.plugins
+      if (Array.isArray(list)) applySnapshot(list)
+      state.ready = true
+      state.error = ''
+      return list || []
+    } finally {
+      refreshing = null
+    }
+  })()
+  return refreshing
 }
 
 /**
@@ -114,6 +146,11 @@ export function subscribePluginChange(cb) {
 
 export function pluginById(id) {
   return state.plugins.find((p) => p.id === id) || null
+}
+
+/** 首份台账快照是否已到位（用于区分「还没加载」与「未安装」，D11）。 */
+export function pluginsReady() {
+  return state.ready
 }
 
 export function pluginView(id, viewId) {

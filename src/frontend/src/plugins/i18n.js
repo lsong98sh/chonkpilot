@@ -29,6 +29,8 @@ import zhPublishError from '../locales/zh-CN/publishError.json'
 import zhLayoutFree from '../locales/zh-CN/layoutFree.json'
 // 字段校验提示（INPUTVAL-1）
 import zhFieldRules from '../locales/zh-CN/fieldRules.json'
+// 会话内查找（CHAT-028）
+import zhChatSearch from '../locales/zh-CN/chatSearch.json'
 
 import enCommon from '../locales/en-US/common.json'
 import enToolbar from '../locales/en-US/toolbar.json'
@@ -54,6 +56,7 @@ import enOptimizeError from '../locales/en-US/optimizeError.json'
 import enPublishError from '../locales/en-US/publishError.json'
 import enLayoutFree from '../locales/en-US/layoutFree.json'
 import enFieldRules from '../locales/en-US/fieldRules.json'
+import enChatSearch from '../locales/en-US/chatSearch.json'
 
 // Priority: localStorage > default
 function getInitialLocale() {
@@ -95,6 +98,7 @@ export const i18n = createI18n({
       publishError: zhPublishError,
       layoutFree: zhLayoutFree,
       fieldRules: zhFieldRules,
+      chatSearch: zhChatSearch,
     },
     'en-US': {
       common: enCommon,
@@ -121,6 +125,7 @@ export const i18n = createI18n({
       publishError: enPublishError,
       layoutFree: enLayoutFree,
       fieldRules: enFieldRules,
+      chatSearch: enChatSearch,
     },
   },
 })

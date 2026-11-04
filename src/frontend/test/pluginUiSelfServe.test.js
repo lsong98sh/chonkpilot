@@ -5,7 +5,7 @@
  *   ① 路由统一：`/plugins/<id>/<entry>`，helper 不再按 `self_serve` 分流；
  *   ② `PluginPageHost` sandbox 放开 same-origin（同源 iframe 才能拿到 ckMq），且不再接收分流属性；
  *   ③ ckMq：插件页 `window.top.ckMq.new(window)` 自注册，宿主只在卸载 / beforeunload `release`；
- *   ④ 内置插件（browser/codegraph/desktop/file/mcp/task/websearch）为 selfServe 单源
+ *   ④ 内置插件（browser/codegraph/desktop/file/mcp/task/web）为 selfServe 单源
  *      （`src/initdata/.../<id>/webui` 已删除，唯一源 = `src/plugins/<id>/webui`）；
  *   ⑤~⑥ action 面 / codegraph 单源；
  *   ⑦ 全量单源 + demo-python 无 `ui.views`（旧路由下线后不得留死入口）；
@@ -141,9 +141,9 @@ test('⑤ pluginAction：注入 X-CK-Plugin-Id，成功取 result / 失败抛错
 })
 
 test('⑥ codegraph 单源：manifest 声明 selfServe，initdata 不再携带 webui', () => {
-  const manifestPath = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codegraph', 'plugin.json')
+  const manifestPath = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codegraph', 'manifest.json')
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-  assert.equal(manifest.ui?.selfServe, true, 'codegraph plugin.json 须声明 ui.selfServe: true')
+  assert.equal(manifest.ui?.selfServe, true, 'codegraph manifest.json 须声明 ui.selfServe: true')
   const legacyWebui = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codegraph', 'webui')
   assert.equal(existsSync(legacyWebui), false, 'initdata codegraph webui 目录须已删除（唯一源 = chonkpilot-plugins/codegraph/webui）')
   const srcWebui = join(repoDir, '..', 'chonkpilot-plugins', 'codegraph', 'src', 'webui', 'config.html')
@@ -155,11 +155,11 @@ test('⑥ codegraph 单源：manifest 声明 selfServe，initdata 不再携带 w
  *
  * 唯一白名单 = `demo-python`：Python 样例（`runtime.exe = python`，无 Go 构建产物 / 无法 embed，
  * 且 `product: false` 不随产物投放），其页面只能留在 initdata 内随目录安装。
- * 旧路由 `/plugin-ui/<id>/…`（宿主直读磁盘）已下线 → 该样例**不得再声明 `ui.views`**
- * （含引用它的菜单 / 状态栏入口），避免出现点了就 404 的死入口；`webui/` 目录保留作写法参考。
- * 其余插件必须 `ui.selfServe: true`，且 `ui.views[].entry` 在 `src/plugins/<id>/` 下真实存在。
+ * 2026-10-31（PLUGIN-ASSET-1）：该样例改用 `ui.assets{mode:"dir", root:"webui"}` 由宿主直读磁盘，
+ * 因此**可以**声明 `ui.views`（页面不再 404）；其余插件必须 `ui.selfServe: true`，
+ * 且 `ui.views[].entry` 在 `src/plugins/<id>/` 下真实存在。
  */
-test('⑦ 全量单源：initdata 仅 demo-python 保留 webui 样例，且其 manifest 无 ui 死入口', () => {
+test('⑦ 全量单源：initdata 仅 demo-python 保留 webui 样例，且其页面经 dir 模式可达', () => {
   const allowInitdataWebui = new Set(['demo-python'])
   const initPluginsDir = join(repoDir, 'src', 'initdata', 'capability', 'plugins')
 
@@ -170,17 +170,20 @@ test('⑦ 全量单源：initdata 仅 demo-python 保留 webui 样例，且其 m
     .filter((id) => !allowInitdataWebui.has(id))
   assert.deepEqual(offenders, [], `以下插件仍带 initdata webui 副本：${offenders.join(', ')}`)
 
-  // demo-python：样例 webui 保留，但 manifest 不再声明页面入口（旧路由下线 → 不可达）。
+  // demo-python：样例 webui 保留；页面来源 = dir（宿主直读），views 条目必须真实存在。
   const demoDir = join(initPluginsDir, 'demo-python')
-  assert.equal(existsSync(join(demoDir, 'webui', 'config.html')), true, '样例页面保留（作写法参考）')
-  const demo = JSON.parse(readFileSync(join(demoDir, 'plugin.json'), 'utf8'))
-  assert.equal(demo.ui?.views, undefined, 'demo-python 不得声明 ui.views（否则是 404 死入口）')
-  assert.equal(demo.ui?.menus, undefined, 'demo-python 不得声明引用页面的菜单')
-  assert.equal(demo.ui?.statusbar, undefined, 'demo-python 不得声明引用页面的状态栏入口')
+  assert.equal(existsSync(join(demoDir, 'webui', 'config.html')), true, '样例页面保留')
+  const demo = JSON.parse(readFileSync(join(demoDir, 'manifest.json'), 'utf8'))
+  assert.equal(demo.ui?.assets?.mode, 'dir', 'demo-python 必须声明 ui.assets.mode = dir')
+  assert.equal(demo.ui?.assets?.root, 'webui', 'demo-python 的 assets.root 必须是 webui')
+  assert.ok((demo.ui?.views ?? []).length > 0, 'demo-python 必须声明 ui.views（dir 模式下页面可达）')
+  for (const view of demo.ui.views ?? []) {
+    assert.equal(existsSync(join(demoDir, view.entry)), true, `demo-python 缺页面资源 ${view.entry}`)
+  }
 
-  for (const id of ['browser', 'codegraph', 'desktop', 'file', 'mcp', 'task', 'websearch']) {
-    const manifest = JSON.parse(readFileSync(join(initPluginsDir, id, 'plugin.json'), 'utf8'))
-    assert.equal(manifest.ui?.selfServe, true, `${id} plugin.json 须声明 ui.selfServe: true`)
+  for (const id of ['browser', 'codegraph', 'desktop', 'file', 'mcp', 'task', 'web']) {
+    const manifest = JSON.parse(readFileSync(join(initPluginsDir, id, 'manifest.json'), 'utf8'))
+    assert.equal(manifest.ui?.selfServe, true, `${id} manifest.json 须声明 ui.selfServe: true`)
     for (const view of manifest.ui.views ?? []) {
       const asset = join(repoDir, '..', 'chonkpilot-plugins', id, 'src', view.entry)
       assert.equal(existsSync(asset), true, `${id} 缺页面资源 ${view.entry}（唯一源应在 chonkpilot-plugins/${id}/）`)

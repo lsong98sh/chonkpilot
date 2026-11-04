@@ -10,12 +10,12 @@ import (
 
 // finish 发送唯一终态（对齐 21-llm-server）：
 // llm-complete（唯一终态）落库 → 写快照（hist + 本轮消息，经 persist data-snapshot-set）
-// → 发 llm-complete → 发 llm-compress。
+// → 发 llm-complete（压缩为内部方法面，不再有独立 MQ 事件；2026-10-31）。
 // retryable 为**可选**字段（S21）：非 nil → 随 llm-complete 携带真实可重试分类；nil → 不带该字段。
 func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text string, retryable *bool) {
 	// 原子终态（E2-2）：正常完成路径与 onLLMCancel（取消）可能并发到达同一轮次——唯一终态权由
 	// 生命周期闸门授予（`session/runner.Lifecycle.BeginFinish`，TURNRUN-1 批次 5）：
-	// 终态（落库 CompleteTurnTokens + 快照 + llm-complete/llm-compress 广播）**仅发生一次**；
+	// 终态（落库 CompleteTurnTokens + 快照 + llm-complete 广播）**仅发生一次**；
 	// 其后到达者（如取消命中已终态轮次）静默跳过，不二次写库、不二次广播（覆盖已 complete 的 turn 行）。
 	if !tc.life.BeginFinish() {
 		return
@@ -87,31 +87,9 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		ev["retry_wait_ms"] = 0
 	}
 	s.publish("llm-complete", ev)
-	// 轮末事件（`session-compress`，载荷形状不变）：唯一终态落库后发出。
-	// 压缩已内建（SESSION-1，2026-10-23；见 compress.go：组装后按 Usage 判阈值 → 后台压缩），
-	// 本事件**不是压缩触发源**，也**不再承担记忆沉淀触发**（2026-10-24 解耦：memory 改订阅
-	// `session-complete`，二者与压缩无关）。保留发送点是因为外部订阅者 / 前端「压缩记录」
-	// 刷新仍在消费它；无订阅者 = 无动作。
-	compressEv := map[string]any{
-		"instance_id": tc.req.InstanceID, "work_dir": tc.req.WorkDir, "data_dir": tc.req.DataDir,
-		"session": tc.req.Session, "last_turn": tc.req.Turn, "snapshot_turn": tc.req.Turn,
-	}
-	// 一树一库（61 §0.6）：订阅方按对话定位快照（`dialog_id` 恒必填；取不到即不带，由订阅方判失败）。
-	if dlg := s.dialogOf(tc.req.InstanceID, tc.req.Session); dlg != "" {
-		compressEv["dialog_id"] = dlg
-	}
-	// P1（2026-09-25，口径 Z4）：对外载荷字段统一 snake_case —— **只增**可选字段 `max_context_token` /
-	// `max_output_token`——兜底归并的**真窗口**来源与**输出预留**（各自 = provider `maxContextToken` /
-	// `maxOutputToken`，见 21 §3.3 / 28 §3.1）；未配置（nil）→ 不带该键 → 插件按"兜底不启用"处理
-	// （与旧载荷逐字节等价）。插件侧对 camelCase `maxContextToken` / 更早 `window` **只读兼容**。
-	// （替代上批以 provider `maxTokens`（输出上限）当窗口代理 + 常量 4096 预留的误用。）
-	if tc.llmMaxContextToken != nil {
-		compressEv["max_context_token"] = *tc.llmMaxContextToken
-	}
-	if tc.llmMaxOutputToken != nil {
-		compressEv["max_output_token"] = *tc.llmMaxOutputToken
-	}
-	s.publish("llm-compress", compressEv)
+	// 压缩（SESSION-1，2026-10-23 定案）：**纯内部方法面**，不再作为 MQ 事件广播
+	// （`session-compress` 已于 2026-10-31 从消息面移除；61 同步）。压缩触发 = 组装后按
+	// `Usage` 判阈值 → 后台压缩（见 compress.go），与本函数的终态落库无耦合。
 	// 终态后的续轮动作由 runner 决策（`session/runner.DecideFollowUp`，TURNRUN-1 批次 5）：
 	//   - complete / incomplete → 消费 `next_turn` 起新一轮（INBOX）；
 	//   - 其余终态（error / interrupted / cancelled）→ 丢弃**本 turn** 的 LLM 排队项（NEXTRUN-1 终态收敛），

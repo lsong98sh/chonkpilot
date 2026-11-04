@@ -1,8 +1,8 @@
-# 2D · chonkpilot-router（LLM 出网协议适配）
+# 2D · chonkpilot-agent/router（LLM 出网协议适配）
 
 > 状态：✅ 与代码一致
 > 关联：[21-llm-server](21-llm-server.md) · [10-分层与依赖](../10-architecture/10-分层与依赖.md) · [23-工程与部署拓扑](../10-architecture/23-工程与部署拓扑.md) · [40-演进计划 §LR](../40-roadmap/40-演进计划.md)
-> 代码目录：**独立仓 `chonkpilot-router/`**（根包 + `internal/canon/` + `internal/adaptor/{openai,anthropic,echo}/`）；2026-10-27 起主仓 `src/lib/router/` 已删除，主仓经 `github.com/lsong98sh/chonkpilot-router` **按版本依赖**（v0.1.0；2026-10-22 起**不使用** `replace`）。
+> 代码目录：**独立仓 `chonkpilot-agent/router/src/`**（根包 + `internal/canon/` + `internal/adaptor/{openai,anthropic,echo}/`）；2026-10-27 起主仓 `src/lib/router/` 已删除，主仓经 `github.com/lsong98sh/chonkpilot-agent/router` **按版本依赖**（v0.1.0；2026-10-22 起**不使用** `replace`）。
 > 设计出处（决策过程不在本文重复）：见 [40-演进计划 §LR](../40-roadmap/40-演进计划.md)。
 
 ---
@@ -29,7 +29,7 @@
 
 | 项 | 值 |
 |----|----|
-| 编译形态 | **纯 lib**（module `github.com/lsong98sh/chonkpilot-router`），无 `main`、无独立 exe |
+| 编译形态 | **纯 lib**（module `github.com/lsong98sh/chonkpilot-agent/router`），无 `main`、无独立 exe |
 | 运行位置 | 进程内（llm-server） |
 | 依赖方向 | `router → internal/adaptor → internal/canon`（**单向无环**）；本包**只 import 标准库 + 自身 `internal/*`**，**不 import 任何其它 chonkpilot-* module** |
 | 装配方 | `src/lib/llm/server`：`router.New(router.Config{})` → `Register` / `Reconcile`（`server.go` / `routercall.go`） |
@@ -77,6 +77,7 @@
 - `Message{Role, Kind, Content []Part, ToolCalls, ToolCallID, Reasoning, ReasoningSignature}`；`Part{Type: text|image, Text, Image}`。
 - `ToolDef{Name, Description, Parameters json.RawMessage}`。
 - `CallOptions{Model, Temperature*, MaxTokens*, TopP*, Reasoning*, ResponseTimeout, StreamTimeout}`（指针 nil = 不下发）。
+- **auto 档位调度**（D-65）：`CallOptions.AutoCandidates []string` = 同档次候选 provider 名（有序、不含首选；空 = 既有行为）。候选集由 llm 侧按**推理档位**（`capability.reasoning`）算好，router 只持「本次调用已试过哪些 provider」的切换状态。
 - `ReasoningSignature` 承载 Anthropic 思考块签名，随 `Reasoning` 保真往返。
 
 ---
@@ -134,6 +135,29 @@ Stream(ctx, spec, req, out)
  └─ 终态 done 只投一次；成功收尾可用 ErrStreamDone 提前结束（不等 EOF）
 ```
 
+### 4.4 auto 重试换档（D-65，2026-11-04）
+
+```text
+Call(ctx, req)
+ ├─ 首选 target = specs[req.Provider]（含 echo 兜底解析）
+ ├─ 候选 target = req.Options.AutoCandidates 逐个折算（跳过空名 / echo / 与首选同名 / 重复 /
+ │                未注册 / 协议无适配器；保持传入顺序）——「已试过」集合由本次调用的切换状态持有
+ └─ runWithRetries(base, cands, req, out)
+      configured（MaxRetries != nil）：
+        每次 attemptOnce 失败后：
+          emitted>0 / 次数用尽 / stream 硬帽 / 断网 / 不可重试（auth·protocol·invalid）/ 预算不足
+            → 终态（**不换 provider**）
+          决策通过 → Observer.OnRetry → 退避 → **切到下一个候选**（无候选 = 原地重试）
+            切换时请求体 model：调用方显式指定（≠ 当前 spec.DefaultModel）→ 保留；
+                                否则折到新 provider 的 DefaultModel；messages / tools / 采样参数不变
+      legacy（MaxRetries == nil）：**不换 provider**（保持既有「仅 network 透明重发 ≤1 次」）
+```
+
+- 档位判定（`capability{reasoning,vision}` 双维度各 `0~5`、基准 = 默认 LLM 的 **reasoning**、`±0.5` 含端点、显式 `0` = 不具备）**不在本层**：由 `chonkpilot-llm/server`（`autoCandidates`）按 usr `llms[].capability` 算出候选名列表。
+- **图像感知**（2026-11-04 口径更新）也**不在本层**：默认 LLM `vision=0` 且本次请求含图像时，llm 侧（`chatLLMClient.Step` 首次调用）在**发请求前**就整体换到「`reasoning ±0.5` 且 `vision>0`」的候选 provider（`ChatOptions.ImageFallbacks` 的调用快照），无合格候选则降级仍用默认。router 只看到「首选 provider 已经不是默认 LLM」，切换状态机与候选列表语义不变。
+- 本层只做「哪些还没试过」的状态机；**零新增 MQ 主题、零 payload 变更**（`llm-retry` 仍只有 attempt / wait）。
+- `auth` / `protocol` / `invalid` 类失败不切换（换 provider 无意义，属配置/请求问题）。
+
 ---
 
 ## 5. 失败态
@@ -171,7 +195,7 @@ Stream(ctx, spec, req, out)
 | TopP | `Options.TopP` 非空 | 软：清零 |
 | MaxTokensRequired | `Options.MaxTokens` 空 | caps=true → 适配器补缺省 |
 
-> 〔订正（2026-10-08）：原「Reasoning / ReasoningEffort」合一行「软：清零」**不准确、已拆分** —— `!caps.ReasoningEffort` 时**只清档位、保留 `Reasoning`**（原先误清整个思考请求），`!caps.Reasoning` 才整体清零；与 `chonkpilot-router/internal/adaptor/degrade.go` 注释表一致。〕
+> 〔订正（2026-10-08）：原「Reasoning / ReasoningEffort」合一行「软：清零」**不准确、已拆分** —— `!caps.ReasoningEffort` 时**只清档位、保留 `Reasoning`**（原先误清整个思考请求），`!caps.Reasoning` 才整体清零；与 `chonkpilot-agent/router/src/internal/adaptor/degrade.go` 注释表一致。〕
 
 ### 5.4 内置兜底 `echo`
 
@@ -193,7 +217,7 @@ Stream(ctx, spec, req, out)
 - **职责只有报文级**：协议编解码 / SSE 流解析 / 连接与双超时 / 错误分类 / **报文级重试**（次数 · 预算 · 退避 · `Emitted==0` 判据）——即「同一份报文能不能原样再发一次」。
 - **可见重试事件归宿主**：router 只经非阻塞 `CallOptions.Observer.OnRetry` 上报（`RetryContext` / `wait`）；宿主适配器 `src/lib/llm/server/chatshadow.go` 的 `chatLLMClient` 把 `StepOptions.OnRetry` 折成引擎事件 `EventLLMRetry` → `chatEventSink` 发既有 `llm-retry`（前端 `session-retry`），**payload 与现状一致**。router 不决定是否让用户可见、不决定续写。
 - **不感知 chat / gateway / MQ**：router 零 turn/session 概念、零工具执行、零 MQ 主题；chat 的 `LLMClient.Step` 端口与 router 的 `Call` 之间的类型互转只在宿主（`routerconv.go` / `chatshadow.go`）。
-- **边界断言**：`chonkpilot-router/deps_test.go`（`TestDepsPureLib`）以 `go list -deps` 断言 router 依赖图不含 `chonkpilot-lib/mq` · `msgkeys` · `chonkpilot-mcp-gateway/gateway` · `chonkpilot-llm`；模块内两两无 import 由此固化。
+- **边界断言**：`chonkpilot-agent/router/src/deps_test.go`（`TestDepsPureLib`）以 `go list -deps` 断言 router 依赖图不含 `chonkpilot-lib/mq` · `msgkeys` · `chonkpilot-agent/gateway/src` · `chonkpilot-llm`；模块内两两无 import 由此固化。
 
 ---
 
@@ -201,15 +225,17 @@ Stream(ctx, spec, req, out)
 
 - ✅ 已实施：canonical 类型、注册/分派、四协议实现、SSE/共用件、增量聚合、usage 归一、声明式降级、错误分类与退避值、`llm` 接线。
 - ✅ **报文级重试已下沉 router（RETRY-2，2026-10-20）**：`CallOptions.MaxRetries/Budget/Policy/Observer`；`Error.Phase` 由适配器标注；llm 侧删除可见重试循环与 `probeBeforeRetry`，只实现 `OnRetry` 发布 `session-retry`（前端 `llm-retry`）。`MaxRetries == nil` 的调用方（`llm-simple` / `prompt-optimise` / 探活）行为不变。
+- ✅ **重试前系统网络状态检测（D-66 / ERR-002，2026-10-31）**：`CallOptions.NetworkReady func() bool` 在**每次重试前**调用（仅对 `Kind: network` 失败生效）；返回 false → 直接以 `network` 终态返回，不再按退避预算空等。检测口径 = **本机系统网络连接**（宿主编排），**不探测目标端点**；nil = 不检测（既有行为不变）。
+- ✅ **auto 档位换 provider（D-65，2026-11-04）**：`CallOptions.AutoCandidates`（同档次候选名，有序、不含首选）+ 重试循环内的「未试过」状态机（见 §4.4）；档位判定归 llm 侧 `autoCandidates`（**`capability{reasoning,vision}` 双维度各 `0~5`**、基准 = 默认 LLM 的 `reasoning`、`±0.5` 含端点、显式 `0` 不参与、缺省按默认 LLM）。同批新增**图像感知**（默认 `vision=0` + 请求含图像 → 首次即改选 `vision>0` 同档候选），实现与判定都在 llm 侧，本层零改动。
 - 已知线格式差异（事件语义不变）：恒带 `stream_options.include_usage`；上限字段按模型择一（`max_completion_tokens`）；无参工具补空 schema；空文本图消息省略空文本块；非 2xx 错误串按 JSON 取值。
 
 ---
 
 ## 8. 关联测试（测试落点）
 
-**L1 白盒（`chonkpilot-router/**`，仅此层，无 L2/L3/L4 专门套件）**：
+**L1 白盒（`chonkpilot-agent/router/src/**`，仅此层，无 L2/L3/L4 专门套件）**：
 
-- 根包：`router_test.go`（注册/分派/`Call` 契约/能力/内置 echo 回落/透明重试 5 例/并发）· `retry_config_test.go`（RETRY-2：429 重试+预算权重、Emitted>0 不重发、stream 硬帽、dial 次数、显式 0、Observer panic 隔离、预算门槛、auth 不重试、DefaultPolicy 权重）· `reconcile_test.go` · `error_test.go`（Kind↔Retryable / 状态码映射 / `ToError` / `RetryWait`）· `alias_test.go`。
+- 根包：`router_test.go`（注册/分派/`Call` 契约/能力/内置 echo 回落/透明重试 5 例/并发）· `retry_config_test.go`（RETRY-2：429 重试+预算权重、Emitted>0 不重发、stream 硬帽、dial 次数、显式 0、Observer panic 隔离、预算门槛、auth 不重试、DefaultPolicy 权重；**D-66：断网不重试 / 5xx 不受影响 / legacy 同约束**）· **`auto_switch_test.go`（D-65：可重试失败换候选 / 不重复失败者 / 鉴权不换 / 候选用尽回既有重试 / 未知候选跳过 / model 折算与显式 model 保留）** · `reconcile_test.go` · `error_test.go`（Kind↔Retryable / 状态码映射 / `ToError` / `RetryWait`）· `alias_test.go`。
 - `internal/adaptor`：`sse_test.go`（多行/注释心跳/空白/CRLF/半包/截断）· `exchange_test.go`（SSE 泵与单发 JSON）· `errors_test.go`（状态码/Retry-After/传输错误/流内 error）· `toolcall_test.go` · `usage_test.go` · `degrade_test.go` · `fixture_test.go`（`testdata/*.sse.json` 金样本）。
 - `internal/adaptor/openai`：`openai_test.go`（编码/上限字段/SSE 映射/无 `[DONE]`/按 index 工具/截断/非 SSE 体/错误分类）· `responses_test.go`（Responses 全链）。
 - `internal/adaptor/anthropic`：`anthropic_test.go`（编码/签名往返/`max_tokens` 必填/thinking 与采样互斥/端点拼接/校验/流映射/无 `message_stop`/流内错误/HTTP 分类）。

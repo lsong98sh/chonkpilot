@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -43,26 +42,11 @@ func (s *Service) openContentDB(instanceID string, scope facade.Scope, dialogID 
 }
 
 // sessionEnsureInDialog 幂等建会话（写对话库 `sessions` 表；已存在不覆盖、不重复广播）。
+//
+// P4-2 批次三（2026-10-31）：实现体切到会话组件（`componentEnsureSession`，单事务判存 + 插入）；
+// 语义/落库形状/事件时序不变（`Created` 才广播 `session-new`）。
 func (s *Service) sessionEnsureInDialog(prj *data.DB, req facade.SessionEnsureRequest) (facade.SessionEnsureResponse, error) {
-	sdb, release, err := data.OpenExistingDialog(prj.Path(), req.DialogID)
-	if err != nil {
-		return facade.SessionEnsureResponse{}, err
-	}
-	defer release()
-	var rec data.Record
-	ok, err := sdb.Table("sessions").Get(req.SessionID, &rec)
-	if err != nil {
-		return facade.SessionEnsureResponse{}, err
-	}
-	if ok {
-		return facade.SessionEnsureResponse{OK: true, DialogID: req.DialogID}, nil
-	}
-	row := sessionRowFromEnsure(req, time.Now().UTC().Format(kernel.RFC3339FixedNano))
-	if err := sdb.Table("sessions").Insert(req.SessionID, row); err != nil {
-		return facade.SessionEnsureResponse{}, err
-	}
-	s.emitSessionNew(req.SessionID, req.ParentSessionID, req.InstanceID, req.DialogID)
-	return facade.SessionEnsureResponse{OK: true, DialogID: req.DialogID}, nil
+	return s.componentEnsureSession(prj, req)
 }
 
 // sessionGetInDialog 读对话库内单个会话（不存在 → Found=false）。
@@ -86,46 +70,11 @@ func (s *Service) sessionGetInDialog(prj *data.DB, req facade.SessionGetRequest)
 }
 
 // sessionTitleInDialog 改会话标题；主 session 额外同步 `dialogs.title`（尽力双写，失败上抛）。
+//
+// P4-2 批次三（2026-10-31）：实现体切到会话组件（`componentSetTitle` → `RenameSession`）；
+// 语义不变（主 session 同事务外同步目录副本、成功后广播 `data-session-title-changed`）。
 func (s *Service) sessionTitleInDialog(prj *data.DB, req facade.SessionTitleRequest) (facade.SessionTitleResponse, error) {
-	sdb, release, err := data.OpenExistingDialog(prj.Path(), req.DialogID)
-	if err != nil {
-		return facade.SessionTitleResponse{}, err
-	}
-	defer release()
-	var rec data.Record
-	ok, err := sdb.Table("sessions").Get(req.SessionID, &rec)
-	if err != nil {
-		return facade.SessionTitleResponse{}, err
-	}
-	if !ok {
-		return facade.SessionTitleResponse{}, fmt.Errorf("session not found: %s", req.SessionID)
-	}
-	isMain := kernel.Sval(rec["parent_id"]) == ""
-	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
-	if err := sdb.Table("sessions").UpdateIn(req.SessionID, func(cur data.Record) data.Record {
-		if len(cur) == 0 {
-			return nil
-		}
-		cur["title"] = req.Title
-		cur["updated_at"] = now
-		return cur
-	}); err != nil {
-		return facade.SessionTitleResponse{}, err
-	}
-	if isMain {
-		if err := prj.Table("dialogs").UpdateIn(req.DialogID, func(row data.Record) data.Record {
-			if len(row) == 0 {
-				return nil
-			}
-			row["title"] = req.Title
-			row["updated_at"] = now
-			return row
-		}); err != nil {
-			return facade.SessionTitleResponse{}, err
-		}
-	}
-	s.emitSessionTitleChanged(req.SessionID, req.Title, req.DialogID)
-	return facade.SessionTitleResponse{OK: true}, nil
+	return s.componentSetTitle(prj, req)
 }
 
 // sessionDeleteInDialog 删会话：主 session → 整对话删除；子会话 → 只级联自身数据。
@@ -293,6 +242,7 @@ func clearActiveIfMatches(prj *data.DB, sessionID string) error {
 // latestDialogMainSession 返回最近更新对话的主 session id（P3 活动态回落；无 → ""）。
 //
 // 只读 prjusr 目录行 + 打开该对话库读主 session；不做 session → dialog 全局反查。
+// C12（P4）：**排除 `kind = crontab`** 的对话（定时任务会话不得成为「当前活动会话」回落值）。
 func latestDialogMainSession(prj *data.DB) string {
 	type row struct {
 		id      string
@@ -300,6 +250,9 @@ func latestDialogMainSession(prj *data.DB) string {
 	}
 	var rows []row
 	_ = prj.Table("dialogs").ForEach(func(key string, rec data.Record) error {
+		if sessionstore.IsHiddenDialogKind(kernel.Sval(rec["kind"])) {
+			return nil
+		}
 		rows = append(rows, row{id: firstNonEmptyStr(kernel.Sval(rec["dialog_id"]), key), updated: kernel.Sval(rec["updated_at"])})
 		return nil
 	})

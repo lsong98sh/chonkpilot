@@ -36,4 +36,5 @@ export { PLUGIN_UI_PREFIX, pluginUIPageURL } from './pluginUiRoute.js'
 export { pluginBarItems } from './pluginBar.js'
 
 export { default as PluginPageHost } from './PluginPageHost.vue'
+export { default as PluginPageGate } from './PluginPageGate.vue'
 export { default as PluginManagerPage } from './PluginManagerPage.vue'

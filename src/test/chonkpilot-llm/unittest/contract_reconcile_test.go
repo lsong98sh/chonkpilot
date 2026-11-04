@@ -286,6 +286,11 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 		{"instance-exit", "instance 生命周期主题；需多实例装配，单测级未驱动"},
 		{"instance-bring-to-top", "instance 生命周期主题；需多窗口装配，单测级未驱动"},
 		{"instance-goto-top", "instance 生命周期广播；需多窗口装配，单测级未驱动"},
+		// 工作区生命周期（61 §2.5）：生产者 = 工作区管理器（src/lib/workspace/manager.go，
+		// 首实例注册 → workdir-opened / 末实例退出 → workdir-closed）；行为由 workspace 包 L1
+		// `manager_test.go` 覆盖，本套件（llm server 面）不重复装配。
+		{"workdir-opened", "生产者 = 工作区管理器（src/lib/workspace/manager.go）；行为由 workspace L1 manager_test 覆盖"},
+		{"workdir-closed", "生产者 = 工作区管理器（src/lib/workspace/manager.go）；行为由 workspace L1 manager_test 覆盖"},
 		// 单聊 subchat-*（2026-10-16）：B-1 登记消息面 + 跨窗口投递基础设施；**B-2 已落 handler**
 		// （生产/消费 = `subchat_open`/`subchat_finish` handler + `subchat-list`/`subchat-finish`
 		// 订阅，见 `src/lib/llm/server/subchat.go`）。本套件不伪造业务链路 → 仍登记；键/契约/文档
@@ -299,12 +304,15 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 		// 群聊「继续」续期（2026-10-16 · SUBCHAT-3 阶段 F）：「继续」= 前端 → server 方法面；本套件不
 		// 伪造群聊调度链路 → 仍登记；handler 行为由 server 包 L1 单测（groupchat_sched_test.go，mq 驱动）覆盖。
 		{"subchat-continue", "生产者 = subchat.go onSubchatContinue（阶段 F 已落）；同名映射由 chonkpilot-gui bridge wiring 覆盖"},
+		// 在跑轮次的会话清单（2026-11-03）：前端 → server 方法面（只读内存快照，读 busy 注册表、不落库）。
+		// 本套件不装配运行态 → 仍登记；handler 行为由 server 包 L1（runninglist_test.go）覆盖，
+		// 同名映射由 chonkpilot-gui bridge wiring 覆盖。
+		{"session-running-list", "生产者 = handler_session.go onSessionRunningList（2026-11-03 已落）；行为由 server 包 L1 runninglist_test 覆盖；同名映射由 chonkpilot-gui bridge wiring 覆盖"},
 		// 群聊参与者状态（2026-10-16 · 阶段 E）：契约/文档/键已落（61 §4.3 + schema + genmsg）；生产者 =
 		// 群聊参与者状态变更路径（**阶段 F 调度器**），消费者 = 前端头像。阶段 E 不含调度器 → 仍登记；
 		// 键一致性由 chonkpilot-lib msgkeys 覆盖，转发对账由 chonkpilot-gui bridge contract_reconcile 覆盖。
 		{"subchat-participant-state", "阶段 E 已落契约（server→client 下行）；生产者 = 群聊参与者状态路径（阶段 F 调度器），消费者 = 前端头像；转发对账由 chonkpilot-gui bridge contract_reconcile 覆盖"},
 		{"instance-register", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖"},
-		{"session-compress", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖"},
 		{"session-new", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖"},
 		{"server-starting", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖"},
 		{"prompt-optimised", "事件转发由 B0 TestForwardedEventKeysSubsetOfContract 覆盖（prompt-optimise 异步产物）"},
@@ -328,6 +336,15 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 		{"llm-inbox-list", "INBOX 读回；行为由 server 包 L2 inbox_test + data 黑盒 facade_inbox_test 覆盖"},
 		{"llm-inbox-discard", "INBOX 撤回；行为由 server 包 L2 inbox_test 覆盖"},
 		{"llm-inbox-promote", "INBOX 提升（无运行轮时 = 继续）；行为由 server 包 L2 inbox_test 覆盖"},
+		// INBOX 取消插话意向（2026-11-01）：方法面 handler = subscribe.go 注册 onInboxRevert
+		// （bus 主题 inbox-revert）；行为（insert → next_turn、仍 pending、新一轮被消费）由
+		// server 包 L1 inbox_test TestInboxRevertIntent（mq 驱动 + mq 监听）覆盖。
+		{"llm-inbox-revert", "INBOX 取消插话意向（2026-11-01）；handler = subscribe.go onInboxRevert；行为由 server 包 L1 inbox_test TestInboxRevertIntent 覆盖"},
+		// inbox 变更广播（2026-11-01）：生产者 = inbox.go publishInboxChanged（added/promoted/
+		// reverted/discarded/consumed 五路径，含 engine_turn.go consumed）；下行经桥 eventType
+		// 原名直通前端，消费方 = MessageList.vue（按 session 重拉 llm-inbox-list）。事件由
+		// server 包 L1 inbox_test 的 inboxRec（订阅 session-* 全量记录）收录。
+		{"session-inbox-changed", "生产者 = inbox.go publishInboxChanged（2026-11-01，五路径广播）；事件由 server 包 L1 inbox_test inboxRec 收录；前端消费 = MessageList.vue"},
 	}
 	declared := c.byTopic()
 	registered := map[string]bool{}

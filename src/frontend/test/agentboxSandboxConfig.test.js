@@ -65,9 +65,8 @@ test('新页签：useToolSandbox composable 按「被 spawn 的执行体」写 u
   assert.match(js, /export const TOOL_SANDBOX_KEY = 'tool_sandbox'/, '键名须为 tool_sandbox')
   // 单位 = 内置 executor（exe 基名）+ 外部 MCP；executors 子表按 exe 基名，mcps 子表按 MCP 名
   assert.match(js, /export const EXECUTOR_UNITS = \[/, '缺内置 executor 单位清单')
-  // 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 内置 executor 只剩 tools / script / web 三个。
-  assert.match(js, /'chonkpilot-tools-executor\.exe'/, '缺 tools executor exe 单位键')
-  assert.match(js, /'chonkpilot-script-executor\.exe'/, '缺 script executor exe 单位键')
+  // 2026-10-31（D-72）：内置 executor 全部退场（`src/lib/mcp-tools` 删除）→ 清单为空。
+  assert.match(js, /export const EXECUTOR_UNITS = \[\]/, '内置 executor 应已全部退场（空清单）')
   assert.match(js, /listMcpServers\(\)/, '外部 MCP 清单须取既有 data-mcp-list')
   assert.match(js, /saveUserConfig\(\{\s*\[TOOL_SANDBOX_KEY\]:\s*next\s*\}\)/, '须经 usr 配置面写该键（结构化 executors/mcps）')
   assert.match(js, /mq\.emit\(MsgClientTopics\.toolsList/, '工具清单须取既有能力面 tools-list')

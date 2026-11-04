@@ -26,11 +26,11 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-agent/chat"
 	"github.com/lsong98sh/chonkpilot-agent/session"
 	sessioninbox "github.com/lsong98sh/chonkpilot-agent/session/inbox"
 	sessionrunner "github.com/lsong98sh/chonkpilot-agent/session/runner"
-	"github.com/lsong98sh/chonkpilot-agent/chat"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // engineTurnCalls 记录 `runEngineLoop` 的调用次数（测试钩子：断言子会话 / 群聊零调用）。
@@ -39,6 +39,12 @@ var engineTurnCalls atomic.Int64
 // enginePendingPlaceholder 是「等待异步回执期间」该 tool_call 在上下文里的占位 tool 消息
 // （与数据层 `LoadMessages` 对 running 行的投影文案逐字一致；见 data/internal/kernel/viewdata.go）。
 const enginePendingPlaceholder = "（工具执行中，结果稍后返回）"
+
+// insertFlushInterval 是「插话意向重试」的轮询间隔（2026-11-01 批量插话）：相位（在飞工具）
+// 轮换没有事件通知，用低频 ticker 在可插入窗口把该会话全部 pending insert 意向一次投递。
+// 取值权衡：100ms 对用户「插话」点击的体感接近即时，且仅在有运行轮时每 tick 读一次内存索引
+// （无数据面请求）。
+const insertFlushInterval = 100 * time.Millisecond
 
 // engineToolResultItem 构造一条异步工具回执输入（ask 回答 / 异步工具结果同形）。
 func engineToolResultItem(callID, content string, isErr bool) chat.InboxItem {
@@ -89,11 +95,11 @@ func (tc *turnCtx) runEngineLoop() {
 	res, err := tc.server.engine.RunTurnParamsWith(tc.ctx, chat.TurnParams{
 		InstanceID: tc.req.InstanceID, SessionID: tc.req.Session, TurnID: tc.req.Turn,
 	}, chat.Deps{
-		Context: engineTurnContext{tc: tc},
-		Store:      store,
-		Sink:       engineTurnSink{tc: tc},
-		Tools:      engineTurnTools{tc: tc},
-		Lifecycle:  lifecycle,
+		Context:   engineTurnContext{tc: tc},
+		Store:     store,
+		Sink:      engineTurnSink{tc: tc},
+		Tools:     engineTurnTools{tc: tc},
+		Lifecycle: lifecycle,
 		// 下发面与生产同源（hot / 白名单 / denyTools 的过滤都在 tc.llmTools 内）。
 		Catalog: newChatToolCatalog(tc.server, func(string) []ToolDef { return tc.llmTools() }),
 		// 思考链转发（reasoning 增量 → `llm-receive{type:reason}`）复用 P3a 的包装；报文级
@@ -107,6 +113,12 @@ func (tc *turnCtx) runEngineLoop() {
 			ResponseTimeout: tc.responseTimeout,
 			StreamTimeout:   tc.streamTimeout,
 			Images:          ImageOptions{DataRoot: imageDataRoot(tc.req.DataDir, tc.req.WorkDir)},
+			// D-65 auto 档位调度：同档次候选（空 = 普通指定名，行为不变）。
+			AutoCandidates: tc.llmAutoCandidates,
+			// D-65 图像感知：默认 LLM 不具备识图能力时的首选替换候选（首次调用若含图像即切换）；
+			// 无合格候选 → 降级用默认（仅日志留痕）。
+			ImageFallbacks:           tc.llmImageFallbacks,
+			ImageFallbackUnavailable: tc.llmVisionUnavailable,
 		})},
 		Config: tc.engineRuntimeConfig(),
 		Inbox:  tc.engineInbox,
@@ -219,12 +231,18 @@ func (tc *turnCtx) engineFirstInput() (ChatMsg, bool) {
 // 不另起 pending 看门狗：引擎的 `PendingWait` 等待循环对未回填调用合成 failed 占位续轮
 // （阈值同源 = `pending_task_timeout_sec`）。
 func (tc *turnCtx) enginePump(stop <-chan struct{}) {
+	// 插话意向重试（2026-11-01 批量插话）：相位轮换（工具派发 / 工具返回）没有事件通知，
+	// 用低频 ticker 在可插入窗口把该会话全部 pending insert 意向一次性投递。
+	tick := time.NewTicker(insertFlushInterval)
+	defer tick.Stop()
 	for {
 		select {
 		case <-stop:
 			return
 		case <-tc.Done():
 			return
+		case <-tick.C:
+			tc.server.flushInsertIntents(tc)
 		case m := <-tc.in:
 			tc.engineRouteInput(m)
 		case item := <-tc.inboxCh:
@@ -255,21 +273,25 @@ func (tc *turnCtx) engineRouteInput(msg ChatMsg) {
 }
 
 // engineRouteInsert 消费一条 inbox 项（判据同 inbox 消费语义）：空内容 → discarded；
-// 已撤回 → 不消费；非可插入相位（无在飞工具）→ 降级 next_turn；否则投递给引擎建插入帧。
+// 已撤回 / 已取消意向 → 不消费；**相位不可插入 → 保持 pending（不降级）**，由轮内 ticker
+// 在相位到达时重新批量投递（2026-11-01 插话意向语义）；否则投递给引擎建插入帧。
 func (tc *turnCtx) engineRouteInsert(item facade.InboxItem) {
 	if strings.TrimSpace(item.Content) == "" {
 		_ = tc.server.inboxUpdate(tc.req.InstanceID, item.ID, sessioninbox.StatusDiscarded, "", "")
 		tc.server.inboxSetStatus(item.ID, sessioninbox.StatusDiscarded)
 		return
 	}
-	// 删除优先：用户可能已在入队后撤回（discard）→ 不得再落 message。
-	if cur, ok := tc.server.inboxLookup(item.ID); ok && !sessioninbox.Consumable(cur.Status) {
-		return
+	// 删除 / 取消意向优先：用户可能在入队后撤回（discard）或取消插话（revert）→ 不得再落 message。
+	if cur, ok := tc.server.inboxLookup(item.ID); ok {
+		if !sessioninbox.Consumable(cur.Status) || cur.Type != string(sessioninbox.Insert) {
+			tc.server.inboxUnqueue(item.ID)
+			return
+		}
 	}
 	if !tc.insertable() {
-		_ = tc.server.inboxUpdate(tc.req.InstanceID, item.ID, "", string(sessioninbox.Degrade(sessioninbox.Insert)), "")
-		item.Type = string(sessioninbox.NextTurn)
-		tc.server.inboxRemember(item)
+		// 相位已退（工具已返回 / 进入流式）→ 退回 pending 意向，等下一次可插入窗口再批量投递；
+		// 轮末仍未插入则由 consumeNextTurn 降级为 next_turn（不丢用户输入）。
+		tc.server.inboxUnqueue(item.ID)
 		return
 	}
 	tc.engineInbox.Push(chat.InboxItem{ID: item.ID, Type: chat.InboxTypeInsert, Content: item.Content})
@@ -459,6 +481,8 @@ func (s *engineTurnStore) CommitInbox(_ context.Context, inboxID string, msg cha
 	}
 	if inboxID != "" {
 		tc.server.inboxSetStatus(inboxID, "consumed")
+		// 消费即落 messages → 广播 inbox 变更，两端刷新（2026-11-01）。
+		tc.server.publishInboxChanged(tc.req.InstanceID, tc.req.Session, "consumed", []string{inboxID})
 	}
 	return nil
 }

@@ -300,6 +300,22 @@ func (st *sessionStore) EnsureTurn(turnID, sessionID string) error {
 	return nil
 }
 
+// EnsureTurnInDialog 幂等建轮次并**显式指定 `dialog_id`**（定时任务用，SANDBOX-WRITE-1 P4）。
+//
+// 与 EnsureTurn 的差别只在 `dialog_id` 来源：定时任务由插件显式带（宿主进程重启后本进程内的
+// session→dialog 备忘为空，不能依赖注入）；成功后同样登记 turn→session 备忘。
+func (st *sessionStore) EnsureTurnInDialog(turnID, sessionID, dialogID string) error {
+	data := map[string]any{"turn_id": turnID, "session_id": sessionID}
+	if dialogID != "" {
+		data["dialog_id"] = dialogID
+	}
+	if _, err := st.req("ensure-turn", data); err != nil {
+		return err
+	}
+	st.idx.setTurnSession(turnID, sessionID)
+	return nil
+}
+
 // ReopenTurn 复用既有轮次：把 turn 行状态置回 running 并清空 finish_reason
 // （同轮次继续 llm-start{continue:true} 用；复用 data-session-complete-turn 的 upsert
 // 语义，不新增消息面）。原 finished/interrupted 记录随之复位，不留脏状态。
@@ -439,6 +455,17 @@ func (st *sessionStore) CompleteTurnTokens(turnID, status, finishReason string, 
 	}
 	if briefTokens != nil {
 		data["brief_tokens"] = *briefTokens
+	}
+	_, err := st.req("complete-turn", data)
+	return err
+}
+
+// CompleteTurnInDialog 结束轮次并**显式指定 `dialog_id`**（定时任务用，SANDBOX-WRITE-1 P4）：
+// 同 CompleteTurnTokens 的语义，只是不依赖进程内 turn→session 备忘补 `dialog_id`。
+func (st *sessionStore) CompleteTurnInDialog(turnID, dialogID, status, finishReason string) error {
+	data := map[string]any{"turn_id": turnID, "status": status, "finish_reason": finishReason}
+	if dialogID != "" {
+		data["dialog_id"] = dialogID
 	}
 	_, err := st.req("complete-turn", data)
 	return err

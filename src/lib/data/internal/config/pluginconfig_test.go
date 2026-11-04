@@ -18,8 +18,8 @@ func TestPluginConfigSaveReadRoundTrip(t *testing.T) {
 	db := openTestDB(t)
 
 	if err := saveUserConfig(db, map[string]any{
-		"plugins.websearch.api-key":  "sk-test-key",
-		"plugins.websearch.count":    float64(10),
+		"plugins.web.api-key":        "sk-test-key",
+		"plugins.web.count":          float64(10),
 		"plugins.browser.headless":   true,
 		"plugins.desktop.shot-dir-1": `E:\shots`,
 	}); err != nil {
@@ -28,8 +28,8 @@ func TestPluginConfigSaveReadRoundTrip(t *testing.T) {
 
 	// 落库形态 = 字符串（float64 / bool 归一为字符串）
 	want := map[string]string{
-		"plugins.websearch.api-key":  "sk-test-key",
-		"plugins.websearch.count":    "10",
+		"plugins.web.api-key":        "sk-test-key",
+		"plugins.web.count":          "10",
 		"plugins.browser.headless":   "true",
 		"plugins.desktop.shot-dir-1": `E:\shots`,
 	}
@@ -104,13 +104,13 @@ func TestValidatePluginConfigEntries(t *testing.T) {
 		want  string
 	}{
 		{"缺插件 id", map[string]any{"plugins.": "1"}, "plugins.<插件id>.<字段>"},
-		{"缺字段", map[string]any{"plugins.websearch.": "1"}, "须形如"},
-		{"字段含 ..", map[string]any{"plugins.websearch.a..b": "1"}, "字段名非法"},
+		{"缺字段", map[string]any{"plugins.web.": "1"}, "须形如"},
+		{"字段含 ..", map[string]any{"plugins.web.a..b": "1"}, "字段名非法"},
 		{"id 非法字符", map[string]any{"plugins.web search.a": "1"}, "只允许可见 ASCII"},
-		{"键超长", map[string]any{"plugins.websearch." + strings.Repeat("k", maxPluginConfigKeyChars): "1"}, "超长"},
-		{"值非标量", map[string]any{"plugins.websearch.a": map[string]any{"x": 1}}, "必须是字符串"},
-		{"值 null", map[string]any{"plugins.websearch.a": nil}, "值不能为 null"},
-		{"值超长", map[string]any{"plugins.websearch.a": strings.Repeat("v", maxPluginConfigValueChars+1)}, "超长"},
+		{"键超长", map[string]any{"plugins.web." + strings.Repeat("k", maxPluginConfigKeyChars): "1"}, "超长"},
+		{"值非标量", map[string]any{"plugins.web.a": map[string]any{"x": 1}}, "必须是字符串"},
+		{"值 null", map[string]any{"plugins.web.a": nil}, "值不能为 null"},
+		{"值超长", map[string]any{"plugins.web.a": strings.Repeat("v", maxPluginConfigValueChars+1)}, "超长"},
 	}
 	for _, tc := range bad {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,9 +130,44 @@ func TestValidatePluginConfigEntries(t *testing.T) {
 
 	// 合法插件配置通过校验；未知非插件键沿用既有语义（不额外拦截）
 	if err := ValidateUserConfigPayload(map[string]any{
-		"plugins.websearch.api-key": "sk-test-key",
-		"unknown-key":               "x",
+		"plugins.web.api-key": "sk-test-key",
+		"unknown-key":         "x",
 	}); err != nil {
 		t.Fatalf("合法载荷被拒：%v", err)
+	}
+}
+
+// TestLegacyPluginKeyMigration：插件改名（websearch → web）后，旧键在首次读 usr 配置时
+// 一次性搬移到 `plugins.web.*` 并删除旧键；目标已存在时以目标为准。
+func TestLegacyPluginKeyMigration(t *testing.T) {
+	db := openTestDB(t)
+	if err := data.SetConfig(db, "plugins.websearch.api-key", "sk-old"); err != nil {
+		t.Fatalf("SetConfig legacy: %v", err)
+	}
+	if err := data.SetConfig(db, "plugins.websearch.count", "7"); err != nil {
+		t.Fatalf("SetConfig legacy: %v", err)
+	}
+	if err := data.SetConfig(db, "plugins.web.api-key", "sk-new"); err != nil {
+		t.Fatalf("SetConfig new: %v", err)
+	}
+	invalidateConfigValues(db.Path())
+
+	view := readUserConfig(db)
+	if got := view["plugins.web.api-key"]; got != "sk-new" {
+		t.Fatalf("目标已存在应以目标为准，got=%v", got)
+	}
+	if got := view["plugins.web.count"]; got != "7" {
+		t.Fatalf("旧键应迁入新键，got=%v", got)
+	}
+	if _, ok := data.GetConfig(db, "plugins.websearch.api-key"); ok {
+		t.Fatal("旧键应被删除")
+	}
+	if _, ok := data.GetConfig(db, "plugins.websearch.count"); ok {
+		t.Fatal("旧键应被删除")
+	}
+	// 幂等：再次读取不报错、值不变。
+	view2 := readUserConfig(db)
+	if view2["plugins.web.count"] != "7" {
+		t.Fatalf("二次读取值变化：%v", view2["plugins.web.count"])
 	}
 }

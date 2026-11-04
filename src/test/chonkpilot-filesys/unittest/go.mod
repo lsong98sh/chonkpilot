@@ -16,7 +16,6 @@ require (
 
 replace github.com/chonkpilot/chonkpilot-filesys => ../../../lib/filesys
 
-
 replace github.com/chonkpilot/chonkpilot-workspace => ../../../lib/workspace
 
 // 开发期依赖策略（2026-10-29）：同机跨仓依赖一律本地 replace；正式发版时统一切回版本号并删除本节。
@@ -31,4 +30,12 @@ require github.com/lsong98sh/chonkpilot-framework/host v0.0.0
 
 replace github.com/lsong98sh/chonkpilot-agent => ../../../../../chonkpilot-agent
 
-require github.com/lsong98sh/chonkpilot-agent v0.0.0
+replace github.com/lsong98sh/chonkpilot-agent/chat => ../../../../../chonkpilot-agent/chat/src
+
+replace github.com/lsong98sh/chonkpilot-agent/gateway => ../../../../../chonkpilot-agent/gateway/src
+
+replace github.com/lsong98sh/chonkpilot-agent/router => ../../../../../chonkpilot-agent/router/src
+
+replace github.com/lsong98sh/chonkpilot-agent/session => ../../../../../chonkpilot-agent/session/src
+
+replace github.com/lsong98sh/chonkpilot-agent/types => ../../../../../chonkpilot-agent/types/src

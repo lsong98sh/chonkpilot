@@ -126,7 +126,7 @@ class GUIClient:
 
     # ── 驱动指令 ──
     # JS 执行预算（ms）默认 30s：`--test-port` 的 `/eval` 走
-    # `webview2.EvalWithResult`（`src/lib/go-webview2/webview.go:639`）派发到 WebView2 UI 线程，
+    # `webview2.EvalWithResult`（`chonkpilot-webview2/webview.go:675`）派发到 WebView2 UI 线程，
     # 其 timeout 覆盖「派发 + 执行 + 回调」全程；负载下首屏 bundle 执行期该线程被争用，
     # 10s 会误判为 `ExecuteScript timed out` 并**使套件崩溃**（实测 2026-09-23 负载批跑
     # `test_statusbar.py:48`）。预算提到 30s（test 通道自身钳制上限，见

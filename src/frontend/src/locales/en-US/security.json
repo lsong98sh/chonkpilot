@@ -2,7 +2,6 @@
   "title": "Trusted Directories",
   "add": "Add",
   "trust_dir": "Trusted Directory",
-  "read_write": "Read/Write",
   "operation": "Operation",
   "delete": "Delete",
   "save_failed": "Failed to save security config",
@@ -10,5 +9,5 @@
   "dir_path_prompt": "Enter directory path:",
   "dir_placeholder": "C:\\path\\to\\trusted",
   "empty": "No trusted directories",
-  "not_enforced_hint": "This policy is enforced by agentbox at the execution layer: after enabling “Sandbox” on the MCP page or the Tool Sandbox page, tool reads/writes outside the allowed dirs are denied."
+  "not_enforced_hint": "This page is a writable whitelist (recursive): listed dirs are writable, writes outside them are denied (reads are not restricted). Enforced by agentbox at the execution layer once “Sandbox” is enabled on the MCP page or the Tool Sandbox page."
 }

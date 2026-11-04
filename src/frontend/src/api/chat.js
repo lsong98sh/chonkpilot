@@ -1,4 +1,5 @@
 import { EventNames } from '../events/event-names'
+import { MsgTopics, SessionRunningListKeys } from '../events/msgkeys'
 import mq from '@ckfw/utils/mq.js'
 
 // 域化改造（阶段三，20-gui）：send/队列出队不再走 SendChatMessage /
@@ -45,10 +46,11 @@ export function publishLLMStart(sessionId, text, llmName, thinkEnabled, effort, 
   return { turn, ack }
 }
 
-// ── INBOX（中途插话 / 等下一轮，2026-10-17）─────────────────────────────
-// 发送统一入口：落 prjusr inbox，由 llm-server 按当前相位分类 insert / next_turn。
-// 返回应答 promise：{ok, id, type}；type=insert 表示已立即插入，next_turn 表示等下一轮。
-export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, scenarioId) {
+// ── INBOX（中途插话 / 等下一轮，2026-10-17；2026-11-01 语义调整）────────────
+// 发送统一入口：落 prjusr inbox。`insert=true` = 用户点「插话」→ 登记插话意向，
+// 可插入相位时该会话全部意向一次性批量插入；缺省 = 排队下一轮。
+// 返回应答 promise：{ok, id, type}；type=insert 表示已登记插话意向。
+export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, scenarioId, insert = false) {
   return mq.emit(EventNames.llmInboxAdd, {
     session: sessionId,
     llm: llmName || '',
@@ -56,6 +58,7 @@ export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, 
     think: thinkEnabled || '',
     effort: effort || '',
     scenario_id: scenarioId || '',
+    insert: !!insert,
   }, { timeout: 10000 })
 }
 
@@ -69,9 +72,26 @@ export function discardInbox(id) {
   return mq.emit(EventNames.llmInboxDiscard, { id }, { timeout: 10000 })
 }
 
-// 把 next_turn 提升为 insert（「立刻插入」）；无运行轮时 = 「继续」消费。
+// 登记「插话」意向（next_turn → insert，pending；可传 ids 批量）；无运行轮时 = 「继续」消费。
 export function promoteInbox(id) {
   return mq.emit(EventNames.llmInboxPromote, { id }, { timeout: 10000 })
+}
+
+// 取消「插话」意向（insert → next_turn，仍 pending）。
+export function revertInbox(id) {
+  return mq.emit(EventNames.llmInboxRevert, { id }, { timeout: 10000 })
+}
+
+// listRunningSessions 当前**在跑轮次**的会话清单（61 §4.2 `session-running-list`）：
+// 服务端**只读内存快照**（busy 注册表，不落库），每项 `{session_id, turn, instance_id}`，
+// 覆盖本进程全部窗口（调用方按自己的会话列表过滤）。
+export async function listRunningSessions() {
+  const env = await mq.emit(MsgTopics.sessionRunningList, {}, { timeout: 10000 })
+  const backend = env && env.backend
+  if (!backend || !backend.ok) return []
+  const r = backend.result && typeof backend.result === 'object' ? backend.result : {}
+  const list = r[SessionRunningListKeys.list]
+  return Array.isArray(list) ? list : []
 }
 
 // 发布「同轮次继续」llm-start（continue=true）：复用既有 turn（不新开 uuid turn），

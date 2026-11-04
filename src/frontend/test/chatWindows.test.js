@@ -10,7 +10,7 @@
  *  2) 接线守卫（源码断言）：App.vue 按 URL 分派 ChatOnlyView；ChatOnlyView 仅 chat +
  *     不写几何 + 不调 `session-active-*` + 标题走 `gui.window.set-title`；
  *     ChatPanel 的 T-1（仅主窗口、达上限置灰）；SessionsPane 的 T-2/T-3/T-4/T-5；
- *     消息主题字面量与 61 §1 一致，`open-chat` 入参 = `{session_id}`。
+ *     消息主题字面量与 61 §1 一致，`open-chat` 入参 = `{session_id, dialog_id?}`（G-105）。
  *
  * 说明：`composables/useChatWindows.js` 含 `vue` / `utils/mq` 无扩展名导入 → Node ESM 不可直载，
  * 故其正确性由「纯逻辑单测 + 接线守卫」共同覆盖（与 layoutPrefetch.test.js 同口径）。
@@ -40,14 +40,15 @@ test('视图分派：`?session-id=…#chat` → chat（绑定该会话）', () =
   const r = parseViewRoute('?session-id=abc123', '#chat')
   assert.equal(r.view, VIEW_CHAT)
   assert.equal(r.sessionId, 'abc123')
+  assert.equal(r.dialogId, '')
 })
 
 test('视图分派：缺 session-id / 缺 #chat / 空 URL → 主窗口', () => {
-  assert.deepEqual(parseViewRoute('#chat', '#chat'), { view: VIEW_MAIN, sessionId: '' }) // 只命中 hash → 非对话窗口
-  assert.deepEqual(parseViewRoute('?session-id=abc123', ''), { view: VIEW_MAIN, sessionId: '' })
-  assert.deepEqual(parseViewRoute('', '#chat'), { view: VIEW_MAIN, sessionId: '' })
-  assert.deepEqual(parseViewRoute('', ''), { view: VIEW_MAIN, sessionId: '' })
-  assert.deepEqual(parseViewRoute('?foo=1', '#chat'), { view: VIEW_MAIN, sessionId: '' })
+  assert.deepEqual(parseViewRoute('#chat', '#chat'), { view: VIEW_MAIN, sessionId: '', dialogId: '' }) // 只命中 hash → 非对话窗口
+  assert.deepEqual(parseViewRoute('?session-id=abc123', ''), { view: VIEW_MAIN, sessionId: '', dialogId: '' })
+  assert.deepEqual(parseViewRoute('', '#chat'), { view: VIEW_MAIN, sessionId: '', dialogId: '' })
+  assert.deepEqual(parseViewRoute('', ''), { view: VIEW_MAIN, sessionId: '', dialogId: '' })
+  assert.deepEqual(parseViewRoute('?foo=1', '#chat'), { view: VIEW_MAIN, sessionId: '', dialogId: '' })
 })
 
 test('视图分派：hash 必须精确等于 #chat（#chat2 / 大小写不合规 → 主窗口）', () => {
@@ -61,9 +62,21 @@ test('视图分派：session-id 经 URL 解码（宿主 url.QueryEscape 语义�
   assert.equal(r.sessionId, 's a/b')
 })
 
+test('视图分派：可选 dialog-id 透传（G-105，仅 chat 视图）', () => {
+  const r = parseViewRoute('?session-id=s1&dialog-id=dg-9', '#chat')
+  assert.equal(r.view, VIEW_CHAT)
+  assert.equal(r.sessionId, 's1')
+  assert.equal(r.dialogId, 'dg-9')
+  // URL 编码解码
+  assert.equal(parseViewRoute('?session-id=s1&dialog-id=d%2Fg', '#chat').dialogId, 'd/g')
+  // 非 chat 视图不透传 dialog-id
+  assert.deepEqual(parseViewRoute('?session-id=s1&dialog-id=dg-9', ''), { view: VIEW_MAIN, sessionId: '', dialogId: '' })
+  assert.deepEqual(parseViewRoute('?dialog-id=dg-9', '#log'), { view: VIEW_LOG, sessionId: '', dialogId: '' })
+})
+
 test('视图分派：`#log` → 日志窗口（PRODSIM-1，不绑定会话）', () => {
-  assert.deepEqual(parseViewRoute('', '#log'), { view: VIEW_LOG, sessionId: '' })
-  assert.deepEqual(parseViewRoute('?session-id=s1', '#log'), { view: VIEW_LOG, sessionId: '' })
+  assert.deepEqual(parseViewRoute('', '#log'), { view: VIEW_LOG, sessionId: '', dialogId: '' })
+  assert.deepEqual(parseViewRoute('?session-id=s1', '#log'), { view: VIEW_LOG, sessionId: '', dialogId: '' })
   assert.equal(parseViewRoute('', '#log2').view, VIEW_MAIN)
 })
 
@@ -127,7 +140,7 @@ test('幂等并入 / 关闭解除：activated 不新增；关闭按 window_id �
 
 // ── 3) 消息面字面量（61 §1；不许改字段）─────────────────────────
 
-test('消息主题与 61 §1 逐字一致，open-chat 入参 = {session_id}', () => {
+test('消息主题与 61 §1 逐字一致，open-chat 入参 = {session_id, dialog_id?}', () => {
   const names = SRC('events/event-names.js')
   assert.match(names, /guiWindowOpenChat:\s*'gui\.window\.open-chat'/)
   assert.match(names, /guiWindowList:\s*'gui\.window\.list'/)
@@ -135,8 +148,13 @@ test('消息主题与 61 §1 逐字一致，open-chat 入参 = {session_id}', ()
   assert.match(names, /guiWindowSetTitle:\s*'gui\.window\.set-title'/)
 
   const c = SRC('composables/useChatWindows.js')
-  assert.match(c, /mq\.emit\(EventNames\.guiWindowOpenChat,\s*\{\s*session_id:\s*sessionId\s*\}\)/,
-    'open-chat payload 必须为 {session_id}（61 §1，零新增字段）')
+  // G-105：载荷 = {session_id, dialog_id?} —— session_id 恒有；dialog_id 非空才落键（向后兼容）。
+  assert.match(c, /const payload = \{\s*session_id:\s*sessionId\s*\}/,
+    'open-chat payload 必含 session_id')
+  assert.match(c, /if \(dialogId\) payload\.dialog_id = dialogId/,
+    'open-chat dialog_id 可选：非空才落键（G-105）')
+  assert.match(c, /mq\.emit\(EventNames\.guiWindowOpenChat,\s*payload\)/,
+    'open-chat 经 payload 变量发送')
   assert.match(c, /mq\.emit\(EventNames\.guiWindowList,\s*\{\s*\}\)/, 'list payload = {}')
   assert.match(c, /mq\.on\(EventNames\.guiWindowClosed/, '订阅 gui.window.closed 解除占用')
   assert.match(c, /mergeOpenedWindow\(/, 'open-chat 成功 → 并入本地清单（activated 不新增）')
@@ -160,6 +178,8 @@ test('App.vue：按 URL 分派 ChatOnlyView，且对话窗口不触发主窗口�
     '分派来源 = location.search + location.hash')
   assert.match(app, /<ChatOnlyView\s+v-if="ready && chatOnly"\s+:session-id="route\.sessionId"/,
     '命中 #chat → ChatOnlyView 且传入 URL 的 session-id')
+  assert.match(app, /:dialog-id="route\.dialogId"/,
+    'URL 可选 dialog-id 透传 ChatOnlyView（G-105）')
   assert.match(app, /<MainLayout\s+v-else-if="ready"/, '其余仍走主布局')
   // init()（读活动会话 + 广播 session-changed）在对话窗口必须跳过
   const init = app.match(/async function init\(\)\s*\{[\s\S]*?\n\}/)
@@ -208,6 +228,22 @@ test('会话标题变更广播：ChatOnlyView 订阅 data-session-title-changed�
   assert.doesNotMatch(v, /\bwatch(Effect)?\s*\(/, '禁 watch/watchEffect（规则：事件经 mq.on）')
 })
 
+test('ChatOnlyView：URL dialog-id → 先 seed 备忘再发首条请求（G-105，免反查自举空库）', () => {
+  const v = SRC('views/chat/ChatOnlyView.vue')
+  assert.match(v, /dialogId:\s*\{\s*type:\s*String,\s*default:\s*''\s*\}/,
+    'dialogId 为可选 prop（缺省空串 = 既有行为）')
+  // onMounted 内：seed 必须先于 refreshTitle（首条 data-session-get 即带 dialog_id）
+  const mounted = v.match(/onMounted\(\(\) => \{[\s\S]*?\n\}\)/)
+  assert.ok(mounted, '未找到 onMounted')
+  const seedAt = mounted[0].indexOf('seedDialog(props.sessionId, props.dialogId)')
+  const refreshAt = mounted[0].indexOf('refreshTitle()')
+  assert.ok(seedAt >= 0, 'URL 带 dialog-id 时预置 session→dialog 备忘')
+  assert.ok(refreshAt >= 0 && seedAt < refreshAt, 'seed 必须先于首条请求（refreshTitle）')
+  assert.match(mounted[0], /if \(props\.dialogId\)/, '空 dialogId 不动作（向后兼容）')
+  assert.match(v, /import\s*\{[^}]*seedDialog[^}]*\}\s*from\s*'\.\.\/\.\.\/api\/session'/,
+    'seedDialog 来自 api/session（进程内备忘单源）')
+})
+
 // ── 6) 接线守卫：T-1（主 chat 头部，仅主窗口）────────────────────
 
 test('T-1：ChatPanel 头部「新建对话窗口」仅主窗口可见 + 达上限置灰', () => {
@@ -225,6 +261,15 @@ test('T-1：ChatPanel 头部「新建对话窗口」仅主窗口可见 + 达上�
   assert.match(btn[0], /handleNewChatWindow/, '点击 → 新建对话窗口')
   assert.match(cp, /openNewChatWindow\(\)/, 'T-1 走 useChatWindows.openNewChatWindow（新会话 + ensure）')
   assert.match(cp, /class="new-session-btn icon-btn"/, '「新建会话」入口仍在标题条内（chatOnly 下随非场景部分隐藏）')
+})
+
+test('G-47：固定参数会话（sub_chat / group_chat）LLM 选择入口不可用', () => {
+  const cp = SRC('views/chat/ChatPanel.vue')
+  assert.match(cp, /<Tag v-if="fixedParams"[^>]*class="fixed-llm-tag"/,
+    '固定参数会话应以只读 Tag 展示 LLM（不提供选择入口）')
+  assert.match(cp, /<Popover v-else placement="top-end"/,
+    '仅非固定参数会话保留 LLM 选择 Popover')
+  assert.match(cp, /\$t\('chat\.fixed_params'\)/, '固定参数应给出 i18n 提示')
 })
 
 test('ChatPanel：对话窗口绑定 URL 会话（不读/不写活动会话、不跟随 session-changed）', () => {

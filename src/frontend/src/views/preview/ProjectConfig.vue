@@ -12,6 +12,7 @@
              原两个重复设置页已删除（UIREG-1）；容器复用插件 view 机制。 -->
         <PluginPageHost
           v-if="codegraphView"
+          :key="codegraphView.entry || ''"
           :plugin-id="CODEGRAPH_PLUGIN_ID"
           :page-id="CODEGRAPH_CONFIG_VIEW_ID"
           :entry="codegraphView.entry || ''"

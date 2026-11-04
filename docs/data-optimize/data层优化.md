@@ -61,7 +61,7 @@
 | 位置 | 内容 | 约行数 |
 |------|------|--------|
 | `facade/wire/wire.go:498-551` | `FlatPayload` / `RequestID` / `ConfigSaveEntries`（0 调用，且与 persist 实现口径重复） | ~60 |
-| `token.go:17-43` · `brief.go:17` | 5 个纯转发：`TokenDivisor` / `Zones` / `EstimateTokensOfMessages` / `LocateFullTurnCount` / `BriefMessages`（实现已在 `chonkpilot-session`） | ~40 |
+| `token.go:17-43` · `brief.go:17` | 5 个纯转发：`TokenDivisor` / `Zones` / `EstimateTokensOfMessages` / `LocateFullTurnCount` / `BriefMessages`（实现已在 `chonkpilot-agent/session`） | ~40 |
 | `config.go:5-76` · `resolve.go:8-86` | `OpenConfig` / `Config` / `Resolver` / `NewResolver` / `SystemDefault` / `SystemLayer` / `ErrLayerUnavailable` 零生产调用，能力与 `internal/config` 重复 | ~160 |
 | `internal/kernel/viewdata.go:370-422` 等 | `MessageView`、`ToolLLMContent`、`TurnIDOfMsg`、`SortSessionsByActivity` 零调用；`Sval` / `SvalOf` 逐字相同 | ~70 |
 | `internal/sessionstore/store.go:23-190` | `Store.Fork` 整族 + `Open` / `CatalogRow` / `copyTable`（fork 已由 `component.ForkDialog` 接管）；D-2 后此文件仅剩 `ListDialogs`/`GetDialog`/`PutDialog`/`Delete` | ~145 |

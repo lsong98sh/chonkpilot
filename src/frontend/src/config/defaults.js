@@ -22,8 +22,11 @@ export const DEFAULT_LLM = {
   thinking: true,
   reasoningEffort: '',
   maxToolIterations: 20,
-  // 模型能力（多选，声明式）：reasoning = 推理 / vision = 图形（图片输入）。
-  // 未声明「vision」→ 聊天窗口禁用截图（前端按所选 provider 的该字段判定）。
+  // 能力双维度（D-65，2026-11-04）：reasoning = 推理 / vision = 识图，各 0~5 一位小数、0 = 不具备。
+  // 新增默认 = 推理中位档 3 + 不识图 0（与旧口径「capabilities 为空 → 不可截图」一致；用户显式调高
+  // 识图档位后，保存时派生 capabilities 含 vision）。
+  capability: { reasoning: 3, vision: 0 },
+  // 旧声明式能力数组：**由 capability 派生**（保存时写回；此处初值仅占位）。
   capabilities: [],
 }
 

@@ -247,14 +247,18 @@ type SessionData struct {
 	Summary         string    `json:"summary,omitempty"`
 	Mode            string    `json:"mode,omitempty"`
 	ParentSessionID string    `json:"parent_session_id,omitempty"`
-	Keys            []string  `json:"keys,omitempty"`
-	Mentions        []string  `json:"mentions,omitempty"`
-	Agents          []string  `json:"agents,omitempty"`
-	Round           IntValue  `json:"round,omitempty"`
-	TargetMessages  IntValue  `json:"target_messages,omitempty"`
-	TargetBytes     IntValue  `json:"target_bytes,omitempty"`
-	FullTokens      *int      `json:"full_tokens,omitempty"`
-	BriefTokens     *int      `json:"brief_tokens,omitempty"`
+	// Kind / Title / Origin 是 `data-session-ensure-session` 的**可选**建会话参数
+	// （SANDBOX-WRITE-1 P4：定时任务 `crontab` / `crontab_task` 会话；空值 = 旧行为不变）。
+	Kind           string   `json:"kind,omitempty"`
+	Origin         string   `json:"origin,omitempty"`
+	Keys           []string `json:"keys,omitempty"`
+	Mentions       []string `json:"mentions,omitempty"`
+	Agents         []string `json:"agents,omitempty"`
+	Round          IntValue `json:"round,omitempty"`
+	TargetMessages IntValue `json:"target_messages,omitempty"`
+	TargetBytes    IntValue `json:"target_bytes,omitempty"`
+	FullTokens     *int     `json:"full_tokens,omitempty"`
+	BriefTokens    *int     `json:"brief_tokens,omitempty"`
 	// GroupParticipants = 群聊名册 save 载荷的 `list:[{agent, role?}]`。
 	GroupParticipants []GroupParticipantItem `json:"list,omitempty"`
 }

@@ -24,6 +24,7 @@ import MemoryTokenView from './bar-views/MemoryTokenView.vue'
 import QueueStatusView from './bar-views/QueueStatusView.vue'
 import LangSwitcherView from './bar-views/LangSwitcherView.vue'
 import LayoutProfilesView from './bar-views/LayoutProfilesView.vue'
+import CkStoreView from './bar-views/CkStoreView.vue'
 import MemoryStatusView from './bar-views/MemoryStatusView.vue'
 import CompressStatusView from './bar-views/CompressStatusView.vue'
 import MemoryStatusDetail from '../views/status/MemoryStatusDetail.vue'
@@ -67,6 +68,7 @@ registerViews([
   { key: 'compress-status', component: CompressStatusView },
   { key: 'lang-switcher', component: LangSwitcherView },
   { key: 'layout-profiles', component: LayoutProfilesView },
+  { key: 'ck-store', component: CkStoreView },
   // ── 长任务详情页（STB-1；索引进度已归插件 codegraph，见 PLUGIN-UI-2）──
   { key: 'status-memory', component: MemoryStatusDetail },
   { key: 'status-compress', component: CompressStatusDetail },

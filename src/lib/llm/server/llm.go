@@ -117,4 +117,31 @@ type ChatOptions struct {
 	MaxRetries    *int
 	RetryBudget   time.Duration        // 0 = 默认 60s；<0 = 关闭预算（固定指数）
 	RetryObserver router.RetryObserver // 非阻塞上报（turnCtx 实现）
+
+	// AutoCandidates 是 auto 档位调度（D-65）的同档次候选 provider 名（有序；不含首选）。
+	// 非空 → router 在可重试失败后切换 provider（鉴权 / 参数类错误不换）；空 = 既有行为。
+	AutoCandidates []string
+
+	// ImageFallbacks 是 auto 模式「图像感知」的首选替换候选（D-65 口径更新 2026-11-04）：
+	// 默认 LLM 不具备识图能力（vision=0）且本次请求含图像时，**首次调用**就改选其中一个
+	// （有序 = 最优在前，由 llm 侧按「reasoning ±0.5 且 vision>0」算好）。空 = 不触发
+	// （普通指定名 / 默认 LLM 已具备识图 / 无合格候选 → 降级仍用默认 LLM）。
+	ImageFallbacks []ImageFallback
+	// ImageFallbackUnavailable = auto 模式且默认 LLM 不具备识图能力，但**没有任何**同档候选
+	// （无合格候选 / 候选配置不全）→ 本次请求若含图像也不改选（降级用默认 LLM，不阻断），
+	// 首次调用时留一条日志便于排障。
+	ImageFallbackUnavailable bool
+}
+
+// ImageFallback 是一个「具备识图能力」的替换候选的调用快照：替换时整体切换 provider
+// （协议 / baseUrl / apiKey / model 及该 provider 专属采样与思考参数），避免把默认 LLM 的参数
+// 错套到别的厂商上。
+type ImageFallback struct {
+	Name           string // provider 名（= usr `llms[].name`；仅日志 / 排障用）
+	Spec           router.Spec
+	Model          string
+	Temperature    *float64
+	MaxOutputToken *int
+	Think          string
+	Effort         string
 }

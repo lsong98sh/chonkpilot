@@ -108,8 +108,9 @@
   --text-primary: #eceff4;
   --text-secondary: #d8dee9;
   /* 弱化文字：原 #81a1c1 在 #2e3440 上仅 4.64:1（11–12px 提示余量过小）→
-     同色相提亮至 #93a8c8（5.16:1，见 20-gui §12.8） */
-  --text-muted: #93a8c8;
+     同色相提亮至 #a0b5d4（bg-primary 5.98:1 / **状态栏面 --bg-secondary #3b4252 上 4.82:1**；
+     原 #93a8c8 在状态栏面上仅 4.16，低于 4.5；见 20-gui §12.8） */
+  --text-muted: #a0b5d4;
   /* 语义文字色覆写：仅覆写非别名项（--fg-primary/important/link 引 var(...) 自动跟随主题） */
   --fg-secondary: #c9c3b2;   /* 暖灰偏黄（nord 提亮版）；--bg-secondary #3b4252 上 5.8:1 */
   --fg-disabled: #7b8699;

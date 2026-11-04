@@ -131,21 +131,35 @@ test('④ 布局：思考模式开关与标签同行（靠右）、推理强度�
   }
 })
 
-test('④ 模型能力：checkbox 多选（推理 / 图形），绑定 localData.capabilities', () => {
+test('④ 能力双维度：两个数值输入（推理 / 识图）+ 旧声明式 capabilities 派生写入', () => {
   const src = read(DIALOG)
-  assert.match(src, /config\.llm\.capabilities/, '须有「模型能力」标签（i18n）')
-  assert.match(src, /config\.llm\.capReasoning/, '须有「推理」能力项（i18n）')
-  assert.match(src, /config\.llm\.capVision/, '须有「图形」能力项（i18n）')
-  assert.match(src, /type="checkbox" value="reasoning" v-model="localData\.capabilities"/, '推理须为 checkbox 多选绑定')
-  assert.match(src, /type="checkbox" value="vision" v-model="localData\.capabilities"/, '图形须为 checkbox 多选绑定')
+  assert.match(src, /config\.llm\.capabilityReasoning/, '须有「推理能力」标签（i18n）')
+  assert.match(src, /config\.llm\.capabilityVision/, '须有「识图能力」标签（i18n）')
+  // 两项各为 0~5 / step 0.1 的数值输入，分别绑定 capability.reasoning / capability.vision。
+  for (const dim of ['reasoning', 'vision']) {
+    assert.match(src, new RegExp(`v-model\\.number="localData\\.capability\\.${dim}"`), `${dim} 须绑定双维度字段`)
+  }
+  assert.match(src, /:step="LLM_CAPABILITY_STEP"/, '步进须取 fieldRules 常量')
+  // 旧记录：只有 capabilities 时按「具备 = 中位档」映射为双维度（不置空）。
+  assert.match(src, /capabilityFromLegacyCaps/, '旧记录须按 capabilities 映射双维度')
   assert.match(src, /if \(!Array\.isArray\(localData\.capabilities\)\) localData\.capabilities = \[\]/, '旧记录须回落空数组')
-  // 默认值：DEFAULT_LLM 含 capabilities（空数组）
-  assert.match(read(DEFAULTS), /capabilities:\s*\[\]/, 'DEFAULT_LLM 须含 capabilities 初值')
+  // 保存时派生 capabilities（截图门控等旧读侧契约）。
+  assert.match(src, /localData\.capabilities = deriveCapabilities\(localData\.capability\)/, '保存须派生 capabilities')
+  // 旧 checkbox 多选已由档位输入取代。
+  assert.doesNotMatch(src, /type="checkbox" value="vision"/, '不得再保留旧「图形」checkbox')
+  // 默认值：DEFAULT_LLM 含双维度初值 + capabilities 占位。
+  const defaults = read(DEFAULTS)
+  assert.match(defaults, /capability:\s*\{\s*reasoning:\s*3,\s*vision:\s*0\s*\}/, 'DEFAULT_LLM 须含 capability 双维度初值')
+  assert.match(defaults, /capabilities:\s*\[\]/, 'DEFAULT_LLM 须含 capabilities 初值（派生占位）')
   // i18n 双语齐备
   for (const loc of LOCALES) {
     const llm = readLocale(loc, 'config.json').llm
-    for (const k of ['capabilities', 'capReasoning', 'capVision', 'capabilitiesHint']) {
+    for (const k of ['capabilityReasoning', 'capabilityVision', 'capabilityReasoningHint', 'capabilityVisionHint', 'capabilityZeroHint']) {
       assert.ok(typeof llm[k] === 'string' && llm[k].trim().length > 0, `${loc} 缺 config.llm.${k}`)
+    }
+    // 旧单一「能力值 / 模型能力」词条已随 UI 回收
+    for (const k of ['capability', 'capabilities', 'capReasoning', 'capVision']) {
+      assert.equal(llm[k], undefined, `${loc} 应回收 config.llm.${k}`)
     }
   }
 })
@@ -170,4 +184,43 @@ test('⑤ 聊天窗口：所选 LLM 未声明「图形」→ 截图按钮禁用 
     assert.ok(typeof chat.screenshot_no_vision === 'string' && chat.screenshot_no_vision.trim().length > 0,
       `${loc} 缺 chat.screenshot_no_vision`)
   }
+})
+
+// ═══════════════════════════════════════════════════════════════
+// ⑥ 能力双维度（D-65，2026-11-04）：0~5 一位小数（步进 0.1），0 = 不具备；默认值 + 双语词条 + auto 选项
+// ═══════════════════════════════════════════════════════════════
+test('⑥ 能力双维度：表单值域 + 0 提示 + 保存校验 + 默认值 + 双语词条 + auto 选项', () => {
+  const src = read(DIALOG)
+  assert.match(src, /:min="LLM_CAPABILITY_MIN"/, '档位下限须取 fieldRules 常量')
+  assert.match(src, /:max="LLM_CAPABILITY_MAX"/, '档位上限须取 fieldRules 常量')
+  assert.match(src, /:step="LLM_CAPABILITY_STEP"/, '档位步进须取 fieldRules 常量')
+  assert.match(src, /capabilityZeroHint/, '0 = 不具备须就地提示（i18n）')
+  assert.match(src, /reasoningUnavailable/, '推理 0 须就地提示')
+  assert.match(src, /visionUnavailable/, '识图 0 须就地提示')
+  // 两维度各自保存前校验。
+  assert.match(src, /if \(!isValidCapability\(localData\.capability\.reasoning\)\)/, '保存前须校验推理档位')
+  assert.match(src, /if \(!isValidCapability\(localData\.capability\.vision\)\)/, '保存前须校验识图档位')
+
+  const rules = read('utils/fieldRules.js')
+  assert.match(rules, /export const LLM_CAPABILITY_MAX = 5/, '档位上限 = 5')
+  assert.match(rules, /export function isValidCapability\(/, '须有 isValidCapability 校验函数')
+  assert.match(rules, /export function deriveCapabilities\(/, '须有 capabilities 派生函数')
+  assert.match(rules, /export function capabilityFromLegacyCaps\(/, '须有旧声明式 → 双维度映射')
+
+  // 列表页：展示两项档位（推理 / 识图），不再是单一「能力值」列。
+  const list = read('views/config/SettingsLLMPage.vue')
+  assert.match(list, /capabilityReasoning/, '列表页须展示推理档位')
+  assert.match(list, /capabilityVision/, '列表页须展示识图档位')
+  assert.doesNotMatch(list, /prop: 'capability'/, '列表页不得再以单一 capability 列展示')
+
+  for (const loc of LOCALES) {
+    const chat = readLocale(loc, 'chat.json')
+    assert.ok(typeof chat.auto_llm === 'string' && chat.auto_llm.trim().length > 0,
+      `${loc} 缺 chat.auto_llm（auto 选项文案）`)
+  }
+
+  // 聊天选择器出现 auto 选项（D-65：llm-start.llm = auto）。
+  const chatSrc = read('views/chat/ChatPanel.vue')
+  assert.match(chatSrc, /const AUTO_LLM = 'auto'/, '须定义 auto 保留名')
+  assert.match(chatSrc, /\{ value: AUTO_LLM, label: t\('chat\.auto_llm'\)/, '选择器须前置 auto 选项')
 })

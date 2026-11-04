@@ -112,7 +112,8 @@ type McpGetRequest struct {
 	InstanceID string `json:"instance_id,omitempty"`
 	// Name server 名（必填）。
 	Name string `json:"name"`
-	// Level 限定级别（空 = 具体级优先 prjusr → project → user → app）。
+	// Level 限定级别（空 = 具体级优先 prjusr → project → user → app；非空须为四级之一，
+	// 未知级别直接报错，D-54）。
 	Level string `json:"level,omitempty"`
 	// Scope 实例数据根（可选）。
 	Scope Scope `json:"scope,omitempty"`
@@ -134,7 +135,8 @@ type McpGetRawResponse struct {
 type McpSaveRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id,omitempty"`
-	// Server 定义（Name 必填；Level = 写入目标级别，空 = 用户级）。
+	// Server 定义（Name 必填；Level = 写入目标级别，空 = 用户级；非空须为四级之一，
+	// 未知级别 / 该级不可用直接报错、不回落 user 级，D-54）。
 	Server McpServer `json:"server"`
 	// OldName 改名前的 server 名（可选：非空且与新名/级别不同 → 先删旧文件，避免残留）。
 	OldName string `json:"old_name,omitempty"`
@@ -158,7 +160,8 @@ type McpDeleteRequest struct {
 	InstanceID string `json:"instance_id,omitempty"`
 	// Name server 名（必填）。
 	Name string `json:"name"`
-	// Level 指定级别（空 = 具体级优先：删命中的最具体级副本）。
+	// Level 指定级别（空 = 具体级优先：删命中的最具体级副本；非空须为四级之一，
+	// 未知级别直接报错、不回落到 user 级，D-54）。
 	Level string `json:"level,omitempty"`
 	// Scope 实例数据根（可选）。
 	Scope Scope `json:"scope,omitempty"`

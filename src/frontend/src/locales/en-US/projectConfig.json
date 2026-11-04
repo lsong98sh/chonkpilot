@@ -102,6 +102,7 @@
   "context_async": "Compression runs asynchronously after each turn, mutually exclusive within the same session, no duplicate triggers.",
   "context_tip_cache_billing": "If your provider bills purely by token and does not bill for cache hits, it is recommended to reduce the keep turns to 1",
   "context_tip_compress_llm": "Context compression and memory extraction use the default LLM; a specific LLM is coming soon",
+  "context_memory_moved": "Memory settings moved to the plugin config page: Settings → Plugin Manager → Memory → Config.",
   "memory_section": "Memory",
   "memory_enabled": "Enable memory",
   "memory_enabled_hint": "When enabled, each turn is asynchronously distilled into category files; disabled means no distillation.",

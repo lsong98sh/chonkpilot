@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/lsong98sh/chonkpilot-agent/chat"
@@ -19,6 +20,8 @@ type chatLLMClient struct {
 	s    *Server
 	spec router.Spec
 	opts ChatOptions // 模板：模型/超时/think/effort/图片；模型可由 StepRequest 覆盖
+	// visionOnce 保证「auto 图像感知」的首选替换只在**首次 step** 判定一次（每个 client 实例 = 一轮）。
+	visionOnce sync.Once
 }
 
 // newChatLLMClient 构造 LLM step 适配器。
@@ -26,7 +29,36 @@ func newChatLLMClient(s *Server, spec router.Spec, opts ChatOptions) chat.LLMCli
 	return &chatLLMClient{s: s, spec: spec, opts: opts}
 }
 
+// applyImageFallback 是 auto 模式「图像感知」的首选替换（D-65 口径更新 2026-11-04）：
+// 默认 LLM 不具备识图能力（vision=0）且本次请求含图像 → **首次调用**就整体切到一个
+// 「reasoning ±0.5 且 vision>0」的候选（`opts.ImageFallbacks` 已按优先级排序，取首个）。
+//
+// 判定只做一次（每轮一个 client 实例）；ImageFallbacks 为空（非 auto / 默认已具备识图 /
+// 无合格候选）→ 保持默认 LLM，不阻断本轮（仅日志留痕）。
+func (c *chatLLMClient) applyImageFallback(msgs []ChatMsg) {
+	c.visionOnce.Do(func() {
+		if !requestHasImage(msgs) {
+			return
+		}
+		if len(c.opts.ImageFallbacks) == 0 {
+			if c.opts.ImageFallbackUnavailable {
+				logf("[chonkpilot-server] auto: 默认 LLM 不具备识图能力且本次请求含图像，但无同档且具备识图能力的候选 → 降级仍用默认 LLM\n")
+			}
+			return
+		}
+		pick := c.opts.ImageFallbacks[0]
+		c.spec = pick.Spec
+		c.opts.Model = pick.Model
+		c.opts.Temperature = pick.Temperature
+		c.opts.MaxTokens = pick.MaxOutputToken
+		c.opts.Think = pick.Think
+		c.opts.Effort = pick.Effort
+		logf("[chonkpilot-server] auto: 默认 LLM 不具备识图能力且本次请求含图像 → 首选替换为 %q\n", pick.Name)
+	})
+}
+
 func (c *chatLLMClient) Step(ctx context.Context, req chat.StepRequest, opts chat.StepOptions) (<-chan chat.StepEvent, error) {
+	c.applyImageFallback(req.Messages)
 	co := c.opts
 	if req.Model != "" {
 		co.Model = req.Model

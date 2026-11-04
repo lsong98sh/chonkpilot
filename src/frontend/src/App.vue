@@ -3,8 +3,9 @@
   <LogView v-if="logOnly" />
   <template v-else>
     <!-- 视图分派（24 §6.1 / U-2 已决）：**以 URL 为准** —— `?session-id=…#chat` → 纯对话窗口；
-         其余 → 主窗口完整布局。宿主零视图判断（不注入 `__ck.view`）。 -->
-    <ChatOnlyView v-if="ready && chatOnly" :session-id="route.sessionId" />
+         其余 → 主窗口完整布局。宿主零视图判断（不注入 `__ck.view`）。
+         `route.dialogId`（G-105）：URL 可选 `dialog-id` → 直连该 dialog（免反查自举空库）。 -->
+    <ChatOnlyView v-if="ready && chatOnly" :session-id="route.sessionId" :dialog-id="route.dialogId" />
     <!-- 项目就地切换（browser「打开目录」）：`:key="projectEpoch"` 自增 → 主布局整树重挂载，
          等价于整页重载后的组件重建（不整页重载）。见 utils/projectReinit.js。 -->
     <MainLayout v-else-if="ready" :key="projectEpoch" />

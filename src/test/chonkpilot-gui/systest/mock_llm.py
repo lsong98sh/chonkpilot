@@ -298,14 +298,6 @@ def route_tool_calls(text):
     if "call loop-limit" in t:
         return [("task_run", {"command": "Write-Output loop-limit",
                               "tool_call_display_name": "测试"})]
-    if "call close" in t:
-        # 关闭链：desktop_run DSL `WIN "标题" focus` + `KPR alt+f4` → IDE 退出（C6 持久化测试用）。
-        # 旧 `key_press` 工具已不存在（桌面 UI 自动化统一收敛到 desktop_run DSL）；
-        # 窗口标题 = `chonkpilot-<workDir 名>`（gui.MainWindowTitle），WIN 标题为模糊匹配。
-        title = "chonkpilot-%s" % os.path.basename(SCRIPTS_WS)
-        return [("desktop_run",
-                 {"script": 'WIN "%s" focus\nSLP 200\nKPR alt+f4' % title,
-                  "tool_call_display_name": "回归"})]
     # ── I-88：真实会话工具调用 → Task 层权威行（run_tool_async.py H）──
     # 真实 task_run（`Start-Sleep 6s`）：给「层权威行 state=running（执行推进中）」留
     # 可观测窗口，工具自然结束后落 done；用于断言 data-tasktree-tasks 出现权威行且 exec_json

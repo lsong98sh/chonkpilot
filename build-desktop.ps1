@@ -14,38 +14,33 @@
 #   前端 dist 经 go:embed 进 exe（前端源码工程 = 仓库级 src/frontend，vite 产物直投
 #   `src/desktop/frontend/dist`；PRODSIM-1 后不再有 gui/browser 的第二份投放目录）。
 #
-# 产物（仓库根 dist\desktop\，决策 [42 §2 (16)]）：
+# 产物（仓库根 dist\，2026-11-02 目录扁平化：不再有 dist\desktop / dist\other / dist\initdata）：
 #   ├── chonkpilot.exe                      # webview2 宿主
-#   ├── capability/                         # 契约 + executor×4 + 出厂场景（来自 dist/other + 场景源）
-#   │   ├── prompts/<...>/*.prompt.md
-#   │   ├── tools/<cat>/*.tool.md
-#   │   ├── resources/<...>/*.resource.md
-#   │   ├── skills/<...>/*.skill.md
-#   │   ├── agents/                         # 智能体契约（*.agent.md，扁平；源 src/initdata/capability/agents）
-#   │   ├── system/                         # 非原语系统文档全量（summary.md/system-directory.md/memory/*.md；源 src/initdata/capability/system，OP-02）
-#   │   ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
-#   │   ├── plugins/<id>/plugin.json + <exe>  # manifest 插件（manifest 源 src/initdata/capability/plugins，exe 由 build-plugins.ps1 产出）
-#   │   │                                   # ⚠️ `ui.selfServe: true` 的插件把 webui embed 进 exe（唯一源 = chonkpilot-plugins/<id>/webui/），
-#   │   │                                   #    产物内**不带** <id>/webui/；demo-python 为样例（product=false，不随产物投放）
-#   │   └── executors/chonkpilot-{core,browser,desktop}-executor.exe
-#   ├── mcps/                               # 内置 MCP 引擎 + 可选文档转换器
-#   │   ├── codegraph/chonkpilot-codegraph-mcp-server.exe
-#   │   ├── vfts/chonkpilot-vfts-mcp-server.exe + zvec_c_api.dll（必须与 vfts 引擎同目录）
-#   │   └── markitdown/…（可选：文档转换，dist/other/mcps 兜底镜像；缺则告警、不中断）
+#   ├── chonkpilot-remote-server.exe        # 远端服务（H5/后台管理已 embed；源 = 同级仓 chonkpilot-plugins/remote）
+#   ├── chonkpilot-remote-server.db         # 远端服务 SQLite 库（首启自动建；构建末尾执行一次 user list 生成）
 #   ├── themes/themes.css                   # 主题资产（源 src/initdata/themes，覆盖式同步；运行期可编辑）
-#   └── (无其它)                            # 根仅 chonkpilot.exe 一个 exe
+#   └── capability/                         # 契约 + 出厂场景 + manifest 插件
+#       ├── prompts/<...>/*.prompt.md
+#       ├── tools/<cat>/*.tool.md
+#       ├── resources/<...>/*.resource.md
+#       ├── skills/<...>/*.skill.md
+#       ├── agents/                         # 智能体契约（*.agent.md，扁平；源 src/initdata/capability/agents）
+#       ├── system/                         # 非原语系统文档全量（源 src/initdata/capability/system，OP-02）
+#       ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
+#       └── plugins/<id>/plugin.json + <exe>  # manifest 插件（manifest 源 src/initdata/capability/plugins，exe 由 build-plugins.ps1 产出）
+#                                           # ⚠️ `ui.selfServe: true` 的插件把 webui embed 进 exe（唯一源 = chonkpilot-plugins/<id>/webui/），
+#                                           #    产物内**不带** <id>/webui/；demo-python 为样例（product=false，不随产物投放）
 #
-# 另产**出厂数据包**到 dist\initdata\（不进 dist\desktop）：
-#   capability-<ver>.zip（= dist/desktop/capability/ **全量**，含 executors exe）·
-#   initial.zip（完整出厂包，内含 exe，供用户自行恢复）。
-#   <ver> = 日期时间戳（无独立版本源）；不做哈希/清单校验。
+# **不再产出**（2026-11-02 按用户口径精简：重复/历史形态全部移除）：
+#   - dist\other\（mcp-server / gateway / executors 部署区）——桌面单体不依赖；
+#   - dist\desktop\（旧宿主子目录）——exe 直接落 dist 根；
+#   - dist\initdata\（出厂 zip 包）——按需另跑打包步骤，不随常规构建；
+#   - dist\...\mcps\（内置 codegraph/vfts 引擎 + 文档转换器）——默认不接入；需要内置 MCP 时再单独投放。
 #
 # **出厂数据唯一源** = src/initdata/（capability/{prompts,tools,resources,skills,agents,scenarios,system}），不再 embed
-# （例外：system/ 另经 embed 落点编入 data 模块，供磁盘缺失兜底，见 [0.5/9]）。
+# （例外：system/ 另经 embed 落点编入 data 模块，供磁盘缺失兜底，见 [0.5/7]）。
 # 全量组件：业务能力**全部进程外**（`capability/plugins/<id>/`，由 build-plugins.ps1 产出）；
-#   压缩已内建在会话侧（SESSION-1，2026-10-23：`src/lib/llm/server/compress.go`，无独立插件 / exe）；
-#   外置引擎 exe（codegraph/vfts）+ zvec_c_api.dll 置于 dist/desktop/mcps/{codegraph,vfts}\——
-#   codegraph 插件按「宿主 exe 同目录/mcps/<engine>/」解析引擎（L4 门禁 `-dump` 自检亦读该产物）。
+#   压缩已内建在会话侧（SESSION-1，2026-10-23：`src/lib/llm/server/compress.go`，无独立插件 / exe）。
 # 用法：.\build-desktop.ps1 [-Debug]
 #
 # -Debug：调试构建（附带 `-tags debugport`），使 GUI 单体壳编入 `--test-port` 测试通道
@@ -71,13 +66,14 @@ $desktop = Join-Path $root "src\desktop"
 # `//go:embed all:frontend/dist` 落点），不再有 gui/browser 的第二份投放目录。
 $frontend = Join-Path $root "src\frontend"
 $embedDst = Join-Path $desktop "frontend\dist"
-$dist = Join-Path $root "dist\desktop"
+$dist = Join-Path $root "dist"
 $outGuiExe = Join-Path $dist "chonkpilot.exe"
-# 出厂数据唯一源 + 出厂数据包落点
+# 出厂数据唯一源（契约/场景/主题/插件 manifest）
 $initScenarios = Join-Path $root "src\initdata\capability\scenarios"
-$initdataDist = Join-Path $root "dist\initdata"
+$initCap = Join-Path $root "src\initdata\capability"
+# 远端服务（同仓外挂：chonkpilot-plugins\remote；由本脚本调用其 build.ps1 后拷入 dist 根）
+$remoteRepo = [System.IO.Path]::GetFullPath((Join-Path $root "..\chonkpilot-plugins\remote"))
 # 版本 = 日期时间戳（无独立版本源，见头注）
-$ver = Get-Date -Format "yyyyMMdd-HHmmss"
 
 # ── 破坏性操作防护（2026-10-11；本仓曾发生误删用户主目录事故，见 .trae/rules 全局规则）──
 # 统一约束：任何删除/覆盖目标必须落在**仓库根 $root 之内**（严格子路径），越界即 throw 中止。
@@ -175,6 +171,23 @@ New-Item -ItemType Directory -Force -Path $themeDst | Out-Null
 Copy-Item (Join-Path $initThemes "*") $themeDst -Recurse -Force
 Write-Host "    ok: dist themes -> $themeDst ($((Get-ChildItem $themeDst -Recurse -File | Measure-Object).Count) files)"
 
+# -- 0.8) 前端静态图投放（唯一源 image/*.png → 前端 public，前端按 URL 引用） --
+#   chonkpilot.png = 顶栏品牌 logo；cat1/cat2.png = 输入框上沿小猫（睁眼/闭眼）。
+Write-Host "==> [0.8/9] sync static images -> frontend public"
+foreach ($name in @("chonkpilot.png", "cat1.png", "cat2.png")) {
+    $imgSrc = Join-Path $root "image\$name"
+    $imgDst = Join-Path $frontend "public\$name"
+    if (-not (Test-Path -LiteralPath $imgSrc)) {
+        Write-Host "    [warn] 图片源缺失，跳过: $imgSrc"
+        continue
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $imgDst) | Out-Null
+    $imgStale = (-not (Test-Path -LiteralPath $imgDst)) -or
+        ((Get-Item -LiteralPath $imgSrc).LastWriteTimeUtc -gt (Get-Item -LiteralPath $imgDst).LastWriteTimeUtc)
+    if ($imgStale) { Copy-Item -LiteralPath $imgSrc -Destination $imgDst -Force }
+    Write-Host "    ok: $imgDst"
+}
+
 # -- 1) 前端构建（工程 src/frontend；产物直投桌面壳 embed 落点） --
 Write-Host "==> [1/9] build frontend"
 Push-Location $frontend
@@ -201,6 +214,27 @@ Write-Host "==> [2/9] build chonkpilot.exe"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 Push-Location $desktop
 try {
+    # Windows 图标（2026-11-02）：`-ldflags` 无法指定图标，必须靠**包目录内的 .syso 资源**自动链接。
+    # 唯一图标源 = 仓库根 `image\favicon-multi-size.ico`；ico 比 syso 新（或 syso 缺失）时用 rsrc 重新生成。
+    # 生成失败时沿用已有 syso（其余构建内容不受影响）；两者都没有才报错。
+    $icoSrc = Join-Path $root "image\favicon-multi-size.ico"
+    $icoSyso = Join-Path $desktop "rsrc_windows_amd64.syso"
+    if (Test-Path -LiteralPath $icoSrc) {
+        $sysoStale = (-not (Test-Path -LiteralPath $icoSyso)) -or
+            ((Get-Item -LiteralPath $icoSrc).LastWriteTimeUtc -gt (Get-Item -LiteralPath $icoSyso).LastWriteTimeUtc)
+        if ($sysoStale) {
+            Write-Host "    生成 Windows 图标资源: $icoSyso"
+            go run github.com/akavel/rsrc@v0.10.2 -arch amd64 -ico $icoSrc -o $icoSyso
+            if ($LASTEXITCODE -ne 0) {
+                if (-not (Test-Path -LiteralPath $icoSyso)) { throw "图标资源生成失败且无可用 syso: $icoSyso" }
+                Write-Host "    [warn] rsrc 生成失败，沿用已有 syso: $icoSyso"
+            }
+        }
+        Write-Host "    ok: icon = $icoSrc"
+    } else {
+        Write-Host "    [warn] 图标源缺失，跳过: $icoSrc"
+    }
+
     # 仅在非空时传 -tags：Windows PowerShell 5.1 会丢弃空串实参，
     # 使 `-tags` 误吞 `-ldflags`，进而把 `-H windowsgui` 当成未知顶层参数（见 2026-10-14 修复）。
     $tagsArg = if ($desktopTags) { @("-tags", $desktopTags) } else { @() }
@@ -210,54 +244,65 @@ try {
     Write-Host "    ok: $outGuiExe ($mb MB)"
 } finally { Pop-Location }
 
-# -- 3) （已撤销，PRODSIM-1 L4 2026-10-22：CLI 单体 chonkpilot-cli.exe 全量删除） --
+# -- 2.5) 旧布局残留清理（2026-11-02 目录扁平化）--
+#   历史产物 dist\desktop / dist\other / dist\initdata 与根下其它 exe/dll 全部清掉，
+#   保证 dist 根恒为：chonkpilot.exe · chonkpilot-remote-server.exe(+.db) · themes\ · capability\。
+Write-Host "==> [2.5/7] clean legacy layout artifacts"
+foreach ($legacyDir in @((Join-Path $dist "desktop"), (Join-Path $dist "other"), (Join-Path $dist "initdata"), (Join-Path $dist "plugin-apps"))) {
+    if (Test-Path -LiteralPath $legacyDir) {
+        Write-Host "    [清理] 旧布局目录: $legacyDir"
+        Remove-SafeItem -LiteralPath $legacyDir -Recurse
+    }
+}
+$rootFileAllow = @("chonkpilot.exe", "chonkpilot-remote-server.exe", "chonkpilot-remote-server.db")
+Get-ChildItem -Path $dist -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { ($_.Extension -in @(".exe", ".dll")) -and ($rootFileAllow -notcontains $_.Name) } |
+    ForEach-Object {
+        Write-Host "    [清理] 根下陈旧产物: $($_.Name)"
+        Remove-SafeItem -LiteralPath $_.FullName
+    }
+
 
 # -- 3.5) 2026-10-19（G-68 第二步）：server-tools 已撤销 —— meta/domain 控制面工具改为
 #         core-mcp-server 的一工具一 exe（由 build-mcp-server.ps1 产出到 capability/executors）。 --
 
-# -- 4) 构建 MCP server 契约与 executor（调用 build-mcp-server.ps1 → dist/other） --
-Write-Host "==> [4/9] build mcp-server (contracts + executors)"
-Invoke-ChildBuild "build-mcp-server.ps1"
-
-# 复制 capability/ 到发行目录
-Write-Host "    -> stage capability/ to dist/desktop"
-$capSrc = Join-Path $root "dist\other\capability"
+# -- 4) stage capability/（契约全量，直接从出厂数据唯一源铺；不再经 dist\other） --
+#    2026-11-02：目录扁平化后 capability 直接落 dist\capability —— 与旧 build-mcp-server.ps1 的
+#    「契约部署」等价（同 6 棵子树 + 剔除规则），但**不产出** mcp-server/gateway/executors。
+Write-Host "==> [3/7] stage capability/ (src/initdata/capability)"
 $capDst = Join-Path $dist "capability"
 Remove-SafeItem -LiteralPath $capDst -Recurse
-Copy-Item $capSrc $capDst -Recurse -Force
+New-Item -ItemType Directory -Force -Path $capDst | Out-Null
+foreach ($sub in @("prompts", "tools", "resources", "skills", "agents", "system")) {
+    $subSrc = Join-Path $initCap $sub
+    if (-not (Test-Path $subSrc)) { throw "capability 源缺失: $subSrc" }
+    Copy-Item $subSrc $capDst -Recurse -Force
+}
+# 插件化剔除：file 域 11 工具随 file 插件投放（PLUGIN-1），契约不得进 capability 根（否则工具名冲突）。
+# embed 兜底副本（[0.6/7] 已同步）同步剔除。
+foreach ($dst in @((Join-Path $capDst "tools\file"), (Join-Path $root "src\lib\mcp-server\server\contracts\tools\file"))) {
+    if (Test-Path $dst) { Remove-SafeItem -LiteralPath $dst -Recurse }
+}
+# 未发布草稿剔除：skills/se/（源留在 src/initdata，不随产物投放）。
+$seDraft = Join-Path $capDst "skills\se"
+if (Test-Path $seDraft) { Remove-SafeItem -LiteralPath $seDraft -Recurse }
+# 域工具契约（ask_user / tool_result / tool_stop / subchat_open / subchat_finish）：唯一源 = src/lib/llm/contracts/tools。
+$domainToolsSrc = Join-Path $root "src\lib\llm\contracts\tools"
+$serverToolsDst = Join-Path $capDst "tools\server"
+New-Item -ItemType Directory -Force -Path $serverToolsDst | Out-Null
+Copy-Item (Join-Path $domainToolsSrc "*.tool.md") $serverToolsDst -Force
 Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
 
-# P6（2026-10-19）：系统级 app 根工具的进程外实现（宿主按 <exeDir>/mcps/self-tools/ 查找）。
-$selfToolSrc = Join-Path $root "dist\other\chonkpilot-self-tools.exe"
-if (-not (Test-Path $selfToolSrc)) { throw "self-tools 产物缺失: $selfToolSrc（build-mcp-server.ps1 未产出）" }
-$selfToolDir = Join-Path $dist "mcps\self-tools"
-New-Item -ItemType Directory -Force -Path $selfToolDir | Out-Null
-Copy-Item $selfToolSrc $selfToolDir -Force
-$mbSelf = [Math]::Round((Get-Item (Join-Path $selfToolDir "chonkpilot-self-tools.exe")).Length / 1MB, 1)
-Write-Host "    ok: mcps/self-tools/chonkpilot-self-tools.exe ($mbSelf MB)"
-
-# 2026-10-19：工具唯一前门 core-mcp-server（宿主按 <exeDir>/mcps/core-mcp/ 查找）。
-$coreMcpSrc = Join-Path $root "dist\other\chonkpilot-core-mcp-server.exe"
-if (-not (Test-Path $coreMcpSrc)) { throw "core-mcp-server 产物缺失: $coreMcpSrc（build-mcp-server.ps1 未产出）" }
-$coreMcpDir = Join-Path $dist "mcps\core-mcp"
-New-Item -ItemType Directory -Force -Path $coreMcpDir | Out-Null
-Copy-Item $coreMcpSrc $coreMcpDir -Force
-$mbCore = [Math]::Round((Get-Item (Join-Path $coreMcpDir "chonkpilot-core-mcp-server.exe")).Length / 1MB, 1)
-Write-Host "    ok: mcps/core-mcp/chonkpilot-core-mcp-server.exe ($mbCore MB)"
-
-# 2026-10-21（GATEWAY-2/L1）：DSL 已退役，chonkpilot-dsl-executor.exe 不再产出。
-# browser / desktop 改为常驻插件（capability/executors/chonkpilot-{browser,desktop}-plugin.exe，GUI 子系统 + 托盘）。
-
 # -- 4.5) manifest 插件（PLUGIN-1）：manifest 来自 src/initdata，exe 由 build-plugins.ps1 产出 --
-#   插件目录 = dist/desktop/capability/plugins/<id>/（plugin.json + exe 同目录；
+#   插件目录 = dist/capability/plugins/<id>/（plugin.json + exe 同目录；
 #   manifest 的 runtime.exe 是插件目录内相对路径）。
 #   ⚠️ PLUGIN-UI-1：`ui.selfServe: true` 的插件（本轮起 = browser/codegraph/desktop/file/mcp/task/websearch）
 #   自持 webui —— 资源 embed 在插件 exe 内，webui 唯一源 = `chonkpilot-plugins/<id>/webui/`，
 #   产物内**不得**出现 `<id>/webui/`（避免双源漂移；判定见下方通用规则）。
-Write-Host "==> [4.5/9] stage plugins (manifest + exe)"
+Write-Host "==> [4/7] stage plugins (manifest + exe)"
 $initPlugins = Join-Path $root "src\initdata\capability\plugins"
 if (Test-Path $initPlugins) {
-    $plgDst = Join-Path $dist "capability\plugins"
+    $plgDst = Join-Path $dist "plugins"
     Remove-SafeItem -LiteralPath $plgDst -Recurse
     Copy-Item $initPlugins $plgDst -Recurse -Force
     # 演示插件不随产物投放：demo-python 是「插件规范全功能演示」样例（manifest product=false），
@@ -269,7 +314,8 @@ if (Test-Path $initPlugins) {
     # 插件 exe 内（唯一源 = `chonkpilot-plugins/<id>/webui/`），产物内**不得**出现 `<id>/webui/`。
     # 通用规则：遍历全部插件 manifest 判定，不按插件 id 逐个列举（新增 selfServe 插件自动覆盖）。
     Get-ChildItem -Path $plgDst -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
-        $ckManifest = Join-Path $_.FullName "plugin.json"
+        # PLUGIN-LOAD-1：plugin.json 已极简（无 ui 段），selfServe 判定改读插件自带的 manifest.json。
+        $ckManifest = Join-Path $_.FullName "manifest.json"
         if (-not (Test-Path -LiteralPath $ckManifest)) { return }
         $ckManifestJSON = $null
         try {
@@ -295,8 +341,8 @@ if (Test-Path $initPlugins) {
     Write-Host "    skip（src/initdata/capability/plugins 不存在）"
 }
 
-# -- 5) 出厂场景：src/initdata/capability/scenarios → dist/desktop/capability/scenarios（覆盖式同步，不删目录本身） --
-Write-Host "==> [5/9] stage scenarios/ (src/initdata/capability/scenarios)"
+# -- 5) 出厂场景：src/initdata/capability/scenarios → dist/capability/scenarios（覆盖式同步，不删目录本身） --
+Write-Host "==> [5/7] stage scenarios/ (src/initdata/capability/scenarios)"
 if (-not (Test-Path $initScenarios)) { throw "scenarios not found: $initScenarios" }
 $scnDst = Join-Path $dist "capability\scenarios"
 New-Item -ItemType Directory -Force -Path $scnDst | Out-Null
@@ -309,105 +355,35 @@ Copy-Item (Join-Path $initScenarios "*") $scnDst -Recurse -Force
 $scnCount = (Get-ChildItem $scnDst -Recurse -File | Measure-Object).Count
 Write-Host "    ok: capability/scenarios/ ($scnCount files)"
 
-# -- 6) codegraph 引擎构建并置于 dist/desktop/mcps/codegraph/（出厂内置 MCP；默认不接入，见 42 §2 (17)） --
-Write-Host "==> [6/9] build codegraph engine -> mcps/codegraph"
-Invoke-ChildBuild "build-codegraph.ps1"
-$cgExe = "chonkpilot-codegraph-mcp-server.exe"
-$cgDir = Join-Path $dist "mcps\codegraph"
-New-Item -ItemType Directory -Force -Path $cgDir | Out-Null
-Copy-Item (Join-Path $root "dist\plugins\codegraph\$cgExe") $cgDir -Force
-$mbCg = [Math]::Round((Get-Item (Join-Path $cgDir $cgExe)).Length / 1MB, 1)
-Write-Host "    ok: mcps/codegraph/$cgExe ($mbCg MB)"
-# 注（PLUGIN-EDGE-1，2026-10-28）：codegraph 查询工具「一工具一 exe」已无消费方（插件进程内直挂），
-# 不再随产物投放；引擎 exe 保留 = 插件/L4 `-dump` 自检的落盘索引读取。
-
-# -- 7) vfts 引擎 + zvec 运行库置于 dist/desktop/mcps/vfts/（zvec_c_api.dll 必须与引擎 exe 同目录） --
-Write-Host "==> [7/9] build vfts engine -> mcps/vfts"
-Invoke-ChildBuild "build-vfts.ps1"
-$vfExe = "chonkpilot-vfts-mcp-server.exe"
-$vftsDist = Join-Path $root "dist\plugins\vfts"
-$vfDir = Join-Path $dist "mcps\vfts"
-New-Item -ItemType Directory -Force -Path $vfDir | Out-Null
-Copy-Item (Join-Path $vftsDist $vfExe) $vfDir -Force
-Copy-Item (Join-Path $vftsDist "zvec_c_api.dll") $vfDir -Force
-$mbVf = [Math]::Round((Get-Item (Join-Path $vfDir $vfExe)).Length / 1MB, 1)
-$mbDll = [Math]::Round((Get-Item (Join-Path $vfDir "zvec_c_api.dll")).Length / 1MB, 1)
-Write-Host "    ok: mcps/vfts/$vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
-
-# -- 8) mcps 转换器兜底并入 dist/desktop/mcps/（dist\other\mcps → dist\desktop\mcps；可选，**幂等**）--
-#    兜底语义：源存在 → 覆盖镜像（**仅覆盖子项，保留 codegraph/vfts 引擎目录**）；源不存在但目标已存在
-#    → 保留并提示；两处都无 → 醒目告警（**不中断构建**）。转换器（文档索引 vfts.docs）为可选组件，
-#    产物由 .\src\mcps\markitdown\build-mcps.ps1 独立冻结（不打入本脚本必经路径，见该脚本头注）。
-Write-Host "==> [8/9] stage mcps/ doc converter (optional)"
-$mcpsSrc = Join-Path $root "dist\other\mcps"
-$mcpsDst = Join-Path $dist "mcps"
-$mcpsCount = 0
-if (Test-Path $mcpsSrc) {
-    New-Item -ItemType Directory -Force -Path $mcpsDst | Out-Null
-    Copy-Item (Join-Path $mcpsSrc "*") $mcpsDst -Recurse -Force
-    $mcpsCount = (Get-ChildItem $mcpsDst -Recurse -File | Measure-Object).Count
-    Write-Host "    ok: mcps/ ($mcpsCount files) <- $mcpsSrc"
-} elseif (Test-Path $mcpsDst) {
-    $mcpsCount = (Get-ChildItem $mcpsDst -Recurse -File | Measure-Object).Count
-    Write-Host "    [提示] $mcpsSrc 不存在；保留既有 $mcpsDst（$mcpsCount files）"
+# -- 6) 远端服务（chonkpilot-remote-server.exe）：调用同级仓 build.ps1 后拷入 dist 根 --
+#    2026-11-02：远端服务随桌面发行根一起投放（H5 + 后台管理页已 embed）；
+#    数据库 chonkpilot-remote-server.db 由 exe 自己落「exe 所在目录」，此处跑一次 user list 生成。
+Write-Host "==> [6/7] build chonkpilot-remote-server.exe"
+if (-not (Test-Path (Join-Path $remoteRepo "build.ps1"))) {
+    Write-Host "    [警告] 同级仓缺失: $remoteRepo（跳过远端服务投放）"
 } else {
-    Write-Host "    [警告] mcps 转换器产物缺失（$mcpsSrc 与 $mcpsDst 均不存在）！文档索引（vfts.docs）将不可用"
-    Write-Host "           如需：.\src\mcps\markitdown\build-mcps.ps1（产物 = dist\desktop\mcps\markitdown\markitdown-mcp.exe）"
+    & (Join-Path $remoteRepo "build.ps1")
+    if (-not $? -or $LASTEXITCODE -ne 0) { throw "remote build.ps1 失败 (LASTEXITCODE=$LASTEXITCODE)" }
+    $remoteExe = Join-Path $remoteRepo "dist\chonkpilot-remote-server.exe"
+    if (-not (Test-Path $remoteExe)) { throw "远端服务产物缺失: $remoteExe" }
+    Copy-Item $remoteExe (Join-Path $dist "chonkpilot-remote-server.exe") -Force
+    # 生成 SQLite 库（无账号时首启会建默认 admin/admin；这里只建表 + 建库，不写账号）
+    & (Join-Path $dist "chonkpilot-remote-server.exe") user list | Out-Null
+    $mbRemote = [Math]::Round((Get-Item (Join-Path $dist "chonkpilot-remote-server.exe")).Length / 1MB, 1)
+    Write-Host "    ok: chonkpilot-remote-server.exe ($mbRemote MB) + chonkpilot-remote-server.db"
 }
-
-# -- 8.5) 根目录陈旧产物清理（不占步号）：运行根**只允许** chonkpilot.exe
-#    引擎与运行库已归位 mcps/{codegraph,vfts}（zvec_c_api.dll 随 vfts 同目录），
-#    根下遗留的旧引擎 exe / 旧 dll / 已删除的 chonkpilot-cli.exe 属历史残留，必须清掉，否则会被 initial.zip 带入出厂包。
-Write-Host "==> clean stale root artifacts (root 仅允许 chonkpilot.exe)"
-$rootExeAllow = @("chonkpilot.exe")
-Get-ChildItem -Path $dist -File -Force -ErrorAction SilentlyContinue |
-    Where-Object { ($_.Extension -in @(".exe", ".dll")) -and ($rootExeAllow -notcontains $_.Name) } |
-    ForEach-Object {
-        Write-Host "    [清理] 根下陈旧产物: $($_.Name)"
-        Remove-SafeItem -LiteralPath $_.FullName
-    }
-# 旧「与 capability 平级的独立 scenarios 根」已随 P2 移入 capability/scenarios → 清根下遗留 scenarios/ 目录
-$legacyScenarios = Join-Path $dist "scenarios"
-if (Test-Path $legacyScenarios) {
-    Write-Host "    [清理] 根下陈旧目录: scenarios/（已移入 capability/scenarios/）"
-    Remove-SafeItem -LiteralPath $legacyScenarios -Recurse
-}
-
-# -- 9) 出厂数据包 → dist/initdata/（单包 capability-<ver>.zip + initial.zip 完整出厂包，**不进 dist/desktop**）--
-#    来源 = dist/desktop 已铺好的 capability/ 全量（prompts/tools/resources/skills/scenarios/executors）
-#    + 全部产物（initial.zip 内含 exe）。不做任何哈希/版本清单校验（<ver> = 时间戳）。
-Write-Host "==> [9/9] pack factory data -> dist/initdata/"
-New-Item -ItemType Directory -Force -Path $initdataDist | Out-Null
-# 先清旧包：<ver> 是时间戳，不清会累积历史 zip（只保留本次构建的 capability-<ver>.zip + initial.zip）
-Get-ChildItem -Path $initdataDist -Filter "*.zip" -File -ErrorAction SilentlyContinue | ForEach-Object {
-    Write-Host "    [清理] 旧出厂包: $($_.Name)"
-    Remove-SafeItem -LiteralPath $_.FullName
-}
-function New-ZipFromDir {
-    param([string]$Src, [string]$Zip)
-    Remove-SafeItem -LiteralPath $Zip
-    Compress-Archive -Path $Src -DestinationPath $Zip -CompressionLevel Optimal
-}
-# 单包 = dist/desktop/capability/ 全量（含 executors exe；旧 4 分包 capability-tools/-knowledge/-executors/-scenarios 已撤）
-New-ZipFromDir (Join-Path $dist "capability") (Join-Path $initdataDist "capability-$ver.zip")
-# initial.zip：完整出厂包（**内含 exe**），= dist/desktop 全部内容（根平铺），供用户自行恢复安装
-$initialZip = Join-Path $initdataDist "initial.zip"
-Remove-SafeItem -LiteralPath $initialZip
-# 排除 `.chonkpilot/`（运行时数据：会话/记忆/索引等，**绝不入出厂包**）
-$packItems = Get-ChildItem -Path $dist -Force | Where-Object { $_.Name -ne ".chonkpilot" } | ForEach-Object { $_.FullName }
-Compress-Archive -Path $packItems -DestinationPath $initialZip -CompressionLevel Optimal
-$zipCount = (Get-ChildItem $initdataDist -File | Measure-Object).Count
-Write-Host "    ok: dist/initdata/ ($zipCount zips, ver=$ver)"
 
 # -- 清单 --
 $mbGui = [Math]::Round((Get-Item $outGuiExe).Length / 1MB, 1)
 $capCount = (Get-ChildItem (Join-Path $dist "capability") -Recurse -File | Measure-Object).Count
 Write-Host "==> done: $dist"
 Write-Host "    chonkpilot.exe                      $mbGui MB"
-Write-Host "    capability/                         $capCount files (prompts/tools/resources/skills/agents/system/scenarios/executors)"
+if (Test-Path (Join-Path $dist "chonkpilot-remote-server.exe")) {
+    Write-Host "    chonkpilot-remote-server.exe        $mbRemote MB (+ chonkpilot-remote-server.db)"
+}
+Write-Host "    capability/                         $capCount files (prompts/tools/resources/skills/agents/system)"
+Write-Host "    plugins/                            $((Get-ChildItem (Join-Path $dist 'plugins') -Directory -ErrorAction SilentlyContinue | Measure-Object).Count) 个（与 capability 同级）"
 Write-Host "    capability/scenarios/               $scnCount files"
-Write-Host "    mcps/codegraph/                      $cgExe ($mbCg MB)"
-Write-Host "    mcps/vfts/                          $vfExe ($mbVf MB) + zvec_c_api.dll ($mbDll MB)"
-Write-Host "    mcps/                               $mcpsCount files (可选：文档转换)"
+Write-Host "    themes/themes.css"
 Write-Host "    run: cd $dist ; .\chonkpilot.exe"
-Write-Host "    packs: $initdataDist (*.zip, ver=$ver)"
+Write-Host "    remote: cd $dist ; .\chonkpilot-remote-server.exe serve   → 后台管理 /admin（默认 admin/admin）"

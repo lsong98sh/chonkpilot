@@ -20,8 +20,14 @@ replace github.com/lsong98sh/chonkpilot-framework/host => ../../../../../chonkpi
 
 replace github.com/chonkpilot/chonkpilot-workspace => ../../../lib/workspace
 
-require github.com/lsong98sh/chonkpilot-framework/host v0.0.0
-
 replace github.com/lsong98sh/chonkpilot-agent => ../../../../../chonkpilot-agent
 
-require github.com/lsong98sh/chonkpilot-agent v0.0.0
+replace github.com/lsong98sh/chonkpilot-agent/chat => ../../../../../chonkpilot-agent/chat/src
+
+replace github.com/lsong98sh/chonkpilot-agent/gateway => ../../../../../chonkpilot-agent/gateway/src
+
+replace github.com/lsong98sh/chonkpilot-agent/router => ../../../../../chonkpilot-agent/router/src
+
+replace github.com/lsong98sh/chonkpilot-agent/session => ../../../../../chonkpilot-agent/session/src
+
+replace github.com/lsong98sh/chonkpilot-agent/types => ../../../../../chonkpilot-agent/types/src

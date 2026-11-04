@@ -9,15 +9,15 @@
  *
  * 覆盖：
  *  1) 注册表自检：每个值都是完整 `<svg>…</svg>`、viewBox 合法、无重复键。
- *  2) 静态引用自检：`<Icon|LfIcon name="x">`、`icon: 'x'`、`:name="'x'"`、
- *     `LfBarEditor` 的 `iconPresets` 清单，全部必须存在于注册表。
+ *  2) 静态引用自检：`<Icon|LfIcon name="x">`、`icon: 'x'`、`:name="'x'"`，全部必须存在于注册表。
+ *  3) 分类自检：`iconGroups` 的成员必须都存在，且每个图标都归入某一类（选择器无空白格 / 无遗漏）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, relative } from 'node:path'
-import { icons } from '../../../../chonkpilot-framework/host/web/src/components/icon/icons.js'
+import { icons, iconGroups } from '../../../../chonkpilot-framework/host/web/src/components/icon/icons.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -63,12 +63,8 @@ function collectStaticNames() {
     for (const m of text.matchAll(/\bicon(?:Name)?\s*:\s*'([^']+)'/g)) add(m[1], f)
   }
 
-  // LfBarEditor 的候选图标清单（纯数组，不在上面任何模式内）
-  const presetFile = join(FW_SRC, 'layout-free/components/settings/LfBarEditor.vue')
-  const presetText = read(presetFile)
-  const block = presetText.match(/const iconPresets\s*=\s*\[([\s\S]*?)\]/)
-  assert.ok(block, 'LfBarEditor.vue 里找不到 iconPresets 清单')
-  for (const m of block[1].matchAll(/'([a-z0-9-]+)'/g)) add(m[1], presetFile)
+  // LfBarEditor 的候选图标清单已移除（2026-11-03：平铺候选改为分类下拉选择器），
+  // 图标名统一由 icons.js + iconGroups 提供，无需额外采集。
 
   return hits
 }
@@ -112,4 +108,21 @@ test('图标引用：布局子系统与默认布局文档用到的 Lucide 名已
   ]
   const lost = required.filter((n) => !REGISTRY.has(n))
   assert.deepEqual(lost, [], `缺失的图标：${lost.join(', ')}`)
+})
+
+test('图标分类：成员都存在、无跨分类重复、每个图标都已归类', () => {
+  assert.ok(iconGroups.length >= 9, `iconGroups 至少应有 9 个分类，当前 ${iconGroups.length}`)
+  const missing = []
+  const seen = new Map()
+  for (const g of iconGroups) {
+    for (const n of g.icons) {
+      if (!REGISTRY.has(n)) missing.push(`${g.label}:${n}`)
+      seen.set(n, (seen.get(n) || 0) + 1)
+    }
+  }
+  assert.deepEqual(missing, [], `分类里引用了不存在的图标：\n${missing.join('\n')}`)
+  const dup = [...seen].filter(([, c]) => c > 1).map(([n]) => n)
+  assert.deepEqual(dup, [], `同一图标出现在多个分类：${dup.join(', ')}`)
+  const ungrouped = [...REGISTRY].filter((n) => !seen.has(n))
+  assert.deepEqual(ungrouped, [], `未归类的图标：${ungrouped.join(', ')}`)
 })

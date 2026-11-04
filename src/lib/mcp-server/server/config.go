@@ -152,7 +152,8 @@ type Config struct {
 	ToolAsync map[string]ToolAsyncOverride `json:"-"`
 
 	// SkipTools（P6 2026-10-19）为 true 时 RegisterContracts 只注册资产（prompts/skills/resources），
-	// **不注册工具**：系统级 app 根的可执行工具改由外部进程（chonkpilot-self-tools）经插件桥注册/执行。
+	// **不注册工具**：工具改由外部进程（如独立 gateway 的 core-mcp-server）注册/执行。
+	// 桌面单体不再使用该模式（2026-11-02：self-tools 退役，工具全部进程内注册）。
 	// 仅影响同一 cfg 上的 RegisterContracts 调用；dir 节点扫描经 RegisterContractsWithTools 强制包含工具。
 	SkipTools bool `json:"-"`
 
@@ -399,14 +400,8 @@ func (c *Config) toolAsyncOverride(name string) (ToolAsyncOverride, bool) {
 
 // ─── 工具沙箱开关（决策 42 §2 (104)/(109)）────────────────
 
-// 内置 executor 产物名（= 开关在 `executors` 下的单位键；与 src/mcp-tools 产物一致）。
-// 2026-10-21（GATEWAY-2/L1）：DSL 退役 —— 删 core / desktop / browser / dsl 四个 executor；
-// desktop/browser 改为常驻插件（非 executor，不在本表）。
-// 2026-10-25（PLUGIN-SPLIT-1）：file 域 11 工具随 file 插件迁出主仓 → 删 tools-executor。
-// 2026-10-28（P2-3）：脚本执行随 task 插件迁出主仓 → 删 script-executor。
-const (
-	ExecutorExeWeb = "chonkpilot-web-executor.exe"
-)
+// 内置 executor 已全部退场（2026-10-31 D-72：`src/lib/mcp-tools` 整体删除；web 三工具随 `web` 插件）。
+// 沙箱开关仅剩外部 MCP（`mcps`）维度；历史 `executors` 键保留读取兼容（见 ToolSandboxConfig）。
 
 // ToolSandboxConfig 是 agentbox 沙箱开关（usr 键 `tool_sandbox`，**管理单位 = 被 spawn 的执行体**）：
 //   - Executors：内置 executor，key = executor **exe 基名**（chonkpilot-*-executor.exe）；

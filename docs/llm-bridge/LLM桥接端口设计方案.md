@@ -138,7 +138,7 @@ c.messages.create(model="claude-...", max_tokens=1024, messages=[...])
 ## 5. 与既有机制的关系
 
 - **与业务消息面**：两者独立——桥只是 UDS 上的独立 HTTP 面，进程内 MQ 为唯一业务总线（[19 §6](../spec/10-architecture/19-单进程形态与实例隔离.md)）。
-- **与 [`chonkpilot-router`](../spec/20-modules/2D-router.md)**：本入口**只读** provider 配置（name → base_url / apiKey / protocol），**不 `Register` / 不 `Call` / 不经 canon** → 对原 LLM 出网路径**零影响**。
+- **与 [`chonkpilot-agent/router`](../spec/20-modules/2D-router.md)**：本入口**只读** provider 配置（name → base_url / apiKey / protocol），**不 `Register` / 不 `Call` / 不经 canon** → 对原 LLM 出网路径**零影响**。
 - **与 `turn.go` / gateway / MCP**：完全不碰。
 - **与消息面（[61-消息一览](../spec/60-reference/61-消息一览.md)）**：**零新增 MQ 主题 / payload**（纯 HTTP-over-UDS 面）。
 

@@ -175,13 +175,6 @@ func (s *Server) onInstanceRegister(_ string, payload []byte) {
 
 // ─── llm-start / llm-send / llm-cancel / ask-user-reply ─────────────
 
-// SetCoreRuntimeSink 注入 core-mcp-server 的执行配置推送出口（nil = 未启用）。
-func (s *Server) SetCoreRuntimeSink(fn func(mcpms.RuntimeConfig)) {
-	s.mu.Lock()
-	s.coreRuntimeSink = fn
-	s.mu.Unlock()
-}
-
 // SetFilters 注入插件 filter 链（BRIDGE-2）；nil = 关闭。
 // tool.before_call 同时下推到内嵌 gateway（工具执行前 fail-closed）。
 func (s *Server) SetFilters(f *pluginbridge.FilterChain) {

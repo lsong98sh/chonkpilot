@@ -83,6 +83,14 @@ export function resetClaim() {
   inflight = null
 }
 
+/** 认领在「后端尚未就绪」时的重试（2026-11-02）：首帧请求常早于 persist/实例登记就绪
+ *  → 此前直接降级放行，随后所有 data-* 调用再各自等满 15s 超时（表现为「会话初始化失败」
+ *  + 界面卡顿）。这里在**无应答**时做有限次重试，成功即继续，避免整串请求连锁超时。 */
+export const CLAIM_RETRY_LIMIT = 5
+export const CLAIM_RETRY_DELAY_MS = 500
+/** 单次认领超时：用短超时快失败快重试（默认 15s 会让「后端未就绪」白等整轮）。 */
+export const CLAIM_ATTEMPT_TIMEOUT_MS = 5000
+
 /**
  * 发起一次 instance-claim（并发调用共享同一次在飞请求）。
  * @param {object} payload `{user?, work_dir?}`（均为提议；2a 前端不带 —— 认证/选目录属 2b）
@@ -94,30 +102,46 @@ export function claim(payload = {}) {
     state.value = CLAIM_INFLIGHT
     errorCode.value = ''
     try {
-      const res = await mq.emit(MsgTopics.instanceClaim, payload)
-      const backend = res && res.backend
-      const result = backend && backend.result
-      // 失败（61 §4.6：复用 {ok,error} 信封）：错误码优先取 result.error，其次取 errors[0]
-      // （桥/httpapi 的 /publish 响应把服务端 v.Errors 收集在 errors）。
-      const errs = (backend && backend.errors) || []
-      const code = (result && result.error) || (errs.length ? errs[0] : '')
-      if (code) return applyFailure(String(code))
-      if (!result || !result.instance_id) {
-        // 无应答（如 `--no-server` 的 UI 注入模式 / 后端未接线）：**不静默** —— 告警后降级放行，
-        // 不阻塞进入主视图（认领未生效，payload 仍用首屏注入的 instance_id）。
-        console.warn('[instance-claim] 无应答（未接入该消息面），降级进入主视图', res)
-        state.value = CLAIM_UNANSWERED
-        return false
+      for (let attempt = 0; attempt <= CLAIM_RETRY_LIMIT; attempt++) {
+        const outcome = await claimOnce(payload)
+        if (outcome !== CLAIM_UNANSWERED) return outcome === CLAIM_OK
+        // 无应答 = 后端还没起来：等一拍再试（最后一次不再等待，直接降级放行）
+        if (attempt < CLAIM_RETRY_LIMIT) {
+          await new Promise((r) => setTimeout(r, CLAIM_RETRY_DELAY_MS))
+          state.value = CLAIM_INFLIGHT
+        }
       }
-      instance.value = setClaimedInstance(result)
-      state.value = CLAIM_OK
-      startHeartbeat() // 分离形态：claim 成功后起 30s 续期
-      return true
+      console.warn('[instance-claim] 后端持续无应答 → 降级进入主视图（认领未生效，payload 仍用首屏注入的 instance_id）')
+      state.value = CLAIM_UNANSWERED
+      return false
     } finally {
       inflight = null
     }
   })()
   return inflight
+}
+
+/** 单次认领：返回 `CLAIM_OK`（成功）/ `CLAIM_UNANSWERED`（无应答）/ 失败状态（已落 errorCode）。 */
+async function claimOnce(payload) {
+  const res = await mq.emit(MsgTopics.instanceClaim, payload, { timeout: CLAIM_ATTEMPT_TIMEOUT_MS })
+  const backend = res && res.backend
+  const result = backend && backend.result
+  // 失败（61 §4.6：复用 {ok,error} 信封）：错误码优先取 result.error，其次取 errors[0]
+  // （桥/httpapi 的 /publish 响应把服务端 v.Errors 收集在 errors）。
+  const errs = (backend && backend.errors) || []
+  const code = (result && result.error) || (errs.length ? errs[0] : '')
+  if (code) {
+    applyFailure(String(code))
+    return state.value
+  }
+  if (!result || !result.instance_id) {
+    // 无应答（如 `--no-server` 的 UI 注入模式 / 后端未接线 / 启动期尚未就绪）：由调用方重试
+    return CLAIM_UNANSWERED
+  }
+  instance.value = setClaimedInstance(result)
+  state.value = CLAIM_OK
+  startHeartbeat() // 分离形态：claim 成功后起 30s 续期
+  return CLAIM_OK
 }
 
 /** 认领状态读取（模块级单例；App 与其它消费者共享）。 */

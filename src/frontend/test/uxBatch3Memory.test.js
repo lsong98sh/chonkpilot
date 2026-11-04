@@ -65,117 +65,48 @@ function mkI18n(messages) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// A 立即沉淀：按钮 / 进行中 / 成功 / 失败可见 / 成功后刷新
+// MEMORY-UI-1（2026-11-02）：记忆配置整体迁到 memory 插件配置页
+//   「立即沉淀 / 清空内容 / 类别与提示词编辑」不再由主仓上下文页承载 →
+//   主仓只守「迁移后不残留 + 插件侧能力面齐备」；页面实现见插件仓 webui/config.html。
 // ═══════════════════════════════════════════════════════════════
-test('⑱A 立即沉淀：按钮 + 进行中 loading + 记忆库关闭时禁用（防重复点击）', () => {
-  const src = read(PAGE)
-  assert.match(src, /memoryIO\.flush/, '须有「立即沉淀」文案（i18n，不得硬编码中文）')
-  assert.match(src, /@click="flushMemory"/, '按钮须触发手动沉淀')
-  assert.match(src, /:loading="flushing"/, '进行中须有 loading 态')
-  assert.match(src, /:disabled="!memoryEnabled \|\| flushing"/, '记忆库关闭 / 进行中须禁用')
-  assert.match(src, /const flushing = ref\(false\)/, '须有进行中状态')
-  const fn = fnBody(src, 'flushMemory')
-  assert.ok(fn, '未找到 flushMemory')
-  assert.match(fn, /if \(flushing\.value\) return/, '进行中不得重入（防重复点击）')
-  assert.ok(fn.indexOf('finally') > 0 && /flushing\.value = false/.test(fn.slice(fn.indexOf('finally'))),
-    '须在 finally 复位（异常不卡 loading）')
-})
-
-test('⑱A 主题：点分相对主题 memory.flush，前端字面量 = Go 插件订阅点', () => {
-  const src = read(PAGE)
-  assert.match(src, /const FLUSH_TOPIC = 'memory\.flush'/, '须用点分相对主题（桥/服务端直通总线）')
-  assert.match(src, /mq\.emit\(FLUSH_TOPIC, \{ session: sessionID, dialog_id: dialogID \}/, '须经统一 mq.emit 发送（禁直调 window.go.*；61 §0.6：载荷须同级带 dialog_id）')
-  assert.doesNotMatch(stripComments(src), /window\.go\.|gui\./, '不得绕过 mq 直调宿主')
-
-  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'lib', 'memory.go'), 'utf8')
-  assert.match(go, /flushSubject = "memory\.flush"/, 'Go 插件主题字面量须与前端一致')
-  assert.match(go, /d\.Bus\.On\(flushSubject, 0/, '插件须在 Start 订阅该主题')
-  assert.match(go, /func \(p \*Plugin\) flush\(/, '插件须有 flush 实现')
-  assert.match(go, /v\.Result = p\.flush\(v\.Payload\)/, 'handler 须把结果写回 Value.Result（promise 回执）')
-})
-
-test('⑱A 作用域与内容：显式动作取「当前会话」；不受 min-turn-tokens 门控', () => {
-  const go = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'lib', 'memory.go'), 'utf8')
-  // 作用域 = payload 的 instance + session（不跨实例/会话）
-  assert.match(go, /InstanceID string `json:"instance_id"`[\s\S]{0,80}Session    string `json:"session"`/,
-    'payload 须为 {instance_id, session}（实例字段必带）')
-  assert.match(go, /p\.enqueue\(turnEvent\{InstanceID: req\.InstanceID, Session: req\.Session, DialogID: req\.DialogID\}, true\)/,
-    '手动沉淀须置待处理标记（force=true；作用域限定该会话，并带上 dialog_id）')
-  assert.match(go, /sessionHistorySubject = "data-session-history"/, '取轮次走既有 data-session-history 面')
-  // 不受阈值门控：force=true 跳过累计门控（process 内 `if !force { … cfg.MinTokens … }`）
-  assert.match(go, /func \(p \*Plugin\) process\(ev turnEvent, force bool\)/, '须有 process(ev, force) 共用回路')
-  assert.match(go, /if !force \{[\s\S]*?cfg\.MinTokens/, '手动沉淀（force）须跳过 memory.min-turn-tokens 门控')
-  assert.match(go, /p\.distillRanged\(ev, cfg, cats, turns, prog, cache\)/, '须复用既有跨轮沉淀回路（distillRanged）')
-})
-
-test('⑱A 回执：**投递即回**（queued）；失败路径可见（含原因）；进度见 statusbar 队列状态', () => {
-  const src = read(PAGE)
-  const fn = fnBody(src, 'flushMemory')
-  assert.ok(fn, '未找到 flushMemory')
-  assert.match(fn, /res\.ok !== true/, '须校验后端 ok（不假成功）')
-  assert.match(fn, /memoryIO\.flush_fail', \{ error:/, '失败须给可见文案 + 原因')
-  // A3（2026-09-24 用户口径）+ I-128：投递即回 → 成功静默（进度由 statusbar 队列状态展示）
-  assert.doesNotMatch(fn, /message\.success\(/, 'A3：沉淀成功须静默（不得弹成功提示）')
-  assert.doesNotMatch(fn, /res\.saved|res\.failed|res\.enabled/, '投递即回：不得再依赖 saved/failed/enabled（异步处理）')
-  assert.doesNotMatch(fn, /await reloadMemoryCategories\(\)/, '投递即回：不得在回执后立即重读（写回由 data-memory-refresh 驱动）')
-  assert.match(fn, /memoryIO\.flush_no_session/, '无活动会话须提示')
-  assert.match(fn, /message\.error\(/, '失败须经统一 message.error（可见）')
-  // 投递即回 → 短超时足够（不再等插件侧 ≈60s）
-  assert.match(src, /const FLUSH_TIMEOUT = 15000/)
-  assert.match(fn, /timeout: FLUSH_TIMEOUT/)
-
-  // 队列状态展示在状态栏（I-128；既有通知面 tool-notify，零新增主题）
-  const sb = read('layout/bar-views/QueueStatusView.vue')
-  assert.match(sb, /useQueueStatus\(\)/, 'statusbar 须消费队列状态 composable')
-  assert.match(sb, /mq\.on\(EventNames\.toolNotify, handleQueueNotice\)/, 'statusbar 须订阅 tool-notify')
-  assert.match(sb, /queueText\(/, 'statusbar 须渲染记忆/压缩队列状态')
-  const q = read('composables/useQueueStatus.js')
-  for (const n of ['memory-queued', 'memory-start', 'memory-done', 'compress-queued', 'compress-start', 'compress-done']) {
-    assert.match(q, new RegExp("'" + n + "'"), `useQueueStatus 须识别 notice=${n}`)
+test('⑱A/B 迁移：上下文页不再承载记忆配置；memory 插件配置页能力面齐备', () => {
+  const src = stripComments(read(PAGE))
+  // 1) 主仓页：记忆配置项 / 立即沉淀 / 清空 / 类别表 全部退场，只留迁移提示
+  for (const gone of ['flushMemory', 'clearCategory', 'deleteCategory', 'addCategory',
+    'memory.category.', 'memoryIO.flush', 'memoryIO.clear_confirm']) {
+    assert.ok(!src.includes(gone), `上下文页不应再含记忆配置：${gone}`)
   }
-})
+  assert.match(src, /projectConfig\.context_memory_moved/, '须有迁移提示（指向插件配置页）')
 
-// ═══════════════════════════════════════════════════════════════
-// B 清空某类别内容：二次确认 + 保留类别 + 后端确认后回读
-// ═══════════════════════════════════════════════════════════════
-test('⑱B 清空：入口在类别行（含用户偏好）+ 二次确认 + 与删除并存', () => {
-  const src = read(PAGE)
-  // 2026-09-27：类别表改用自研 Table（具名插槽），行内插槽作用域变量 = row
-  assert.match(src, /@click="clearCategory\(row\)"/, '项目类别行须有「清空」入口')
-  assert.match(src, /@click="clearCategory\(userPref\)"/, '用户偏好行同样须可清空')
-  assert.match(src, /@click="deleteCategory\(row\)"/, '「删除类别」须保留（两者并存）')
-  assert.match(src, /memoryIO\.clear_confirm', \{ name: c\.category \}/, '须二次确认（含类别名）')
-  assert.match(src, /memoryIO\.clear_confirm_title/, '确认框须给标题（与既有删除同风格）')
-  const fn = fnBody(src, 'clearCategory')
-  assert.ok(fn, '未找到 clearCategory')
-  assert.ok(fn.indexOf('await confirm(') >= 0, '未确认不得执行')
-  assert.match(fn, /catch \{ return \}/, '用户取消（confirm reject）须直接返回')
-})
+  // 2) 插件 manifest：配置视图 + 动作面（页面据此调用）
+  const manifest = JSON.parse(readRepo('initdata/capability/plugins/memory/manifest.json'))
+  const view = (manifest.ui?.views || []).find((v) => v.id === 'config')
+  assert.ok(view && view.entry === 'webui/config.html', 'memory 配置视图须指向 webui/config.html')
+  for (const rpc of ['config-load', 'config-save', 'category-content', 'category-save',
+    'category-delete', 'prompt-save', 'prompt-reset', 'flush']) {
+    assert.ok((manifest.ui.rpc || []).includes(rpc), `插件须注册 RPC：${rpc}`)
+  }
+  for (const perm of ['config.prj.set', 'memory.delete', 'config.prompt.set', 'config.prompt.delete']) {
+    assert.ok((manifest.permissions?.data || []).includes(perm), `插件须声明数据权限：${perm}`)
+  }
 
-test('⑱B 语义：保留类别只清内容（复用 data-memory-save 写空串）+ 后端确认后回读', () => {
-  const src = read(PAGE)
-  const fn = fnBody(src, 'clearCategory')
-  assert.ok(fn, '未找到 clearCategory')
-  assert.match(fn, /dataClient\.save\('memory', \{ category: c\.category, content: '' \}\)/,
-    '清空 = 写空串（复用既有 data-memory-save；不是 delete）')
-  assert.doesNotMatch(fn, /remove\('memory'|data-memory-delete|'delete'/, '清空不得删类别')
-  assert.doesNotMatch(fn, /memoryList\.value\s*=/, '不得乐观清空（后端确认后才更新 UI）')
-  const saveIdx = fn.indexOf("dataClient.save('memory'")
-  const loadIdx = fn.indexOf('await reloadMemoryCategories()')
-  assert.ok(saveIdx >= 0 && loadIdx > saveIdx, '须「先保存成功 → 再回读」')
-  assert.match(fn, /memoryIO\.clear_ok', \{ name: c\.category \}/, '成功后给可见反馈')
-  assert.match(fn, /memoryIO\.clear_fail', \{ error:/, '失败须给可见文案 + 原因')
+  // 3) 插件 Go 侧：配置读写入参仍是既有 memory.* 键（零新增配置键；键常量在 lib 单源定义）+ 手动沉淀复用 memory.flush
+  const ui = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'lib', 'config_ui.go'), 'utf8')
+  for (const key of ['memoryEnabledKey', 'memoryMinTokensKey', 'memoryCategoryMaxTokensKey',
+    'memorySubsessionKey', 'memoryTriggerKey', 'memorySafetyTokensKey']) {
+    assert.ok(ui.includes(key), `配置面须覆盖既有键常量：${key}`)
+  }
+  assert.match(ui, /data-prj-config-save/, '写回走既有 data-prj-config-save（零新增主题）')
+  const lib = readFileSync(join(repoDir, '..', '..', 'chonkpilot-plugins', 'memory', 'src', 'lib', 'memory.go'), 'utf8')
+  assert.match(lib, /flushSubject = "memory\.flush"/, '手动沉淀仍走 memory.flush（字面量不变）')
 
-  // 后端语义核实：save 写空串 → 文件保留（空 .md）→ 类别仍在清单
-  // （阶段 4 门面化第四批 41 G-36：save 分支在 persist 信封层，落盘在 memory 域实现）
-  // 阶段 4 internal 下沉：域实现已由 persist 下沉 internal/memory（信封在 persist/envelope.go）。
-  const go = readRepo('lib/data/persist/envelope.go')
-  assert.match(go, /case "save":/, 'persist 须有 save 分支')
+  // 4) 清空语义不变：仍复用 data-memory-save 写空串（不删类别）
   const impl = readRepo('lib/data/internal/memory/memory.go')
   assert.match(impl, /os\.WriteFile\(path, \[\]byte\(req\.Content\), 0o644\)/, 'save 原样写盘（空串 = 清空内容）')
   const l2 = readRepo('test/chonkpilot-data/unittest/persist/persist_memory_test.go')
   assert.match(l2, /func TestDataMemoryClearContentKeepsCategory/, 'L2 须有「清空保留类别」用例')
 })
+
 
 // ═══════════════════════════════════════════════════════════════
 // C 压缩内容可查：真实数据来源（会话快照）+ 截断/展开 + 空态
@@ -218,9 +149,9 @@ test('⑱C 呈现：摘要原文（截断 + 展开全文）+ 触发范围 + 保�
   assert.match(src, /hasActiveSession\.value \? t\('memoryIO\.records_empty'\) : t\('memoryIO\.records_no_session'\)/,
     '两种空态须区分（有会话无压缩 / 无活动会话）')
   assert.match(src, /class="field-hint records-empty"/, '空态须渲染')
-  // 触发时机：llm-compress（= 总线 session-compress）后重读
-  assert.match(src, /const COMPRESS_EVENT = 'llm-compress'/, '须订阅压缩事件（前端 type = 桥映射）')
-  assert.match(src, /mq\.on\(COMPRESS_EVENT, loadCompressRecords\)/, '压缩后须重读记录')
+  // 触发时机：session-complete（轮末终态；压缩为内部方法面，无独立总线事件）后重读
+  assert.match(src, /const COMPRESS_EVENT = EventNames\.sessionComplete/, '须订阅轮末事件（压缩无独立事件）')
+  assert.match(src, /mq\.on\(COMPRESS_EVENT, loadCompressRecords\)/, '轮末后须重读记录')
   // 时间不可得 → 如实说明（不臆造时间列）
   assert.match(src, /memoryIO\.records_note/, '须有「不单独记录压缩时间」的口径说明')
   assert.doesNotMatch(src, /records_time|formatTime\(r\./, '不得凭空展示压缩时间')
@@ -302,14 +233,26 @@ test('⑱ 规范：无 watch/watchEffect；新增样式走主题 token（不硬�
   const raw = read(PAGE)
   const src = stripComments(raw)
   assert.doesNotMatch(src, /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect（项目规则）')
-  assert.match(src, /onDataRefresh\('memory', reloadMemoryCategories\)/, '既有记忆刷新订阅不得丢失')
   assert.match(src, /v-mq:\[EventNames\.contextSave\]\.click/, '既有保存按钮不得被改坏')
+  // MEMORY-UI-1：记忆配置已迁到 memory 插件配置页 → 本页不得再出现记忆配置项
+  assert.doesNotMatch(src, /memory\.enabled|memory\.min-turn-tokens|memory\.category-max-tokens/,
+    '上下文页不得再写记忆配置键（已迁移到插件配置页）')
+  assert.match(src, /projectConfig\.context_memory_moved/, '须保留迁移提示（指向插件配置页）')
   for (const sel of ['.compress-record', '.record-meta', '.record-text', '.records-empty']) {
     const rule = raw.match(new RegExp(sel.replace('.', '\\.') + '\\s*\\{[\\s\\S]*?\\n\\}'))
     assert.ok(rule, `未找到 ${sel} 规则`)
     // 色值须走主题 token（允许 var(--x, #fallback) 形态；禁裸色值声明）
     assert.doesNotMatch(rule[0], /(color|background)\s*:\s*(#[0-9a-f]{3,8}|rgba?\()/i,
       `${sel} 不得裸写色值（走主题 token）`)
+  }
+  // 新归属：memory 插件 manifest 声明配置页（插件维护 → 记忆沉淀 → 配置）
+  const manifest = JSON.parse(readRepo('initdata/capability/plugins/memory/manifest.json'))
+  assert.equal(manifest.ui.selfServe, true, 'memory 插件须自持 webui 资源')
+  const view = (manifest.ui.views || []).find((v) => v.id === 'config')
+  assert.ok(view, 'memory 插件须声明 id=config 的配置视图')
+  assert.match(view.entry, /^webui\//, '配置视图 entry 须指向 webui 资源')
+  for (const rpc of ['config-load', 'config-save', 'category-save', 'prompt-save', 'flush']) {
+    assert.ok((manifest.ui.rpc || []).includes(rpc), `memory 插件须注册 RPC：${rpc}`)
   }
 })
 

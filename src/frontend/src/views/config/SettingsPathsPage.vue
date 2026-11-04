@@ -83,7 +83,7 @@
         </div>
       </template>
 
-      <!-- 项目：可编辑，写 prj 库（团队共享）；chromePath 不出现（两级）——显式【保存】才落库 -->
+      <!-- 项目：可编辑，写 prj 库（团队共享）——显式【保存】才落库 -->
       <template #project>
         <div class="page-body">
           <div class="path-toolbar">
@@ -145,7 +145,7 @@ const savingPrj = ref(false)
 
 // 路径项定义：三维 = 名称 / 探测 id / 配置 key；级别决定出现在哪些页签
 const PATH_ITEMS = [
-  { id: 'chrome', name: 'Chrome', key: 'chromePath', levels: ['system', 'user'] },
+  { id: 'chrome', name: 'Chrome', key: 'chromePath', levels: ['system', 'user', 'project'] },
   { id: 'java', name: 'Java', key: 'javaPath', levels: ['system', 'user', 'project'] },
   { id: 'python', name: 'Python', key: 'pythonPath', levels: ['system', 'user', 'project'] },
   { id: 'node', name: 'Node.js', key: 'nodePath', levels: ['system', 'user', 'project'] },

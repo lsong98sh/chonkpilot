@@ -1,13 +1,18 @@
-# 26 · chonkpilot-mcp-gateway（MCP 网关）
+# 26 · chonkpilot-agent/gateway（MCP 网关）
 
 > 状态：✅ 与代码一致（2026-10-21 GATEWAY-2 L5/L6/L7/L8 同步；2026-10-28 L6 改「动态池 · 不保留 free 池」并实施；见 §0 现状订正、§9）
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [25-mcp-server](25-mcp-server.md) · [27-mcp-tools](27-mcp-tools.md)
-> 代码目录：**内核 = `chonkpilot-mcp-gateway/`**（独立目录，与主仓同级：`gateway/` + 子包 `sandbox/`、`winproc/`，零本仓依赖）；**适配胶水层 = `src/lib/gwadapter/`**（`mqadapter/` + `facadeapi/` + `internal/facade/`，经 `require github.com/lsong98sh/chonkpilot-mcp-gateway v0.1.0` 引用内核 —— 2026-10-22 起不再 `replace` 本地目录，见 [10 §3](../10-architecture/10-分层与依赖.md)）；**exe 外壳 = `src/others/mcp-gateway/`**（`main.go` + `gateway_service.go`；跨 module 经 `facadeapi` 转发 `internal/facade`，保持 internal 隔离）。**2026-10-27：主仓 `src/lib/gateway/` 旧副本已随 `src/plugins/` 清理一并删除**，内核唯一源 = 独立仓。
+> 代码目录：**内核 = `chonkpilot-agent/gateway/src/`**（独立目录，与主仓同级：`gateway/` 包 + `chonkpilot-util/{sandbox,winproc}`，零本仓依赖；`sandbox` 2026-11-03 从 `chonkpilot-agent/sandbox` 下沉）；**适配胶水层 = `src/lib/gwadapter/`**（`mqadapter/` + `facadeapi/` + `internal/facade/`，经 `require github.com/lsong98sh/chonkpilot-agent/gateway v0.1.0` 引用内核 —— 2026-10-22 起不再 `replace` 本地目录，见 [10 §3](../10-architecture/10-分层与依赖.md)）；**exe 外壳 = `src/others/mcp-gateway/`**（`main.go` + `gateway_service.go`；跨 module 经 `facadeapi` 转发 `internal/facade`，保持 internal 隔离）。**2026-10-27：主仓 `src/lib/gateway/` 旧副本已随 `src/plugins/` 清理一并删除**，内核唯一源 = 独立仓。
 
 ---
 
 ## 0. 现状订正（2026-10-21，GATEWAY-2 L5 / L6 / L7 / L8）
 
+> ✅ **〔订正（2026-11-03，SANDBOX-WRITE-1）〕沙箱能力已下沉到 `chonkpilot-util/sandbox`**（原 `chonkpilot-agent/sandbox` 已删除；gateway 与插件共用同一实现）。
+> 新增 **`SetSandboxDirsProvider`**（宿主注入 `func(workdir) []SandboxRule` 快照查询）+ **`_meta.chonkpilot.sandbox = {enabled, writable_dirs}`**：
+> 在 `proxyProvider.Call` 里按 `sandboxOn(entry)`（usr `tool_sandbox.mcps`）决定是否注入，白名单 = `work_dir` + `<work_dir>/.chonkpilot/tmp` + `WritableRoots(entry.SandboxDirs)`（去重）。
+> `SandboxRule.Writable` 仅作旧值兼容（`WritableRoots` 不再按其过滤：`security-*` 已收敛为**只写白名单**，见 [14 订正块](../10-architecture/14-安全域-agentbox.md)）。
+>
 > 本节为准，**与下文冲突时以本节为准**。L5「纯化」后 gateway **只持四件事**：
 
 | 组件 | 载体 | 职责 |
@@ -17,14 +22,14 @@
 | **Dispatcher** | `provider.go` / `registered_provider.go` | 三类下游 provider（`stdio` 自持子进程 / `proxied` 远程 http·sse / `registered` 注册回调）+ `_meta` 注入 |
 | **TaskLayer** | `tasks.go` / `execsink` | 执行四态（同步 / 异步 / pending / awaiting）+ 取消 + 完成回报（**只发 server**） |
 
-- **① 零工具实现（L5）**：`Params.MCPServer`、self 内存节点（`selfnode.go`）、dir 目录节点（`dirnode.go`）、`ContractScanner`、资产注册表（`mcp_find/mcp_load` 的目录资产面）、`llmToolPick` **全部删除**。`Params` 现为 `Transport` / `Servers` / `NsPrefix` / `CallTimeout` / `CBThreshold` / `CBCooldown` / `MaxTasks` / `AsyncMode` / `ManageAddr` / `ExecSink` / `ProgressHandler` / `ElicitHandler` / `Logf`（无 `MCPServer` / 无 `MCPConfig`）。
+- **① 零工具实现（L5）**：`Params.MCPServer`、self 内存节点（原 `selfnode.go`，已删除）、dir 目录节点（原 `dirnode.go`，已删除）、`ContractScanner`、资产注册表（`mcp_find/mcp_load` 的目录资产面）、`llmToolPick` **全部删除**。`Params` 现为 `Transport` / `Servers` / `NsPrefix` / `CallTimeout` / `CBThreshold` / `CBCooldown` / `MaxTasks` / `AsyncMode` / `ManageAddr` / `ExecSink` / `ProgressHandler` / `ElicitHandler` / `Logf`（无 `MCPServer` / 无 `MCPConfig`）。
 - **② 内置与第三方一视同仁（L5；P0a 2026-10-29 订正）**：全部下游都是**普通 provider**；`Origin=builtin` 仅决定是否注入 `_meta["chonkpilot"]`，**不再有 `builtin` 分支**。`tools/register` 的注册工具经 `registeredProvider` 参与路由，**暴露名 = 原名**（内置 `self` 节点不再加 `self_` 前缀，见 §4.3.1）。
 - **③ 池化（L6）**：`procSlot`（进程，仅 stdio）与 `connSlot`（连接，http/sse）**拆分**；`pool_key`、`pool_size`、`max_concurrent`（缺省 **5**）、`call_timeout`、`grace_ms`（缺省 **2000**）、`kill_policy`（固定 **cascade-report**）由 `ServerEntry` 下发；`inFlight` 升级为 **`call_id → inflight`** 注册表（可查询单次调用是否结束、连带影响范围）。**2026-10-28 起 `isolate=true` 走「动态池 · 不保留 free 池」**：键 = `(workdir, exe)`、每键等待队列、调用结束 1s 交接、实例数按需 0..`maxConcurrent`（无 free 队列 / 无空闲 TTL / 无后台回收线程；`pool_size` 不再消费）。**stdio 不跨 workdir 复用**（沙箱按 workdir 打标）。
-- **④ 取消阶梯（L7）**：`CancelCall`（`provider.go`）＝ **L0 协议取消 → L1 宽限 `grace_ms` → L2 关连接/会话 → L3 杀进程树**；远程（proxied）无进程可杀 → **L3 回退 L2 断连**；同槽在飞调用按 **`cascade-report`** 连带终止（`ErrKindSlotKilled` + `Cascaded []call_id`）。详见 [18 §3.9](../10-architecture/18-工具异步超时与取消.md)。
+- **④ 取消阶梯（L7）**：`CancelCall`（`provider.go`）＝ **L0 协议取消 + 标记槽「取消中/不可复用」→ L1 宽限 `grace_ms` → L2 关连接/会话 → L3 杀进程树**；远程（proxied）无进程可杀 → **L3 回退 L2 断连**；同槽在飞调用按 **`cascade-report`** 连带终止（`ErrKindSlotKilled` + `Cascaded []call_id`）。**〔2026-11-04 D-68〕** L1 只认**对端应答**为「结束」（ctx 撤销后本地立刻返回不算），宽限到点即 kill 并退役该槽（取消后下一次调用拿到新进程）；插件 http 无网关侧进程 → 只断连。详见 [18 §3.9](../10-architecture/18-工具异步超时与取消.md)。
 - **⑤ 通知路由（L8）**：下游 `progress` / `elicitation` 按 **`progressToken`（= `call_id`）** 归位到具体调用（`Params.ProgressHandler` / `ElicitHandler`）；未注入 = progress 丢弃 + warn、elicitation 不注册 handler（客户端不声明该能力）。
   - **〔2026-10-28 定案〕** `progress` **接**：llm server 注入 `ProgressHandler` → 新增下行事件 `mcp-tools-progress{instance_id, tool_call_id, progress, total?}` → 前端工具条目 **title** 显示 `进度 20%`（无 `total` 或无进度则**不显示**）。`elicitation` **不接**（`ElicitHandler` 保持不注入，提问由 `ask_user`：`session-ask` + `ask-user-reply` 承担）。详见 [49 §2.20](../40-roadmap/49-待实现项.md)。
   - **✅ 已实施（2026-10-28）**：装配点 = `src/lib/assembly/assemble.go`（`mcpgateway.Params.ProgressHandler = mqadapter.Transport.ProgressHandler()`；`Bus` 缺省时不注入）。主题名/载荷由适配层决定（gateway 内核仍不 import msgkeys）：`src/lib/gwadapter/mqadapter/mqadapter.go` 把 `ProgressEvent{CallID, InstanceID, Tool, Progress, Total, Message}` 归一为 61 声明字段 `{instance_id, tool_call_id, progress, total?}` —— **`total` 未上报（≤0）→ 不带该键**，`tool`/`message` **不透出**（契约未声明）。前端 = `src/frontend/src/composables/useToolProgress.js`（模块级单例 `mq.on`，`tool_call_id → {progress,total}` 内存表）+ `views/chat/MessageItem.vue`（`tool_pair` 根节点 `:title`；无事件 / 无 `total` → 不渲染 title）。契约断言：`src/lib/gwadapter/mqadapter/mqadapter_test.go`（`TestProgressHandlerEmitsContractTopic`）· `src/test/chonkpilot-lib/unittest/msgkeys/tools_progress_keys_test.go` · 前端 `test/contractReconcile.test.js`。**`ElicitHandler` 仍恒 nil**。
-- **⑥ 沙箱（L7）**：仅 `stdio` 的 spawn 生效，`ServerEntry.Sandbox` / `SandboxDirs`（`prj security-*` 快照，类型 = `[]SandboxRule`）→ **独立仓 `chonkpilot-mcp-gateway/sandbox/`**（2026-10-21 随 gateway 从 `core/sandbox` 迁入、2026-10-22 随内核迁出主仓；Windows **Low IL + Job Object**，只限写，允许目录须 `EnsureLowIL` 打标）。`SandboxRule` 类型与 `WritableRoots` 归 gateway 包；**配置的读取与持有仍在宿主**（llm/server 解析 `security-*` 后填入）。
+- **⑥ 沙箱（L7）**：仅 `stdio` 的 spawn 生效，`ServerEntry.Sandbox` / `SandboxDirs`（`prj security-*` 快照，类型 = `[]SandboxRule`）→ **独立仓 `chonkpilot-agent/sandbox/`**（2026-10-21 随 gateway 从 `core/sandbox` 迁入、2026-10-22 随内核迁出主仓；Windows **Low IL + Job Object**，只限写，允许目录须 `EnsureLowIL` 打标）。`SandboxRule` 类型与 `WritableRoots` 归 gateway 包；**配置的读取与持有仍在宿主**（llm/server 解析 `security-*` 后填入）。
 
 ---
 
@@ -55,7 +60,7 @@
 > ② **`Servers` 参数** = **宿主注入**的下游（llm 启动时把用户维护 MCP（usr `mcps` 表）转成 `ServerEntry` 传入；单体不读 exe 同目录 `config.json`。见 [21-llm-server §2.1](21-llm-server.md)、`src/lib/llm/server/gateway_servers.go`）；
 > ③ **`ServersFile`**（`servers.list` 文件）= 部署形态来源；**无源（空路径 / 未给文件）→ 空列表（不报错）**，gateway 照常启动、工具面可为空（仅 self/meta）；**显式路径存在却读取失败、或内容非法 → 报错**（真错误，启动失败）。**无「内置默认」回退**（`defaultServersList` 已移除；无源不报错）。
 > 运行时动态接入另走消息方法面 `servers/register`（§5.1.1，按 `scope` 隔离）。
-> **core-mcp-server（2026-10-19；2026-10-27 订正面；2026-10-28 口径订正）**：工具唯一前门由宿主拉起后，经 `servers/register` 登记为内置下游（`name=core`、`namespace="-"`（P0a：暴露名原样，不加 `self_`）、`origin=builtin`、`mcp_server={url,transport:"http",headers:{Authorization:"Bearer <token>"}}`）；**core 暴露面 = `--root` 下实际存在的非 internal 契约**——当前出厂仅 server 域 6（`capability/tools/server/`，源 `src/lib/llm/contracts/tools/`）。file 11 / task / mcp（`mcp_find/load/invoke`）/ websearch / codegraph 8 / vfts 1 均由各自插件 MCP server（manifest `namespace:"-"`）暴露；`internal` 契约不进 core 工具面。取消/超时由 core 按 call 落实（该次请求 ctx 取消 → `KillTree` 本次 executor），gateway 不做进程级 kill。
+> **core-mcp-server（2026-10-19；2026-10-27 订正面；2026-10-28 口径订正）**：工具唯一前门由宿主拉起后，经 `servers/register` 登记为内置下游（`name=core`、`namespace="-"`（P0a：暴露名原样，不加 `self_`）、`origin=builtin`、`mcp_server={url,transport:"http",headers:{Authorization:"Bearer <token>"}}`）；**core 暴露面 = `--root` 下实际存在的非 internal 契约**——当前出厂仅 server 域 6（`capability/tools/server/`，源 `src/lib/llm/contracts/tools/`）。file 11 / task / mcp（`mcp_find/load/invoke`）/ web / codegraph 8 / vfts 1 均由各自插件 MCP server（manifest `namespace:"-"`）暴露；`internal` 契约不进 core 工具面。取消/超时由 core 按 call 落实（该次请求 ctx 取消 → `KillTree` 本次 executor），gateway 不做进程级 kill。
 >
 > **纯远程（proxied）取消语义（2026-10-19 修正）**：`proxyProvider.Terminate` 对 `kind=proxied`（无自持子进程）为**协作式 no-op** —— 取消已由执行池 ctx 送达（MCP client 中止 HTTP 请求并发出 `notifications/cancelled`），对端进程可能继续运行 = 语义「尽力」；**不重建共享连接**。此前 proxied 走 `Invalidate`（断连 + `initialize` 握手）会在取消路径上同步阻塞 mq 同步派发线程（实测 30s ctx 打满 → `task-stop` / `/eval` 超时），并发取消还会把共享槽置空 → 后续调用报 `no transport connection`。`spawned`（自持子进程）仍按 `(instance, workdir)` kill + respawn。
 >
@@ -102,7 +107,7 @@
 |:--:|------|------|
 | ① 建 instance | `root = opts.MCPServerRoot`，缺省 `<exeDir>/capability` | `server.go:228-235` |
 | ① 建 instance | **`ms := mcp.NewServer(&mcp.Implementation{Name:"chonkpilot-server",Version:"1.0.0"}, nil)`** = 标准 go-sdk **in-memory server instance**（无传输、不 spawn） | `server.go:236` |
-| ② 扫描 + 注册 | `s.mcpCfg = mcpms.DefaultConfig(); s.mcpCfg.Root = root` → **`mcpms.RegisterContracts(ms, root, s.mcpCfg)`**：扫描 capability 并把契约工具注册进**这个 `ms`**；失败仅打印告警、**空能力面继续**。**P6 外部模式**（`CHONKPILOT_EXTERNAL_TOOLS=1`）下 `SkipTools=true`：只注册 prompts/skills/resources，5 个可执行工具由 `chonkpilot-self-tools.exe` 经 `tools/register` 注入 | `server.go:239-243` |
+| ② 扫描 + 注册 | `s.mcpCfg = mcpms.DefaultConfig(); s.mcpCfg.Root = root` → **`mcpms.RegisterContracts(ms, root, s.mcpCfg)`**：扫描 capability 并把契约工具注册进**这个 `ms`**；失败仅打印告警、**空能力面继续**。**P6 外部模式**（`CHONKPILOT_EXTERNAL_TOOLS=1`）下 `SkipTools=true`：只注册 prompts/skills/resources，工具改由 `chonkpilot-core-mcp-server --stdio` 作为下游接入（2026-11-02：`self-tools` 已退役） | `server.go:239-243` |
 | ② 留存 | `s.mcpServer = ms`（供运行期重扫/热生效） | `server.go:246` |
 | ③ 交参数 | **`mcpgateway.New(mcpgateway.Params{Transport: mqadapter.New(bus), MCPServer: ms, Servers…})`** = 把该 instance 作为参数构建 gateway | `server.go:259-268` |
 
@@ -221,7 +226,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 
 - **显式 `http`/`sse` 无 `url` → 前置报错、不 spawn**（`transport %q needs url`）。
 - **spawned 子进程 `env`**：基线 `os.Environ()` + `entry.Env`（`K=V`），值经 `expandVars` 展开 **`%VAR%` 与 `${VAR}`**（与 `servers.list` 字段同一展开函数；**未定义变量 → 空串**）。
-- **进程级沙箱（仅 stdio 下游，2026-10-21 起）**：`ServerEntry` 保留 `Sandbox *bool`（旧 usr `mcps[].sandbox`，仅作兼容写入口；开关来源 = usr `tool_sandbox.mcps[<mcp 名>]`）；`buildConn` 的 **stdio** 分支在 spawn 时由 `chonkpilot-mcp-gateway/gateway/sandbox`（独立仓）以 **Low IL + Job Object** 施加**只写隔离**（允许目录 = 在线实例 `security-*` 并集；判据 = 开关 + stdio + 允许目录非空；http/sse **不施加**）。**不再注入 `CHONKPILOT_SANDBOX` 环境变量**（`agentbox` 包与服务端消费方已删除）。**与 `isolate`（连接池按 `(instance, workdir)` 隔离）是两条独立轴**。见 [14 §7.1](../10-architecture/14-安全域-agentbox.md) · [18 §2](../10-architecture/18-工具异步超时与取消.md) · [64 §6](../60-reference/64-配置项一览.md)。
+- **进程级沙箱（仅 stdio 下游，2026-10-21 起）**：`ServerEntry` 保留 `Sandbox *bool`（旧 usr `mcps[].sandbox`，仅作兼容写入口；开关来源 = usr `tool_sandbox.mcps[<mcp 名>]`）；`buildConn` 的 **stdio** 分支在 spawn 时由 `chonkpilot-agent/sandbox`（独立仓）以 **Low IL + Job Object** 施加**只写隔离**（允许目录 = 在线实例 `security-*` 并集；判据 = 开关 + stdio + 允许目录非空；http/sse **不施加**）。**不再注入 `CHONKPILOT_SANDBOX` 环境变量**（`agentbox` 包与服务端消费方已删除）。**与 `isolate`（连接池按 `(instance, workdir)` 隔离）是两条独立轴**。见 [14 §7.1](../10-architecture/14-安全域-agentbox.md) · [18 §2](../10-architecture/18-工具异步超时与取消.md) · [64 §6](../60-reference/64-配置项一览.md)。
 - `needsSpawn = runtime != "" && (http|sse)`：spawn 进程 → `waitEndpointReady`（TCP 轮询 + 子进程提前退出检测）→ 连接。
 > 实现细节见 `provider.go buildConn`。
 
@@ -308,7 +313,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
     - **`maxConcurrent` 取值**：`ServerEntry.MaxConcurrent`（缺省 5），`Params.MaxTasks > 0` 时取 `min(maxConcurrent, MaxTasks)`，**不新增配置键**。`isolate=true` 不再叠 server 级并发信号量（否则不同 workdir 互相排队）；`isolate=false` / `pool_key=call` 保留信号量（行为不变）。
     - **`call_id → inflight{实例, 调用}`** 在位（`inflightCall.slot` / `slotID`，`slot_id = <workdir>#<gen>`），progress 归位与取消定位共用。
     - 实例数限制：`--root` 目录节点可多实例；走 `tools/register` 上报工具的 server 由独立 `registeredProvider` 承载（无进程/无池 → 逻辑上单实例，不参与动态池）。
-    - 代码：`chonkpilot-mcp-gateway/gateway/pool.go`（键/等待队列/交接护栏/整键清）+ `provider.go`（`slotFor` / `Call` / `CancelCall` / `Terminate` 接线）；白盒用例见 §10。
+    - 代码：`chonkpilot-agent/gateway/src/pool.go`（键/等待队列/交接护栏/整键清）+ `provider.go`（`slotFor` / `Call` / `CancelCall` / `Terminate` 接线）；白盒用例见 §10。
 
 ---
 
@@ -317,10 +322,10 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 `src/test/chonkpilot-mcp-gateway/unittest/gateway_test.go`（内存总线 + 自备能力源官方 server → New/Start → 总线驱动）：
 `TestSyncCall` · `TestAsyncByMeta` · `TestAsyncByRequest` · `TestBackgroundManual` · `TestTaskReport` · `TestTaskCancel` · `TestTaskError` · `TestMCPFindAllNoQuery` · `TestMCPFindPurposeAllTypes`。
 
-`chonkpilot-mcp-gateway/gateway/pool_test.go`（动态实例池白盒；2026-10-28 改「动态池 · 不保留 free 池」）：
+`chonkpilot-agent/gateway/src/pool_test.go`（动态实例池白盒；2026-10-28 改「动态池 · 不保留 free 池」）：
 `TestDynamicPoolQueueHandoffReuse`（同键并发 3 调用 / `maxConcurrent=2` → 峰值 2 实例、第 3 个排队后**复用同一实例**、创建次数=2）· `TestInstanceDestroyedAfterHandoffGrace`（无同键等待 → 1s（±容差）销毁进程，下次调用重新 spawn）· `TestDifferentWorkdirsDoNotQueueEachOther`（不同 workdir 实例数独立、互不排队）· `TestInstanceExitedRemovedAndRespawn`（进程自退 → 立即移出 + 重新 spawn）· `TestInflightCallBindsInstanceAndProgress`（`call_id → inflight{实例}` 精确，progress 归位到该实例）· `TestSameWorkdirInstancesShareKeyAndScopedClear`（同 workdir 不同 instance 共享键；作用域终止整键清且不影响其他 workdir）· `TestIsolateFalseSharesSingleConn` · `TestIsolateMissingWorkdirFallsBackShared` · `TestIsolateDefaultInferredByTransport` · `TestParseServersListIsolateAndInvalidatePool` · `TestRegisterSpecCarriesIsolate` · `TestProxiedTerminateDoesNotRebuildSharedConn`。
 
-`chonkpilot-mcp-gateway/gateway/purpose_test.go`（C1 · 运行目的注入通道白盒，§4.3）：
+`chonkpilot-agent/gateway/src/purpose_test.go`（C1 · 运行目的注入通道白盒，§4.3）：
 `TestTurnContextPurpose`（进程内 `PurposeFromContext` + 域工具 `turnContextPayload["purpose"]`）· `TestExecCtxFromMetaPurpose`（协议 `_meta` 往返）· `TestDoCallInjectsPurposeBeforeStripping`（剥离前取值写入调用上下文，且 args 仍被剥离）。
 配套（进程外通道）：`src/lib/mcp-server/server/config_test.go` 的 `TestCallContextFromMeta`（`_meta.purpose` 往返 / 空值不写键）与 `TestExecutorEnv`（`CHONKPILOT_PURPOSE` 注入 / 空值不注入）。
 

@@ -52,9 +52,11 @@ from chonk_client import TRANSIENT_ERRORS as TRANSIENT_PROBE_ERRORS  # noqa: E40
 
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", "..", ".."))
 
-# GUI 产物候选（顺序 = 优先级）：dist/desktop（主力发行目录）→ src/gui/dist（旧路径回落）。
-# 产物名（2026-09-21，D-27 第二刀）：`chonkpilot-gui.exe` → **`chonkpilot.exe`**（桌面单体宿主）。
+# GUI 产物候选（顺序 = 优先级）：dist（2026-11-02 目录扁平化后的发行根）→ dist/desktop /
+# src/gui/dist（历史路径回落）。产物名（2026-09-21，D-27 第二刀）：`chonkpilot-gui.exe` →
+# **`chonkpilot.exe`**（桌面单体宿主）。
 GUI_EXE_CANDIDATES = (
+    os.path.join(_REPO_ROOT, "dist", "chonkpilot.exe"),
     os.path.join(_REPO_ROOT, "dist", "desktop", "chonkpilot.exe"),
     os.path.join(_REPO_ROOT, "src", "gui", "dist", "chonkpilot.exe"),
 )
@@ -67,7 +69,7 @@ DEFAULT_MOCK_LLM_PORT = 8901
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # 被测进程**优先级**（`start_gui`）：并机负载（并发跑其它 L1/L2/后台编译）下，WebView2 UI 线程被
 # 普通优先级的大量争用者饿死 → `--test-port` `/eval` 的 ExecuteScript（派发+执行+回调全程，
-# 见 `src/lib/go-webview2/webview.go:639`）在预算内拿不到调度 → `ExecuteScript timed out`
+# 见 `chonkpilot-webview2/webview.go:675`）在预算内拿不到调度 → `ExecuteScript timed out`
 # 使套件崩溃（实测 2026-09-23：负载 5 连跑第 4 轮 `test_toolbar` + `test_filetree` 首个断言 eval 双双超时）。
 # 给**被测应用**一个「高于普通」的调度份额，消除与本轮断言无关的饥饿型假失败；
 # 不改任何断言、不改变被测逻辑（只影响调度）。
@@ -197,7 +199,7 @@ def tmp_dir(prefix):
 # ── 启动就绪探测（容忍 test 通道的瞬时基础设施错误）────────────────
 #
 # 起因（2026-09-23，`run_all.py` 负载批跑实测，[42 §2 (148)]）：`--test-port` 的 `/eval` 经
-# `webview2.EvalWithResult`（`src/lib/go-webview2/webview.go:639`）把 ExecuteScript **派发到
+# `webview2.EvalWithResult`（`chonkpilot-webview2/webview.go:675`）把 ExecuteScript **派发到
 # WebView2 UI 线程**执行，其 timeout 覆盖「派发 + 执行 + 回调」**全程**。并机负载（CPU/IO 压力）
 # 下首屏 bundle 执行期该线程被争用 → 一次 10s 超时即抛 `ExecuteScript timed out`
 # → 套件**启动就绪探测**直接崩溃（实测 `test_statusbar.py:48`；表现 = 批内偶发红、单独复跑全绿、
@@ -922,7 +924,7 @@ class GUIHandle(ProcResource):
         self.client = wait_ready(port, timeout=ready_timeout)
         # 启动就绪栏栅（2026-09-23，[42 §2 (148)]）：`/ping ready` 由**宿主**应答（首次导航完成），
         # **早于**前端首屏 bundle 执行完毕 —— 此刻 WebView2 UI 线程仍繁忙，紧随其后的首个 `/eval`
-        # 可能瞬时超时（`ExecuteScript timed out`，见 `src/lib/go-webview2/webview.go:639`）→
+        # 可能瞬时超时（`ExecuteScript timed out`，见 `chonkpilot-webview2/webview.go:675`）→
         # 套件启动探测崩溃（实跑证据：负载批跑 `test_statusbar.py:48` → 21/22）。
         # 故在**唯一起停入口**处有界等待主视图挂载（`.panel-inner` = 主聊天面板，各 GUI 套件共用），
         # 并容忍瞬时基础设施错误（重试；非瞬时异常照旧上抛）。只影响「何时开始」，不改任何断言。

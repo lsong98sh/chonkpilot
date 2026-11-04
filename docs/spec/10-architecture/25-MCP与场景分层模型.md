@@ -2,7 +2,7 @@
 
 > 状态：✅ 已落地（T1–T6 + #7 均已实现；§10 #12 主题已定为 `data-session-title-changed` 并落地）
 > 关联：[21-llm-server](../20-modules/21-llm-server.md) · [26-mcp-gateway](../20-modules/26-mcp-gateway.md) · [12-数据层](12-数据层.md) · [37-场景](../30-function-points/37-场景.md) · [39-知识库与原语](../30-function-points/39-知识库与原语.md) · [61-消息一览](../60-reference/61-消息一览.md)
-> 代码目录（D-28）：`src/lib/llm/server/`（提示词 / 工具面 / 资产注册）· 独立仓 `chonkpilot-mcp-gateway/`（meta 工具 + 目录资产；主仓适配面 = `src/lib/gwadapter/`）· `src/lib/data/internal/`（capfs 场景根）· `src/frontend/src/views/`（场景编辑器 / chat 输入框）
+> 代码目录（D-28）：`src/lib/llm/server/`（提示词 / 工具面 / 资产注册）· 独立仓 `chonkpilot-agent/gateway/src/`（meta 工具 + 目录资产；主仓适配面 = `src/lib/gwadapter/`）· `src/lib/data/internal/`（capfs 场景根）· `src/frontend/src/views/`（场景编辑器 / chat 输入框）
 > 本篇为**自包含**规格：能力面 / 场景面 / chat 面的职责切分、系统提示词拼接、工具面语义、资产面变更、存储命名与落地分解。**以本篇为准**；与之冲突的既有表述按 §8 逐处订正。
 
 ---

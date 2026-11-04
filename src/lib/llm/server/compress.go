@@ -37,11 +37,11 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/lsong98sh/chonkpilot-agent/router"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
-	"github.com/lsong98sh/chonkpilot-agent/router"
-	"github.com/lsong98sh/chonkpilot-agent/session"
 )
 
 const (
@@ -77,6 +77,9 @@ type compressJob = session.CompressionJob
 //   - 无已完成轮（首轮）→ 不压缩（无回填锚点）；
 //   - 未达阈值 → 不压缩；
 //   - 子会话 + 项目未开「压缩子会话」（`compress.subsession`，默认关）→ 不压缩（既有口径）。
+//
+// 阈值判定通过后、真正起压缩前，先用**既有** `memory.flush` 触发一次记忆沉淀
+// （2026-10-31 用户定案：记忆提取跟随压缩，不再每轮提取；零新增主题）。
 func (tc *turnCtx) maybeStartCompress(a session.Result) {
 	if tc == nil || tc.server == nil || a.LastTurnID == "" {
 		return
@@ -87,7 +90,36 @@ func (tc *turnCtx) maybeStartCompress(a session.Result) {
 	if tc.isSubsession() && !tc.server.compressSubsessionOn(tc.req.InstanceID) {
 		return
 	}
+	tc.server.flushMemoryBeforeCompress(tc.req.InstanceID, tc.req.Session)
 	tc.server.startCompress(session.NewJob(a, tc.req.InstanceID, tc.req.Session, tc.req.Turn))
+}
+
+// flushMemoryBeforeCompress 在压缩前用**既有** `memory.flush` 主题触发一次记忆沉淀
+// （2026-10-31 用户定案：提取时机跟随压缩 —— 阈值判定通过后、执行压缩前；不新增消息面）。
+//
+// payload 与手动沉淀同形（`instance_id` / `session` / `dialog_id`，61 §1.1）；memory 插件侧
+// force=true（跳过最小轮次 token 门控），范围 = 各类别进度 → 最新轮。投递即回（插件入队后
+// 立即应答），故异步发出：不阻塞本轮组装、不影响压缩与主流程；失败只记日志。
+// dialog_id 缺失（无法定位会话库，61 §0.6）→ 不发（插件侧亦会以 dialog_required 拒绝）。
+func (s *Server) flushMemoryBeforeCompress(instanceID, session string) {
+	if s == nil || s.bus == nil || instanceID == "" || session == "" {
+		return
+	}
+	dialogID := s.dialogOf(instanceID, session)
+	if dialogID == "" {
+		logf("[chonkpilot-server] memory: 压缩前沉淀跳过（session=%s 无 dialog_id）\n", session)
+		return
+	}
+	payload := map[string]any{
+		msgkeys.MemoryFlushPayloadInstanceId: instanceID,
+		msgkeys.MemoryFlushPayloadSession:    session,
+		msgkeys.MemoryFlushPayloadDialogId:   dialogID,
+	}
+	go func() {
+		if err := s.bus.Emit(context.Background(), msgkeys.TopicMemoryFlush, payload).Wait().Err(); err != nil {
+			logf("[chonkpilot-server] memory: 压缩前沉淀触发失败（session=%s）: %v\n", session, err)
+		}
+	}()
 }
 
 // startCompress 后台起一次压缩（**每会话串行 + 覆盖合并队列**）。

@@ -5,14 +5,15 @@ title: core-tools-overview
 ```
 
 # 摘要
-工具面总览（供 LLM 快速决定使用哪个工具）。file 系列由 `file` 插件提供，`task_run` 由 `task` 插件提供，`web_fetch` 由 core-mcp-server 提供。
+工具面总览（供 LLM 快速决定使用哪个工具）。file 系列由 `file` 插件提供，`task_run` 由 `task` 插件提供，`web_*` 由 `web` 插件提供。
 
 # 正文
 # 工具总览
 
-> **归属（2026-10-28，P2-3）**：`file_*` 11 个工具由 **`file` 插件**（独立 MCP server）提供、
-> `task_run`（执行命令/脚本）由 **`task` 插件**提供，均经 gateway 调用；`web_fetch` 由
-> **core-mcp-server** 提供。对 LLM 而言用法一致。
+> **归属（2026-11-02）**：`file_*` 11 个工具由 **`file` 插件**（独立 MCP server）提供、
+> `task_run`（执行命令/脚本）由 **`task` 插件**提供、`web_*`（搜索/抓取/下载）由 **`web` 插件**提供，
+> 均经 gateway 调用；桌面单体不再有进程外工具前门（core-mcp-server / self-tools 已退役）。
+> 对 LLM 而言用法一致。
 
 | 工具 | 用途 | 何时用 |
 |---|---|---|

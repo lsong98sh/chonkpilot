@@ -136,6 +136,7 @@ export function createSessionMessages() {
         _meta: data._meta || null, // 该工具自身的 meta 子集（I-60；随 llm-receive tool-call 推送）
         id: 'tp_' + data.tool_call_id,
         createdAt: new Date().toISOString(),
+        localOnly: true, // 本地流式新增（loadMessages 竞态保护用；DB 回填条目无此标记）
       }
       msg.brief = computeBrief(msg.tool, msg.simplified, null, 'pending', purpose)
       msg.content_size = computeContentSize(data.arguments, null)
@@ -174,6 +175,7 @@ export function createSessionMessages() {
         type: sectionKey,
         content: data.content || '',
         createdAt: new Date().toISOString(),
+        localOnly: true, // 本地流式新增（loadMessages 竞态保护用）
       })
       currentSection = sectionKey
     }
@@ -275,7 +277,16 @@ export function createSessionMessages() {
       const res = await getTurnsPaginated(sessionId, '', 300, 4 * 1024 * 1024, currentDialogId)
       if (gen !== loadGen) return // 代次已变：丢弃本批，不写任何状态
       if (res && res.messages) {
-        messages.value = res.messages.map(dbMsgToView)
+        // 竞态保护（2026-10-31）：loadMessages 期间本地新增的消息（乐观 user 气泡 / 流式
+        // assistant 段）不能被历史快照整体替换冲掉——历史快照可能早于这些消息落库。
+        // 只保留「本地新增且历史里没有同内容同角色」的条目，追加在历史之后（时序 = 最新）。
+        const hist = res.messages.map(dbMsgToView)
+        const locals = messages.value.filter(m => m && m.localOnly)
+        messages.value = hist
+        for (const m of locals) {
+          const dup = hist.some(h => h.role === m.role && h.type === m.type && (h.content || '') === (m.content || ''))
+          if (!dup) messages.value.push(m)
+        }
       }
       hasMore.value = !!(res && res.has_more)
       turns.value = (res && res.turns) || []

@@ -92,25 +92,43 @@
           </div>
           <Select v-model="localData.reasoningEffort" :options="reasoningOptions" :placeholder="$t('config.llm.reasoningPlaceholder')" :disabled="!localData.thinking" />
         </div>
-        <!-- 模型能力（多选）：声明该 provider 支持的能力；「图形」未勾选 → 聊天窗口禁用截图 -->
+        <!-- 能力双维度（D-65，2026-11-04 用户口径）：推理 / 识图各 0~5（一位小数，步进 0.1）；
+             0 = 不具备。识图 > 0 会派生旧声明式 `capabilities`（截图门控等旧读侧契约），保存时写入。 -->
         <div class="form-item form-item-12">
           <label class="form-label">
-            <span>{{ $t('config.llm.capabilities') }}</span>
-            <Tooltip :content="$t('config.llm.capabilitiesHint')" placement="top">
+            <span>{{ $t('config.llm.capabilityReasoning') }}</span>
+            <Tooltip :content="$t('config.llm.capabilityReasoningHint')" placement="top">
               <Icon name="help" :size="13" class="label-help" />
             </Tooltip>
             <span v-if="aiMark('capabilities')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span>
           </label>
-          <div class="cap-row">
-            <label class="b-checkbox">
-              <input type="checkbox" value="reasoning" v-model="localData.capabilities" />
-              <span>{{ $t('config.llm.capReasoning') }}</span>
-            </label>
-            <label class="b-checkbox">
-              <input type="checkbox" value="vision" v-model="localData.capabilities" />
-              <span>{{ $t('config.llm.capVision') }}</span>
-            </label>
-          </div>
+          <Input
+            type="number"
+            v-model.number="localData.capability.reasoning"
+            :min="LLM_CAPABILITY_MIN"
+            :max="LLM_CAPABILITY_MAX"
+            :step="LLM_CAPABILITY_STEP"
+            style="width:100%"
+          />
+          <span v-if="reasoningUnavailable" class="cap-zero-hint">{{ $t('config.llm.capabilityZeroHint') }}</span>
+        </div>
+        <div class="form-item form-item-12">
+          <label class="form-label">
+            <span>{{ $t('config.llm.capabilityVision') }}</span>
+            <Tooltip :content="$t('config.llm.capabilityVisionHint')" placement="top">
+              <Icon name="help" :size="13" class="label-help" />
+            </Tooltip>
+            <span v-if="aiMark('capabilities')" class="ai-badge">{{ $t('config.llm.aiSuggested') }}</span>
+          </label>
+          <Input
+            type="number"
+            v-model.number="localData.capability.vision"
+            :min="LLM_CAPABILITY_MIN"
+            :max="LLM_CAPABILITY_MAX"
+            :step="LLM_CAPABILITY_STEP"
+            style="width:100%"
+          />
+          <span v-if="visionUnavailable" class="cap-zero-hint">{{ $t('config.llm.capabilityZeroHint') }}</span>
         </div>
         <div class="form-item form-item-12">
           <label class="form-label">
@@ -168,6 +186,8 @@ import { EventNames } from '../../events/event-names'
 import {
   MAX_NAME, MAX_TITLE, MAX_URL, MAX_KEY, OUT_TOKEN_MIN, OUT_TOKEN_MAX,
   CTX_TOKEN_MAX, TOOL_ITER_MAX, TEMP_MAX, trimStr, tooLong, isHttpUrl,
+  LLM_CAPABILITY_MIN, LLM_CAPABILITY_MAX, LLM_CAPABILITY_STEP, isValidCapability,
+  normalizeCapability, deriveCapabilities, capabilityFromLegacyCaps,
 } from '../../utils/fieldRules'
 
 const { t } = useI18n()
@@ -195,8 +215,19 @@ const protocolOptions = [
 const localData = reactive({ ...props.initialData })
 // 旧记录无 protocol（或为空）→ 回落 openai，保证下拉有选中项、保存后字段完整
 if (!localData.protocol) localData.protocol = DEFAULT_LLM_PROTOCOL
-// 旧记录无 capabilities → 空数组（checkbox 多选绑定要求数组）
+// 能力双维度（D-65）：旧记录只有 `capabilities` 声明式数组 → 按「具备 = 中位档 3.0」映射为
+// {reasoning, vision}（与后端读侧同口径）；完全未声明 → {3, 0}（不把存量记录判成「不具备」）。
+if (!localData.capability || typeof localData.capability !== 'object') {
+  localData.capability = capabilityFromLegacyCaps(
+    Array.isArray(localData.capabilities) ? localData.capabilities : null)
+}
+localData.capability = normalizeCapability(localData.capability)
+// 旧记录无 capabilities → 空数组（保存时按能力双维度重新派生）
 if (!Array.isArray(localData.capabilities)) localData.capabilities = []
+
+// 档位 = 0 → 不具备（就地提示，避免误以为是普通档位）
+const reasoningUnavailable = computed(() => Number(localData.capability.reasoning) === 0)
+const visionUnavailable = computed(() => Number(localData.capability.vision) === 0)
 
 // Token 快捷值（十进制 K/M）：点按钮即把对应字段设为该值（供「最大输出 Token」「上下文窗口」共用）
 const tokenPresets = [
@@ -238,10 +269,23 @@ function handleSave() {
   if (localData.maxToolIterations !== '' && (!Number.isInteger(iter) || iter < 0 || iter > TOOL_ITER_MAX)) {
     return warn('invalidNumber', { field: t('config.llm.maxToolIterations'), min: 0, max: TOOL_ITER_MAX })
   }
+  // 能力双维度（D-65）：推理 / 识图各 0~5 一位小数；保存时派生旧 capabilities（截图门控等旧读侧契约）。
+  if (!isValidCapability(localData.capability.reasoning)) {
+    return warn('invalidNumber', {
+      field: t('config.llm.capabilityReasoning'), min: LLM_CAPABILITY_MIN, max: LLM_CAPABILITY_MAX,
+    })
+  }
+  if (!isValidCapability(localData.capability.vision)) {
+    return warn('invalidNumber', {
+      field: t('config.llm.capabilityVision'), min: LLM_CAPABILITY_MIN, max: LLM_CAPABILITY_MAX,
+    })
+  }
   localData.name = name
   localData.model = model
   localData.baseUrl = baseUrl
   localData.apiKey = trimStr(localData.apiKey)
+  localData.capability = normalizeCapability(localData.capability)
+  localData.capabilities = deriveCapabilities(localData.capability)
   emit('save', { ...localData }, props.editIndex)
   aiFields.value = [] // 保存后清「AI 建议」标记
 }
@@ -274,9 +318,13 @@ function applySuggest(fields) {
   for (const k of AI_LLM_FIELDS) {
     if (!(k in fields)) continue
     if (k === 'capabilities') {
-      localData.capabilities = Array.isArray(fields.capabilities)
+      const caps = Array.isArray(fields.capabilities)
         ? fields.capabilities.filter((v) => typeof v === 'string')
         : []
+      localData.capabilities = caps
+      // 旧声明式能力 → 双维度（具备 = 中位档 3.0）：AI 只给出 capabilities 时同步档位，避免保存后
+      // 按 capability 派生把 AI 建议覆盖掉。
+      localData.capability = capabilityFromLegacyCaps(caps)
     } else {
       localData[k] = fields[k]
     }
@@ -414,6 +462,11 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   color: var(--fg-secondary);
   margin-left: 4px;
 }
+/* 能力值 = 0（不具备，不参与 auto 档位调度）的就地提示 */
+.cap-zero-hint {
+  font-size: 12px;
+  color: var(--warning, #e6a23c);
+}
 /* AI 填充（AICFG-1）：自然语言输入 + 【AI 填充】按钮 + 提示/结果行 */
 .ai-fill {
   display: flex;
@@ -498,16 +551,6 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   flex-shrink: 0;
 }
 .token-presets :deep(.b-btn) { padding: 2px 6px; min-height: 20px; font-size: 11px; }
-/* 模型能力（多选 checkbox） */
-.cap-row { display: flex; align-items: center; gap: 16px; }
-.b-checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-primary);
-  cursor: pointer;
-}
 /* 测试连接：结果行在表单区内（底栏按钮触发的就地结果） */
 .form-item.test-conn {
   flex-direction: row;

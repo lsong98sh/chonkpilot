@@ -8,20 +8,19 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// personalBuckets 是 prjusr（个人运行态）实际使用的桶（含二级索引）。
+// personalBuckets 是 prjusr（个人运行态）实际使用的桶。
 //
 // 2026-10-28（SESSION-DB-2）：prjusr `chonkpilot.db` = **宿主/server 独占**（配置 + UI 运行态 +
 // 对话目录 `dialogs`）；会话正文归**一树一库** `dialogs/dialog-<hex>.db`（Session 独占）。
-// 会话内容桶（`turns` / `messages` / `tasktree` / `inbox_items` 等）仍保留在此，**仅供存量库
-// 兼容读取**（旧布局已退场，新写入只落对话库，见 `shardBuckets`）。
+//
+// 2026-11-03（DATA-OPT-1 ② 收尾）：旧布局整体退场后，会话内容桶（`sessions` / `turns` /
+// `messages` / `tasktree` / `task_shadow` / `inbox_items` 及其 11 个二级索引）**已无任何读取方**
+// （读写都只走对话库）→ 新库不再建；仍需保留的 prjusr 级表：`dialogs`（对话目录）、
+// `turn_events`（事件日志，见 internal/session/turnevent_facade.go）、`memory_extract`
+// （记忆提取进度）与群聊名册 `group_participants` / `group_round_targets`。
 var personalBuckets = []string{
-	"sessions", "turns", "messages", "tasktree", "task_shadow",
-	"memory_extract", "group_participants", "group_round_targets",
-	"inbox_items", "turn_events", "dialogs",
-	"sessions_by_top", "turns_by_session",
-	"messages_by_session", "messages_by_turn", "messages_by_client_msg",
-	"tasktree_by_parent", "tasktree_by_top", "tasktree_by_session",
-	"task_shadow_by_top", "task_shadow_by_parent", "task_shadow_by_session",
+	"dialogs", "turn_events", "memory_extract",
+	"group_participants", "group_round_targets",
 }
 
 // shardBuckets 是一树一库（`dialogs/dialog-<hex>.db`，**Session 独占**）实际使用的桶。

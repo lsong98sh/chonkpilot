@@ -32,6 +32,16 @@
         </Button>
         <div class="header-spacer" />
       </template>
+      <!-- 会话内查找（CHAT-028）：标题条放大镜入口（主窗口 / 纯对话窗口共用）；
+           标题条被隐藏的窗口形态（chatOnly + 固定参数会话）由 SessionFindBar 自带启动器提供入口。 -->
+      <Button
+        text
+        class="icon-btn session-find-toggle"
+        :title="$t('chatSearch.placeholder')"
+        @click="toggleFind"
+      >
+        <Icon name="search" :size="14" :color="findOpen ? '#1890ff' : '#555'" />
+      </Button>
       <!-- 场景切换入口：单聊（F1）为**固定参数会话** → 隐藏（服务端亦以会话参数为准，双保险 §6 E4） -->
       <Popover v-if="!fixedParams" placement="bottom-end" :width="160">
         <template #reference>
@@ -79,7 +89,33 @@
       </Popover>
     </div>
     <div class="chat-panel">
-    <MessageList ref="messageListRef" :session-id="currentSessionId" direction="right" />
+    <!-- 会话内查找条（CHAT-028）：消息区**上方独立一行**（不占消息滚动区）；
+         主窗口由标题条放大镜打开；标题条被隐藏时（chatOnly + 固定参数会话）由自带启动器打开。 -->
+    <SessionFindBar
+      v-if="findOpen || headerHidden"
+      :open="findOpen"
+      :show-launcher="headerHidden"
+      :query="findQuery"
+      :total="findTotal"
+      :index="findIndex"
+      :loading="findLoading"
+      :searched="findSearched"
+      :error-hint="findErrorHint"
+      :older-hint="findOlderHint"
+      @open="openFind"
+      @input="onFindInput"
+      @prev="findPrev"
+      @next="findNext"
+      @close="closeFind"
+    />
+    <MessageList
+      ref="messageListRef"
+      :session-id="currentSessionId"
+      :find-text="findQuery"
+      :find-active-id="findActiveId"
+      direction="right"
+    />
+
     <!-- 发送失败后的可行动提示（口径 2026-09-20：本回合失败即提示，不限「未配置」）：非常驻，仅该次失败后出现；CTA 直达「设置 → LLM」。
          非阻塞（不弹模态、不阻断编辑）；同一次失败只提示一次（见 onLlmCompleteHint）；配置一变化即消失（useLLMSetup 回调）。 -->
     <!-- 可见重试中间态（RETRY-1，2026-10-17）：后端每次失败重发前发 session-retry（前端 llm-retry）
@@ -153,7 +189,12 @@
       :queue-items="queueItems"
     >
       <template #controls>
-        <Popover placement="top-end" :width="160">
+        <!-- F1/E4：固定参数会话（sub_chat / group_chat）→ LLM 选择入口**不可用**（服务端以会话行
+             为准，前端不再提供切换入口，与场景 Tag 同款双保险）。 -->
+        <Tag v-if="fixedParams" type="info" class="fixed-llm-tag" :title="$t('chat.fixed_params')">
+          {{ selectedLLMLabel }}
+        </Tag>
+        <Popover v-else placement="top-end" :width="160">
           <template #reference>
             <Tag type="info" style="cursor:pointer">
               {{ selectedLLMLabel }}
@@ -230,6 +271,7 @@ import MessageList from './MessageList.vue'
 import InputBox from './InputBox.vue'
 import ScreenshotOverlay from './ScreenshotOverlay.vue'
 import SubChatBar from './SubChatBar.vue'
+import SessionFindBar from './SessionFindBar.vue'
 import Icon from '@ckfw/components/icon/Icon.vue'
 import { Button, Tag, Popover, message } from '@ckfw/components/ui/index.js'
 import { useTaskView } from '../../composables/useTaskView'
@@ -245,6 +287,7 @@ import { needsLLMConfigHint } from '../../utils/llmSetup'
 import { pluginFailureText } from '../../../packages/plugin-ui/src/pluginNotice.js'
 import { classifyError } from '../../utils/errorMessage'
 import { useSelectionStore } from '../../stores/selection'
+import { useSessionSearch } from '../../composables/useSessionSearch'
 
 const { t, te } = useI18n()
 
@@ -281,6 +324,44 @@ const sessionKind = ref('')
 const sessionLifecycle = ref('')
 const fixedParams = computed(() => isSubChatKind(sessionKind.value))
 const subChatReadOnly = computed(() => fixedParams.value && sessionLifecycle.value === 'finished')
+
+// ── 会话内查找（CHAT-028，2026-11-01）──
+// 状态逻辑在 composables/useSessionSearch（禁止 watch：全部由 UI 事件/方法调用驱动）；
+// 消息面 = 61 §1 `vfts.session.query`（hits 已按 ts 升序）；定位/向上翻页由 MessageList
+// 暴露的 revealMessage 完成（最多 5 页，超出 → 查找条内「该命中较早」提示）。
+async function revealHit(hit, maxPages) {
+  const list = messageListRef.value
+  const mid = hit && hit.message_id
+  if (!list || !mid) return { found: false, pages: 0 }
+  return list.revealMessage(mid, maxPages)
+}
+
+const {
+  open: findOpen,
+  query: findQuery,
+  index: findIndex,
+  loading: findLoading,
+  searched: findSearched,
+  errorHint: findErrorHint,
+  olderHint: findOlderHint,
+  total: findTotal,
+  activeHit: findActiveHit,
+  openBar: openFind,
+  close: closeFind,
+  onInput: onFindInput,
+  next: findNext,
+  prev: findPrev,
+} = useSessionSearch({ sessionId: () => currentSessionId.value, reveal: revealHit })
+
+// 当前命中消息 id → MessageList/MessageItem 高亮用（空 = 无当前命中）
+const findActiveId = computed(() => (findActiveHit.value && findActiveHit.value.message_id) || '')
+// 标题条被隐藏（chatOnly + 固定参数会话）→ 查找入口由 SessionFindBar 自带启动器承担
+const headerHidden = computed(() => props.chatOnly && fixedParams.value)
+
+function toggleFind() {
+  if (findOpen.value) closeFind()
+  else openFind()
+}
 
 // ── 发送失败后的可行动提示（问题 A，口径变更 2026-09-20）──
 // 原「无可用 LLM → 聊天区常驻引导」已移除；改为**发送失败时**才提示（非常驻 UI）。
@@ -469,6 +550,10 @@ defineExpose({ scrollTop, scrollBottom })
 // ── LLM controls ──
 const llmList = ref([]) // usr llms（data-user-config-load，可编辑）
 const selectedLLM = ref('')
+// auto 档位调度保留名（D-65）：首次解析到默认 LLM，可重试失败后在同档次候选间切换。
+const AUTO_LLM = 'auto'
+// 默认 LLM（usr defaultLLM 解析结果）：auto 选中项的能力判定（截图门控）跟随它。
+const defaultLLMName = ref('')
 const thinkEnabled = ref(true)
 const effortLevel = ref('high')
 const screenshotting = ref(false) // 截图进行中（按钮 loading）
@@ -503,7 +588,9 @@ function closeScreenshot() {
 const llmPopoverVisible = ref(false)
 
 // LLM 选项列表 = usr llms 记录（value/label = provider name，发给 llm-start.llm）。
+// 前置固定 `auto` 选项（D-65 档位调度保留名：首次 = 默认 LLM，可重试失败后同档切换）。
 const llmOptions = computed(() => [
+  { value: AUTO_LLM, label: t('chat.auto_llm'), kind: 'auto', model: '' },
   ...llmList.value.map(l => ({ value: l.name || '', label: l.name || '', kind: 'user', model: l.model || '' })),
 ])
 
@@ -517,9 +604,10 @@ const selectedLLMLabel = computed(() => {
   return opt ? opt.label : t('chat.default_llm')
 })
 
-// 模型能力（usr llms 记录的 capabilities；未声明 → 空数组）
+// 模型能力（usr llms 记录的 capabilities；未声明 → 空数组）。选中 auto 时跟随默认 LLM。
 const selectedLLMCaps = computed(() => {
-  const rec = llmList.value.find(l => (l.name || '') === selectedLLM.value)
+  const name = selectedLLM.value === AUTO_LLM ? defaultLLMName.value : selectedLLM.value
+  const rec = llmList.value.find(l => (l.name || '') === name)
   return rec && Array.isArray(rec.capabilities) ? rec.capabilities : []
 })
 // 截图前提 = 所选 LLM 声明「图形」（vision）能力；未声明 → 按钮禁用（不静默失败）
@@ -590,11 +678,9 @@ function flushPendingNotifications() {
   items.forEach((text) => sendNotify(text))
 }
 
-// ── 待发队列（当前 LLM）指示：分桶键 = provider name（附录 A：队列只承载用户消息）──
-// 用 selectedLLMPayloadName() 而非 selectedLLM：MessageList 的 currentLlm 存的是广播出去的
-// provider name（「系统默认（启动参数）」= 空串），两边必须同键才不会漏计。
-const queueCount = computed(() => sendQueue.countOf(selectedLLMPayloadName()))
-const queueItems = computed(() => sendQueue.itemsOf(selectedLLMPayloadName()))
+// ── inbox 一览（2026-11-01）：显示该会话**全量** pending 项（两端共享、不按 LLM / 来源过滤）──
+const queueItems = computed(() => sendQueue.allItems())
+const queueCount = computed(() => queueItems.value.length)
 
 // ── 发送消息（LLM 空闲时）──
 // RETRY-2：中断提示条的「继续」= 发一条 continueText 用户消息（正常发送路径；后端收到即取消自动续写）。
@@ -647,7 +733,8 @@ async function handleQueue(text) {
 // 仍能回话（内置 echo），失败则走 needsLLMConfigHint 提示。
 // apiKey 不在此校验（配置系统本就允许空 key，本地模型无需 key；缺 key 的 401 走 S16 分类）。
 function llmConfigReady() {
-  if (!llmOptions.value || llmOptions.value.length === 0) return 'chat.no_llm_configured'
+  // auto 选项恒在列表内，但**未配置任何 LLM** 时仍须提示去配置（auto 无候选可用）。
+  if (!llmList.value || llmList.value.length === 0) return 'chat.no_llm_configured'
   const llm = llmOptions.value.find(l => l.value === selectedLLM.value)
   if (!llm) return 'chat.no_llm_selected'
   if (llm.kind === 'user' && !llm.model) return 'chat.llm_model_missing'
@@ -748,7 +835,14 @@ function resolveDefaultLLM(v, llist) {
 }
 
 // ── Init session on mount ──
-async function initSession() {
+/** 启动期瞬时失败判定（2026-11-02）：首帧的 data-* 请求可能早于 persist/实例登记就绪
+ *  → 表现为 backend unreachable / instance not registered。这类失败**重试**而不是直接报错。 */
+function isTransientInitError(e) {
+  const m = String((e && (e.message || e)) || '')
+  return /backend unreachable|instance not registered|AbortError|timeout/i.test(m)
+}
+
+async function initSession(attempt = 0) {
   try {
     try {
       const ures = await getUserConfig()
@@ -757,10 +851,12 @@ async function initSession() {
       defaultScenarioId.value = (uc && uc.defaultScenario) || ''
       llmList.value = Array.isArray(uc.llms) ? uc.llms : []
       const picked = resolveDefaultLLM(uc.defaultLLM, llmList.value)
+      // 默认 LLM 名（auto 的基准；defaultLLM=auto 时退化为首个可用 LLM，仅供能力判定展示）。
+      defaultLLMName.value = picked === AUTO_LLM ? ((llmList.value[0] || {}).name || '') : picked
       if (picked) {
         selectedLLM.value = picked
-        // usr 记录 → think/effort 跟随其配置
-        const rec = llmList.value.find(l => l.name === picked)
+        // usr 记录 → think/effort 跟随其配置（auto 时跟随默认 LLM 的记录）
+        const rec = llmList.value.find(l => l.name === defaultLLMName.value)
         if (rec) {
           thinkEnabled.value = rec.thinking !== false
           if (rec.reasoningEffort) {
@@ -804,6 +900,11 @@ async function initSession() {
         return
       }
     } catch (e) {
+      if (isTransientInitError(e) && attempt < 2) {
+        // 后端尚未就绪：短退避后重试（最多 3 次），成功则完全不打扰用户
+        await new Promise((r) => setTimeout(r, 700 * (attempt + 1)))
+        return initSession(attempt + 1)
+      }
       console.warn('[ChatPanel] Failed to init session:', e)
       // 会话初始化失败 → 可见错误提示（E-41，windowsgui 下 console 不可见）
       message.error(t('chat.session_init_failed'))
@@ -849,6 +950,7 @@ onMounted(() => {
     // 会话身份已由 selectionSubscribers（唯一写入点）写入 store，此处只做本组件的后续动作。
     const sid = session_id || null
     clearFailHint() // 错误提示条按会话隔离：切换会话不残留上一会话的失败/重试进度
+    closeFind() // 会话内查找按会话隔离：切会话即关闭并清空高亮
     refreshTasks(sid || '', '', { initOnly: true })
     loadSessionMeta(sid)
   })
@@ -869,6 +971,9 @@ onMounted(() => {
         const picked = resolveDefaultLLM(uc.defaultLLM, llmList.value)
         if (picked) selectLLM(picked)
       }
+      // 默认 LLM 名同步刷新（auto 的能力判定/think 跟随其记录）。
+      const defName = resolveDefaultLLM(uc.defaultLLM, llmList.value)
+      defaultLLMName.value = defName === AUTO_LLM ? ((llmList.value[0] || {}).name || '') : defName
     } catch (e) { console.warn('[ChatPanel] config:refresh error:', e) }
   })
   permanentUnsubs.push(unsubRefresh)

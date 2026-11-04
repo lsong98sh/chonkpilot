@@ -29,7 +29,7 @@
 | # | 决策 | 说明 |
 |---|------|------|
 | D1 | 显隐是通用区域能力 | 叶子与容器都可显隐；不做固定「文件树/会话树/对话」三按钮 |
-| D2 | 显隐入口 = 用户可配置命令 | `publish-mq` → `lf-area-toggle-visible`，payload 指定 `viewKey` / `nodeId`；默认布局不带任何显隐按钮 |
+| D2 | 显隐入口 = 用户可配置命令 | 内部命令 `toggle-area-visible`（G-89 起；原 `publish-mq → lf-area-toggle-visible`），payload 指定 `viewKey` / `nodeId`；默认布局不带任何显隐按钮 |
 | D3 | 编辑器内三处入口 | 区域设置开关、树上眼睛、右键菜单 |
 | D4 | 隐藏 = 保活 | 用 `v-show`，不卸载组件；视图池不受显隐影响 |
 | D5 | 有效可见 | `自身 visible !== false` 且**所有祖先可见**；祖先隐藏不改子节点自己的 `visible` |
@@ -171,7 +171,7 @@ A/B 数值（1:2），C 弹性，隐藏前 C 占 0.4：
    - 直接隐藏（命令 / 右键 / 眼睛 / 设置）被拒，提示原因；
    - 祖先隐藏导致的不显示不受限制；
 6. **兜底**：至少保留一个有效可见叶子；违反时拒绝并提示；
-7. **运行态命令**：`lf-area-toggle-visible` 的 `viewKey` 定位到第一个匹配叶子；`nodeId` 精确定位。
+7. **运行态命令**（G-89 起为内部命令 `toggle-area-visible`）：`viewKey` 定位到第一个匹配叶子；`nodeId` 精确定位。
 
 ---
 
@@ -212,28 +212,29 @@ A/B 数值（1:2），C 弹性，隐藏前 C 占 0.4：
 
 ---
 
-## 7. 消息契约（纯前端 `lf-*`，不进 61 业务面）
+## 7. 内部协作契约（G-89 完成态：无 `lf-*` 主题）
+
+> **2026-10-31（G-89）**：本节原列的 `lf-area-set-visible` / `lf-area-toggle-visible` / `lf-layout-profile-*` / `lf-layout-edit` / `lf-editor-save` 等 `lf-*` 主题**已全部清退**。
+> 同一前端进程内的协作改由 `layout-free/stores/actions.js` 域动作 + `layout/profiles.js` 导出函数直调；不计入 [61](../../docs/spec/60-reference/61-消息一览.md) 业务消息面（**零变更**）。
 
 ### 7.1 显隐
 
-| 主题 | payload | 说明 |
-|------|---------|------|
-| `lf-area-set-visible` | `{ nodeId, visible }` | 编辑器写草稿；叶子 / 容器均可 |
-| `lf-area-toggle-visible` | `{ viewKey?, nodeId? }` | 运行态切换；用户命令入口 |
+| 入口 | 形态 | 说明 |
+|------|------|------|
+| 设计态 | `actions#setAreaVisible(nodeId, visible)` | 编辑器写草稿；叶子 / 容器均可 |
+| 运行态 | 内部命令 `toggle-area-visible` → `actions#toggleAreaVisible({ nodeId?, viewKey? })` | 写 live 并落盘；用户命令入口 |
 
 ### 7.2 布局档案
 
-| 主题 | payload | 说明 |
-|------|---------|------|
-| `lf-layout-profile-new` | `{}` | 打开"新建布局"对话框 |
-| `lf-layout-profile-create` | `{ name, from }` | `from` = 档案 id 或 `'blank'`；创建后进入编辑器，不切换 |
-| `lf-layout-profile-switch` | `{ id }` | 切换布局 |
-| `lf-layout-edit` | `{ id? }` | 编辑当前（缺省）；新建流程传新档案 id |
-| `lf-layout-profile-rename` | `{ id, name }` | 改名 |
-| `lf-layout-profile-delete` | `{ id }` | 删除；若是活动档案则清空 active |
-| `lf-layout-profile-restore` | `{ id? }` | 恢复种子档案（缺省 = 当前活动档案） |
+| 动作（`layout/profiles.js` 导出） | 说明 |
+|------|------|
+| `openNewLayoutDialog()` | 打开「新建布局」对话框 |
+| `createLayoutProfile(name, from)` | `from` = 档案 id 或 `'blank'`；创建后进入编辑器，不切换 |
+| `switchLayoutProfile(id)` | 切换布局 |
+| `editLayoutProfile(id?)` | 编辑当前（缺省）；新建流程传新档案 id |
+| `renameLayoutProfile(id, name)` / `deleteLayoutProfile(id)` / `restoreLayoutProfile(id?)` | 改名 / 删除（活动档案则清空 active）/ 恢复种子档案 |
 
-保存复用 `lf-editor-save`（宿主钩子分流），不新增主题。
+保存复用 `actions#saveEditor()`（宿主钩子分流），无主题。
 
 ---
 
@@ -271,7 +272,7 @@ A/B 数值（1:2），C 弹性，隐藏前 C 占 0.4：
 
 ### 8.4 运行态显隐入口
 
-- 不预置按钮；用户在编辑器里添加命令条目：`publish-mq` + `lf-area-toggle-visible` + `{"viewKey":"explorer"}`；
+- 不预置按钮；用户在编辑器里添加命令条目：`toggle-area-visible` + `{"viewKey":"explorer"}`；
 - 文案、图标、位置均由用户配置。
 
 ---
@@ -319,7 +320,7 @@ A/B 数值（1:2），C 弹性，隐藏前 C 占 0.4：
 
 ### 11.2 L4（mq 驱动 + DOM 断言）
 
-- 显隐：`lf-area-toggle-visible` → 断言 `display:none` / 可见区尺寸变化 → 恢复；
+- 显隐：`toggle-area-visible`（内部命令）→ 断言 `display:none` / 可见区尺寸变化 → 恢复；
 - 档案：创建 → 切换 → DOM 结构变化 → 回读 `layout.profiles` → 重启后恢复；
 - **不重建证明**：
   1. `window.__ckViewPool` 挂载次数切换前后不变；
@@ -355,6 +356,6 @@ A/B 数值（1:2），C 弹性，隐藏前 C 占 0.4：
 
 | # | 内容 | 处理 |
 |---|------|------|
-| U1 | 命令编辑器是否为 `lf-area-toggle-visible` 提供"选区域"辅助（下拉选 `viewKey`） | 非必需；先允许手填 JSON，后续可加 |
+| U1 | 命令编辑器是否为 `toggle-area-visible` 提供"选区域"辅助（下拉选区域） | ✅ 已实现（G-89 批次 2：`LfCommandEditor` 区域下拉） |
 | U2 | 池内实例是否需要"手动释放"命令 | 本期不做，会话期内常驻 |
 | U3 | 抽屉开合状态是否持久化 | 本期不持久化 |

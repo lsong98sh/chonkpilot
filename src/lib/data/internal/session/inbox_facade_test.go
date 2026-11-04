@@ -101,14 +101,15 @@ func TestInboxCommit(t *testing.T) {
 
 // TestCleanupInboxTTL：仅删除「终态 + 超期」行；pending（无论多旧）与未超期终态行保留；
 // 时间不可解析 → 保守保留（不误删）。
+//
+// P4-2 批次 A（2026-10-31）：TTL 实现唯一 = 会话组件（`component.CleanupStale`），
+// 本用例改经 `TurnCleanupStale`（启动清理的同一入口）驱动，时间基准取当前时刻相对值。
 func TestCleanupInboxTTL(t *testing.T) {
 	s, scope := newSessionEnv(t)
-	prj, err := s.PrjUsrFor("ins-inbox-ttl", scope)
-	if err != nil {
-		t.Fatalf("prjusr: %v", err)
-	}
-	tb := prj.Table(inboxTable)
-	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
+	const inst = "ins-inbox-ttl"
+	_, db := openEnvDialog(t, s, inst, scope)
+	tb := db.Table(inboxTable)
+	now := time.Now().UTC()
 	ts := func(d time.Duration) string { return now.Add(d).Format(kernel.RFC3339FixedNano) }
 
 	rows := map[string]data.Record{
@@ -130,7 +131,9 @@ func TestCleanupInboxTTL(t *testing.T) {
 		}
 	}
 
-	s.cleanupInboxTTL(prj, now)
+	if _, err := s.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: inst, Scope: scope}); err != nil {
+		t.Fatalf("TurnCleanupStale: %v", err)
+	}
 
 	for _, k := range []string{"old-consumed", "old-discarded", "old-no-updated"} {
 		if _, ok := mustInboxRow(t, tb, k); ok {

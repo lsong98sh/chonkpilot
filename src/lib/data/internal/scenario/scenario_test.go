@@ -263,3 +263,41 @@ func TestScenarioSaveAllowsSameAgentNameAcrossScenarios(t *testing.T) {
 		}
 	}
 }
+
+// TestScenarioRejectsUnknownLevel（D-54，2026-10-31）：save / delete 的显式 level 不是四级之一 →
+// **报错**，且绝不回落 user 级（不得误写 / 误删 user 级同名场景）。
+func TestScenarioRejectsUnknownLevel(t *testing.T) {
+	s, _, usrPath := testRoots(t)
+	userRoot := capfs.ScenarioUserRoot(usrPath)
+	if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
+		ID: "keep", Level: capfs.KindUser,
+	}}); err != nil {
+		t.Fatalf("预置 user 级场景失败：%v", err)
+	}
+
+	if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
+		ID: "bad", Level: "bogus",
+	}}); err == nil {
+		t.Fatal("Save(level=bogus) 应报错（禁止回落 user 级）")
+	}
+	if capfs.ScenarioDirExists(userRoot, "bad") {
+		t.Fatal("未知级别不得回落 user 级落盘")
+	}
+
+	if _, err := s.ScenarioDelete(facade.ScenarioDeleteRequest{ScenarioID: "keep", Level: "bogus"}); err == nil {
+		t.Fatal("Delete(level=bogus) 应报错（禁止回落 user 级）")
+	}
+	if !capfs.ScenarioDirExists(userRoot, "keep") {
+		t.Fatal("未知级别不得回落 user 级误删同名场景")
+	}
+
+	// 合法级别但当前不可用（未绑定实例 → 无 work_dir）同样报错，不回落 user 级。
+	if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
+		ID: "proj-scn", Level: capfs.KindProject,
+	}}); err == nil {
+		t.Fatal("Save(level=project) 在未绑定 work_dir 时应报错")
+	}
+	if capfs.ScenarioDirExists(userRoot, "proj-scn") {
+		t.Fatal("不可用级别不得回落 user 级落盘")
+	}
+}

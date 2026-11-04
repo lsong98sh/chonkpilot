@@ -25,6 +25,8 @@ type gwRuntime interface {
 	Stop(ctx context.Context) error
 	SetAsyncOverrides(m map[string]mcpgateway.ToolAsyncOverride)
 	SetSandboxOverrides(executors, mcps map[string]bool)
+	// SetSandboxDirsProvider 注入可写白名单查询（C3：`_meta.chonkpilot.sandbox` 下发）。
+	SetSandboxDirsProvider(f mcpgateway.SandboxDirsProvider)
 	CancelExec(instanceID, idOrCall string) (bool, error)
 	DetachExec(instanceID, idOrCall string) (string, error)
 	SetBeforeToolCall(fn func(tool string, args map[string]any) (map[string]any, error))

@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/lsong98sh/chonkpilot-agent/session"
 	chat "github.com/lsong98sh/chonkpilot-agent/chat"
+	"github.com/lsong98sh/chonkpilot-agent/session"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestIsContextOverflow：超窗错误识别（厂商文案差异大，按关键词）。
@@ -139,6 +140,71 @@ func TestCompressCommitSingleFlightAndCAS(t *testing.T) {
 	}
 	if strings.Contains(stringOf(after["history"]), "should-not-appear") {
 		t.Fatal("CAS 丢弃后不应写入新摘要")
+	}
+}
+
+// TestMaybeStartCompressTriggersMemoryFlush：阈值判定通过 → 起压缩前用**既有** memory.flush
+// 触发一次记忆沉淀（payload instance_id/session/dialog_id；2026-10-31 用户定案：提取跟随压缩）；
+// 未达阈值 → 不投递。
+func TestMaybeStartCompressTriggersMemoryFlush(t *testing.T) {
+	llm := slowLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	completeTurnOne(t, s, "s-flush", "t1", "hello flush")
+
+	got := make(chan map[string]any, 8)
+	sub, err := s.bus.On("memory.flush", 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if json.Unmarshal(v.Payload, &m) == nil {
+			select {
+			case got <- m:
+			default:
+			}
+		}
+		v.Result = map[string]any{"ok": true, "queued": true}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("订阅 memory.flush: %v", err)
+	}
+	defer sub.Unsubscribe()
+
+	tc := &turnCtx{
+		server:        s,
+		req:           StartReq{InstanceID: "ins-test", Session: "s-flush", Turn: "t2"},
+		hist:          newSessionStore(s.bus, "ins-test").LoadMessages("t1"),
+		turnTokens:    []facade.TurnToken{{TurnID: "t1"}},
+		keepFullTurns: 1,
+		briefBudget:   1,
+	}
+	tc.maybeStartCompress(tc.buildAssembly())
+	select {
+	case m := <-got:
+		if m["instance_id"] != "ins-test" || m["session"] != "s-flush" {
+			t.Fatalf("memory.flush 归属字段不符: %+v", m)
+		}
+		if dlg, _ := m["dialog_id"].(string); dlg == "" {
+			t.Fatalf("memory.flush 必带 dialog_id（61 §0.6）: %+v", m)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("阈值达成后应投递 memory.flush")
+	}
+	waitCompressIdle(t, s, "ins-test", "s-flush")
+
+	// 未达阈值（预算极大）→ 不投递（memory.flush 与压缩同一门控）。
+	tcNo := &turnCtx{
+		server:         s,
+		req:            StartReq{InstanceID: "ins-test", Session: "s-flush", Turn: "t3"},
+		hist:           tc.hist,
+		turnTokens:     tc.turnTokens,
+		keepFullTurns:  1,
+		keepFullTokens: 1 << 30,
+	}
+	tcNo.maybeStartCompress(tcNo.buildAssembly())
+	select {
+	case m := <-got:
+		t.Fatalf("未达阈值不应投递 memory.flush: %+v", m)
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 

@@ -1,8 +1,15 @@
 <template>
   <div class="plugin-page-host">
-    <div v-if="!entry" class="pph-state">
-      <Icon name="warning-filled" :size="28" />
-      <p>{{ $t('layoutFree.plugin.pageMissing', { id: pluginId }) }}</p>
+    <!-- 无 entry（manifest 未到 / 视图未注册）：按台账给「未安装 / 启动中」，不报“页面不可用”（D11） -->
+    <div v-if="!entry" class="pph-state pph-placeholder">
+      <Icon :name="notInstalled ? 'warning-filled' : 'loading'" :size="28" :class="{ 'is-loading': !notInstalled }" />
+      <p class="pph-title">{{ $t('layoutFree.plugin.notReadyTitle', { id: pluginId }) }}</p>
+      <p class="pph-hint">
+        {{ $t(notInstalled ? 'layoutFree.plugin.notInstalledHint' : 'layoutFree.plugin.notReadyStatusHint') }}
+      </p>
+      <p v-if="statusLabel" class="pph-meta">
+        {{ $t('layoutFree.plugin.notReadyStatus', { status: $t(statusLabel) }) }}
+      </p>
     </div>
     <template v-else>
       <iframe
@@ -24,8 +31,8 @@
         <Icon name="warning-filled" :size="28" />
         <p class="pph-title">{{ $t('layoutFree.plugin.notReadyTitle', { id: pluginId }) }}</p>
         <p class="pph-hint">{{ $t(reasonKey) }}</p>
-        <p v-if="status" class="pph-meta">
-          {{ $t('layoutFree.plugin.notReadyStatus', { status }) }}<template v-if="detail"> · {{ detail }}</template>
+        <p v-if="statusLabel" class="pph-meta">
+          {{ $t('layoutFree.plugin.notReadyStatus', { status: $t(statusLabel) }) }}
         </p>
         <p v-if="autoExhausted" class="pph-meta">{{ $t('layoutFree.plugin.autoRetryExhausted', { n: autoRetryLimit }) }}</p>
         <button type="button" class="pph-retry" :disabled="!canRetry" @click="retry">
@@ -67,8 +74,8 @@ const frameRef = ref(null)
 const {
   src,
   status,
-  detail,
   reason,
+  notInstalled,
   showFrame,
   showLoading,
   showPlaceholder,
@@ -80,14 +87,33 @@ const {
   retry,
 } = usePluginReadiness(props)
 
-/** 未就绪文案：按原因选 i18n key（状态未就绪 / 资源 404 / 加载超时 / 加载错误）。 */
+/** 未就绪文案：按原因选 i18n key（未安装 / 状态未就绪 / 资源 404 / 加载超时 / 加载错误）。 */
 const REASON_KEY = {
+  missing: 'notInstalledHint',
   status: 'notReadyStatusHint',
   asset: 'notReadyAssetHint',
   timeout: 'notReadyTimeoutHint',
   error: 'notReadyErrorHint',
 }
 const reasonKey = computed(() => 'layoutFree.plugin.' + (REASON_KEY[reason.value] || 'notReadyAssetHint'))
+
+/** 状态文字（PLUGIN-LOAD-1 D11：只显示状态，不带 detail 行）。 */
+const STATUS_KEY = {
+  discovered: 'statusStarting',
+  registering: 'statusStarting',
+  starting: 'statusStarting',
+  running: 'statusRunning',
+  degraded: 'statusError',
+  error: 'statusError',
+  stopping: 'statusStopped',
+  stopped: 'statusStopped',
+  disabled: 'statusDisabled',
+}
+const statusLabel = computed(() => {
+  if (notInstalled.value) return 'layoutFree.plugin.statusMissing'
+  const key = STATUS_KEY[status.value]
+  return key ? 'layoutFree.plugin.' + key : ''
+})
 
 function reply(id, ok, result, errors) {
   const win = frameRef.value?.contentWindow
@@ -185,7 +211,7 @@ let unsubTheme = null
 onMounted(() => {
   window.addEventListener('message', onMessage)
   window.addEventListener('beforeunload', releaseFrame)
-  unsubUI = mq.on('plugin-ui-event', (ev) => {
+  unsubUI = mq.on('plugin-event', (ev) => {
     if (!ev || ev.id !== props.pluginId) return
     frameRef.value?.contentWindow?.postMessage(
       { ckPlugin: 1, type: 'event', topic: ev.topic, payload: ev.payload },
@@ -210,6 +236,8 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  /* 容器查询基准：状态栏徽标（96×20）等极小容器走紧凑态，避免「加载中」占位撑出格子 */
+  container-type: size;
 }
 .pph-frame {
   flex: 1;
@@ -273,5 +301,29 @@ onBeforeUnmount(() => {
 .pph-retry:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 紧凑态（状态栏徽标高度 ≤ 48px）：只留一个小 spinner，不渲染文字/图标/重试按钮 */
+@container (max-height: 48px) {
+  .pph-overlay,
+  .pph-state {
+    gap: 0;
+    padding: 0;
+    flex-direction: row;
+    font-size: 10px;
+    background: transparent;
+  }
+  .pph-state > .b-icon {
+    width: 10px !important;
+    height: 10px !important;
+  }
+  .pph-state > p,
+  .pph-retry {
+    display: none;
+  }
+  /* 未就绪占位在徽标位不显示（插件就绪后 iframe 自带内容） */
+  .pph-placeholder {
+    display: none;
+  }
 }
 </style>

@@ -32,11 +32,27 @@
       </span>
     </div>
 
+    <!-- CHAT-029 会话列表标题过滤：纯前端本地过滤（不发请求、不改消息面）。
+         命中 = 标题子串 或 会话号（session_id）子串，大小写不敏感；空关键字 = 全部。 -->
+    <div class="sp-filter">
+      <Icon name="search" :size="13" class="sp-filter-icon" />
+      <Input
+        class="sp-filter-input"
+        :model-value="filterText"
+        :placeholder="$t('chat.session_filter_placeholder')"
+        @update:model-value="filterText = $event"
+      />
+      <button v-if="filterText" type="button" class="sp-filter-clear" @click="filterText = ''">
+        <Icon name="circle-close-filled" :size="13" />
+      </button>
+    </div>
+
     <div class="sp-list">
       <EmptyState v-if="sessions.length === 0" :message="$t('chat.no_sessions')" />
+      <EmptyState v-else-if="visibleSessions.length === 0" :message="$t('chat.session_filter_empty')" />
 
       <div
-        v-for="session in sessions"
+        v-for="session in visibleSessions"
         :key="session.session_id"
         class="session-card"
         :class="{ active: session.session_id === currentSessionId }"
@@ -73,6 +89,10 @@
             />
           </div>
           <div class="session-meta">
+            <!-- 运行中徽标（2026-11-03）：来源 = `session-running-list` 内存快照（不落库） -->
+            <span v-if="isRunning(session.session_id)" class="session-running">
+              <span class="session-running-dot"></span>{{ $t('chat.session_running') }}
+            </span>
             <span class="session-id">#{{ session.session_id?.slice(0, 8) }}</span>
           </div>
         </div>
@@ -149,7 +169,7 @@
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button, Input, confirm, message } from '@ckfw/components/ui/index.js'
 import Icon from '@ckfw/components/icon/Icon.vue'
@@ -158,6 +178,7 @@ import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics, FieldKeys } from '../../events/msgkeys'
 import * as sessionApi from '../../api/session'
+import { listRunningSessions } from '../../api/chat'
 import { buildCopyMessages, serializeCopyMessages } from '../../utils/sessionCopy'
 import { useChatWindows } from '../../composables/useChatWindows'
 import { windowForSession } from '../../utils/chatWindows'
@@ -176,6 +197,52 @@ const { t } = useI18n()
 const selection = useSelectionStore()
 
 const sessions = ref([])
+// CHAT-029：标题过滤关键字（**纯前端本地过滤**，不改 `sessions` 原数组、不发任何请求）。
+const filterText = ref('')
+
+// ── 运行中会话（2026-11-03）────────────────────────────────────────────
+// 数据源 = `session-running-list`（server **内存快照**，读 busy 注册表，**不落库**；
+// 每项含 session_id，覆盖本进程全部窗口）。窗格打开时拉一次 + 4s 轮询对齐
+// （事件 session-turn-start / session-complete 带 instance_id，只投发起窗口，
+//  主窗口看不到别的对话窗口的在跑轮次 → 用快照轮询兜住跨窗口一致性）。
+const runningIds = ref({})
+const RUNNING_POLL_MS = 4000
+let runningTimer = null
+
+/** 该会话当前是否有在跑轮次（徽标依据）。 */
+function isRunning(sessionId) {
+  return !!(sessionId && runningIds.value[sessionId])
+}
+
+/** 拉一次运行态快照并整体替换（静默失败：徽标非关键路径，不影响列表）。 */
+async function refreshRunning() {
+  try {
+    const list = await listRunningSessions()
+    const next = {}
+    for (const it of list) {
+      const sid = it && it.session_id
+      if (sid) next[sid] = true
+    }
+    runningIds.value = next
+  } catch (e) {
+    console.warn('[SessionsPane] session-running-list failed:', e)
+  }
+}
+
+/** 过滤命中：标题子串 或 会话号（session_id）子串；大小写不敏感。 */
+function matchesFilter(session, kw) {
+  if (!kw) return true
+  const title = String((session && session.title) || '').toLowerCase()
+  const sid = String((session && session.session_id) || '').toLowerCase()
+  return title.includes(kw) || sid.includes(kw)
+}
+
+// 仅影响展示：选中 / 改名 / 删除 / fork / 复制 / 子聊天展开态仍按原数组与 session_id 工作。
+const visibleSessions = computed(() => {
+  const kw = filterText.value.trim().toLowerCase()
+  if (!kw) return sessions.value
+  return sessions.value.filter((s) => matchesFilter(s, kw))
+})
 // 本组件内的**副本**（会话行 active 高亮 / 「删除当前会话」判定 / 开窗入口态）；写入口径见 load()
 // —— store 优先、后端仅兜底（裁决 1，2026-10-16）。
 const currentSessionId = ref(null)
@@ -303,6 +370,7 @@ async function load() {
       sessionApi.listSessions(),
       sessionApi.getActiveSessionID(),
       refreshWindows(),
+      refreshRunning(),
     ])
     sessions.value = res || []
     // UILAYOUT-1 裁决 1（2026-10-16）：store 优先、后端兜底。
@@ -463,6 +531,8 @@ async function handleCreate() {
 const _unsubs = []
 onMounted(() => {
   load()
+  // 运行中徽标：快照轮询（跨窗口对齐；见 refreshRunning 注释）。窗格卸载即停。
+  runningTimer = setInterval(refreshRunning, RUNNING_POLL_MS)
   // 打开/切到「会话」页签（工具栏 Sessions 按钮 = sessions-open；左侧导航 = filetree-mode-select）→ 重载
   _unsubs.push(mq.on(EventNames.sessionsOpen, load))
   _unsubs.push(mq.on(EventNames.filetreeModeSelect, (d) => {
@@ -493,7 +563,11 @@ onMounted(() => {
   _unsubs.push(mq.on(MsgTopics.subchatOpened, refreshParent))
   _unsubs.push(mq.on(MsgTopics.subchatState, refreshParent))
 })
-onUnmounted(() => _unsubs.forEach(fn => fn()))
+onUnmounted(() => {
+  if (runningTimer) clearInterval(runningTimer)
+  runningTimer = null
+  _unsubs.forEach(fn => fn())
+})
 </script>
 
 <style scoped>
@@ -527,6 +601,41 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+}
+/* CHAT-029：标题过滤行（放大镜 + 输入框 + 清空按钮） */
+.sp-filter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  flex-shrink: 0;
+}
+.sp-filter-icon {
+  position: absolute;
+  left: 17px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.sp-filter-input {
+  padding-left: 26px;
+  padding-right: 24px;
+}
+.sp-filter-clear {
+  position: absolute;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.sp-filter-clear:hover {
+  color: var(--text-primary);
 }
 .sp-list {
   flex: 1;
@@ -658,6 +767,21 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 运行中徽标（2026-11-03）：小圆点 + 文案，与 #id 同一行 */
+.session-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+.session-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 /* 操作图标：hover 时显示在文本下方（一整行，右对齐） */
 .session-actions {

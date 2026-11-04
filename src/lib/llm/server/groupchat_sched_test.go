@@ -519,9 +519,9 @@ func TestSubChatOpenSingleNoRegression(t *testing.T) {
 
 // TestGroupMentionParseAndMarkers 是解析 / 机读约定的纯函数单测（不驱动链路）。
 func TestGroupMentionParseAndMarkers(t *testing.T) {
-	sc := &groupSched{byAgent: map[string]groupParticipant{
-		"scn/a": {agent: "scn/a"}, "b": {agent: "b"}, "c": {agent: "c"},
-	}}
+	sc := &groupSched{
+		parts: []groupParticipant{{agent: "scn/a"}, {agent: "b"}, {agent: "c"}},
+	}
 	if got := sc.parseMentions("结论\n@b @c"); len(got) != 2 || got[0] != "b" || got[1] != "c" {
 		t.Fatalf("多 @ 解析不符：%v", got)
 	}

@@ -14,6 +14,8 @@ import {
   MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
   charLen, tooLong, isHttpUrl, isAbsolutePath, isIdentifier, isDirId,
   hasControlChar, intInRange, attachmentTooLarge, attachmentCountExceeded,
+  isValidCapability, normalizeCapability, deriveCapabilities, capabilityFromLegacyCaps,
+  LLM_CAPABILITY_LEGACY_DIM,
 } from '../src/utils/fieldRules.js'
 import { readSrc } from './support/feSource.mjs'
 
@@ -67,6 +69,38 @@ test('④ 控制字符 / 数值范围 / 附件上限', () => {
   assert.equal(attachmentTooLarge(1024), false)
   assert.equal(attachmentCountExceeded(10), true)
   assert.equal(attachmentCountExceeded(9), false)
+})
+
+test('④b LLM 能力档位（D-65）：单维度 0~5 一位小数；空 = 未声明（允许）', () => {
+  assert.equal(isValidCapability(0), true)
+  assert.equal(isValidCapability(5), true)
+  assert.equal(isValidCapability('4.5'), true)
+  assert.equal(isValidCapability(''), true)
+  assert.equal(isValidCapability(null), true)
+  assert.equal(isValidCapability(5.1), false)
+  assert.equal(isValidCapability(-0.1), false)
+  assert.equal(isValidCapability(3.25), false) // 两位小数
+})
+
+test('④c LLM 能力双维度（D-65，2026-11-04）：归一 / 派生 capabilities / 旧声明式映射', () => {
+  // 归一：非数字 / 缺项 → 0；越界 → 夹到 0~5。
+  assert.deepEqual(normalizeCapability({ reasoning: 4.5, vision: 2 }), { reasoning: 4.5, vision: 2 })
+  assert.deepEqual(normalizeCapability({ reasoning: '3.5' }), { reasoning: 3.5, vision: 0 })
+  assert.deepEqual(normalizeCapability({ reasoning: 9, vision: -2 }), { reasoning: 5, vision: 0 })
+  assert.deepEqual(normalizeCapability(null), { reasoning: 0, vision: 0 })
+
+  // 派生：档位 > 0 即含该项（与后端 DeriveLLMCapabilities 同口径）。
+  assert.deepEqual(deriveCapabilities({ reasoning: 4, vision: 3 }), ['reasoning', 'vision'])
+  assert.deepEqual(deriveCapabilities({ reasoning: 4, vision: 0 }), ['reasoning'])
+  assert.deepEqual(deriveCapabilities({ reasoning: 0, vision: 2.5 }), ['vision'])
+  assert.deepEqual(deriveCapabilities({ reasoning: 0, vision: 0 }), [])
+
+  // 旧声明式 → 双维度：具备 = 中位档 3.0；完全未声明（null）→ 推理 3.0 / 识图 0。
+  assert.equal(LLM_CAPABILITY_LEGACY_DIM, 3)
+  assert.deepEqual(capabilityFromLegacyCaps(['reasoning', 'vision']), { reasoning: 3, vision: 3 })
+  assert.deepEqual(capabilityFromLegacyCaps(['vision']), { reasoning: 0, vision: 3 })
+  assert.deepEqual(capabilityFromLegacyCaps([]), { reasoning: 0, vision: 0 })
+  assert.deepEqual(capabilityFromLegacyCaps(null), { reasoning: 3, vision: 0 })
 })
 
 test('⑤ 接入点：Input / Textarea 透传原生约束', () => {

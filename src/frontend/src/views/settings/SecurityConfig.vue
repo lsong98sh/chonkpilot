@@ -27,11 +27,6 @@
             <Button size="small" v-mq:[EventNames.securitySelectDir].click="{ index }">...</Button>
           </div>
         </template>
-        <template #writable="{ index }">
-          <label class="b-checkbox">
-            <input type="checkbox" v-model="entries[index].writable" @change="syncDirty" />
-          </label>
-        </template>
         <template #action="{ index }">
           <Button text size="small" type="danger" v-mq:[EventNames.securityDelete].click="{ index }">{{ $t('security.delete') }}</Button>
         </template>
@@ -58,11 +53,11 @@ import { MAX_PATH, isAbsolutePath, trimStr } from '../../utils/fieldRules'
 
 const { t } = useI18n()
 
-// 表格列配置（信任目录表）：与既有原生表逐列一致（# / 信任目录 / 读写 / 操作）。
+// 表格列配置（可写白名单表）：# / 目录 / 操作。
+// 2026-11-03（C1）：安全配置收敛为**只写白名单**——不再区分「只读/可写」，列出的目录即可写（递归）。
 const securityColumns = computed(() => [
   { label: '#', type: 'index', width: 40 },
   { label: t('security.trust_dir'), prop: 'dir', minWidth: 300 },
-  { label: t('security.read_write'), prop: 'writable', width: 80, align: 'center' },
   { label: t('security.operation'), type: 'action', width: 70, align: 'center' },
 ])
 
@@ -82,7 +77,7 @@ let _savedSnapshot = ''
 
 // 当前条目状态的可比较快照（忽略行号，含待删键标记）
 function snapshot() {
-  return JSON.stringify(entries.value.map((e) => ({ key: e._key || '', dir: e.dir || '', writable: !!e.writable })))
+  return JSON.stringify(entries.value.map((e) => ({ key: e._key || '', dir: e.dir || '' })))
 }
 
 // 编辑/增删后重算 dirty：与上次快照一致（且无待删键）→ 视为无改动。
@@ -138,7 +133,7 @@ async function save() {
 
 // 新增条目：只改本地态（点【保存】才落库）
 function addEntry() {
-  entries.value.push({ _key: '', dir: '', writable: false })
+  entries.value.push({ _key: '', dir: '' })
   syncDirty()
 }
 
@@ -252,15 +247,5 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
 }
 .security-dir-row .b-input {
   flex: 1;
-}
-.b-checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.b-checkbox input[type="checkbox"] {
-  accent-color: var(--accent, #409eff);
 }
 </style>

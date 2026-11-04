@@ -28,13 +28,16 @@ import GroupChatBoard from './GroupChatBoard.vue'
 import AskUserDialog from './AskUserDialog.vue'
 import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
-import { getSession } from '../../api/session'
+import { getSession, seedDialog } from '../../api/session'
 import { claimedInstance } from '@ckfw/utils/instanceState.js'
 import { isGroupChatKind } from '../../utils/groupchat.js'
 
 const props = defineProps({
   /** URL 绑定的会话（`?session-id=…#chat`；由 App.vue 解析传入，固定不变）。 */
   sessionId: { type: String, required: true },
+  /** URL 可选携带的 dialog（`?dialog-id=…#chat`，G-105）：宿主直开时透传；首条请求前
+      预置 session→dialog 备忘，使本窗全部 sessionReq 直连该 dialog（免反查自举空库）。 */
+  dialogId: { type: String, default: '' },
 })
 
 // ── 窗口标题（24 §6.3 / WIN-020）──
@@ -98,6 +101,9 @@ const TITLE_REFRESH_EVENTS = [
 const _unsubs = []
 
 onMounted(() => {
+  // G-105：URL 带 dialog-id → 先预置 session→dialog 备忘（幂等），再发首条 data-session-get；
+  // 之后本窗所有 sessionReq（get/history/title 等）自动携带 dialog_id，不触发反查自愈。
+  if (props.dialogId) seedDialog(props.sessionId, props.dialogId)
   refreshTitle()
   for (const ev of TITLE_REFRESH_EVENTS) {
     _unsubs.push(mq.on(ev, (d) => {

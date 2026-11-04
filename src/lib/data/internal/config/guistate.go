@@ -30,7 +30,7 @@ var localRuntimeKeyPrefixes = []string{
 }
 
 // isLocalRuntimeKey 判断是否个人运行态 key（含 window.* / layout.* 细 key 形态 +
-// history.status.* / history.timeline.* 会话级键）。
+// history.status.* / history.timeline.* 会话级键 + 插件 prjusr 配置 `plugins.<id>.prjusr.*`）。
 func isLocalRuntimeKey(key string) bool {
 	if localRuntimeKeys[key] {
 		return true
@@ -43,5 +43,12 @@ func isLocalRuntimeKey(key string) bool {
 			return true
 		}
 	}
-	return false
+	return isPluginPrjUsrKey(key)
+}
+
+// isPluginPrjUsrKey 判定插件 **prjusr 层**配置键（G-82①，2026-10-31）：
+// `plugins.<id>.prjusr.<field>` 落 prjusr（本机本项目）；`plugins.<id>.<field>`
+// （prj 层，团队共享）不受影响。桥入口见 framework `bridge/configprjusr.go`。
+func isPluginPrjUsrKey(key string) bool {
+	return strings.HasPrefix(key, "plugins.") && strings.Contains(key, ".prjusr.")
 }

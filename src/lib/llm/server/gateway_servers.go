@@ -171,7 +171,7 @@ func userMCPServerSpec(e mcpgateway.ServerEntry) map[string]any {
 		"timeout":      e.TimeoutSec,
 		"isolate":      e.Isolate,     // nil = 未设置（JSON null）→ gateway 按 transport 推断
 		"sandbox":      e.Sandbox,     // nil = 未设置（JSON null）→ 不隔离（仅 stdio spawn 下发策略）
-		"sandbox_dirs": e.SandboxDirs, // agentbox 允许目录快照（security-* → {dir,writable}）
+		"sandbox_dirs": e.SandboxDirs, // 可写白名单快照（security-* → {dir}；C1 起只写，递归）
 		"origin":       mcpgateway.OriginUser,
 	}
 }

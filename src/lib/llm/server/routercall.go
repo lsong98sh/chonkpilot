@@ -270,6 +270,10 @@ func routerCallOptions(opts ChatOptions) router.CallOptions {
 		MaxRetries:      opts.MaxRetries,
 		Budget:          opts.RetryBudget,
 		Observer:        opts.RetryObserver,
+		// D-65 auto 档位调度：同档次候选（有序；不含首选），router 在可重试失败后换 provider。
+		AutoCandidates: opts.AutoCandidates,
+		// D-66 / ERR-002：重试前监测**系统网络状态**（断网 → network 终态，不再空等退避预算）。
+		NetworkReady: func() bool { return systemNetworkConnected() },
 	}
 	effort := opts.Effort
 	if effort == "" {

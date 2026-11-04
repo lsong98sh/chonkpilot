@@ -1,15 +1,64 @@
 // local_test.go — 文件树初始化预载单测（I-52）：
 // readDirNodesExpanded 只对展开键命中的目录递归预载 children，未展开目录不带 children。
-// 另含 gui.search file 源（searchFileSource）命中与预算（D-25）单测。
+// 另含 gui.search file 源（searchFileSource）命中与预算（D-25）单测、
+// window 几何落盘宿主权威校正（windowSaveEntries，2026-11-04）单测。
 package bridge
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// TestWindowSaveEntriesPlacementOverride 落盘权威校正（2026-11-04）：
+// 已接线 windowPlacement（GetWindowPlacement）时几何/最大化标记以宿主为准 ——
+// 最大化时落「最大化前还原边界 + maximized=true」；最小化按「还原边界 + maximized=false」；
+// 前端上报的最大化几何（错误来源）被覆盖；未接线/读取失败回落前端值。
+func TestWindowSaveEntriesPlacementOverride(t *testing.T) {
+	frontend := []json.RawMessage{json.RawMessage(
+		`{"width":1920,"height":1040,"x":0,"y":0,"maximized":true}`)}
+
+	// ① 最大化：NormalPosition=还原边界（非最大化几何），maximized=true。
+	b := &Bridge{windowPlacement: func() (int, int, int, int, bool, bool) {
+		return 100, 80, 1280, 800, true, true
+	}}
+	got := windowSaveEntries(b, frontend)
+	for k, want := range map[string]string{
+		"window.x": "100", "window.y": "80", "window.width": "1280",
+		"window.height": "800", "window.maximized": "true",
+	} {
+		if got[k] != want {
+			t.Fatalf("最大化落盘 %s=%q，want %q", k, got[k], want)
+		}
+	}
+
+	// ② 最小化：ShowCmd=SW_SHOWMINIMIZED → maximized=false + 还原边界（最小化退出改正常）。
+	b2 := &Bridge{windowPlacement: func() (int, int, int, int, bool, bool) {
+		return 100, 80, 1280, 800, false, true
+	}}
+	got2 := windowSaveEntries(b2, frontend)
+	if got2["window.maximized"] != "false" || got2["window.width"] != "1280" {
+		t.Fatalf("最小化落盘应按正常记录：got=%v", got2)
+	}
+
+	// ③ 未接线（nil provider）→ 回落前端上报（原行为）。
+	got3 := windowSaveEntries(&Bridge{}, frontend)
+	if got3["window.width"] != "1920" || got3["window.maximized"] != "true" {
+		t.Fatalf("未接线应回落前端值：got=%v", got3)
+	}
+
+	// ④ 已接线但读取失败（ok=false）→ 回落前端值。
+	b4 := &Bridge{windowPlacement: func() (int, int, int, int, bool, bool) {
+		return 0, 0, 0, 0, false, false
+	}}
+	got4 := windowSaveEntries(b4, frontend)
+	if got4["window.width"] != "1920" {
+		t.Fatalf("读取失败应回落前端值：got=%v", got4)
+	}
+}
 
 // TestSearchRelPath 检索结果路径归一（2026-09-27 修 bug）：三源结果必须为
 // workdir 相对 + 斜杠（与 file-open 契约一致）；workdir 之外的绝对路径不做 `..` 归一。

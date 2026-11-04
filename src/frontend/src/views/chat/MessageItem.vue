@@ -1,5 +1,9 @@
 <template>
-  <div class="message-item" :class="[message.role, message.type]" :data-id="message.id">
+  <div
+    class="message-item"
+    :class="[message.role, message.type, { 'session-find-hit': findHit, 'session-find-active': findActive }]"
+    :data-id="message.id"
+  >
     <!-- Avatar: only show for first message in a group (user-notify 除外，走 🔔 通知样式) -->
     <div v-if="showHeader && message.type !== 'error' && message.type !== 'user-notify' && (message.role === 'assistant' || message.role === 'user' || message.role === 'tool' || message.type === 'tool_pair')" class="speaker-line" :class="message.role === 'tool_pair' ? 'assistant' : message.role">
       <template v-if="message.role === 'assistant' || message.type === 'tool_pair'">
@@ -232,6 +236,9 @@ const props = defineProps({
   // 来自 DB 的历史消息（loadMessages / loadMoreMessages）→ reasoning 默认折叠；
   // 流式实时追加的消息（无此标记）→ turn 活跃时展开、turn 结束时折叠。
   fromHistory: { type: Boolean, default: false },
+  // 会话内查找（CHAT-028）：本条命中关键字 / 本条是当前命中（↑↓ 定位目标）
+  findHit: { type: Boolean, default: false },
+  findActive: { type: Boolean, default: false },
 })
 
 // 清除裁决：message 由 MessageList 持有 → 子组件只发事件，不直改 props 内部属性（E-08）。
@@ -731,6 +738,20 @@ const formattedTime = computed(() => {
 
 .message-item.assistant {
   align-items: flex-start;
+}
+
+/* 会话内查找（CHAT-028）：命中消息气泡描边；当前命中（↑↓ 目标）用强调色加粗。
+   关键字不在 markdown/代码块内二次包裹 `<mark>`（会破坏既有渲染），故高亮落在消息级。 */
+.message-item.session-find-hit .message-bubble,
+.message-item.session-find-hit .notify-row {
+  outline: 1px solid var(--warning, #e6a23c);
+  outline-offset: 1px;
+}
+.message-item.session-find-active .message-bubble,
+.message-item.session-find-active .notify-row {
+  outline: 2px solid var(--accent, #409eff);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.18);
 }
 
 /* user-notify（🔔 完成通知）：role=user 但走通知样式，靠左展示，覆盖 .user 的右对齐 */

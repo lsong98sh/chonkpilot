@@ -65,6 +65,10 @@ type Bridge struct {
 	// startResize 由窗口工厂注入（frameless 主窗口的系统原生 resize；gui.window.resize 用）。
 	// nil = 未接线（非 frameless 窗口 / 宿主不支持）→ gui.window.resize 明确失败，不静默。
 	startResize func(uintptr)
+	// windowPlacement 由窗口工厂注入（GetWindowPlacement 权威读取，2026-11-04）：
+	// 返回还原边界（最大化前的 NormalPosition，物理 px）与是否最大化；window 几何落盘时
+	// 以它为准（最大化时前端读不到还原边界）。nil = 未接线（测试宿主等）→ 回落前端上报值。
+	windowPlacement func() (x, y, w, h int, maximized, ok bool)
 	// projectOpener 由宿主注入（PRODSIM-1 单进程多项目）：`gui.dir.open` 走它**同进程**
 	// 打开/激活项目主窗口。nil → 旧行为（spawn 新进程；flash 等形态）。
 	projectOpener func(dir string) error
@@ -179,8 +183,13 @@ func (b *Bridge) SetDevToolsOpener(fn func()) { b.openDevTools = fn }
 
 // SetWindowResizer 由窗口工厂注入「进入系统原生 resize 模态循环」能力（gui.window.resize）。
 // 仅 frameless 主窗口装配（其 WebView2 子窗铺满客户区 → 系统无边缘命中区，需前端命中后回调；
-// 见 go-webview2/FORK.md P4）；非 frameless 窗口不装配（nil）→ gui.window.resize 明确失败。
+// 见同级仓 chonkpilot-webview2 的 FORK.md P4）；非 frameless 窗口不装配（nil）→ gui.window.resize 明确失败。
 func (b *Bridge) SetWindowResizer(fn func(uintptr)) { b.startResize = fn }
+
+// SetWindowPlacementSource 由窗口工厂注入「宿主窗口放置信息」读取（window 几何落盘权威校正用）。
+func (b *Bridge) SetWindowPlacementSource(fn func() (x, y, w, h int, maximized, ok bool)) {
+	b.windowPlacement = fn
+}
 
 // SetInstanceExitSuppressed 置位「关闭本桥实例时不发 instance-exit」（flash 远程薄壳：
 // 多窗口共享同一实例/同一 UDS 连接，实例注销只由主窗口关闭或连接断开触发，见 19 §8.11）。
@@ -345,7 +354,6 @@ var mqTypeMap = map[string]string{
 	msgkeys.TopicSessionReceive:   "llm-receive",
 	msgkeys.TopicSessionComplete:  "llm-complete",
 	msgkeys.TopicSessionRetry:     "llm-retry",
-	msgkeys.TopicSessionCompress:  "llm-compress",
 	msgkeys.TopicSessionAsk:       "ask-user",
 	msgkeys.TopicSessionTurnStart: "turn-start",
 	// task 域（值 = 稳定前端 type，非契约主题）
@@ -457,11 +465,14 @@ func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error
 var frontMethodSubjects = map[string]string{
 	msgkeys.TopicLlmSend:   "session-send",
 	msgkeys.TopicLlmCancel: "session-cancel",
-	// INBOX（2026-10-18，中途插话 / 等下一轮）：客户端四条方法面 → llm-server 同名处理器。
+	// INBOX（2026-10-18，中途插话 / 等下一轮）：客户端方法面 → llm-server 同名处理器。
+	// 2026-11-04：补 revert（取消插话）——server 侧 onInboxRevert（subscribe.go）已注册、
+	// 前端 MessageList 已调用，但桥白名单漏登 → 上行被静默丢弃、功能端到端不通。
 	msgkeys.TopicLlmInboxAdd:     "inbox-add",
 	msgkeys.TopicLlmInboxList:    "inbox-list",
 	msgkeys.TopicLlmInboxDiscard: "inbox-discard",
 	msgkeys.TopicLlmInboxPromote: "inbox-promote",
+	msgkeys.TopicLlmInboxRevert:  "inbox-revert",
 	msgkeys.TopicAskUserReply:    "session-ask-reply",
 	msgkeys.TopicTaskStop:        msgkeys.TopicTaskStop,
 	msgkeys.TopicTaskBackground:  msgkeys.TopicTaskBackground,
@@ -499,6 +510,8 @@ var frontMethodSubjects = map[string]string{
 	msgkeys.TopicSubchatFinish: msgkeys.TopicSubchatFinish,
 	// 群聊「继续」续期（SUBCHAT-3 阶段 F，61 §4.2/§4.5）：同为无点分单段主题 → 必须列此白名单。
 	msgkeys.TopicSubchatContinue: msgkeys.TopicSubchatContinue,
+	// 在跑轮次的会话清单（2026-11-03，61 §4.2）：只读内存快照；同为无点分单段主题 → 必须列此白名单。
+	msgkeys.TopicSessionRunningList: msgkeys.TopicSessionRunningList,
 }
 
 // capabilityListKeys 客户端能力面 topic → 结果数组键（T-31 桥侧作用域过滤用）。

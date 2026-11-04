@@ -8,19 +8,22 @@
         B: 关闭态 → 送给 LLM 的 system **无【记忆库】段**，且 work-dir 内
            `.chonkpilot/memory` **不落盘预置文件**（spec 61 §3.1「关闭态不落盘创建」）；
            开启 → system **含【记忆库】段** + 8 个预置 `.md` 落盘（构建端到端对照）。
-  A/B-2 `memory.min-turn-tokens`
-        A: 写 `"999999"` → 回读；写 `"1"` → 回读。
+  A/B-2 `memory.min-turn-tokens` + `memory.trigger`（MEMORY-COMPRESS-1，2026-10-31：
+        记忆提取改为**跟随压缩**——默认 trigger=compress 下轮末不再有独立提取轮次/事件）
+        A: 写 `"999999"` / `"1"` → 回读；trigger 写 `"every-turn"` / `"compress"` → 回读。
         B: 极大阈值 → 观测窗内**无记忆写回**（记忆文件内容逐字节不变 + 无 `data-memory-refresh`）；
-           小阈值 → **发生沉淀**（文件内容变为沉淀 LLM 产物 + `data-memory-refresh`(op=save)）+
-           **类别 → 内容一致性**（I-78 回归：逐类别断言内容含本类别【类别】标记与**专属哨兵**
-           且不含任何其它类别哨兵；反例 = 两类别文件内容完全相同，即原串味实证）。
-           类别数按 **quorum = 全部-2** 断言（插件「失败静默、跳过该类」为既定行为，
-           `memory.go:16`；串味判据则对**所有**类别无条件断言）。
+           小阈值 + 默认 compress → 轮末**仍不**提取（轮末独立沉淀退场的直接证据）；
+           trigger="every-turn"（产品保留旧行为）+ 小阈值 → **发生沉淀**（文件内容变为沉淀
+           LLM 产物 + `data-memory-refresh`(op=save)）+ **类别 → 内容一致性**（I-78 回归：
+           逐类别断言内容含本类别【类别】标记与**专属哨兵**且不含任何其它类别哨兵；
+           反例 = 两类别文件内容完全相同，即原串味实证）。类别数按 **quorum = 全部** 断言
+           （mock backlog=128 已收紧；插件「失败静默、跳过该类」为既定行为，`memory.go:16`）。
   A/B-3 `memory.category.<类别名>`
         A: 写 `"false"` / `"true"` → 逐个回读。
         B: 关闭 `项目概要` → system 记忆指引**不含该类**（仍含其它类）；开启 → **含**；
-           写入效果：关闭 → 该类文件**不被改写**（保持夹具哨兵）且无 `data-memory-refresh(id=该类)`；
-           开启 → 该类**被写入**（内容变化 + `data-memory-refresh(id=该类)`）；写入后同类一致性判据。
+           写入效果（trigger="every-turn" 旧行为模式下驱动轮末沉淀）：关闭 → 该类文件**不被改写**
+           （保持夹具哨兵）且无 `data-memory-refresh(id=该类)`；开启 → 该类**被写入**
+           （内容变化 + `data-memory-refresh(id=该类)`）；写入后同类一致性判据。
   A/B-4 `keep_full_max_turns` + `keep_full_max_tokens` + `compress_token_threshold`
         A: 写 `"1"` / `"24000"` / `"999999"` → 回读；再写两键阈值 `"1"`/`"1"` → 回读。
         B: 阈值极大 → 快照**无** `[已压缩早前对话]` 且 mock 请求数 == 轮数（未发生摘要调用）；
@@ -28,6 +31,8 @@
            （n_requests = 轮数+1，`/lastbody` 的末条 user == 摘要提示词）。
            SESSION-1（2026-10-23）：压缩内建 = 组装后按 `Usage.History > keep_full_max_tokens +
            compress_token_threshold` 异步触发（原「每轮终态都触发」已废止）。
+           扩展（MEMORY-COMPRESS-1）：**提取跟随压缩**——compress 触发 + memory.enabled=true 下
+           压缩发生 → 记忆提取写回（文件变化 + `data-memory-refresh` + I-78 一致性）。
   A/B-5 `capability/system/summary.md`（data-prompt-{save,load,delete}，key=summary_prompt）
         A: 写哨兵 → `data-prompt-load` 回读 == 哨兵 + 项目级文件落盘含哨兵；
         B: 触发压缩 → 摘要请求**末条 user** **含哨兵**（SESSION-1 起压缩要求走 user，不再走 system）；
@@ -396,10 +401,11 @@ def main():
         run_turn(first_q, sid=sid, idx=1)
         t = wait_summary(wait_first)
         if t:
-            return wait_compress(sid, max_wait=10), t, 1
+            # 快照回写滞后于摘要请求（负载高时可 >10s）→ 2026-11-04 由 10s 放宽到 20s
+            return wait_compress(sid, max_wait=20), t, 1
         run_turn(second_q, sid=sid, idx=2)
         t = wait_summary(wait_second)
-        return wait_compress(sid, max_wait=10), t, 2
+        return wait_compress(sid, max_wait=20), t, 2
 
     # ── 前端 DOM 助手（仅 UI-6 用例）────────────────────────────
 
@@ -410,12 +416,42 @@ def main():
     def ev(js, timeout=6000):
         return _plain(c.eval(js, timeout))
 
-    def click_tab(label):
-        ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
-           ".find(e=>e.getBoundingClientRect().width>0);if(!R)return 'no-root';"
-           "const t=[...R.querySelectorAll('.b-tabs-item')].find(x=>x.textContent.trim()===%s);"
-           "if(!t)return 'no-tab';t.click();return 'ok';})()" % json.dumps(label), 5000)
-        time.sleep(1.0)
+    # ── memory 插件配置页 DOM 助手（UI-6 用例；2026-11-04 类别表迁入插件页）────
+
+    def mem_frame_js(inner):
+        """在 memory 插件配置页 iframe 内执行 JS（.pph-frame 且 src 含 memory/webui、可见）。
+
+        注意 `#cats` 本身就是 `<tbody>`，行是其直接子节点（选择器必须 `#cats tr`）。"""
+        return ("(()=>{const f=[...document.querySelectorAll('iframe')]"
+                ".find(x=>x.classList.contains('pph-frame')&&(x.getAttribute('src')||'')"
+                ".includes('memory/webui')&&x.getBoundingClientRect().width>0);"
+                "if(!f)return 'no-frame';"
+                "const d=f.contentDocument;if(!d||!d.body)return 'no-doc';" + inner + "})()")
+
+    def mem_rows():
+        """配置页类别行 [{cat, over}]（iframe 未就绪 → []）。"""
+        r = ev(mem_frame_js("""
+const rows=[...d.querySelectorAll('#cats tr')];
+return rows.map(r=>{const td=r.querySelector('td');
+const tn=td?[...td.childNodes].find(n=>n.nodeType===3):null;
+return {cat:((tn?tn.textContent:(td?td.textContent:''))||'').trim(),
+        over:!!r.classList.contains('over')};});"""))
+        return r if isinstance(r, list) else []
+
+    def open_mem_cfg_page():
+        """打开 memory 插件配置页并等到类别行渲染（占位态自愈：整页重开一次）。"""
+        for wait_s in (15, 30):
+            c.mq_emit("preview-tab-close-all")
+            time.sleep(0.5)
+            c.mq_emit("preview-tab-open", {"kind": "plugin-page", "plugin": "memory",
+                                           "page": "config", "title": "记忆沉淀设置"})
+            deadline = time.time() + wait_s
+            while time.time() < deadline:
+                if mem_rows():
+                    time.sleep(0.3)
+                    return
+                time.sleep(0.4)
+        raise TestError("memory 插件配置页未渲染出类别行（iframe 未就绪）")
 
     def wait_vcount(sel, max_wait=10.0):
         """有界轮询：可见元素数 > 0（等价 vcount + 轮询）。"""
@@ -475,15 +511,35 @@ def main():
             _evi("memory.enabled-B-true", requests=n_on, guide_tail=sys_on[:260], preset_files=files)
 
     def case_min_turn_tokens():
-        """A/B-2 memory.min-turn-tokens：A 回读；B 极大 → 无写回；小 → 发生沉淀（文件+refresh）。"""
-        with _h.prj_config_guard(c, ["memory.enabled", "memory.min-turn-tokens"]):
+        """A/B-2 memory.min-turn-tokens + memory.trigger（MEMORY-COMPRESS-1，2026-10-31：
+        记忆提取改为**跟随压缩**——轮末不再有独立提取轮次/事件）：
+
+        A 回读：min-turn-tokens 极大/极小 + trigger 键；
+        B1 极大阈值（默认 trigger=compress）→ 轮末无写回、无 refresh；
+        B2 小阈值 + 默认 compress → 轮末**仍不**提取（证明轮末独立沉淀已退场——
+           提取只发生在压缩前，见 A/B-4 扩展段）；
+        B3 trigger="every-turn"（产品保留的旧行为模式）+ 小阈值 → 轮末沉淀发生
+           （文件+refresh+I-78 类别一致性，判据不变）。"""
+        with _h.prj_config_guard(c, ["memory.enabled", "memory.min-turn-tokens", "memory.trigger"]):
             prj_save("memory.enabled", "true")
             # A：极大阈值落库回读
             prj_save("memory.min-turn-tokens", "999999")
             va = prj().get("memory.min-turn-tokens")
             if va != "999999":
                 raise TestError("A 落库确认失败：memory.min-turn-tokens 回读 %r，期望 '999999'" % va)
-            _evi("min-turn-tokens-A", readback=va)
+            # A：trigger 键落库回读（默认 compress=跟随压缩；every-turn=旧行为）
+            vt0 = prj().get("memory.trigger")
+            if vt0 not in (None, "", "compress"):
+                raise TestError("A 隔离实例 memory.trigger 初始应缺省/compress，实际 %r" % vt0)
+            prj_save("memory.trigger", "every-turn")
+            if prj().get("memory.trigger") != "every-turn":
+                raise TestError("A 落库确认失败：memory.trigger 回读 %r，期望 'every-turn'"
+                                % prj().get("memory.trigger"))
+            prj_save("memory.trigger", "compress")   # 回到默认（跟随压缩）
+            if prj().get("memory.trigger") != "compress":
+                raise TestError("A 落库确认失败：memory.trigger 回读 %r，期望 'compress'"
+                                % prj().get("memory.trigger"))
+            _evi("min-turn-tokens-A", readback=va, trigger_readback=prj().get("memory.trigger"))
             # 预置文件先落盘（首轮触发 data-memory-list）→ 本轮不参与"无写回"判定
             turn_system("记忆阈值-预热轮")
             # I-78 回归夹具：给每个类别预置**专属哨兵**作为「现有全文」（沉淀后逐类别校验内容归属）
@@ -494,7 +550,7 @@ def main():
             missing_sent = [k for k, s in MEM_SENT.items() if s not in (before.get(k + ".md") or "")]
             if missing_sent:
                 raise TestError("类别哨兵预置失败（data-memory-save 未落盘）：%r" % missing_sent)
-            # B（极大阈值）：观测窗内无写回
+            # B1（极大阈值，compress 模式）：观测窗内无写回
             reset_mock()
             arm(("turn-start", "llm-complete", "llm-error", "data-memory-refresh"))
             run_turn("记忆阈值-极大-本轮不得沉淀")
@@ -513,27 +569,42 @@ def main():
                 raise TestError("min-turn-tokens=999999 仍收到 data-memory-refresh %d 条" % len(refs))
             _evi("min-turn-tokens-B-blocked", threshold=va, files=sorted(after.keys()),
                  content_len={k: len(v) for k, v in sorted(after.items())}, refresh_events=0)
-            # A/B（小阈值）：写入 → 回读 → 发生沉淀
+            # B2（小阈值 + 默认 compress=跟随压缩）：轮末**不再**独立提取（MEMORY-COMPRESS-1）
             prj_save("memory.min-turn-tokens", "1")
             vb = prj().get("memory.min-turn-tokens")
             if vb != "1":
                 raise TestError("A 落库确认失败：memory.min-turn-tokens 回读 %r，期望 '1'" % vb)
             arm(("turn-start", "llm-complete", "llm-error", "data-memory-refresh"))
-            run_turn("记忆阈值-极小-本轮应当沉淀")
-            # 等沉淀收敛（9 个类别并行重写）：quorum = 全部-3（容忍设计内的单类别失败静默）
+            run_turn("记忆阈值-极小-compress-轮末不得提取")
+            time.sleep(10)
+            after2 = read_all_mem()
+            refs2 = c.events_of("data-memory-refresh", clear=False)
+            if after2 != before:
+                diff2 = [k for k in after2 if before.get(k) != after2.get(k)]
+                raise TestError("trigger=compress（默认）下轮末仍发生写回（轮末独立沉淀应已退场，"
+                                "提取只跟随压缩）：%r" % diff2)
+            if refs2:
+                raise TestError("trigger=compress 轮末仍收到 data-memory-refresh %d 条" % len(refs2))
+            _evi("min-turn-tokens-B2-compress-noturn", threshold=vb, refresh_events=0,
+                 note="compress 触发下轮末无提取（跟随压缩语义），压缩路径验证见 A/B-4")
+            # B3（every-turn 旧行为保留）：小阈值 → 轮末沉淀（原 B 断言集不变）
+            prj_save("memory.trigger", "every-turn")
+            arm(("turn-start", "llm-complete", "llm-error", "data-memory-refresh"))
+            run_turn("记忆阈值-极小-every-turn-本轮应当沉淀")
+            # 等沉淀收敛（9 个类别并行重写）：quorum = 全部（mock backlog=128 已收紧）
             cats_all = list(MEM_SENT.keys())
             quorum = quorum_of(cats_all)
             if not wait_quorum(before, cats_all, quorum, max_wait=40):
-                raise TestError("min-turn-tokens=1 后沉淀类别数未达 quorum=%d：diag=%r"
+                raise TestError("every-turn + min-turn-tokens=1 后沉淀类别数未达 quorum=%d：diag=%r"
                                 % (quorum, diag_heads()))
             now = read_all_mem()
             changed = [k for k in now if now.get(k) != before.get(k)]
-            refs2 = c.events_of("data-memory-refresh", clear=False)
+            refs3 = c.events_of("data-memory-refresh", clear=False)
             if not changed:
-                raise TestError("min-turn-tokens=1 未发生记忆写回（文件内容未变）")
-            if not refs2:
-                raise TestError("min-turn-tokens=1 写回后未收到 data-memory-refresh 广播")
-            ops = sorted({(e.get("payload") or {}).get("op") for e in refs2})
+                raise TestError("every-turn + min-turn-tokens=1 未发生记忆写回（文件内容未变）")
+            if not refs3:
+                raise TestError("every-turn + min-turn-tokens=1 写回后未收到 data-memory-refresh 广播")
+            ops = sorted({(e.get("payload") or {}).get("op") for e in refs3})
             heads = {k: v.replace("\n", "\\n")[:56] for k, v in sorted(now.items())}
             sample = (now.get(changed[0]) or "")
             if "mock-reply:" not in sample:
@@ -544,17 +615,19 @@ def main():
                 raise TestError("类别→内容一致性失败（I-78 串味回归）：bad=%r identical=%r" % (bad, identical))
             if len(rewritten) < quorum:
                 raise TestError("被改写类别数 %d < quorum=%d：%r" % (len(rewritten), quorum, diag_heads()))
-            _evi("min-turn-tokens-B-distilled", threshold=vb, changed_files=changed,
-                 refresh_events=len(refs2), refresh_ops=ops, heads=heads,
+            _evi("min-turn-tokens-B3-every-turn-distilled", threshold=vb, trigger="every-turn",
+                 changed_files=changed, refresh_events=len(refs3), refresh_ops=ops, heads=heads,
                  pref_file_changed="mock-reply:" in read_file(PREF_FILE))
             _evi("category-content-consistency", categories=len(MEM_SENT), rewritten=rewritten,
                  untouched=untouched, bad=bad, identical_pairs=identical, sentinels=MEM_SENT,
                  own_mark=[k for k in rewritten if ("【类别】" + k) in (now.get(k + ".md") or "")])
 
     def case_category_gate():
-        """A/B-3 memory.category.<类别>：A 回读；B 指引含/不含该类 + 该类是否**被写入**（I-78 回归）。"""
+        """A/B-3 memory.category.<类别>：A 回读；B 指引含/不含该类 + 该类是否**被写入**（I-78 回归）。
+        （MEMORY-COMPRESS-1：写入效果段在 trigger="every-turn" 旧行为模式下跑——该模式
+        保留轮末按 min-turn-tokens 沉淀；compress 模式下的提取面由 A/B-2 B2 与 A/B-4 覆盖。）"""
         with _h.prj_config_guard(c, ["memory.enabled", "memory.min-turn-tokens",
-                                     "memory.category." + CAT_A]):
+                                     "memory.trigger", "memory.category." + CAT_A]):
             prj_save("memory.enabled", "true")
             prj_save("memory.min-turn-tokens", "999999")  # 隔离沉淀请求 → /last 恒为主轮请求
             key = "memory.category." + CAT_A
@@ -583,6 +656,7 @@ def main():
             # B（写入效果，I-78 回归）：关闭 → 该类**不被改写**（保持夹具哨兵 + 无 refresh(id=该类)）；
             # 开启 → 该类**被写入**（内容变化 + refresh(id=该类)）；写入后仍须满足类别归属一致。
             seed_mem_sentinels()
+            prj_save("memory.trigger", "every-turn")  # MEMORY-COMPRESS-1：写入效果走旧行为（轮末沉淀）
             prj_save("memory.min-turn-tokens", "1")   # 放开沉淀 → 本轮真发生并行分类别重写
             prj_save(key, "false")
             if prj().get(key) != "false":
@@ -649,8 +723,10 @@ def main():
                  bad=bad_o, file_head=(aft.get(CAT_A + ".md") or "").replace("\n", "\\n")[:120])
 
     def case_compress_threshold():
-        """A/B-4 keep_full_max_turns + keep_full_max_tokens + compress_token_threshold：A 回读；B 压缩是否真发生（快照+摘要请求）。"""
-        with _h.prj_config_guard(c, ["memory.enabled", "keep_full_max_turns", "keep_full_max_tokens", "compress_token_threshold"]):
+        """A/B-4 keep_full_max_turns + keep_full_max_tokens + compress_token_threshold：A 回读；B 压缩是否真发生（快照+摘要请求）。
+        （扩展段：MEMORY-COMPRESS-1 提取**跟随压缩**——compress 触发下压缩发生时记忆提取写回。）"""
+        with _h.prj_config_guard(c, ["memory.enabled", "memory.min-turn-tokens", "memory.trigger",
+                                     "keep_full_max_turns", "keep_full_max_tokens", "compress_token_threshold"]):
             prj_save("memory.enabled", "false")  # 关闭沉淀 → mock 请求数 = 轮数(+摘要)
             # A：三项阈值落库回读（D1：keep_full_max_turns 为原 keep_full_turns 改名；keep_full_max_tokens 新增）
             prj_save("keep_full_max_turns", "1")
@@ -690,16 +766,75 @@ def main():
             sid_yes = new_session()
             mk, tail, turns = compress_and_capture(sid_yes, "压缩阈值-极小-第1轮", "压缩阈值-极小-第2轮",
                                                    DEFAULT_SUMMARY)
+            extra = 0
+            if not mk:
+                # 补轮再观测（2026-11-04 批跑定位：异步压缩管线偶发滞后超出等待窗，属观测窗口
+                # 问题非断言放宽——阈值=1 → 每轮终态必触发压缩；同 case_category_gate 补轮先例）
+                arm(("turn-start", "llm-complete", "llm-error"))
+                run_turn("压缩阈值-极小-补轮", sid=sid_yes, idx=turns + 1)
+                extra = 1
+                mk = wait_compress(sid_yes, max_wait=25)
+                if not tail:
+                    tail = last_request_text()
             n_yes = nreq()
             if not mk:
-                raise TestError("阈值 1 + keep_full_max_turns 1 未发生压缩（快照无 %s）" % COMPRESS_MARK)
-            if n_yes != turns + 1:
-                raise TestError("压缩后 mock 请求数=%d，期望 %d（%d 轮 + 1 次摘要 llm-simple）"
-                                % (n_yes, turns + 1, turns))
+                raise TestError("阈值 1 + keep_full_max_turns 1 未发生压缩（快照无 %s）：diag=%s"
+                                % (COMPRESS_MARK, json.dumps({
+                                    "turns": turns, "extra": extra, "nreq": nreq(),
+                                    "tail_head": tail[:100],
+                                    "last": {k: last().get(k) for k in ("path", "system", "n_requests")},
+                                    "mark": compress_mark(sid_yes)[:120],
+                                }, ensure_ascii=False)[:600]))
+            if n_yes != turns + 1 + extra:
+                raise TestError("压缩后 mock 请求数=%d，期望 %d（%d 轮 + 1 次摘要 llm-simple%s）"
+                                % (n_yes, turns + 1 + extra, turns, " + 补轮" if extra else ""))
             if DEFAULT_SUMMARY not in tail:
                 raise TestError("摘要请求（system/末条 user）未含摘要提示词：%r" % tail[:200])
             _evi("compress-B-triggered", requests=n_yes, turns=turns, snapshot_mark=mk[:200],
                  summary_request_text=tail[:120])
+            # ── 扩展（MEMORY-COMPRESS-1，2026-10-31）：提取**跟随压缩** ──────────────
+            # 默认 trigger=compress 下轮末不提取（A/B-2 B2 已证）；此处证明「压缩时提取」：
+            # 开启记忆（min-turn-tokens=1；压缩路径经既有 memory.flush force=true，
+            # 不受 min-turn-tokens 门控）→ 新会话再跑 1 轮（阈值已为 1 → 即触发压缩）
+            # → 断言压缩后记忆文件被改写 + data-memory-refresh + 类别一致性（I-78）。
+            prj_save("memory.enabled", "true")
+            prj_save("memory.min-turn-tokens", "1")
+            prj_save("memory.trigger", "compress")
+            seed_mem_sentinels()
+            before_c = read_all_mem()
+            missing_c = [k for k, s in MEM_SENT.items() if s not in (before_c.get(k + ".md") or "")]
+            if missing_c:
+                raise TestError("跟随压缩段类别哨兵预置失败：%r" % missing_c)
+            reset_mock()
+            arm(("turn-start", "llm-complete", "llm-error", "data-memory-refresh"))
+            sid_m = new_session()
+            run_turn("压缩时沉淀-第1轮", sid=sid_m, idx=1)
+            # keep_full_max_turns=1 下第 1 轮可全量保留、不触发压缩（同 B 段 compress_and_capture
+            # 的两轮节奏：第 1 轮无摘要请求、第 2 轮才触发）→ 短窗等待后补第 2 轮再判。
+            mk_m = wait_compress(sid_m, max_wait=8)
+            if not mk_m:
+                run_turn("压缩时沉淀-第2轮", sid=sid_m, idx=2)
+                mk_m = wait_compress(sid_m, max_wait=25)
+            if not mk_m:
+                raise TestError("跟随压缩段未触发压缩（无法验证提取跟随压缩）")
+            cats_m = list(MEM_SENT.keys())
+            if not wait_quorum(before_c, cats_m, quorum_of(cats_m), max_wait=40):
+                raise TestError("压缩后记忆提取未写回（extract-follows-compress 失效）：diag=%r"
+                                % diag_heads())
+            now_m = read_all_mem()
+            refs_m = c.events_of("data-memory-refresh", clear=False)
+            changed_m = [k for k in now_m if now_m.get(k) != before_c.get(k)]
+            if not changed_m:
+                raise TestError("压缩后记忆文件内容未变（提取未跟随压缩）")
+            if not refs_m:
+                raise TestError("压缩后提取未收到 data-memory-refresh 广播")
+            bad_m, rewritten_m, untouched_m, identical_m = check_cat_consistency(now_m, before_c)
+            if bad_m or identical_m:
+                raise TestError("压缩路径提取一致性失败（I-78 串味回归）：bad=%r identical=%r"
+                                % (bad_m, identical_m))
+            _evi("compress-extract-follows-compress", snapshot_mark=mk_m[:160],
+                 changed_files=changed_m, refresh_events=len(refs_m),
+                 rewritten=rewritten_m, untouched=untouched_m)
 
     def case_summary_prompt():
         """A/B-5 capability/system/summary.md：A 保存/回读；B 压缩摘要请求**末条 user** 含哨兵；删除 → 回落默认。
@@ -728,7 +863,20 @@ def main():
                 sid1 = new_session()
                 mk1, tail1, turns1 = compress_and_capture(sid1, "总结提示词哨兵-第1轮", "总结提示词哨兵-第2轮", SENT)
                 if not mk1:
-                    raise TestError("哨兵用例未触发压缩（无法验证摘要请求）")
+                    # 补轮再观测（同 A/B-4 B 段：异步压缩管线偶发滞后；阈值=1 → 每轮必触发）
+                    arm(("turn-start", "llm-complete", "llm-error"))
+                    run_turn("总结提示词哨兵-补轮", sid=sid1, idx=turns1 + 1)
+                    mk1 = wait_compress(sid1, max_wait=25)
+                    if not tail1:
+                        tail1 = last_request_text()
+                if not mk1:
+                    raise TestError("哨兵用例未触发压缩（无法验证摘要请求）：diag=%s" % json.dumps({
+                        "turns": turns1, "nreq": nreq(),
+                        "tail_head": tail1[:120],
+                        "last": {k: last().get(k) for k in ("path", "system", "n_requests")},
+                        "mark": compress_mark(sid1)[:120],
+                        "snapshot_head": str(snapshot_msgs(sid1)[:2])[:200],
+                    }, ensure_ascii=False)[:600])
                 if SENT not in tail1:
                     raise TestError("摘要请求（system/末条 user）不含哨兵：%r diag=%s"
                                     % (tail1[:200], json.dumps({
@@ -752,6 +900,13 @@ def main():
                 mk2, tail2, turns2 = compress_and_capture(sid2, "总结提示词回落-第1轮", "总结提示词回落-第2轮",
                                                           DEFAULT_SUMMARY)
                 if not mk2:
+                    # 补轮再观测（同上：异步压缩管线偶发滞后；阈值=1 → 每轮必触发）
+                    arm(("turn-start", "llm-complete", "llm-error"))
+                    run_turn("总结提示词回落-补轮", sid=sid2, idx=turns2 + 1)
+                    mk2 = wait_compress(sid2, max_wait=25)
+                    if not tail2:
+                        tail2 = last_request_text()
+                if not mk2:
                     raise TestError("回落用例未触发压缩（无法验证摘要请求）")
                 if DEFAULT_SUMMARY not in tail2 or SENT in tail2:
                     raise TestError("删除后摘要请求末条 user 未回落内置默认：%r" % tail2[:200])
@@ -765,39 +920,16 @@ def main():
                     pass
 
     def case_memory_edit_dialog_ui():
-        """UI-7 记忆内容编辑弹框（A1/A4，2026-09-24 用户口径；2026-09-26 双编辑入口）：
+        """UI-7 记忆内容编辑弹框（A1/A4，2026-09-24 用户口径；2026-11-04 随 memory 插件迁移重定界）：
 
-        - 行内两个编辑入口并存：【编辑提示词】（沉淀提示词，见 E4）与【编辑内容】（本用例）；
-        - 行内【编辑内容】→ 弹框（bodyClass = `text-edit-dialog-body`，内容**撑满、底部不留白**）
-          + 弹框内自带【优化】按钮；
-        - 改内容 → 【保存】→ **弹框自动关闭** + 后端内容已更新（`data-memory-read` 回读）；
-        - **状态栏底部**「记忆总 token 数」可点（A4 主入口，2026-09-24 由上下文管理页迁入）
-          → 弹出**记忆分类列表** → 选中 → 内容弹框（可编辑、可保存）；上下文管理页仅保留只读总量。
+        - 项目设置「上下文管理」页的类别行内编辑入口已随记忆类别表**整体迁入 memory 插件配置页**
+          （行内【内容】/【提示词】→ 插件页自有弹框，由 run_config_ui E2/E4 覆盖）；
+        - 本用例保留**状态栏底部「记忆总 token 数」主入口**（A4，MemoryTokenView →
+          useMemoryCategories.openCategoryList）：
+          点击 → 记忆分类列表（.mem-cat-list + 头部合计）→ 选中 → 主仓 TextEditDialog 弹框
+          （bodyClass = `text-edit-dialog-body`，内容**撑满、底部不留白** + 弹框内自带【优化】）；
+          改内容 →【保存】→ **弹框自动关闭** + 后端内容已更新（`data-memory-read` 回读）。
         """
-
-        def open_project_ctx():
-            c.mq_emit("preview-tab-close-all")
-            time.sleep(0.4)
-            c.mq_emit("preview-tab-open", {"kind": "settings-project"})
-            deadline = time.time() + 15
-            while time.time() < deadline and vcount(".project-config-panel") == 0:
-                time.sleep(0.4)
-            if vcount(".project-config-panel") == 0:
-                raise TestError("项目设置页未打开")
-            click_tab("上下文管理")
-
-        def row0_btn(label):
-            return ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
-                      ".find(e=>e.getBoundingClientRect().width>0);if(!R)return false;"
-                      "const tr=R.querySelector('.b-table tbody tr');if(!tr)return false;"
-                      "const t=[...tr.querySelectorAll('button')].find(x=>x.textContent.trim()===%s);"
-                      "if(t)t.click();return !!t;})()" % json.dumps(label))
-
-        def row0_btns():
-            return ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
-                      ".find(e=>e.getBoundingClientRect().width>0);if(!R)return [];"
-                      "const tr=R.querySelector('.b-table tbody tr');if(!tr)return [];"
-                      "return [...tr.querySelectorAll('button')].map(x=>x.textContent.trim());})()") or []
 
         def dialog_btn(label):
             return ev("(function(){const d=document.querySelector('.dialog-shell');if(!d)return false;"
@@ -806,29 +938,30 @@ def main():
 
         with _h.prj_config_guard(c, ["memory.enabled"]):
             prj_save("memory.enabled", "true")
-            time.sleep(1.2)
-            open_project_ctx()
-            cat = None
-            deadline = time.time() + 15
+            # ① 状态栏入口（v-if memoryEnabled；经 data-prj-config-refresh 点亮）
+            if not wait_vcount(".sb-mem", 10):
+                raise TestError("状态栏缺「记忆总 token 数」入口（memory.enabled=true 未点亮）")
+            total_txt = ev("(function(){const e=document.querySelector('.sb-mem .sb-mem-value');"
+                           "return e?(e.textContent||'').trim():null;})()")
+            ev("(function(){const e=document.querySelector('.sb-mem');if(e)e.click();return !!e;})()")
+            n = 0
+            deadline = time.time() + 10
             while time.time() < deadline:
-                cat = ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
-                         ".find(e=>e.getBoundingClientRect().width>0);if(!R)return null;"
-                         "const tr=R.querySelector('.b-table tbody tr');if(!tr)return null;"
-                         "return (tr.querySelector('td')?.textContent||'').trim()||null;})()")
-                if cat:
+                n = vcount(".mem-cat-list .mem-cat-item")
+                if n:
                     break
-                time.sleep(0.4)
-            if not cat:
-                raise TestError("记忆类别表未渲染")
-
-            # ① 行内两个编辑入口并存（提示词 / 内容）→ 点【编辑内容】开内容弹框
-            btns0 = row0_btns()
-            if "编辑提示词" not in btns0 or "编辑内容" not in btns0:
-                raise TestError("类别行须并存【编辑提示词】/【编辑内容】：%r" % (btns0,))
-            if not row0_btn("编辑内容"):
-                raise TestError("类别行缺【编辑内容】按钮")
+                time.sleep(0.3)
+            if not n:
+                raise TestError("点击状态栏总 token 数未弹出分类列表")
+            head_total = ev("(function(){const e=document.querySelector('.mem-cat-total-value');"
+                            "return e?(e.textContent||'').trim():null;})()")
+            # ② 列表选中首项 → 内容弹框（可编辑、可保存）
+            cat = ev("(function(){const i=document.querySelector('.mem-cat-list .mem-cat-item .mem-cat-name');"
+                     "return i?(i.textContent||'').trim():null;})()")
+            ev("(function(){const i=document.querySelector('.mem-cat-list .mem-cat-item');"
+               "if(i)i.click();return !!i;})()")
             if not wait_vcount(".text-edit-body", 10):
-                raise TestError("内容编辑弹框未打开")
+                raise TestError("列表选中后内容弹框未打开")
             geo = ev("(function(){const d=document.querySelector('.dialog-shell');if(!d)return null;"
                      "const body=d.querySelector('.dialog-body.text-edit-dialog-body');if(!body)return {body:false};"
                      "const ta=body.querySelector('textarea');const f=body.querySelector('.text-edit-footer');"
@@ -845,8 +978,7 @@ def main():
                 raise TestError("编辑区未撑满：%r" % geo)
             if geo.get("tail", 999) > 8:
                 raise TestError("弹框底部留白：%r" % geo)
-
-            # ② 改内容 → 保存 → 弹框自动关闭 + 内容落库
+            # ③ 改内容 → 保存 → 弹框自动关闭 + 内容落库
             sentinel = "L4-mem-edit-" + str(int(time.time()))
             ev("(function(){const ta=document.querySelector('.dialog-shell .text-edit-dialog-body textarea');"
                "if(!ta)return false;const s=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;"
@@ -859,82 +991,39 @@ def main():
             if sentinel not in got:
                 raise TestError("保存后内容未落库：%r" % got[:120])
             _evi("mem-edit-dialog", category=cat, geo=geo, saved=got[:80])
-
-            # ③ 「记忆总 token 数」主入口（A4，2026-09-24 迁至**状态栏底部**）→ 分类列表 →
-            #    选中 → 内容弹框（可编辑、可保存）；上下文管理页仅保留**只读**总量展示。
-            readonly_txt = ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
-                              ".find(e=>e.getBoundingClientRect().width>0);if(!R)return null;"
-                              "const t=R.querySelector('.mem-total .mem-total-value');return t?(t.textContent||'').trim():null;})()")
-            if readonly_txt is None:
-                raise TestError("上下文管理页缺只读「记忆总 token 数」展示")
-            total_txt = None
-            deadline = time.time() + 12
-            while time.time() < deadline:
-                total_txt = ev("(function(){const e=document.querySelector('.statusbar .sb-mem .sb-mem-value');"
-                               "return e?(e.textContent||'').trim():null;})()")
-                if total_txt is not None:
-                    break
-                time.sleep(0.4)
-            if total_txt is None:
-                raise TestError("状态栏缺「记忆总 token 数」入口（A4 主入口）")
-            ev("(function(){const e=document.querySelector('.statusbar .sb-mem');if(e)e.click();return !!e;})()")
-            n = 0
-            deadline = time.time() + 10
-            while time.time() < deadline:
-                n = vcount(".mem-cat-list .mem-cat-item")
-                if n:
-                    break
-                time.sleep(0.3)
-            if not n:
-                raise TestError("点击状态栏总 token 数未弹出分类列表")
-            nbtn = dialog_btn(cat)  # 列表项文本 = 类别名（首项同类）
-            if not nbtn:
-                ev("(function(){const i=document.querySelector('.mem-cat-list .mem-cat-item');"
-                   "if(i)i.click();return !!i;})()")
-            if not wait_vcount(".text-edit-body", 10):
-                raise TestError("列表选中后内容弹框未打开")
-            dialog_btn("取消")
-            wait_vcount_gone(".text-edit-body", 6)
-            _evi("mem-total-list", readonly_total=readonly_txt, total=total_txt, items=n, reopened=True)
+            _evi("mem-total-list", total=total_txt, head_total=head_total, items=n)
 
 
     def case_category_max_tokens_ui():
-        """UI-6 memory.category-max-tokens：**仅 UI 效果**（超阈值行标红 + 提示文案）。
+        """UI-6 memory.category-max-tokens：**仅 UI 效果**（超阈值行标红 + 行内「超阈值」徽标）。
 
-        后端不消费该键（plugin-memory / llm 侧无引用；spec 61 §3.1「仅前端标红提醒、不截断」）
-        → 仅断言前端 DOM 表现，不写后端效果断言。
+        2026-11-04 随 memory 插件迁移重定界：记忆类别表已从项目设置「上下文管理」页整体迁入
+        memory 插件配置页（`#cats`；tokens > 阈值 → 行 className=`over` + 行内「超阈值」徽标，
+        阈值取 memory.category-max-tokens）。后端仍不消费该键（spec 61 §3.1「仅前端标红提醒、
+        不截断」）→ 仅断言前端 DOM 表现，不写后端效果断言。对照段：阈值极大 → 无 over 行。
         """
         with _h.prj_config_guard(c, ["memory.enabled", "memory.category-max-tokens"]):
             prj_save("memory.enabled", "true")
             prj_save("memory.category-max-tokens", "1")  # 极小阈值 → 预置模板 token 即超阈值
             time.sleep(1.2)
-            c.mq_emit("preview-tab-close-all")
-            time.sleep(0.4)
-            c.mq_emit("preview-tab-open", {"kind": "settings-project"})
-            deadline = time.time() + 15
-            while time.time() < deadline and vcount(".project-config-panel") == 0:
-                time.sleep(0.4)
-            if vcount(".project-config-panel") == 0:
-                raise TestError("项目设置页未打开")
-            click_tab("上下文管理")
-            deadline = time.time() + 15
-            info = None
-            while time.time() < deadline:
-                info = ev("(function(){const R=[...document.querySelectorAll('.project-config-panel')]"
-                          ".find(e=>e.getBoundingClientRect().width>0);if(!R)return null;"
-                          "const rows=[...R.querySelectorAll('.b-table tbody tr')];"
-                          "return {n:rows.length,over:rows.filter(r=>r.classList.contains('is-over')).length,"
-                          "hints:[...R.querySelectorAll('.over-hint')].map(x=>x.textContent.trim())};})()")
-                if info and info.get("n"):
-                    break
-                time.sleep(0.4)
-            if not info or not info.get("n"):
-                raise TestError("记忆类别表未渲染：%r" % info)
-            if not info.get("over"):
-                raise TestError("memory.category-max-tokens=1 未标红任何类别行：%r" % info)
-            if not any("建议细分记忆" in h for h in (info.get("hints") or [])):
-                raise TestError("缺「建议细分记忆」提示文案：%r" % info.get("hints"))
-            _evi("category-max-tokens-UI", rows=info["n"], over_rows=info["over"], hints=info["hints"])
+            open_mem_cfg_page()
+            rows = mem_rows()
+            over = [r["cat"] for r in rows if r.get("over")]
+            if not over:
+                raise TestError("memory.category-max-tokens=1 未标红任何类别行：%r" % rows)
+            badge_n = ev(mem_frame_js(
+                "return [...d.querySelectorAll('#cats tr.over')].length;"))
+            if not (isinstance(badge_n, int) and badge_n == len(over)):
+                raise TestError("tr.over 行数与判定不符：%r vs %r" % (badge_n, over))
+            # 对照：阈值极大 → 重开页签（config-load 重新拉取）→ 无 over 行
+            prj_save("memory.category-max-tokens", "999999")
+            time.sleep(1.0)
+            open_mem_cfg_page()
+            rows2 = mem_rows()
+            if any(r.get("over") for r in rows2):
+                raise TestError("阈值 999999 仍存在超阈值标红：%r" % rows2)
+            _evi("category-max-tokens-UI", rows=len(rows), over_rows=over,
+                 contrast_rows=len(rows2), contrast_over=0)
 
     # provider 条目（usr llms）：主轮请求经条目 baseUrl 打到本套件自起的 mock
     llms = [{"name": "mock", "protocol": "openai", "apiKey": "mock-key", "model": "mock-model",

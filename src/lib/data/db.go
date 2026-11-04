@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/lsong98sh/chonkpilot-framework/host/core/paths"
-	"github.com/chonkpilot/chonkpilot-workspace"
+	wslayout "github.com/chonkpilot/chonkpilot-workspace/layout"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -28,7 +28,7 @@ type Layer string
 const (
 	LayerUsr    Layer = "usr"    // 用户（~/.chonkpilot）
 	LayerPrj    Layer = "prj"    // 项目（<workdir>/.chonkpilot，团队共享）
-	LayerPrjUsr Layer = "prjusr" // 项目用户（<workDir>/.chonkpilot/users/<用户名>，本机本项目；保留会话列表等）
+	LayerPrjUsr Layer = "prjusr" // 项目用户（<workDir>/.chonkpilot/users/<用户名>，本机本项目；配置 + 对话目录 + 进度/名册表）
 	LayerDialog Layer = "dialog" // 对话库（SESSION-COMP-1 P0）：一树一库（<prjusr>/dialogs/dialog-<hex(dialog_id)>.db）
 )
 
@@ -111,8 +111,8 @@ var (
 func SetDataHome(usrPath, dataRoot string) {
 	userPathOverride.Store(&usrPath)
 	dataRootOverride.Store(&dataRoot)
-	// prjusr 根的唯一算法在 workspace（PM）；此处只做转发，避免两处口径漂移。
-	workspace.SetUsrRootOverride(dataRoot)
+	// prjusr 根的唯一算法在 workspace/layout（PM）；此处只做转发，避免两处口径漂移。
+	wslayout.SetUsrRootOverride(dataRoot)
 }
 
 // UserPath 返回 usr 层 db 路径：~/.chonkpilot/chonkpilot.db。
@@ -140,9 +140,9 @@ func DataRoot() string {
 }
 
 // UserDirName 返回当前 OS 用户目录名（`C:\Users\13661` → `13661`），用作 `users/<name>`。
-// 唯一实现 = workspace.UserDirName（PM 的物理布局）。
+// 唯一实现 = workspace/layout.UserDirName（PM 的物理布局）。
 func UserDirName() string {
-	return workspace.UserDirName()
+	return wslayout.UserDirName()
 }
 
 // PrjUsrPath 返回某工作目录的 prjusr **数据根目录**（非库文件所在目录）：
@@ -153,8 +153,8 @@ func UserDirName() string {
 // 数据随项目目录走：复制工作目录即分叉全部用户历史（49 DATAROOT-1）。
 // `SetDataHome` 的 dataRoot 覆盖（测试隔离 / 便携部署）优先于 `<workDir>/.chonkpilot`。
 func PrjUsrPath(workDir, dataDir string) string {
-	// 唯一算法 = workspace.LayoutOf（PM）；data 只做转发，避免两处口径漂移。
-	return workspace.LayoutOf(workDir, dataDir).PrjUsrDir
+	// 唯一算法 = workspace/layout.Of（PM）；data 只做转发，避免两处口径漂移。
+	return wslayout.Of(workDir, dataDir).PrjUsrDir
 }
 
 // PrjUsrDBPath 返回某工作目录的 prjusr 主库文件路径：

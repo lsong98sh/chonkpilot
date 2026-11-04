@@ -8,9 +8,11 @@ import { i18n } from './plugins/i18n'
 import { logError } from './api/log'
 import mq, { mqPlugin } from '@ckfw/utils/mq.js'
 import { installGlobalCkMq } from '@ckfw/plugin-ui/ckMq.js'
+import { installGlobalCkStore, ckStore } from './utils/ckStore'
 import { dialog } from '@ckfw/components/dialog/index.js'
 import { setHostDeps } from '@ckfw/host-deps.js'
 import { registerSelectionSubscribers } from './stores/selectionSubscribers'
+import { useSelectionStore } from './stores/selection'
 import { setupLayoutEngine } from '@ckfw/layout/index.js'
 // 业务清单（TOPO-1 §2.22.2「机制在基座、清单在应用」）：视图注册表 / 布局落库 / 新建布局对话框 / 顶栏动作
 import { createViewRegistry } from './layout/views.registry.js'
@@ -42,6 +44,15 @@ app.use(createPinia())
 // 跨 view 共享状态的唯一写入点（UILAYOUT-1 §7 P2②）：订阅既有主题 → 写 selection store。
 // 注册时机 = Pinia 安装后、mount 前（早于任何组件挂载，保证组件首帧即可读到已收敛的状态）。
 registerSelectionSubscribers()
+// CK Store（PLUGIN-LOAD-1 D16）：每窗口一份 getter 仓库；插件 iframe 经 `window.top.ckStore` 读取。
+// 示范条目 = 跨 view 状态（selection store），窗口生命周期内常驻。
+installGlobalCkStore()
+{
+  const selection = useSelectionStore()
+  ckStore.register('workspace.current', () => selection.workDir)
+  ckStore.register('chat.currentSession', () => selection.activeSession.sessionId)
+  ckStore.register('preview.currentFile', () => selection.activeFile.path)
+}
 app.use(mqPlugin)
 // 自由布局容器装配（UILAYOUT-1 §7 P3⑤）：须在 pinia 与 mqPlugin 之后 ——
 // 容器的 mq 订阅会取用 Pinia store，且 v-mq 指令复用宿主已注册的那一个。

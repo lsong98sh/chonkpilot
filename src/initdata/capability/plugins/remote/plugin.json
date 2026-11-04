@@ -1,0 +1,7 @@
+{
+  "id": "remote",
+  "cmd": ["chonkpilot-plugin-remote.exe"],
+  "enabled": true,
+  "name": "远程接入",
+  "icon": "link"
+}

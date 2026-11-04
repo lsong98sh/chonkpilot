@@ -317,7 +317,7 @@ def pick_tool():
     if not names:
         raise TestError("页面无工具行（tools-list 为空？）")
     for n in names:
-        if n.endswith("script_run"):
+        if n.endswith("task_run"):
             return n
     return names[0]
 
@@ -698,7 +698,7 @@ def case_h_touch_files_option():
 
         # 配置链路（缺省 = 打点 → 拨到「不打点」= 偏离缺省 → 必须落库）
         # 口径变更（2026-10-22）：候选工具去掉已删除的 `filesys_run`（改用仍存在的 script_run）。
-        tool = pick_tool_by_suffix("web_fetch") or pick_tool_by_suffix("script_run") or pick_tool()
+        tool = pick_tool_by_suffix("web_fetch") or pick_tool_by_suffix("task_run") or pick_tool()
         r0 = row_of(tool)
         if not r0["touchOn"]:
             raise Pending("选中工具 %s 缺省已「不打点」→ 无法验证「偏离缺省落库」链路" % tool)

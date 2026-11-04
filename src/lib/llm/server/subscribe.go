@@ -25,6 +25,7 @@ func (s *Server) subscribeAll() error {
 		{domainSubject(msgkeys.TopicLlmInboxList), s.onInboxList},
 		{domainSubject(msgkeys.TopicLlmInboxDiscard), s.onInboxDiscard},
 		{domainSubject(msgkeys.TopicLlmInboxPromote), s.onInboxPromote},
+		{domainSubject(msgkeys.TopicLlmInboxRevert), s.onInboxRevert},
 		{domainSubject(msgkeys.TopicLlmCancel), s.onLLMCancel},
 		{domainSubject(msgkeys.TopicAskUserReply), s.onAskUserReply},
 		{domainSubject(msgkeys.TopicTaskStop), s.onTaskStop},
@@ -38,6 +39,8 @@ func (s *Server) subscribeAll() error {
 		{domainSubject(msgkeys.TopicSubchatFinish), s.onSubchatFinish},
 		// 群聊「继续」续期（SUBCHAT-3 阶段 F，61 §4.2/§4.5）：同名单段主题。
 		{domainSubject(msgkeys.TopicSubchatContinue), s.onSubchatContinue},
+		// 在跑轮次的会话清单（2026-11-03，61 §4.2/§4.5）：只读内存快照（读 busy），同名单段主题。
+		{domainSubject(msgkeys.TopicSessionRunningList), s.onSessionRunningList},
 		// 场景向导方法面（2026-10-04）
 		{domainSubject(msgkeys.TopicAgentWizardProbe), s.onAgentWizardProbe},
 		{domainSubject(msgkeys.TopicAgentWizardCompose), s.onAgentWizardCompose},

@@ -44,7 +44,6 @@ const {
   parseFreeDoc,
   toFreeString,
 } = await import('../../../../chonkpilot-framework/host/web/src/layout/persist.js')
-const { EventNames: LfEventNames } = await import('../../../../chonkpilot-framework/host/web/src/layout-free/events/event-names.js')
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = (rel) => readSrc(rel)
@@ -82,6 +81,8 @@ const BAR_VIEWS = [
   'compress-status',
   'lang-switcher',
   'layout-profiles',
+  // PLUGIN-LOAD-1 D17：CK Store 抽屉入口（状态栏右侧内置图标）
+  'ck-store',
 ]
 /** 长任务详情 view（STB-1：preview 功能页；登记进注册表供 open-view 解析）
  *  注：`status-index` 已随 PLUGIN-UI-2 归插件（插件自带 `status` 页）。*/
@@ -235,17 +236,17 @@ test('③ 默认文档：栏 / 自定义工具栏 / 抽屉非空，含编辑器�
     flat.some((it) => it.kind === 'view' && it.viewKey === 'layout-profiles'),
     '默认栏必须含「布局」档案下拉条目（layout-profiles）',
   )
-  // 抽屉示例可开 / 关：含 toggle-drawer 命令
+  // 任务区整块显隐：G-89 起为机制层内部命令（MEMORY-UI-1 同期把「任务详情」按钮改为区域显隐）
   assert.ok(
-    flat.some((it) => it.command?.type === 'publish-mq' && it.command.topic === 'lf-layout-toggle-drawer'),
-    '默认栏必须含抽屉开 / 关条目',
+    flat.some((it) => it.command?.type === 'toggle-area-visible' && it.command.nodeId === 'split_left_bottom'),
+    '默认栏必须含「任务详情（任务区显隐）」条目',
   )
-  // 「发布 MQ 动作」只能引用既有主题：默认文档里的 topic 必须都是既有常量
-  const LfTopics = new Set(Object.values(LfEventNames))
+  // 「发布 MQ 动作」只能引用**既有宿主主题**；G-89 起机制层内部 `lf-*` 主题已全部清退
   const HostTopics = new Set(Object.values(EventNames))
   for (const it of flat) {
     if (it.command?.type !== 'publish-mq') continue
-    assert.ok(LfTopics.has(it.command.topic) || HostTopics.has(it.command.topic), `非既有主题：${it.command.topic}`)
+    assert.ok(!String(it.command.topic).startsWith('lf-'), `不得再引用已清退的机制层主题：${it.command.topic}`)
+    assert.ok(HostTopics.has(it.command.topic), `非既有主题：${it.command.topic}`)
   }
 })
 

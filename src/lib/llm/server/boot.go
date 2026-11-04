@@ -32,12 +32,17 @@ func New(bus mq.Bus, opts Options) *Server {
 	// 额外日志 sink（可选；nil = 仅 stdout，行为同改前）：宿主注入后本包与插件日志同落文件
 	// （GUI = `<dataDir>/logs/gui.log`，见 log.go）。
 	setLogSink(opts.LogWriter)
+	// 实例视图（P5 步骤 1）：宿主可注入与 workspace 共用的同一份；未注入 → 本包自建。
+	im := opts.InstanceManager
+	if im == nil {
+		im = instance.New(bus)
+	}
 	s := &Server{
 		bus:             bus,
 		opts:            opts,
 		rt:              router.New(router.Config{}),
 		gc:              newGWClient(bus),
-		im:              instance.New(bus),
+		im:              im,
 		engine:          chat.New(chat.Deps{}),
 		turns:           runner.NewRegistry[turnSession](),
 		busy:            runner.NewRegistry[string](),
@@ -120,6 +125,9 @@ func New(bus mq.Bus, opts Options) *Server {
 		} else {
 			s.gw = st.Gateway
 			sink.gw = st.Gateway
+			// C3（2026-11-03）：可写白名单随每次 tools/call 经 `_meta.chonkpilot.sandbox` 下发
+			// （插件 MCP 是共享 http 长连接，装不下按项目变化的白名单）。
+			s.gw.SetSandboxDirsProvider(s.sandboxRulesForGateway)
 		}
 		s.execSink = sink
 	}
@@ -205,7 +213,8 @@ func (s *Server) Start(ctx context.Context) error {
 	logStartupStage("工具定义缓存预热(gc.ListTools)")
 
 	// 内嵌插件加载（gateway/路由/实例视图就绪后按序 Start；全部成功才广播就绪）
-	deps := hook.Deps{Bus: s.bus, Logf: s.pluginLogf, Notify: s.pluginNotify, ToolExec: s.coreToolExec}
+	// 2026-11-02：进程外工具前门（core-mcp-server）已退役 → ToolExec 恒 nil（无进程内 Hook 插件）。
+	deps := hook.Deps{Bus: s.bus, Logf: s.pluginLogf, Notify: s.pluginNotify}
 	for _, p := range s.plugins {
 		if err := p.Start(deps); err != nil {
 			return fmt.Errorf("plugin %s start: %w", p.Name(), err)

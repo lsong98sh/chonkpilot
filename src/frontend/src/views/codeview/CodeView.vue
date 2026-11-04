@@ -187,7 +187,7 @@ import { EventNames } from '../../events/event-names'
 import { GuiInitDataKeys } from '../../events/msgkeys'
 import { useSelectionStore } from '../../stores/selection'
 import { pickAndOpenDir } from '../../layout/workdirActions'
-import PluginPageHost from '../../../packages/plugin-ui/src/PluginPageHost.vue'
+import PluginPageGate from '../../../packages/plugin-ui/src/PluginPageGate.vue'
 import { usePlugins } from '../../../packages/plugin-ui/src/usePlugins.js'
 
 const baseViewerOptions = { preset: [litePreset, officePreset], theme: 'light' }
@@ -300,21 +300,22 @@ function pluginPageKeyOf(kind) {
   return id && page ? { id, page } : null
 }
 function specialComponent(kind) {
-  if (pluginPageKeyOf(kind)) return PluginPageHost
+  // 插件页经承载门挂载（G-107）：entry（视图注册）未就绪时不挂 PluginPageHost，
+  // 避免其 onMounted check() 在 entry='' 下落 idle 态后无人重跑 → 页面永久空白。
+  if (pluginPageKeyOf(kind)) return PluginPageGate
   return specialComponents[kind] || null
 }
 
 // 功能页组件附加 props：项目配置页支持定位到具体页签（innerTab + innerTabNonce）；
-// 插件页传 pluginId/pageId/entry；其它功能页不注入额外属性（避免无谓的透传属性落到根节点）。
+// 插件页传 pluginId/pageId（entry 由承载门解析，G-107）；其它功能页不注入额外属性。
 function specialProps(tab) {
   if (tab.kind === 'settings-project') {
     return { innerTab: tab.innerTab || '', innerTabNonce: tab.innerTabNonce || 0 }
   }
   const pg = pluginPageKeyOf(tab.kind)
   if (pg) {
-    const v = pluginView(pg.id, pg.page)
-    // PLUGIN-UI-1：插件页资源路由已统一 `/plugins/<id>/…`（不再按插件标志分流）。
-    return { pluginId: pg.id, pageId: pg.page, entry: v?.entry || '', title: v?.title || '' }
+    // entry / title 由 PluginPageGate 内部解析（视图就绪才挂载，G-107）；此处只传定位键。
+    return { pluginId: pg.id, pageId: pg.page }
   }
   return {}
 }

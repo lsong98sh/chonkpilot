@@ -1,13 +1,13 @@
 # TURNRUN-1 执行提示词（新会话首条消息）
 
-> 用法：把本文件全文粘到新会话作为第一条消息。仓库根 = `e:\BizWorks\chonkpilot`；同级仓 = `e:\BizWorks\chonkpilot-chat`、`e:\BizWorks\chonkpilot-session`、`e:\BizWorks\chonkpilot-router`、`e:\BizWorks\chonkpilot-mcp-gateway`。
+> 用法：把本文件全文粘到新会话作为第一条消息。仓库根 = `e:\BizWorks\chonkpilot`；同级仓 = `e:\BizWorks\chonkpilot-agent\chat`、`e:\BizWorks\chonkpilot-agent\session`、`e:\BizWorks\chonkpilot-agent\router`、`e:\BizWorks\chonkpilot-agent\gateway`。
 > 本提示词只覆盖**代码改造**；文档已在上一轮收敛完毕，不要重做。
 
 ---
 
 ## 0. 任务
 
-执行 `TURNRUN-1` 的**批次 1–6**：把 `llm/server` 里的轮次调度与输入策略下沉到 `chonkpilot-session`，chat 改为无状态单例，补进程单例，新建共享数据类型仓。
+执行 `TURNRUN-1` 的**批次 1–6**：把 `llm/server` 里的轮次调度与输入策略下沉到 `chonkpilot-agent/session`，chat 改为无状态单例，补进程单例，新建共享数据类型仓。
 **消息面（[61-消息一览](../../docs/spec/60-reference/61-消息一览.md)）零变更**——topic / payload / 字段一个都不许增删改。
 
 ## 1. 开工前必读（唯一口径）
@@ -29,7 +29,7 @@
 5. **单例只做 `CreateMutexW`**（`Local\chonkpilot-desktop`），入口第一件事；不做 UDS 单例、不做 window class 单例；随后**删除 session 文件锁**。
 6. **数据层保持短读短开**，不改常开。
 7. **唯一形态 = desktop**：不要引入 gui / browser / flash / CLI 任何概念或分支。
-8. **共享契约仓** `chonkpilot-llm-types` 第一批只放 6 个纯数据类型：`Message / ToolCall / ToolSpec / ToolResult / CallContext / Usage`；不放 router 的 `Part/Message`，不放 chat 的 `Event / InboxItem / TurnState`。
+8. **共享契约仓** `chonkpilot-agent/types` 第一批只放 6 个纯数据类型：`Message / ToolCall / ToolSpec / ToolResult / CallContext / Usage`；不放 router 的 `Part/Message`，不放 chat 的 `Event / InboxItem / TurnState`。
 
 ## 3. 已完成（不要重做）
 
@@ -55,13 +55,13 @@
 
 ---
 
-### 批次 2 · 新建 `chonkpilot-llm-types`
+### 批次 2 · 新建 `chonkpilot-agent/types`
 
 **改动**
-- 新仓 `e:\BizWorks\chonkpilot-llm-types`，module 名与现有仓风格一致；只依赖 stdlib。
-- 首批 6 个结构体，字段与现有 JSON tag **逐字一致**（以 `chonkpilot-chat/types.go` 为源）。
-- `chonkpilot-chat`、`chonkpilot-session` 内改为**类型别名过渡**（`type Message = llmtypes.Message`）；**不动 router**（它的 `Message{Content []Part}` 是另一层块模型）。
-- `chonkpilot-session/deps_test.go`：白名单改为 `stdlib + chonkpilot-llm-types`；黑名单保持 `data / llm / gui / mq / msgkeys / router / mcp-gateway`。
+- 新仓 `e:\BizWorks\chonkpilot-agent\types`，module 名与现有仓风格一致；只依赖 stdlib。
+- 首批 6 个结构体，字段与现有 JSON tag **逐字一致**（以 `chonkpilot-agent/chat/src/types.go` 为源）。
+- `chonkpilot-agent/chat`、`chonkpilot-agent/session` 内改为**类型别名过渡**（`type Message = llmtypes.Message`）；**不动 router**（它的 `Message{Content []Part}` 是另一层块模型）。
+- `chonkpilot-agent/session/src/deps_test.go`：白名单改为 `stdlib + chonkpilot-agent/types`；黑名单保持 `data / llm / gui / mq / msgkeys / router / mcp-gateway`。
 
 **验收**
 - 现有键集断言全绿（`assertKeys` / `v2contract_fixture` / `chatadapter_test`）。
@@ -72,7 +72,7 @@
 
 ### 批次 3 · chat 身份外提（不改单例）
 
-**改动（`chonkpilot-chat`）**
+**改动（`chonkpilot-agent/chat`）**
 - `Deps` 去掉 `InstanceID / SessionID`；新增 `TurnParams{ InstanceID, SessionID, TurnID string; Deps }`。
 - `RunTurn(ctx context.Context, p TurnParams) (TurnResult, error)`；`turn` 结构持有 `p` 与全部可变状态（`state / heldResults / heldInserts / resumeNotes / seq`）。
 - 更新测试构造点（约 24 处）。
@@ -88,7 +88,7 @@
 ### 批次 4 · `session/inbox` 策略下沉
 
 **改动**
-- 新包 `chonkpilot-session/inbox`（纯函数 + 状态快照入参）：`Insertable(frameOpen bool, depth int) bool`、`Classify(input) (insert | next_turn)`、`Degrade(item)`、`Promote(item)`、`MaxDepth`。
+- 新包 `chonkpilot-agent/session/src/inbox`（纯函数 + 状态快照入参）：`Insertable(frameOpen bool, depth int) bool`、`Classify(input) (insert | next_turn)`、`Degrade(item)`、`Promote(item)`、`MaxDepth`。
 - `src/lib/llm/server/turn.go` 的 `insertable()`（约 1170 行）、`engine_turn.go` 的 `engineRouteInsert`（约 240–273 行）、`inbox.go` 的 `onInboxAdd / promote / discarded`（约 183–242、313–360、396–400 行）改为**调用该包**，行为零变更。
 - `inbox` 落库仍走 `TurnStore` 端口（`ListBySession / Add / UpdateStatus / Promote / Lookup / CommitInbox`）。
 
@@ -100,7 +100,7 @@
 ### 批次 5 · `session/runner` 下沉（核心）
 
 **改动**
-- 新包 `chonkpilot-session/runner`：
+- 新包 `chonkpilot-agent/session/src/runner`：
   - `TurnRequest{ InstanceID, SessionID, TurnID, LLMSpec, RuntimeConfig, ToolList }`（**配置/工具在轮开始时快照**）；
   - `Hooks{ Store, Events, Tools, Inbox }`；
   - `TurnExecutor interface { RunTurn(ctx, TurnRequest, Hooks) (TurnResult, error) }`；
@@ -118,7 +118,7 @@
 ### 批次 6 · chat `Engine` 单例化
 
 **改动**
-- `chonkpilot-chat`：`Engine` 只保留 `logger / clock`；`RunTurn` 内部创建 `turn`；`New()` 不再需要 per-turn 参数。
+- `chonkpilot-agent/chat`：`Engine` 只保留 `logger / clock`；`RunTurn` 内部创建 `turn`；`New()` 不再需要 per-turn 参数。
 - 宿主侧持有单例 `Engine`，每次传 `TurnParams`。
 
 **验收**
@@ -160,10 +160,10 @@
 | `src/lib/llm/server/inbox.go` ~183–242 / 313–360 / 396–400 | inbox 分类 / 提升 / 降级 |
 | `src/lib/llm/server/finish.go` ~114 | `consumeNextTurn` 起新一轮 |
 | `src/lib/llm/server/groupchat_sched.go` / `subchat.go` ~164–194 / `nextrun.go` | 长程 M3，本任务不动 |
-| `chonkpilot-chat/engine.go` ~78–147 / 836–864 | `Deps / Runtime / New` 与插入帧 |
-| `chonkpilot-chat/lifecycle.go` ~101–129 | `StepRequest` 与 6 个 Hook |
-| `chonkpilot-session/types.go` ~24–34 / `compose.go` ~51 | 现有 3 行 chat 类型别名 |
-| `chonkpilot-session/deps_test.go` ~17–23 / 77–85 | 依赖白名单 / 黑名单 |
+| `chonkpilot-agent/chat/src/engine.go` ~78–147 / 836–864 | `Deps / Runtime / New` 与插入帧 |
+| `chonkpilot-agent/chat/src/lifecycle.go` ~101–129 | `StepRequest` 与 6 个 Hook |
+| `chonkpilot-agent/session/src/types.go` ~24–34 / `compose.go` ~51 | 现有 3 行 chat 类型别名 |
+| `chonkpilot-agent/session/src/deps_test.go` ~17–23 / 77–85 | 依赖白名单 / 黑名单 |
 
 ## 8. 验收命令（每批至少跑对应项）
 
@@ -174,8 +174,8 @@
 # 单元测试（按仓）
 cd e:\BizWorks\chonkpilot\src\lib\llm; go test -race ./...
 cd e:\BizWorks\chonkpilot\src\lib\gui; go test -race ./...
-cd e:\BizWorks\chonkpilot-chat;     go test -race ./...
-cd e:\BizWorks\chonkpilot-session;  go test -race ./...
+cd e:\BizWorks\chonkpilot-agent\chat;     go test -race ./...
+cd e:\BizWorks\chonkpilot-agent\session;  go test -race ./...
 
 # L4 系统测试（MQ 驱动）
 python e:\BizWorks\chonkpilot\src\test\chonkpilot-gui\systest\run_all.py

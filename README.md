@@ -21,7 +21,7 @@ chonkpilot.exe（WebView2 宿主 + 前端 dist 内嵌；壳 = src/desktop，实�
 | **desktop（唯一）** | `dist/desktop/chonkpilot.exe` | WebView2 宿主，内嵌 server→persist→filesys、gateway(内嵌 mcp-server) 与插件；前端 dist 经 go:embed。**双击 = 启动常驻 Server**（日志窗口隐藏）→ 打开最近项目主窗口；托盘可显示日志 / 打开项目 / 退出 |
 | ~~CLI 单体~~ | ~~`chonkpilot-cli.exe`~~ | 已删除（2026-10-21） |
 | ~~gui（GUI 客户端 + 独立 server）~~ | ~~`chonkpilot-gui-client.exe` / `chonkpilot-server.exe`~~ | 已删除（2026-10-22） |
-| ~~flash 薄壳 / browser~~ | ~~`chonkpilot-flash.exe` / `dist/server/www/`~~ | 已删除（2026-10-22；H5 APP 将来以外部 WebView 壳接入，见 [26](docs/spec/10-architecture/26-h5-app.md)） |
+| ~~flash 薄壳 / browser~~ | ~~`chonkpilot-flash.exe` / `dist/server/www/`~~ | 已删除（2026-10-22；远程访问改由 Remote 插件 + Remote Server + H5 提供，见 [26](docs/spec/10-architecture/26-remote.md)） |
 | **协议外壳** | `dist/other/chonkpilot-mcp-server.exe` · `chonkpilot-mcp-gateway.exe` | 独立 MCP 契约服务 / 网关聚合，两 exe 同目录共用 `capability/` |
 
 运行时形态标识：`window.__ck.form` = **`desktop`**（唯一取值；`gui` / `browser` 已删除，见 [61 §0 订正块](docs/spec/60-reference/61-消息一览.md)）。

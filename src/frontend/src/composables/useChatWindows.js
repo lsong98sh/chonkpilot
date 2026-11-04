@@ -1,9 +1,10 @@
 /**
  * useChatWindows —— 纯对话窗口（多窗口）前端唯一接线层（24-多窗口模型设计方案 §6.4 T-1…T-5）。
  *
- * 消息面（61 §1；**payload 零新增字段**）：
+ * 消息面（61 §1；G-105 起载荷 = `{session_id, dialog_id?}`，dialog_id 可选）：
  *   - `gui.window.list {}` → `{windows:[{window_id, session_id}]}`（**只含对话窗口**）；
- *   - `gui.window.open-chat {session_id}` → `{ok, window_id, activated}`（**幂等**：已开即激活）；
+ *   - `gui.window.open-chat {session_id, dialog_id?}` → `{ok, window_id, activated}`（**幂等**：已开即激活；
+ *     带 `dialog_id` → 宿主直开该 dialog，窗口 URL 携带 `dialog-id`，前端免反查）；
  *   - `gui.window.closed {window_id, session_id}`（宿主下行）→ 解除本地「已打开」态。
  *
  * 🆕 **窗口额度分两类**（群聊 §9 D28/D30 · N13/N17；阶段 G G3）：**群聊窗口单独计上限 5**，与
@@ -82,11 +83,16 @@ export async function refreshWindows() {
 
 /**
  * 打开/激活纯对话窗口（幂等；`open-chat` 命中已开窗即激活，返回 `activated=true`）。
+ * @param {string} sessionId 目标会话
+ * @param {string} [dialogId] 可选（G-105）：目标 dialog id；带 → 载荷携带 `dialog_id`，
+ *   宿主直开该 dialog（前端窗口免 session→dialog 反查，crontab 等不进顶层列表的会话必需）。
  * @returns {Promise<{ok:boolean, window_id?:string, activated?:boolean}>}
  */
-export async function openChat(sessionId) {
+export async function openChat(sessionId, dialogId = '') {
   if (!sessionId) return { ok: false }
-  const env = await mq.emit(EventNames.guiWindowOpenChat, { session_id: sessionId })
+  const payload = { session_id: sessionId }
+  if (dialogId) payload.dialog_id = dialogId // 空值不落键（向后兼容，61 §1）
+  const env = await mq.emit(EventNames.guiWindowOpenChat, payload)
   const r = (env && env.backend && env.backend.result) || {}
   if (r.ok) {
     windows.value = mergeOpenedWindow(windows.value, {
@@ -114,9 +120,9 @@ export async function openNewChatWindow() {
   return openChat(sid)
 }
 
-/** T-3 / T-4：对**已有会话**开窗（已开 → 激活，不新建）。 */
-export function openSessionChatWindow(sessionId) {
-  return openChat(sessionId)
+/** T-3 / T-4：对**已有会话**开窗（已开 → 激活，不新建）。dialogId 可选（G-105 直开）。 */
+export function openSessionChatWindow(sessionId, dialogId = '') {
+  return openChat(sessionId, dialogId)
 }
 
 /**

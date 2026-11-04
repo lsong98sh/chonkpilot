@@ -2,7 +2,7 @@
 
 > 状态：✅ 与代码一致
 > 关联：[28-plugins §3.4](28-plugins.md) · [29-codegraph](29-codegraph.md)（同构对照） · [2F-ignore](2F-ignore.md) · [38-检索与索引](../30-function-points/38-检索与索引.md)
-> 代码目录：`chonkpilot-plugins/codegraph/engines/vfts/`（引擎 exe，含 `server/`；2026-10-24 随插件整体迁出主仓）· 主仓已无 `src/plugins/plugin-vfts/`
+> 代码目录：`chonkpilot-plugins/codegraph/src/engines/vfts/`（引擎 exe，含 `server/`；2026-10-24 随插件整体迁出主仓）· 主仓已无 `src/plugins/plugin-vfts/`
 
 ---
 
@@ -27,7 +27,7 @@
 
 > 与主模块 CGO 禁令不冲突：**禁令仅针对 `src/desktop`（`-H windowsgui` 单 exe）**；本组件是独立 console 组件，自由用 CGO（`github.com/zvec-ai/zvec-go`）。
 > **不内嵌引擎**：与 codegraph 同构——引擎外置 exe，插件按需 lazily spawn `--stdio` 子进程。
-> **jieba 基础词典 vendor + 内嵌**：`chonkpilot-plugins/codegraph/engines/vfts/third_party/jieba/{jieba.dict.utf8,hmm_model.utf8}`（约 5.6MB，来源 cppjieba MIT，经 `github.com/yanyiwu/gojieba@v1.4.0` 取得；LICENSE 见同目录 `LICENSE.cppjieba`）经 `//go:embed` **内嵌进引擎 exe**（`third_party/jieba/dict.go`），**产物不新增词典文件**；运行时首次初始化 zvec 前物化到**系统级**缓存目录。**二进制词典不得用文本工具编辑**。
+> **jieba 基础词典 vendor + 内嵌**：`chonkpilot-plugins/codegraph/src/engines/vfts/third_party/jieba/{jieba.dict.utf8,hmm_model.utf8}`（约 5.6MB，来源 cppjieba MIT，经 `github.com/yanyiwu/gojieba@v1.4.0` 取得；LICENSE 见同目录 `LICENSE.cppjieba`）经 `//go:embed` **内嵌进引擎 exe**（`third_party/jieba/dict.go`），**产物不新增词典文件**；运行时首次初始化 zvec 前物化到**系统级**缓存目录。**二进制词典不得用文本工具编辑**。
 
 ---
 
@@ -62,7 +62,7 @@
 
 ### 3.3 插件订阅/发布的消息面（[61-消息一览](../60-reference/61-消息一览.md)）
 
-- 订阅：`instance-register` / `instance-heartbeat` / `instance-exit` · `data-prj-config-refresh` · 工具回调 `vfts-tool-call` · **管理面 `vfts.dict.get` / `vfts.dict.set` / `vfts.reindex`**（UI ↔ 插件，点分相对主题、同主题 promise 写回 `v.Result`；插件分别直调引擎 `vfts_dict_get`/`vfts_dict_set` 与调度强制重建）。
+- 订阅：`instance-register` / `instance-heartbeat` / `instance-exit` · `data-prj-config-refresh` · 工具回调 `vfts-tool-call` · **管理面 `vfts.dict.get` / `vfts.dict.set` / `vfts.reindex`**（UI ↔ 插件，点分相对主题、同主题 promise 写回 `v.Result`；插件分别直调引擎 `vfts_dict_get`/`vfts_dict_set` 与调度强制重建）。**〔2026-10-31 G-84〕**：`codegraph` 插件另订阅 `filesys.changed` / `session-complete` → 按 workdir 去抖（5s）全量重建启用引擎；`vfts.reindex` 回执 `{ok,started:true}`（后台去抖重建）。
 - 发布：`mcp-tools-register` / `mcp-tools-unregister`（gateway 方法面）· `data-prj-config-load`/`save`（读写配置键）。**运行态不回写 prj 键**：`vfts.status` 已随 PLUGIN-UI-2（2026-10-28）整体退场，状态经插件动作 `engine-status` / `badge` 现取。**文件清单不经消息面**（2026-10-25：插件自持 `<workdir>/.chonkpilot/vfts/file_list.json`，D-71；原 `data-filelist-*` 三主题已退场）。
 
 ### 3.4 配置键（prj 库）
@@ -76,6 +76,29 @@
 | `plugins.codegraph.vfts.docs` | 是否索引文档类（Office/PDF，需转换服务；默认关） |
 | `plugins.codegraph.vfts.doc-max-mb` | 文档类单文件上限（整数 MB；缺省 50） |
 | `vfts.status` | 引擎状态 JSON 文本（插件回写、UI 只读回显） |
+
+### 3.5 会话内容索引（SESSION-FTS，2026-11-01 新增）
+
+- **定位**：在 vfts 内新增**会话正文 FTS 集合**，与文件集合并列、互不影响（文件全量重建不得清空会话索引）。
+- **存储**：`<workDir>/.chonkpilot/vfts-session/`（`collection/` + `meta.json` + `state.json`）。一条消息 = 一个 doc；对外 id = `s:<session_id>:<message_id>`；**zvec 主键不允许 `:`** → 落盘主键 = `s_<base64url(session_id|message_id)>`（单射，`remove` 仍接受对外 id 并内部转换）；`path` 字段写 `sessions/<session_id>/<message_id>`（复用既有 `path` 子串过滤）；另存 `session_id` / `dialog_id` / `turn_id` / `message_id` / `role` / `ts`（消息创建时间，int64）。
+- **索引范围**：**仅主会话**（`session-complete.parents` 为空且会话行 `parent_id` 为空）；`role ∈ {user, assistant}` 且消息 `type=text`；工具调用 / 工具结果 / 思维链 / system 不入索引。
+- **写入时机**：订阅 `session-complete`（已有主题，**零新增字段**）→ 只取 `session / turn / dialog_id / work_dir` 标识 → 按轮拉正文 → 增量写。一轮结束后一次性写入该轮全部可索引消息。**正文来源 = `data-session-history`（按 `turn_id` 过滤）**：`data-session-load-messages` 返回的 `ChatMsg` 不含 `message_id/created_at/type`，无法满足主键与 `ts` 升序，故统一走 history 页（消息面上不新增任何主题）。
+- **删除收口**：开关关闭 → 清空该 workdir 的会话集合；索引目录丢失/损坏 → 查询遇 `not_initialized` 时**自动后台全量重建**；**没有「会话删除」事件** —— 删除/编辑的回收由下文「后台对账」周期完成（旧 doc 不可达时也能被清掉）。
+- **全量重建**：扫 `dialogs/`（`data-session-list` + `data-session-history` 分页 `before_turn_id`），逐会话重建；`state.json` 记每会话 `indexed_until_turn` 支持**断点续建**；范围 = **当前项目全部会话**（不跨项目）。后台执行、可被新的重建覆盖（不主动清理已删除消息的旧 doc）。
+- **后台对账（D-74，2026-11-04）**：**零新增 MQ 主题** —— 插件内**单协程低优先级**对账回路，插件启动后延迟 3min 首轮、之后每 12min 一轮（常量，不新增配置项）。每轮对每个已登记 workdir（`plugins.codegraph.vfts.sessions` 为开时）用 `data-session-list` / `data-session-history` 与引擎已索引集合比对，**当场修四类差异**：
+  - **漏索引**（数据面有、`state.json` 无游标 / 无指纹）→ 该会话全量补索引；
+  - **内容变更**（指纹不一致 = 正文编辑 / 消息增删）→ 先 `vfts_session_clear{session_id}` 清旧 doc 再全量写入（先删后插，幂等）；
+  - **已删除记录**（引擎有、`data-session-list` 已无）→ `vfts_session_clear{session_id}` 清掉该会话；
+  - **时间**：`state.json` 每会话 `indexedAt`（UnixMilli，UTC 语义）+ `fingerprint`，仅用于日志 / 新鲜度，不参与正确性判定。
+  - **指纹算法**：消息 `message_id` + `role` + 正文 逐行拼接、按行排序后算 **sha256**（Go 标准库），与消息顺序 / 分页无关；一致则**不重建**（只刷新 `indexedAt`）。
+  - **让行（低优先级）**：同一 workdir 单飞；该 workdir 有增量待处理 / 全量重建在跑 / 引擎 `vfts_session_status` 非 `ready` → 本轮跳过；每处理完一个会话 `runtime.Gosched()` + 120ms 让路。
+  - **失败与重启**：失败只记日志 + 进度 `error`（沿用 `sessionProgress`），不阻断增量、不 disable；`state.json` 的游标 / 指纹是唯一权威，插件重启后首轮对账自然覆盖（重建幂等，至多重复一次）。
+  - **通知**：有差异修复时发既有 `tool-notify`（`notice=session-index-reconciled`，非新主题）。
+- **进度与通知**：进度为**插件内存态**（全量重建期间 `state=indexing`），插件动作 `engine-status` / `badge` 的 vfts 段新增 `session{state,doneSessions,totalSessions,doneTurns,totalTurns}`；设置页画进度条；完成/失败发 `tool-notify`（`notice=session-index-done` / `session-index-failed`）。`state.json` 只记 `""/ready/error` + 逐会话游标（`indexed_until_turn` / `fingerprint` / `indexedAt`，后两者供后台对账）。
+- **查询工具**：`vfts_query` 新增可选 `scope`（`file` 默认 \| `session`）+ `session_id?`（缺省 = `_meta.chonkpilot.session`，回退 `top_session`）+ `role?`；`scope=session` 返回 `hits[{session_id, dialog_id, turn_id, message_id, role, ts, snippet, score}]`（**必须带 `snippet` 正文片段**，只回 id 不可用）。
+- **工具表面不带 `workdir`**（修正历史偏差）：`vfts_query` 的 `workdir` 由插件从 `_meta.chonkpilot.work_dir` 注入（gateway `contextmeta.go` 已透传），缺失回退「当前唯一实例」，仍缺失则明确失败；管理工具（`vfts_configure`/`vfts_index`/`vfts_status`）仍带 `workdir`（LLM 不可见）。
+- **配置键**：`plugins.codegraph.vfts.sessions`（`"true"`/`"false"`，缺省关闭）。
+- **UI 入口通道（2026-11-01 E2E 订正）**：会话内查找（`vfts.session.query`）与全量重建（`vfts.session.reindex`）在 codegraph 插件里以 `OnRequest` 注册 → 实际走**插件 UI 动作面**（前端 `mq.emit('plugin-call',{id:'codegraph',method:'rpc',params:{method,params}})` → 宿主 `plugin.ui.rpc` → 插件 `OnRequest` 同名方法）。**总线无同名订阅**（原「点分主题」写法会得到 `null` 应答）。`vfts.reindex` 语义不变（仅文件索引）。
 
 ---
 
@@ -96,9 +119,10 @@ Initialize：
 - **单飞（`recMu`）**：`Initialize` 全程持 `recMu`（与 `Incremental` / `EnsureReady` **共用同一把锁**）——同一 workdir 的「就绪 / 重建 / 增量」串行执行，避免与并发查询的自愈/重建互踩。
 
 - **文件收集（`collectFiles`）分组**：
-  - **非文档类** = 生效 `exts`（配置集或 `defaultExts`），单文件上限 **8MB**（`maxFileBytes`）；二进制（前 8KB 有 NUL）跳过。
+  - **非文档类** = 生效 `exts`（配置集或 `defaultExts`），单文件上限 **8MB**（`maxFileBytes`）；二进制（前 8KB 有 NUL 且非 UTF-16 BOM）跳过。
+  - **编码识别（2026-10-31 起）**：读原始字节后先识别编码并统一转 UTF-8 再切块分词——解码/识别实现 = **`chonkpilot-util/encodingx`（单一实现）**，引擎 `server/charenc.go` 只保留索引侧策略：① UTF-16 LE/BE BOM（`UseBOM` 解码，BOM 不入文本）；② UTF-8 BOM 剥离；③ 严格合法 UTF-8 原样；④ GB18030（含 GBK/GB2312）解码，**仅当结果「像中文」**（`encodingx.LooksLikeChinese`：汉字中命中高频常用字的占比 ≥0.7 且命中数 ≥3）时采纳；⑤ 其余一律保持原字节。**不猜测 Shift-JIS / Big5 / EUC-KR**（与 GBK 字节区间重叠，误码会造出假中文污染检索；需索引时先用 file 域 `file_iconv` 显式转码）。
   - **文档类**（`docExts` = `.docx/.xlsx/.pptx/.pdf`）= **独立一组**，仅当 `docs` 开启时收集，单文件上限 `doc_max_bytes`（默认 50MiB）。**文档类恒从非文档集中剔除**（即便被写进 `plugins.codegraph.vfts.exts`）→ 文档支持只由 `docs` 开关决定。
-  - 排除走 `chonkpilot-plugins/shared/ignore` 的 `ignore.WalkDir`（I/O 外壳；纯解析/匹配内核 = `chonkpilot-util/ignore`，与 codegraph、vfts 插件清单扫描**同一实现**）；规则来源/优先级/语义见 [29 §4.1](29-codegraph.md)。
+  - 排除走 `chonkpilot-util/ignore` 的 `ignore.New(...).WalkDir` / `ignore.WalkDir`（2026-10-31 起内核 + I/O 同包，与 codegraph、vfts 插件清单扫描**同一实现**）；规则来源/优先级/语义见 [29 §4.1](29-codegraph.md)。
 - **FTS 分词器（`tokenizer` = 固定 `jieba`）**：`server/workspace.go` 常量 `tokenizer = "jieba"`；`zvec.NewFTSIndexParams("jieba", ["lowercase"], extra_params)`（`server/store.go` `buildSchema`/`jiebaExtraParams`），`extra_params` = `{"jieba_dict_dir":<系统词典目录>,"user_dict_path":<自定义词文件>,"cut_mode":"search"}`。过滤器 `lowercase`（英文大小写归一；jieba 本身不对 ASCII 归一）。**中文按词切分**（提升中文召回）；实测判红：跨词相邻字串 `文检` **不**命中（`standard` 下会命中）。zvec 另支持 `ngram`/`whitespace` 分词器与 `ascii_folding`/`stemmer` 过滤器，当前**未启用**。
   - **系统级词典（`server/dict.go`，只有系统级一份）**：目录 = `<系统缓存根>/chonkpilot/vfts/jieba`（Windows = `%LocalAppData%\chonkpilot\vfts\jieba`；`os.UserCacheDir()` 不可得 → 系统临时目录）。内容 = **内嵌基础词典**（`jieba.dict.utf8`/`hmm_model.utf8`，首次初始化 zvec 前物化，按大小判等跳过；**只读**） + **自定义词** `user_dict.txt`（每行一词、`#` 注释；由 `vfts_dict_set` 覆写）。引擎初始化时先 `zvec.SetDefaultJiebaDictDir(dir)` 再 `zvec.Initialize`；建集合时再经 `extra_params` 显式下发同一目录。
   - **分词器/词典变更 → 必须重建索引**（分词结果落在索引里）：① 代码侧 `Meta.tokenizer` 与当前常量不一致（`server/workspace.go` `loadMeta`）→ 复位 `state=""`，插件据此走全量重建并换掉旧集合；② 自定义词变更（`vfts.dict.set`）→ 插件对该 workdir 调度强制重建；③ 配置页「重新索引」按钮（`vfts.reindex`）→ 手动全量重建。
@@ -176,8 +200,8 @@ ensureWorkspace(force)：
 
 ## 6. 依赖
 
-- 引擎：官方 `go-sdk` + **`github.com/zvec-ai/zvec-go` v0.7.0**（C-API，需 `zvec_c_api.dll`）+ `chonkpilot-util/ignore`（纯内核）+ `chonkpilot-plugins/shared/ignore`（I/O 外壳）。**CGO 来自 zvec**（见 §2 注）。
-- 插件：主仓 `src/lib/core`（`msgkeys`/`mq`/`winproc`）· `src/lib/plugin-sdk` · `chonkpilot-util` · `chonkpilot-plugins/shared`；实现 = `chonkpilot-plugins/codegraph`，由宿主 `host/mgr` 拉起。**不依赖** mcp-tools / gateway / data（配置键经 persist 消息面读写；清单为本地文件）。
+- 引擎：官方 `go-sdk` + **`github.com/zvec-ai/zvec-go` v0.7.0**（C-API，需 `zvec_c_api.dll`）+ `chonkpilot-util/ignore`（内核 + I/O 同包）。**CGO 来自 zvec**（见 §2 注）。
+- 插件：`chonkpilot-plugin-framework`（SDK）· `chonkpilot-util`；实现 = `chonkpilot-plugins/codegraph`，由宿主 `host/mgr` 拉起。**不依赖** mcp-tools / gateway / data（配置键经 persist 消息面读写；清单为本地文件）。
 - 转换服务：`src/mcps/markitdown`（Python，**外部**，不在编译依赖内；插件只探测其状态文件 + 探活）。
 
 ---
@@ -204,7 +228,7 @@ ensureWorkspace(force)：
 ## 8. 场景与边界
 
 - 未初始化时查询 → `readyGate` 结构化应答（不报协议错）。
-- 非文档单文件 >8MB 跳过；文档类 >`doc_max_bytes` 跳过；二进制跳过。
+- 非文档单文件 >8MB 跳过；文档类 >`doc_max_bytes` 跳过；二进制（前 8KB 有 NUL 且非 UTF-16 BOM）跳过；非中文遗留编码（Shift-JIS/Big5/EUC-KR）不猜测，按原字节索引。
 - 索引可重建（`Initialize` 幂等）；`Incremental` 按文件增量自愈。
 - 文档服务不可用 → 文档类整批跳过（清单同口径移除）；单文件失败 → 仅文件名。
 - 多 workdir 并存 → 引擎子进程仍全局共享（一对多，按工具参数 `workdir` 路由）；工具面差异注册留待 v2。
@@ -217,8 +241,9 @@ ensureWorkspace(force)：
 - ✅ **按文件增量（清单驱动）已落地**：清单 diff（新/跳过/mtime-only/内容变/删除）+ 主键单调递增；全量重建后重建清单。**清单自持**（`<workDir>/.chonkpilot/vfts/file_list.json`，2026-10-25 D-71）。
 - ✅ **文档类转换接入**：`docs`/`doc-max-mb` 配置 + 服务探测（pid 校验 + 探活，30s TTL）+ 转换缓存（键含 mtime/parser_version）+ 降级 + 后启动自动接上（去抖**增量同步 `force=false`**）。
 - ✅ **进度推送 + 空闲回收已落地**：500ms 轮询引擎 `meta.json` → 回写 `vfts.status`（零新增主题）；`sweepIdleClient` 5min 回收共享子进程。
-- ✅ **叠加 gitignore**：`plugins.codegraph.vfts.skip-dirs`/`plugins.codegraph.vfts.stack-gitignore` 原样下发引擎与插件清单扫描，共用 `chonkpilot-util/ignore`（纯内核）+ `plugins/shared/ignore`（外壳）单一实现。
+- ✅ **叠加 gitignore**：`plugins.codegraph.vfts.skip-dirs`/`plugins.codegraph.vfts.stack-gitignore` 原样下发引擎与插件清单扫描，共用 `chonkpilot-util/ignore`（内核 + I/O 同包）单一实现。
 - ✅ **jieba 分词 + 系统级词典 + 重新索引**：分词器固定 `jieba`（+`lowercase`）；基础词典 vendor 内嵌并物化到系统级目录；系统级自定义词查看/编辑（`vfts.dict.get`/`vfts.dict.set`）；配置页「重新索引」按钮（`vfts.reindex`）；分词器/词典变更 → 强制重建。
+- ✅ **编码识别（2026-10-31）**：文本类文件索引前识别编码并转 UTF-8（UTF-16 LE/BE BOM、UTF-8 BOM、GB18030/GBK「像中文」判据）；GBK 中文与 UTF-16 文本由「切出乱码 / 被当二进制跳过」变为可检索（`server/charenc.go`）。
 - ⚠️ **向量语义检索（HNSW）未实现**：阶段 2 后置（见 `server/workspace.go` 包注释）。
 - ⚠️ **多 workdir 差异注册（按 workdir 区分工具名/可见性）留待 v2**：v1 全局仅注册一份（同 codegraph 限制）。
 - ⚠️ **无 L2/L3 专门套件**：仅包内 L1（见 §10）。
@@ -227,14 +252,14 @@ ensureWorkspace(force)：
 
 ## 10. 关联测试
 
-- **引擎**：`chonkpilot-plugins/codegraph/engines/vfts/server/{docs,incremental}_test.go`（文档类独立成组 / 服务不可用整批跳过 / 空 endpoint 清旧值 / 三态开关 / 转换+缓存命中 / 单文件降级 / 缓存键解析器版本失效 / loc 字节偏移映射 / 并发转换全覆盖 / loc 往返；`TestCollectFilesStackGitignore` / `TestIncrementalIndexSmoke` / `TestTokenizerSemanticsJieba` / `TestSystemDictMaterializeAndTools`）。
-- **插件**：`chonkpilot-plugins/codegraph/config_test.go`（历史测试清单：查询工具定义/schema/回复/`strval`/`resolveExe`/空闲回收/进度 JSON/`readEngineProgress`/轮询序列/去抖合并/`onPrjConfigRefresh` 多键合并/`sweepIdleClient`/无心跳超时/显式退出注销/`splitRules`/清单扫描 gitignore 语义/`readIndexConfig`；现实现集中于插件仓）。
+- **引擎**：`chonkpilot-plugins/codegraph/src/engines/vfts/server/{charenc,docs,incremental}_test.go`（编码策略：UTF-8/BOM/UTF-16LE-BE/GBK 转码与 SJIS-Big5-EUC-KR 不猜测（`TestDecodeIndexText`）+ 真索引检索（`TestIndexLegacyEncodedText`）；通用识别/解码/中文判据的单测在 `chonkpilot-util/encodingx`（`TestDecodeAutoAndAutoName` / `TestCandidatesAndConfidence` / `TestLooksLikeChinese` 等）；文档类独立成组 / 服务不可用整批跳过 / 空 endpoint 清旧值 / 三态开关 / 转换+缓存命中 / 单文件降级 / 缓存键解析器版本失效 / loc 字节偏移映射 / 并发转换全覆盖 / loc 往返；`TestCollectFilesStackGitignore` / `TestIncrementalIndexSmoke` / `TestTokenizerSemanticsJieba` / `TestSystemDictMaterializeAndTools`）。
+- **插件**：`chonkpilot-plugins/codegraph/src/config_test.go`（历史测试清单：查询工具定义/schema/回复/`strval`/`resolveExe`/空闲回收/进度 JSON/`readEngineProgress`/轮询序列/去抖合并/`onPrjConfigRefresh` 多键合并/`sweepIdleClient`/无心跳超时/显式退出注销/`splitRules`/清单扫描 gitignore 语义/`readIndexConfig`；现实现集中于插件仓）。
 - **运行（CGO，需 `zvec_c_api.dll`）**：
 
 ```powershell
 $env:GOROOT="e:\GoDev\go1.26"; $env:Path="e:\GoDev\go1.26\bin;"+$env:Path
 $env:GOPROXY="https://goproxy.cn,direct"
-cd ../chonkpilot-plugins/codegraph/engines/vfts ; go test ./server/ -v -count=1
+cd ../chonkpilot-plugins/codegraph/src/engines/vfts ; go test ./server/ -v -count=1
 cd e:\BizWorks\chonkpilot-plugins\codegraph\engines\vfts   ; go test -v -count=1
 ```
 

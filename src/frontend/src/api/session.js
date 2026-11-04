@@ -191,6 +191,13 @@ export function sessionDialogOf(sessionId) {
   return dialogOf(sessionId)
 }
 
+// seedDialog 预置「session → dialog」备忘（G-105，2026-11-03）：chat 窗口经宿主 URL
+// 携带 `dialog-id` 直开时，在首条请求前注入该映射，使全部 sessionReq 自动带正确 dialog
+// （免 dialog_required 自愈的 session→dialog 反查，反查不到会对不进顶层列表的会话自举空库）。
+export function seedDialog(sessionId, dialogId) {
+  rememberDialog(sessionId, dialogId)
+}
+
 // forkSession 派生对话（data-session-fork，61 §3.2；SESSION-COMP-1 P4）：
 // `dialogId` = 源对话（一树一库，必填）；`mode` 缺省 full（整树拷贝 + id 重映射），
 // context = 只建主会话 + 继承源快照（不拷文件）。回带新 `{dialog_id, session_id}`。

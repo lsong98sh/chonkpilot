@@ -74,12 +74,13 @@ func (s *Service) emitSessionTitleChanged(sessionID, title, dialogID string) {
 // SessionList 读顶层会话列表（每对话一行，ID = 主会话 id；按最近活动降序）。
 //
 // 一树一库：列表由 prjusr `dialogs` 目录派生（不为每个对话开库）。
+// G-99：crontab 顶层对话缺省排除；插件配置 `plugins.crontab.show-in-session-list=true` 时一并返回。
 func (s *Service) SessionList(req facade.SessionListRequest) (facade.SessionListResponse, error) {
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SessionListResponse{}, err
 	}
-	list, err := s.sessionListDialogs(prj)
+	list, err := s.sessionListDialogs(prj, s.showCrontabInSessionList())
 	if err != nil {
 		return facade.SessionListResponse{}, err
 	}
@@ -207,7 +208,8 @@ func sessionRowFromEnsure(req facade.SessionEnsureRequest, now string) data.Reco
 	// parent_id 恒写：顶层 = ""（供 sessions_by_top 索引顶层前缀 "\x00" 等值过滤），子会话 = 父 id。
 	// 空串与会话行缺该键在读取侧等价（Sval/str 均得 ""），故返回形状/MQ payload 不变。
 	row := data.Record{
-		"session_id": req.SessionID, "title": req.SessionID, "created_at": now, "updated_at": now,
+		"session_id": req.SessionID, "title": firstNonEmptyStr(req.Title, req.SessionID),
+		"created_at": now, "updated_at": now,
 		"parent_id": req.ParentSessionID,
 	}
 	// 子聊天 / 群聊的固定参数与生命周期（单聊方案 D28，2026-10-15 新增）——
@@ -240,6 +242,10 @@ func sessionRowFromEnsure(req facade.SessionEnsureRequest, now string) data.Reco
 	}
 	if req.Convergence != "" {
 		row["convergence"] = req.Convergence
+	}
+	// 执行主体标识（P4 / C11）：**仅非空才写键** —— 用户会话行形状零变化。
+	if req.Origin != "" {
+		row["origin"] = req.Origin
 	}
 	return row
 }
@@ -416,78 +422,21 @@ func (s *Service) SessionSubChatsAll(req facade.SessionSubChatsAllRequest) (faca
 
 // TurnHistory 读会话历史分页（按 before_turn_id 向前翻页；target_messages/target_bytes 上限，
 // 缺省 50 条 / 200KB）→ 轮次数组 + 消息视图数组 + has_more。
+//
+// P4-2 批次 A（2026-10-31）：分页/选择实现体切到会话组件（`componentTurnHistory`）；
+// 视图整形仍在门面（同一组 kernel helper），输出逐字等价。
 func (s *Service) TurnHistory(req facade.TurnHistoryRequest) (facade.TurnHistoryResponse, error) {
 	if req.SessionID == "" {
 		return facade.TurnHistoryResponse{}, errors.New("session: session_id required")
 	}
-	targetMessages := req.TargetMessages
-	if targetMessages <= 0 {
-		targetMessages = 50
+	if req.DialogID == "" {
+		return facade.TurnHistoryResponse{}, kernel.ErrDialogRequired
 	}
-	targetBytes := req.TargetBytes
-	if targetBytes <= 0 {
-		targetBytes = 200 * 1024
-	}
-	_, db, releaseDB, err := s.openContentDB(req.InstanceID, req.Scope, req.DialogID)
+	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.TurnHistoryResponse{}, err
 	}
-	defer releaseDB()
-	turnRecs, _, err := db.Table("turns").Query(data.Query{
-		Where:   data.Record{"session_id": req.SessionID},
-		OrderBy: "created_at",
-	})
-	if err != nil {
-		return facade.TurnHistoryResponse{}, fmt.Errorf("query turns: %v", err)
-	}
-	// A-39：改「整会话一次性全量读 messages」为**按轮分批读**（每轮 ≤ messagePerTurnCap，索引
-	// messages_by_turn）——只读从最新往回累计到分页目标所需的那几轮，内存有界。turns 已按
-	// session_id 过滤，按轮取到的消息即本会话消息，输出与改前逐字等价（轮内 created_at 升序）。
-	byTurn := make(map[string][]data.Record)
-	var selected []data.Record
-	accMessages, accBytes, hasMore := 0, 0, false
-	skip := req.BeforeTurnID != ""
-	for i := len(turnRecs) - 1; i >= 0; i-- {
-		t := turnRecs[i]
-		if skip {
-			if kernel.TurnIDOf(t) == req.BeforeTurnID {
-				skip = false
-			}
-			continue
-		}
-		if accMessages >= targetMessages || accBytes >= targetBytes {
-			hasMore = true
-			break
-		}
-		tid := kernel.TurnIDOf(t)
-		if _, loaded := byTurn[tid]; !loaded {
-			recs, err := queryTurnMessages(db, tid)
-			if err != nil {
-				return facade.TurnHistoryResponse{}, fmt.Errorf("query messages: %v", err)
-			}
-			byTurn[tid] = recs
-		}
-		cnt, sz := kernel.TurnStatsByMap(byTurn, tid)
-		selected = append(selected, t)
-		accMessages += cnt
-		accBytes += sz
-	}
-	for i, j := 0, len(selected)-1; i < j; i, j = i+1, j-1 {
-		selected[i], selected[j] = selected[j], selected[i]
-	}
-
-	resp := facade.TurnHistoryResponse{Turns: make([]facade.Turn, 0, len(selected)), HasMore: hasMore}
-	turnIDs := make([]string, 0, len(selected))
-	for _, t := range selected {
-		turnIDs = append(turnIDs, kernel.TurnIDOf(t))
-		resp.Turns = append(resp.Turns, wire.TurnFromWire(kernel.RecordView(t, "turn_id")))
-	}
-	for _, tid := range turnIDs {
-		for _, m := range byTurn[tid] {
-			resp.Messages = append(resp.Messages, messageViewToFacade(m, true))
-		}
-	}
-	return resp, nil
+	return s.componentTurnHistory(prj, req)
 }
 
 // TurnEnsure 幂等建轮次（已存在复用，不覆盖）。
@@ -584,120 +533,20 @@ func (s *Service) TurnComplete(req facade.TurnCompleteRequest) (facade.TurnCompl
 
 // TurnCleanupStale 启动/首次使用清理（`data-session-cleanup-stale` 触发点 = 启动/首次 llm-start）：
 //   - 遗留 running 的轮次标 interrupted（上限 500 条/库，返回处理条数）；
-//   - 一并执行 pair 级清理 cleanupStaleToolPairs（残留非终态 tool_pair → interrupted）。
+//   - 一并执行 pair 级清理（残留非终态 tool_pair → interrupted）与终态 inbox TTL。
 //
-// 一树一库：**扫每个对话库**（新布局轮次/收件箱都在对话库）；prjusr 也扫一遍
+// 一树一库：**扫每个对话库**（新布局轮次/收件箱都在对话库）；目录库也扫一遍
 // （存量库遗留行一并收敛）。两者共用同一启动触发点与同一消息（不新增消息主题/payload，
 // 返回仍为 {ok, count}，count = 轮次数）。
+//
+// P4-2 批次 A（2026-10-31）：单库收敛逻辑切到会话组件（`componentCleanupStale`）；
+// 跨库枚举与「打不开即跳过」口径留在门面，行为逐字等价。
 func (s *Service) TurnCleanupStale(req facade.TurnCleanupStaleRequest) (facade.TurnCleanupStaleResponse, error) {
 	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.TurnCleanupStaleResponse{}, err
 	}
-	// prjusr 存量库先扫一遍；再逐对话库扫描（S-2：跨库枚举复用 forEachDialogDB —— 打不开的
-	// 库跳过、不阻断其它对话，与既有一树一库口径一致）。
-	n := s.cleanupStaleIn(prj)
-	if _, err := s.forEachDialogDB(prj, func(_ string, db *data.DB) (bool, error) {
-		n += s.cleanupStaleIn(db)
-		return false, nil
-	}); err != nil && s.Warnf != nil {
-		s.Warnf("session: 枚举对话库失败（stale 清理仅覆盖部分库）: %v", err)
-	}
-	return facade.TurnCleanupStaleResponse{OK: true, Count: n}, nil
-}
-
-// cleanupStaleIn 在单个库内收敛遗留 running 轮次 + 非终态 tool_pair + 过期收件箱项。
-func (s *Service) cleanupStaleIn(db *data.DB) int {
-	recs, _, err := db.Table("turns").Query(data.Query{Where: data.Record{"status": "running"}, Limit: 500})
-	if err != nil {
-		return 0
-	}
-	n := 0
-	for _, r := range recs {
-		id := kernel.TurnIDOf(r)
-		if id == "" {
-			continue
-		}
-		// 单事务 RMW（A-09）；updated_at 用纳秒（A-11）。
-		if err := db.Table("turns").UpdateIn(id, func(rec data.Record) data.Record {
-			rec["status"] = "interrupted"
-			rec["finish_reason"] = "interrupted"
-			rec["updated_at"] = time.Now().UTC().Format(kernel.RFC3339FixedNano)
-			return rec
-		}); err == nil {
-			n++
-		}
-	}
-	s.cleanupStaleToolPairs(db)
-	s.cleanupInboxTTL(db, time.Now().UTC())
-	return n
-}
-
-// cleanupStaleToolPairs pair 级启动清理（35 §附录 S2/S3）：把消息表中遗留的**非终态** tool_pair
-// （role=tool 且 `tool_call_status` ∈ {pending, running, provisional}）标 `interrupted` —— 进程异常/
-// 应用关闭（abort）后该工具结果无法回填，统一收敛为可手动重试的「已中断」（同步工具 S2 可重试、
-// 转后台 S3 不可重试由前端按 Notify 判定）。
-//
-//   - 与轮次清理同触发点（TurnCleanupStale 内调用，`data-session-cleanup-stale`），**不新增消息主题/payload**；
-//   - 只改 DB 状态，**不改历史文本**（result.Content 原样）——LLM 历史拼接口径不变；
-//   - 状态同源：同时更新 `tool_call_status` 列与 content.result.status（存在 result 段时）；
-//   - 上限 500 条/状态；单项失败跳过（启动清理尽力而为，不阻断启动）。
-//   - 状态常量取自 kernel（与 tool_pair 生命周期常量定义处单一来源一致）。
-func (s *Service) cleanupStaleToolPairs(prj *data.DB) {
-	// R7-A-5：`tool_call_status` 无索引，原对 3 个非终态各做一次 Query{Where:{tool_call_status}}
-	// = 3 次全桶扫。改为**单次流式扫描**（Table.ForEach，单事务、不整表物化）按状态分桶（各状态
-	// 上限 500、桶序取前 500，与改前逐条等价），再统一改写；三个状态均攒满即提前结束扫描。
-	const perStatusCap = 500
-	stale := []string{kernel.ToolStatusPending, kernel.ToolStatusRunning, kernel.ToolStatusProvisional}
-	isStale := map[string]bool{}
-	for _, st := range stale {
-		isStale[st] = true
-	}
-	counts := map[string]int{}
-	targets := map[string][]data.Record{}
-	stop := errors.New("cleanup: all statuses capped")
-	// R8-A-5：检查扫描事务错误并留痕（`stop` = 三状态攒满后的正常提前结束，不算错误）；
-	// 启动清理尽力而为，仍不阻断（仅告警）。
-	if err := prj.Table("messages").ForEach(func(_ string, rec data.Record) error {
-		if st := kernel.Sval(rec["tool_call_status"]); isStale[st] && counts[st] < perStatusCap {
-			counts[st]++
-			targets[st] = append(targets[st], rec)
-		}
-		for _, st := range stale {
-			if counts[st] < perStatusCap {
-				return nil
-			}
-		}
-		return stop
-	}); err != nil && !errors.Is(err, stop) && s.Warnf != nil {
-		s.Warnf("session: pair 级启动清理扫描 messages 失败：%v", err)
-	}
-	for _, st := range stale {
-		for _, rec := range targets[st] {
-			key := kernel.Sval(rec[data.KeyField])
-			if key == "" {
-				continue
-			}
-			// 单事务 RMW（A-17）：Query→改→Upsert 跨两事务在并发下会把已回填 completed 的
-			// 消息整行覆盖回 interrupted；收进 UpdateIn 后状态与行内其余字段同事务读改。
-			// 行已消失（并发删除）→ fn 返回 nil 跳过，不重建残行。尽力而为：单项失败静默
-			// 跳过（启动清理不阻断启动，语义与注释一致、不上报）。
-			_ = prj.Table("messages").UpdateIn(key, func(cur data.Record) data.Record {
-				if len(cur) == 0 {
-					return nil
-				}
-				cur["tool_call_status"] = kernel.ToolStatusInterrupted
-				// content.result.status 与状态列同源：存在 result 段才需改（无 result 段时视图回退读状态列）。
-				if tc, ok := kernel.ParseToolContent(kernel.Sval(cur["content"])); ok && tc.Result != nil {
-					tc.Result.Status = kernel.ToolStatusInterrupted
-					if b, err := json.Marshal(tc); err == nil {
-						cur["content"] = string(b)
-					}
-				}
-				return cur
-			})
-		}
-	}
+	return facade.TurnCleanupStaleResponse{OK: true, Count: s.componentCleanupStale(prj)}, nil
 }
 
 // ── message 域 ───────────────────────────────────────────────────
@@ -939,6 +788,11 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 			msgs := append([]data.ChatMsg{}, snap.History...)
 			found := snap.SnapshotTurn == "" // 快照无覆盖轮 → 全部轮次都拼
 			cache := map[string][]data.ChatMsg{}
+			// G-79（2026-10-31）：边界之后被跳过的 interrupted 轮**同步从 turn_tokens 移除**，
+			// 保证「消息 ↔ 轮 token」尾部对齐不错位（否则更早轮的 turn id 会整体偏移一格，
+			// 压缩锚点 LastTurnID / 三段边界随之偏移）。边界之前的残留 interrupted 轮在尾部
+			// 对齐窗口之外，不影响结果。
+			var skippedTurns []string
 			for _, r := range turnRecs {
 				id := kernel.TurnIDOf(r)
 				if id == "" || id == req.ExcludeTurn {
@@ -949,6 +803,7 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 					continue
 				}
 				if kernel.Sval(r["status"]) == "interrupted" {
+					skippedTurns = append(skippedTurns, id)
 					continue // interrupted 轮不进上下文 → 其消息也不必装载（原实现装载后丢弃）
 				}
 				loaded, err := loadTurnMessages(db, cache, id)
@@ -957,7 +812,7 @@ func (s *Service) MessageContext(req facade.MessageContextRequest) (facade.Messa
 				}
 				msgs = append(msgs, loaded...)
 			}
-			return facade.MessageContextResponse{Messages: messagesToFacade(msgs), TurnTokens: turnTokens}, nil
+			return facade.MessageContextResponse{Messages: messagesToFacade(msgs), TurnTokens: turnTokensExcept(turnTokens, skippedTurns)}, nil
 		}
 	}
 
@@ -1034,6 +889,26 @@ func turnTokensOf(recs []data.Record, excludeTurn string) []facade.TurnToken {
 			tt.Brief = &v
 		}
 		out = append(out, tt)
+	}
+	return out
+}
+
+// turnTokensExcept 从伴随数组移除指定 turn id（G-79：与「消息侧跳过的 interrupted 轮」对齐）。
+// drop 为空 → 原样返回（与引入前逐项一致）；否则保序过滤。
+func turnTokensExcept(tokens []facade.TurnToken, drop []string) []facade.TurnToken {
+	if len(drop) == 0 {
+		return tokens
+	}
+	skip := make(map[string]bool, len(drop))
+	for _, id := range drop {
+		skip[id] = true
+	}
+	out := make([]facade.TurnToken, 0, len(tokens))
+	for _, t := range tokens {
+		if skip[t.TurnID] {
+			continue
+		}
+		out = append(out, t)
 	}
 	return out
 }

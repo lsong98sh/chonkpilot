@@ -180,7 +180,8 @@ export const VIEW_DEFINITIONS = [
     defaultWidth: 64,
     defaultHeight: 20,
   },
-  /* 布局档案下拉（UILAYOUT-2 / WIN-026）：切换 / 新建 / 编辑当前 / 恢复初始布局 */
+  /* 布局档案下拉（UILAYOUT-2 / WIN-026）：切换 / 新建 / 编辑当前 / 恢复初始布局
+     defaultWidth = 单个图标按钮的实际占位（过大曾把右区撑超定宽导致条目被裁） */
   {
     key: 'layout-profiles',
     labelKey: 'view.layoutProfiles',
@@ -189,8 +190,20 @@ export const VIEW_DEFINITIONS = [
     mode: 'singleton',
     host: 'bar',
     designable: false,
-    defaultWidth: 120,
+    defaultWidth: 30,
     defaultHeight: 26,
+  },
+  /* CK Store 抽屉（PLUGIN-LOAD-1 D17）：状态栏右侧常驻图标（内置附加条目，不写布局文档） */
+  {
+    key: 'ck-store',
+    labelKey: 'view.ckStore',
+    label: 'CK Store',
+    icon: 'collection',
+    mode: 'singleton',
+    host: 'bar',
+    designable: false,
+    defaultWidth: 24,
+    defaultHeight: 20,
   },
   /* ── 长任务详情页（STB-1）：状态栏条目点击 → `openView('status-*')` → preview 功能页 ──
      数据驱动（真实任务状态），设计态不挂载真实组件（designable:false）。

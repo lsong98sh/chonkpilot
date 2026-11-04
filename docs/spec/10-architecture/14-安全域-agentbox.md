@@ -1,5 +1,13 @@
 # 14 · 安全域（agentbox）
 
+> ✅ **〔订正（2026-11-03，SANDBOX-WRITE-1：写隔离落地）〕**
+> 1. **`security-*` 收敛为「只写白名单」**：写入只写 `{"dir"}`（旧值 `{dir,writable}` 读取时忽略 `writable`、不报错）；语义 = 列出的目录可写（**递归**），**读不受限**（Low IL 只限写）。
+> 2. **能力下沉**：Low IL + Job 实现从 `chonkpilot-agent/sandbox` 迁到 **`chonkpilot-util/sandbox`**（gateway 与插件共用）；`chonkpilot-util/scriptrun.Options` 新增 `Sandbox{Enabled,Writable,Limits}`。
+> 3. **到插件的通道 = `_meta.chonkpilot.sandbox`**（每次 `tools/call` 下发 `{enabled,writable_dirs}`）——**不是 HTTP header**（插件 MCP 是共享 http 长连接、白名单按项目变化）。
+> 4. **三处强制点**：`file_*` **7 个写工具**（`targets[].path|from|to`；越界 = **整次调用拒绝**、未做任何写入）、`task_run`（`scriptrun` + Low IL/Job，执行前对白名单与 `cwd` 打标）、`web_download`（按**最终落盘路径**）。
+> 5. **内置默认可写项**（宿主合并，不落库）：`work_dir` + `<work_dir>/.chonkpilot/tmp`。`.chonkpilot` 数据根**不排除**在可写项之外——数据读写（含建桶）由能力端点提供，插件不直接开库。
+> 6. **未启用**（无该字段 / `enabled=false`）→ 插件**不校验**（保持旧行为）。
+>
 > ⛔ **〔订正（2026-10-21，GATEWAY-2 L7）：`agentbox` 包已删除，本篇正文为历史口径〕** 现行实现 = **gateway 进程级写隔离**：spawn **stdio** 下游（含内置 executor / 第三方 stdio MCP）时以 `src/lib/core/sandbox` 启动子进程 —— **Windows Low Integrity Level 令牌 + Job Object**（进程树 / 内存 / CPU 约束，`KILL_ON_JOB_CLOSE`）。边界：**只限制写**（Low IL 写不了 Medium IL 对象），**读不受限**；**不改任何 DACL**，允许写目录须先 `sandbox.EnsureLowIL(dir)` 打标（`(OI)(CI)L`），**未打标 = fail-closed（只能读）**；**http/sse 下游不做沙箱**。应用层路径校验 / `DenyRead` 黑名单 / `CHONKPILOT_SANDBOX` 注入**全部移除**。配置面仍为 prj `security-*`（`{dir, writable}`）与 usr `tool_sandbox`（单位 = 执行体 exe 基名 / 外部 MCP 名，**仅 stdio**）。遗留：项目 work_dir / temp 默认可写条目 = [41 G-75](../40-roadmap/41-未决项登记.md)（✅ 2026-10-22 已实施：server 侧内存合并默认项 + gateway 按 `SandboxDirs` WritableRoots 打 Low IL 标）。权威口径见 [26 §0](../20-modules/26-mcp-gateway.md) · [18 订正块](18-工具异步超时与取消.md)。
 >
 > 状态：🗑️ **历史（agentbox 已删除）；现行 = 进程级 Low IL + Job（见上）**

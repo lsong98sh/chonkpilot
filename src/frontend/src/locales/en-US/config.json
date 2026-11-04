@@ -113,10 +113,6 @@
     "maxOutputToken": "Max Output Tokens",
     "maxContextToken": "Context Window",
     "maxContextTokenHint": "0 = fallback merge disabled (regular three-tier compression only)",
-    "capabilities": "Model Capabilities",
-    "capReasoning": "Reasoning",
-    "capVision": "Vision",
-    "capabilitiesHint": "Screenshot in chat is enabled only when \"Vision\" (image input) is checked.",
     "thinking": "Thinking Mode",
     "reasoningPlaceholder": "auto",
     "editTitle": "Edit LLM Provider",
@@ -126,6 +122,11 @@
     "empty": "No LLM configured",
     "maxToolIterations": "Max Tool Iterations",
     "maxToolIterationsHint": "Tool loop limit per turn; 0 or empty = 20",
+    "capabilityReasoning": "Reasoning",
+    "capabilityReasoningHint": "0–5, one decimal (step 0.1); 0 = unavailable. In auto mode the default LLM's reasoning tier is the baseline; LLMs within ±0.5 are the same tier and can take over on retryable failures.",
+    "capabilityVision": "Vision",
+    "capabilityVisionHint": "0–5, one decimal (step 0.1); 0 = unavailable. >0 enables chat screenshots, and in auto mode this LLM is preferred for image requests when the default LLM does not support vision.",
+    "capabilityZeroHint": "0 = unavailable",
     "confirmDelete": "Are you sure to delete this LLM?",
     "saved": "LLM configuration saved",
     "namePlaceholder": "e.g. my-openai",
@@ -204,7 +205,7 @@
     "isolateAuto": "Auto (unset, inferred from transport)",
     "isolateAutoSuffix": " (auto)",
     "sandbox": "Sandbox",
-    "sandboxHint": "agentbox restricts the server subprocess file access to the trust dirs (readable/writable, recursive) of the project security page; applies to stdio & spawn only (http/sse point at a fixed-port process not spawned by us — neither isolation nor sandboxing is possible). The sandbox does NOT depend on isolation — no need to enable per-instance isolation first. Unset = no sandbox (default); an empty allow-list means no policy is sent (= none applied, not an all-reject).",
+    "sandboxHint": "agentbox restricts the server subprocess writes to the writable whitelist (recursive) of the project security page (reads are not restricted); applies to stdio & spawn only (http/sse point at a fixed-port process not spawned by us — neither isolation nor sandboxing is possible). The sandbox does NOT depend on isolation — no need to enable per-instance isolation first. Unset = no sandbox (default); an empty allow-list means no policy is sent (= none applied, not an all-reject).",
     "sandboxEmptyHint": "Server-level sandbox: effective only when the switch is on + transport is stdio + the trust-dir list is non-empty; an empty trust-dir config means NO isolation is applied (it is NOT an all-reject) and is independent of per-instance isolation (no need to enable it first); executor-level directory isolation is pending L6 (not applied yet, so empty dirs impose no restriction either).",
     "sandboxStdioOnly": "Only stdio & spawn MCP servers can be sandboxed; http/sse point at a fixed port — neither isolation nor sandboxing is possible",
     "toolSandboxSummary": "Plus {n} sandbox switches (built-in executors / external MCPs)",
@@ -269,7 +270,7 @@
     "checkpointOff": "No checkpoint"
   },
   "toolSandbox": {
-    "pageHint": "User-level config (usr db): the sandbox switch is per spawned execution body — one row per built-in executor exe (core / desktop / browser / dsl) and one row per external MCP entry (stdio & spawn only); when enabled, agentbox restricts its file access to the trust dirs (readable/writable, recursive) of the project security page. Changes are written only when you click Save (Save is disabled when there are no changes). Unset = no isolation.",
+    "pageHint": "User-level config (usr db): the sandbox switch is per spawned execution body — one row per built-in executor exe (core / desktop / browser / dsl) and one row per external MCP entry (stdio & spawn only); when enabled, agentbox restricts its writes to the writable whitelist (recursive) of the project security page (reads are not restricted). Changes are written only when you click Save (Save is disabled when there are no changes). Unset = no isolation.",
     "empty": "No isolatable execution bodies scanned (built-in executors / external MCPs)",
     "execCore": "Core executor",
     "execDesktop": "Desktop executor",
@@ -285,9 +286,9 @@
     "thirdPartyHint": "External MCP sandboxing (stdio & spawn only — subprocesses we launch) is now configured on this page too: one switch per MCP entry. http/sse point at an existing fixed-port process (not spawned by us) — neither isolation nor sandboxing is possible.",
     "serverSummary": "External MCP sandbox: {n} enabled (stdio only)",
     "gotoMcp": "Go to MCP config",
-    "trustDirWarning": "Sandboxing is on but the project trust dirs are empty: stdio upstream MCPs will not have directory isolation applied (process-level sandbox for built-in executors is pending L6). Configure the readable/writable dirs first.",
+    "trustDirWarning": "Sandboxing is on but the project trust dirs are empty: stdio upstream MCPs will not have directory isolation applied (process-level sandbox for built-in executors is pending L6). Configure the writable dirs first.",
     "trustDirWarningRow": "Trust dirs empty → no directory isolation will be applied",
-    "gotoTrustDirs": "Configure readable/writable dirs"
+    "gotoTrustDirs": "Configure writable dirs"
   },
   "tech": {
     "frontend_frameworks": "Frontend Frameworks",

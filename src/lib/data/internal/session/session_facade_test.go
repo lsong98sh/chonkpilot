@@ -16,12 +16,13 @@ import (
 
 // TestCleanupStaleToolPairs 覆盖三种非终态（pending/running/provisional）→ interrupted，
 // 以及 completed 行不被波及。
+//
+// P4-2 批次 A（2026-10-31）：实现唯一 = 会话组件（`component.CleanupStale`），本用例改经
+// `TurnCleanupStale`（启动清理的同一入口）驱动。
 func TestCleanupStaleToolPairs(t *testing.T) {
-	db, err := data.Open(filepath.Join(t.TempDir(), "prjusr.db"))
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	s, scope := newSessionEnv(t)
+	const inst = "ins-cleanup-pairs"
+	_, db := openEnvDialog(t, s, inst, scope)
 
 	tb := db.Table("messages")
 	rows := map[string]data.Record{
@@ -47,8 +48,9 @@ func TestCleanupStaleToolPairs(t *testing.T) {
 		}
 	}
 
-	// R8-A-5：cleanupStaleToolPairs 改为 Service 方法（Warnf 留痕）；空 Warnf = 静默，行为不变。
-	(&Service{Base: kernel.NewBase(nil, kernel.Options{})}).cleanupStaleToolPairs(db)
+	if _, err := s.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: inst, Scope: scope}); err != nil {
+		t.Fatalf("TurnCleanupStale: %v", err)
+	}
 
 	for _, id := range []string{"m1", "m2", "m3"} {
 		var rec data.Record

@@ -2,16 +2,16 @@
 
 > 状态：✅ 与代码一致（2026-10-27 订正：`dsl` 包已随 DSL 退役删除）
 > 关联：[11-MQ与消息](../10-architecture/11-MQ与消息.md)
-> 代码目录（module 名 `chonkpilot-lib`）：`src/lib/core/`（`mq/` `paths/` `winlog/` `winsvc/` `exedir/` `winproc/` `heartbeat/` `lockfile/` `procsingleton/`）
+> 代码目录（module 名 `chonkpilot-lib`）：`src/lib/core/`（`mq/` `paths/` `winlog/` `winsvc/` `exedir/` `winproc/` `heartbeat/` `lockfile/`）；进程单例已迁 `chonkpilot-framework/host/src/singleinstance`（UDS 独占 listen）
 
 ---
 
 ## 1. 职责与边界
 
-- **一句话**：**零本仓库依赖**的公共底座——消息总线、路径解析、Windows 日志/服务、exe 目录、心跳常量、文件锁/进程单例。
+- **一句话**：**零本仓库依赖**的公共底座——消息总线、路径解析、Windows 日志/服务、exe 目录、心跳常量、文件锁。
 - **做**：为所有模块提供通用能力。
 - **不做**：不依赖任何其他 `chonkpilot-*` module（所有模块的依赖终点）。
-- **同层「非 core」lib module（不在本篇包清单内）**：`chonkpilot-router`（**纯 lib**：**无 facade / 无 MQ / 无 DB / 无 exe**；canonical 落 `internal/canon` + 根包以别名再导出，协议适配落 `internal/adaptor/{openai,anthropic,echo}/`）· `chonkpilot-chat`（纯 lib 端口化内核）· `chonkpilot-session`（纯 lib，零 IO）· `chonkpilot-mcp-gateway`（独立仓内核）· `chonkpilot-plugin-framework`（SDK + host runtime）· `chonkpilot-util`（**无状态 utility**：`ignore` 纯内核、`pathx`、`strx`、`textx` 等 19 个子包，仅标准库；见 [75-utility](../70-conventions/75-utility.md)）· `src/lib/assembly`（入口装配器）· `src/lib/task` · `src/lib/data` · `src/lib/filesys` · `src/lib/llm` · `src/lib/mcp-server` · `src/lib/mcp-tools` 等 —— 见 [10 §3 模块依赖矩阵](../10-architecture/10-分层与依赖.md) / [23 §2](../10-architecture/23-工程与部署拓扑.md)。
+- **同层「非 core」lib module（不在本篇包清单内）**：`chonkpilot-agent/router`（**纯 lib**：**无 facade / 无 MQ / 无 DB / 无 exe**；canonical 落 `internal/canon` + 根包以别名再导出，协议适配落 `internal/adaptor/{openai,anthropic,echo}/`）· `chonkpilot-agent/chat`（纯 lib 端口化内核）· `chonkpilot-agent/session`（纯 lib，零 IO）· `chonkpilot-agent/gateway`（独立仓内核）· `chonkpilot-framework/plugin`（SDK + host runtime）· `chonkpilot-util`（**无状态 utility**：`ignore` 纯内核、`pathx`、`strx`、`textx` 等 19 个子包，仅标准库；见 [75-utility](../70-conventions/75-utility.md)）· `src/lib/assembly`（入口装配器）· `src/lib/task` · `src/lib/data` · `src/lib/filesys` · `src/lib/llm` · `src/lib/mcp-server` · `src/lib/mcp-tools` 等 —— 见 [10 §3 模块依赖矩阵](../10-architecture/10-分层与依赖.md) / [23 §2](../10-architecture/23-工程与部署拓扑.md)。
 
 ---
 
@@ -51,7 +51,7 @@
 
 `InvalidPathMessage(raw) string`：路径违规统一消息（单一实现，供各工具复用）。
 
-> `ResolveDir` 语义**不变**：相对路径在宿主目录参数下仍合法。工具（`file_*` / `task_run` / `web_fetch`）的**所有输入/输出文件与目录参数**另受 R-11 约束（须绝对 / `~/` / `!/` 开头，相对路径整体失败），见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8。
+> `ResolveDir` 语义**不变**：相对路径在宿主目录参数下仍合法。工具（`file_*` / `task_run` / `web_download`）的**所有输入/输出文件与目录参数**另受 R-11 约束（须绝对 / `~/` / `!/` 开头，相对路径整体失败），见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8。
 
 ### 3.4 winlog / winsvc / exedir
 
@@ -78,7 +78,7 @@
 
 **无本仓库依赖**（所有模块的依赖终点）。第三方：`golang.org/x/sys`（winlog/winsvc）。
 
-`heartbeat` 的消费方：发布侧 `chonkpilot-plugin-framework/runtime/instance`（`heartbeat_split.go`，**保留既有导出名** `HeartbeatInterval`/`HeartbeatTimeout` 作常量别名，调用方无需改动）· 服务端扫描侧 `src/lib/llm/server`（`sweep_split.go`）· 数据层清理侧 `src/lib/data/persist`（`sweep_split.go`，**const `staleTimeout = heartbeat.Timeout`**）。**上提 lib 的原因**：data 层**不得依赖插件运行时**（分层约束），原先把 30s/90s 就地复制到 data 层；上提后三处引用同一常量，改值只需一处，依赖方向仍合法。
+`heartbeat` 的消费方：发布侧 `chonkpilot-framework/plugin/src/runtime/instance`（`heartbeat_split.go`，**保留既有导出名** `HeartbeatInterval`/`HeartbeatTimeout` 作常量别名，调用方无需改动）· 服务端扫描侧 `src/lib/llm/server`（`sweep_split.go`）· 数据层清理侧 `src/lib/data/persist`（`sweep_split.go`，**const `staleTimeout = heartbeat.Timeout`**）。**上提 lib 的原因**：data 层**不得依赖插件运行时**（分层约束），原先把 30s/90s 就地复制到 data 层；上提后三处引用同一常量，改值只需一处，依赖方向仍合法。
 
 ---
 
@@ -103,10 +103,10 @@
 
 - ✅ **mq v1 `Publish/Subscribe` 兼容层保留、暂不废弃**：生产与测试代码已全部迁至 v2（`Emit`/`On`），仅 `src/lib/mq/{promise_test,prefix_test}.go` 的 v1 自身测试仍使用。
 - 🔵 去中心化 MQ（自研）远期。
-- `winlog`/`winsvc` 使用方：`src/lib/mcp-server`（service）、`src/others/mcp-gateway`（service；内核在独立仓 `chonkpilot-mcp-gateway`）。
+- `winlog`/`winsvc` 使用方：`src/lib/mcp-server`（service）、`src/others/mcp-gateway`（service；内核在独立仓 `chonkpilot-agent/gateway`）。
 
 ---
 
 ## 10. 关联测试
 
-`src/test/chonkpilot-lib/unittest/`（`mq` 前缀/promise、`paths`、`exedir`、`lockfile`、`procsingleton`）。
+`src/test/chonkpilot-lib/unittest/`（`mq` 前缀/promise、`paths`、`exedir`、`lockfile`；进程单例用例在 `chonkpilot-framework` 的 `singleinstance`）。

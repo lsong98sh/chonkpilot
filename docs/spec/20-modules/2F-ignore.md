@@ -1,17 +1,15 @@
-# 2F · gitignore 语义匹配（util 内核 + 插件 I/O 外壳）
+# 2F · gitignore 语义匹配（`chonkpilot-util/ignore`）
 
-> 状态：✅ 与代码一致（2026-10-29 更新：纯内核迁入 `chonkpilot-util/ignore`，主仓 `src/lib/ignore` 已删除）
+> 状态：✅ 与代码一致（2026-10-31 更新：I/O 外壳亦迁入 `chonkpilot-util/ignore`，`plugins/shared` 已整体删除；对外改为**实例 API** `ignore.New(root, opts)`）
 > 关联：[75-utility](../70-conventions/75-utility.md) · [29-codegraph §4.1](29-codegraph.md) · [38-检索与索引](../30-function-points/38-检索与索引.md) · [61-消息一览 §3.6](../60-reference/61-消息一览.md) · [10-分层与依赖](../10-architecture/10-分层与依赖.md)
-> 代码目录：
-> - 纯内核 `chonkpilot-util/ignore/`（module `github.com/lsong98sh/chonkpilot-util/ignore`，无 IO、无状态）
-> - I/O 外壳 `chonkpilot-plugins/shared/ignore/`（module `github.com/lsong98sh/chonkpilot-plugins/shared`，读盘 + 逐级叠加 + WalkDir）
+> 代码目录：`chonkpilot-util/ignore/`（module `github.com/lsong98sh/chonkpilot-util`）：`ignore.go` = 纯内核；`io.go` = I/O 外壳 + `Matcher` 实例
 
 ---
 
 ## 1. 职责与边界
 
-- **纯内核（util/ignore）**：gitignore(5) 的解析与匹配 —— `Parse` / `Match` / `MatchesAny` / `LastMatch` / `Rule.Match` / `Rule.Negate` / `BuiltinRules` / `DefaultRules` / `NormalizeRel` / `AncestorDirs`。只做「文本/路径 → 布尔」，不读盘、不缓存、不依赖业务包。
-- **I/O 外壳（plugins/shared/ignore）**：规则来源叠加与遍历 —— `FileRules` / `GlobalRules` / `ExcludeRules`、逐级 `.gitignore` 装载、`Options`（惰性 `ruleSet` 缓存）、`WalkDir`、`Options.Ignored`、`ConfigOptions`。
+- **纯内核（同包 `ignore.go`）**：gitignore(5) 的解析与匹配 —— `Parse` / `Match` / `MatchesAny` / `LastMatch` / `Rule.Match` / `Rule.Negate` / `BuiltinRules` / `DefaultRules` / `NormalizeRel` / `AncestorDirs`。只做「文本/路径 → 布尔」，不读盘、不缓存、不依赖业务包。
+- **I/O 外壳（同包 `io.go`）**：规则来源叠加与遍历 —— `FileRules` / `GlobalRules` / `ExcludeRules`、逐级 `.gitignore` 装载、`New` / `Matcher`（惰性规则缓存）、`Matcher.Ignored` / `Matcher.WalkDir`、`ConfigOptions`。
 - **做**：codegraph / vfts 两个索引引擎与 vfts 插件清单扫描共用同一套规则语义（纯内核唯一实现，外壳只负责取规则）。
 - **不做**：不查 git 索引（已跟踪文件照样受忽略规则约束）；不解析 `core.excludesFile`（仅 XDG 默认位置）；不要求 workdir 是 git 仓库（勾选即生效）；纯内核不持库、无 MQ、无 exe。
 
@@ -19,14 +17,14 @@
 
 ## 2. 形态与部署
 
-| 项 | 纯内核 | I/O 外壳 |
-|----|--------|----------|
-| 编译形态 | **纯 lib**（`chonkpilot-util/ignore`） | **纯 lib**（`plugins/shared/ignore`） |
-| 运行位置 | 进程内（引擎遍历 / 插件扫描） | 进程内（引擎遍历 / 插件扫描） |
-| 依赖 | **仅标准库** | 标准库 + `chonkpilot-util/ignore`（+ `strlist`） |
-| 并发 | 无状态，天然并发安全 | `Options.rs`（惰性规则集缓存）**非并发安全**：同一 `Options` 的 `Ignored` 只在单 goroutine 内调用（`WalkDir` 各自新建 `ruleSet`，不共享） |
+| 项 | 值 |
+|----|----|
+| 编译形态 | **纯 lib**（`chonkpilot-util/ignore`；纯内核 + I/O 外壳同包） |
+| 运行位置 | 进程内（引擎遍历 / 插件扫描） |
+| 依赖 | 标准库 + `chonkpilot-util/strlist`（用户规则拆分） |
+| 并发 | 纯内核无状态；`Matcher` 内部加锁（`own`/`loaded` 缓存），**同一实例并发安全** |
 
-> 主仓 `src/lib/ignore`（module `chonkpilot-ignore`）已于 2026-10-29 删除；其 8 个 module 的 `require/replace` 同步清理，全仓零引用。
+> 历史：`plugins/shared/ignore`（I/O 外壳）已于 2026-10-31 随 `plugins/shared` 整体删除；主仓 `src/lib/ignore` 已于 2026-10-29 删除，全仓零引用。
 
 ---
 
@@ -49,14 +47,14 @@
 
 | 入口 / API | 输入 | 说明 |
 |------|------|------|
-| `Options{StackGitignore, UserRules, Root}` | 遍历排除配置 | `StackGitignore=false` → 仅「内置强制 + 默认排除 + 用户输入」；`UserRules` = 用户输入规则（最高优先级） |
+| `Options{StackGitignore, UserRules}` | 遍历排除配置 | `StackGitignore=false` → 仅「内置强制 + 默认排除 + 用户输入」；`UserRules` = 用户输入规则（最高优先级） |
+| `New(root, opts) *Matcher` | 规则根 + 配置 | **推荐用法**：创建一次实例后复用（逐级 `.gitignore` 只解析一次，O(paths)） |
+| `(*Matcher).Ignored(rel)` | 相对实例根、`/` 分隔的路径 | `bool`（自身命中 **或**任一祖先目录「目录剪枝」命中） |
+| `(*Matcher).WalkDir(fn)` | 回调 | 深度优先遍历实例根：**跳过被忽略目录（不下降）与文件**，其余交 `fn`；根自身恒以 `rel=""` 调用 |
+| `WalkDir(root, opts, fn)` | 根 + 配置 + 回调 | 一次性实例的便捷入口（等价 `New(root, opts).WalkDir(fn)`） |
 | `ConfigOptions(keys, get, workdir)` | 显式键名 + 配置读取器 + workdir | 构造 `*Options` 与 `enabled`；`workdir` 为空 → error |
 | `FileRules(path, base)` | 文件路径 + 来源目录 | 读取并解析；文件不存在 / 不可读 → `nil`（静默） |
 | `GlobalRules()` / `ExcludeRules(root)` | — / 根目录 | 全局 ignore / `.git/info/exclude` 规则（缺失 → `nil`） |
-| `WalkDir(root, opts, fn)` | 根 + 配置 + 回调 | 深度优先遍历：**跳过被忽略目录（不下降）与文件**，其余交 `fn`；root 自身恒以 `rel=""` 调用 |
-| `(*Options).Ignored(rel)` | 相对 `Root`、`/` 分隔的路径 | `bool`（自身命中 **或**任一祖先目录「目录剪枝」命中） |
-
-外壳同时以薄封装形式保留 `Parse` / `Match` / `BuiltinRules` / `DefaultRules`，语义直接转纯内核。
 
 ### 3.3 引擎配置键（`ConfigOptions`）
 
@@ -104,7 +102,7 @@ decide(rel, isDir)
 
 - `MatchesAny`：forced 任一命中即忽略。
 - `LastMatch`：从后往前取**首个命中**规则 → `!negate`；无命中 → `(false, false)`。
-- `(*Options).Ignored(rel)`：先按 `uignore.AncestorDirs(rel)` 逐层判「目录剪枝」（祖先被排除 → 其后代恒不索引，**不可被后代 `!` 救回**），再判自身（目录性取磁盘真实类型，不存在 → 按文件）。
+- `(*Matcher).Ignored(rel)`：先按 `AncestorDirs(rel)` 逐层判「目录剪枝」（祖先被排除 → 其后代恒不索引，**不可被后代 `!` 救回**），再判自身（目录性取磁盘真实类型，不存在 → 按文件）。
 
 ### 4.3 解析（纯内核 `parseLine` / `compile` / `globSegment`）
 
@@ -131,7 +129,7 @@ Rule.Match(rel, isDir)：dirOnly 且非目录 → false；base 非空 → 仅适
 | `workdir` 不存在 | **不报错**：逐级 `.gitignore` 读取本就静默容忍缺失 → 判定自然降级为「不排除」 |
 | `.gitignore` / 全局 ignore / info/exclude 不可读 | `FileRules` → `nil`（静默，不中断索引） |
 | 单行无效 | `parseLine` 丢弃该行（空行 / 注释 / 未闭合字符类按字面处理） |
-| `Options.Root` 为空 | `rules()` → `nil` → `Ignored` 恒 `false` |
+| `New` 的 root 为空 | `Matcher.Ignored` 恒 `false`（不读 `.gitignore`） |
 | `Ignored` 传入 `""` / `".."` / `"../…"` | 恒 `false`（根自身与越界路径不排除） |
 | `WalkDir` 的 `fn` 收到 err | 原样转交 `fn`（由调用方决定是否中止） |
 
@@ -140,10 +138,10 @@ Rule.Match(rel, isDir)：dirOnly 且非目录 → false；base 非空 → 仅适
 ## 6. 依赖与边界
 
 - **纯内核上游依赖**：仅标准库。
-- **外壳上游依赖**：`chonkpilot-util/ignore`（纯内核）+ `chonkpilot-util/strlist`（用户规则拆分）。
+- **外壳上游依赖**：同包纯内核 + `chonkpilot-util/strlist`（用户规则拆分）。
 - **下游消费者**：
-  - `chonkpilot-plugins/codegraph/engines/treesitter/server`（索引遍历排除）· `chonkpilot-plugins/codegraph`（`skip-dirs` / `stack-gitignore` 解析）；
-  - `chonkpilot-plugins/codegraph/engines/vfts/server`（索引遍历排除）· `chonkpilot-plugins/codegraph`（`vfts.go` / `manifest.go` 清单扫描）。
+  - `chonkpilot-plugins/codegraph/src/engines/treesitter/server`（索引遍历排除）· `chonkpilot-plugins/codegraph`（`skip-dirs` / `stack-gitignore` 解析）；
+  - `chonkpilot-plugins/codegraph/src/engines/vfts/server`（索引遍历排除）· `chonkpilot-plugins/codegraph`（`vfts.go` / `manifest.go` 清单扫描）。
   - ~~`src/lib/data/internal/indexignored`~~（2026-10-25 随 `data-index-ignored` 主题下线删除）。
 - **边界**：**排除判定单一实现** —— 引擎 `WalkDir` 与插件 `file_list.json` 清单两处共用同一 `ruleSet`，故 `Ignored(p) ⇔ WalkDir 会跳过 p`（与 git 的已知差异见 §1）。
 
@@ -151,8 +149,9 @@ Rule.Match(rel, isDir)：dirOnly 且非目录 → false；base 非空 → 仅适
 
 ## 7. 现状与待办
 
-- ✅ 2026-10-29：纯内核迁入 `chonkpilot-util/ignore`；外壳留在 `plugins/shared/ignore`；主仓孤儿 `src/lib/ignore` 删除、go.mod 引用清零。
-- ✅ 已实施：gitignore 语义匹配单一实现；`ConfigOptions` / `Options.Ignored` 供引擎遍历与插件清单扫描（~~数据面 `data-index-ignored`~~ 已于 2026-10-25 下线）。
+- ✅ 2026-10-31：I/O 外壳并入 `chonkpilot-util/ignore`（实例 API `New` / `Matcher`）；`plugins/shared`（含 `ignore` / `pluginhost` / `pluginproto` / `winproc` / `trayconsole` / `indexkind` / `lockfile` / `pluginclient`）整体删除。
+- ✅ 2026-10-29：纯内核迁入 `chonkpilot-util/ignore`；主仓孤儿 `src/lib/ignore` 删除、go.mod 引用清零。
+- ✅ 已实施：gitignore 语义匹配单一实现；`ConfigOptions` / `Matcher.Ignored` 供引擎遍历与插件清单扫描（~~数据面 `data-index-ignored`~~ 已于 2026-10-25 下线）。
 - 已知与 git 的差异（刻意，见 §1）：不查 git 索引；不解析 `core.excludesFile`；不要求 workdir 是 git 仓库。
 - 遗留 / 规划：无。
 
@@ -162,6 +161,6 @@ Rule.Match(rel, isDir)：dirOnly 且非目录 → false；base 非空 → 仅适
 
 **L1 纯内核（`chonkpilot-util/ignore/ignore_test.go`）**：解析与匹配（注释 / 转义 / `*` 与 `?` 不跨 `/` / `**` 三位置 / 字符类 / dirOnly / 锚定 vs 非锚定 / 有序最后一条胜出 / 内置不可反选）、`MatchesAny` / `LastMatch` / `NormalizeRel` / `AncestorDirs`。
 
-**L1 外壳（`chonkpilot-plugins/shared/ignore/ignore_test.go`）**：`WalkDir`（stack 开关 / 父目录剪枝 / info/exclude + 全局 ignore / 用户规则最高优先级）、`ConfigOptions`、`Ignored` 与 `WalkDir` 等价性。
+**L1 外壳（`chonkpilot-util/ignore/io_test.go`）**：`WalkDir`（stack 开关 / 父目录剪枝 / info/exclude + 全局 ignore / 用户规则最高优先级）、`ConfigOptions`、`Matcher` 实例复用、`Ignored` 与 `WalkDir` 等价性。
 
 **间接**：引擎侧经 `codegraph/server` / `vfts/server` 白盒与 L4 `run_index_gate` / `run_project_cfg`；vfts 插件清单扫描经 `run_docs_gate`。

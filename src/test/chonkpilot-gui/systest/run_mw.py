@@ -10,7 +10,7 @@
 
 用例对账（24 §9）：MW-T01…MW-T28 逐条一条一函数、函数名带 MW-Txx；MW-T29 为 2026-09-26
 新增（会话标题变更跨窗口广播，61 §3.2 · G-48 ⑦ / #12）；MW-T30 为 2026-10-28 新增
-（插件实例事件定向投递，61 §7.2 `plugin-ui-event.instance_id` · 49 §2.8）。
+（插件实例事件定向投递，61 §7.2 `plugin-event.instance_id` · 49 §2.8）。
 运行：python src\\test\\chonkpilot-gui\\systest\\run_mw.py（自起自收：独立 work-dir + 独立 HOME）
 """
 
@@ -1018,9 +1018,9 @@ def case_t30():
     **替代口径（写明于 49 §2.8）**：本仓「双主窗」= 两个 GUI 进程 = **两条进程内 MQ 总线**
     （去 NATS 后事件不可跨进程）→ 定向投递只能在**同进程多窗口**内验证。故以
     「主窗 + 两个对话窗」（三个各自独立的 instance id、各自独立测试通道）替代双主窗，
-    断言同为 MQ 级：各窗口 `mq.on('plugin-ui-event')` 的到达集合。
+    断言同为 MQ 级：各窗口 `mq.on('plugin-event')` 的到达集合。
 
-    驱动 = 既有主题 `plugin-ui-event`（61 §7.2：载荷**只增**可选 `instance_id`；插件桥
+    驱动 = 既有主题 `plugin-event`（61 §7.2：载荷**只增**可选 `instance_id`；插件桥
     `mgr.publishUIEvent` 把 `instance_id` 提升到广播**顶层** → 宿主桥
     `acceptEventInstance` 按 instance_id **精确相等**过滤）。**不新增主题/字段。**
     载荷与插件桥产出**同形**：`{id, instance_id?, topic, payload}`。
@@ -1036,15 +1036,15 @@ def case_t30():
         raise TestError("两个对话窗应有各自独立的实例 id: %r / %r" % (i1, i2))
     cm, c1, c2 = cl(""), cl(w1), cl(w2)
     for cc in (cm, c1, c2):
-        cc.mq_on_capture(["plugin-ui-event"])
+        cc.mq_on_capture(["plugin-event"])
 
     # ① 定向给 w1 的实例 → 只有 w1 收到
-    pub("", "plugin-ui-event", {"id": "mw-t30-probe", "instance_id": i1,
+    pub("", "plugin-event", {"id": "mw-t30-probe", "instance_id": i1,
                                 "topic": "mw-t30", "payload": {"seq": "to-w1"}})
-    ev1 = poll(lambda: c1.events_of("plugin-ui-event", clear=False),
+    ev1 = poll(lambda: c1.events_of("plugin-event", clear=False),
                lambda v: bool(v), timeout=15.0)
     if not ev1:
-        raise TestError("目标实例 %s 所在窗口未收到 plugin-ui-event" % i1)
+        raise TestError("目标实例 %s 所在窗口未收到 plugin-event" % i1)
     pl = ev1[0].get("payload") if isinstance(ev1[0], dict) else None
     if isinstance(pl, str):
         try:
@@ -1054,23 +1054,23 @@ def case_t30():
     if not isinstance(pl, dict) or pl.get("instance_id") != i1 or pl.get("id") != "mw-t30-probe":
         raise TestError("定向事件载荷异常: %r" % (ev1[0],))
     time.sleep(1.2)  # 给「若误广播」足够到达其它窗口
-    ev2 = c2.events_of("plugin-ui-event", clear=False)
+    ev2 = c2.events_of("plugin-event", clear=False)
     if ev2:
         raise TestError("非目标窗口（实例 %s）不应收到定向事件: %s" % (i2, ev2))
-    evm = cm.events_of("plugin-ui-event", clear=False)
+    evm = cm.events_of("plugin-event", clear=False)
     if evm:
         raise TestError("主窗（实例 %s）不应收到定向给 %s 的事件: %s" % (inst(""), i1, evm))
 
     # ② 反向对照：定向给 w2 → 只有 w2 收到（证明是按 instance_id 过滤，非「只到第一个窗口」）
     for cc in (cm, c1, c2):
-        cc.events_of("plugin-ui-event", clear=True)
-    pub("", "plugin-ui-event", {"id": "mw-t30-probe", "instance_id": i2,
+        cc.events_of("plugin-event", clear=True)
+    pub("", "plugin-event", {"id": "mw-t30-probe", "instance_id": i2,
                                 "topic": "mw-t30", "payload": {"seq": "to-w2"}})
-    if not poll(lambda: c2.events_of("plugin-ui-event", clear=False),
+    if not poll(lambda: c2.events_of("plugin-event", clear=False),
                 lambda v: bool(v), timeout=15.0):
-        raise TestError("目标实例 %s 所在窗口未收到 plugin-ui-event（反向对照）" % i2)
+        raise TestError("目标实例 %s 所在窗口未收到 plugin-event（反向对照）" % i2)
     time.sleep(1.2)
-    back = c1.events_of("plugin-ui-event", clear=False)
+    back = c1.events_of("plugin-event", clear=False)
     if back:
         raise TestError("反向对照：非目标窗口（实例 %s）不应收到定向事件: %s" % (i1, back))
     close_all_chats()

@@ -157,7 +157,7 @@ func TestServerTopicWhitelistNotNarrowed(t *testing.T) {
 // TestNonWorkDirTopicNotNarrowed：非 workdir 级主题（即便载荷带 work_dir）不做收紧。
 func TestNonWorkDirTopicNotNarrowed(t *testing.T) {
 	p := New()
-	for _, topic := range []string{"task-started", "llm-receive", "plugin-ui-event"} {
+	for _, topic := range []string{"task-started", "llm-receive", "plugin-event"} {
 		evt := dispatch.Event{Topic: topic, Payload: []byte(`{"work_dir":"E:/ws1"}`)}
 		if got := sinkIDs(p.Deliver(evt, twoWorkDirSinks())); !eqIDs(got, "a1", "a2", "b1") {
 			t.Fatalf("%s 非 workdir 级，应全投，实际 %v", topic, got)

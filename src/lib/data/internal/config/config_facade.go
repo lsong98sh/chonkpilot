@@ -319,6 +319,9 @@ func (s *Service) UserConfigSet(req facade.UserConfigSetRequest) (facade.UserCon
 	if err := ValidateUserConfigPayload(req.Entries); err != nil {
 		return facade.UserConfigSetResponse{}, err
 	}
+	// D-65（2026-11-04）：按 `capability{reasoning,vision}` 派生旧 `capabilities` 字符串数组
+	// （旧读侧契约：ChatPanel 截图门控 / configsuggest），写侧单点归一。
+	DeriveLLMCapabilities(req.Entries)
 	if err := saveUserConfig(db, req.Entries); err != nil {
 		return facade.UserConfigSetResponse{}, err
 	}
