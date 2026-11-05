@@ -17,6 +17,25 @@ function optionValue(o) {
   return o == null ? '' : String(o)
 }
 
+/**
+ * 发送 ask-user-reply（Ask 中心与弹窗共用；2026-11-04）。
+ * item 形状兼容两类消费者：弹窗管理项（askId/options/dialogId）与 Ask 中心项
+ * （ask_id/options/dialog_id）。answer = 选中值或自定义文本；多选以「、」拼接。
+ */
+export function sendAskReply(item, answer) {
+  const options = Array.isArray(item.options) ? item.options : []
+  // 命中所选项（按 value 比较，兼容对象选项）→ custom 为空；否则 answer 即自定义文本。
+  const custom = options.some(o => optionValue(o) === answer) ? '' : answer
+  mq.emit(EventNames.askReply, {
+    ask_id: item.askId || item.ask_id || '',
+    answer,
+    custom,
+    // 会话标识（61 §4.2 ask-user-reply.dialog_id，§0.6 必带；AskUser S1-4）：
+    // **原样回带** `session-ask` 下发的同一值（不重算、不编造）。
+    dialog_id: item.dialogId || item.dialog_id || '',
+  })
+}
+
 // 域化（20-gui）：提问由 server `ask-user` 事件承载（AskUserDialog 订阅后
 // enqueue 到本管理器）；回答经 ask-user-reply 事件直达后端（按 ask_id 权威路由）——
 // 已删除 RespondAskUser RPC、前端 deadline 判断与 sendQueue 兜底（过期判断收归后端）。
@@ -95,6 +114,8 @@ class AskUserManager {
       // 提问下发时的 `dialog_id`，作答时**原样回带**（`ask-user-reply.dialog_id`），
       // 「聊一聊」也用它定位 (dialog_id, session)。
       dialogId: data.dialogId || data.dialog_id || '',
+      // 提问背景说明（ask_user.context；Ask 中心详情与回落弹窗共用）。
+      context: data.context || data.ask_context || '',
       // deadline 仅用于 UI 提示（超时后弹窗提示"回复将作为新消息发送"），不做路由判断。
       deadline: data.deadline && data.deadline > 0 ? data.deadline : 0,
       scenarioId: data.scenarioId || data.scenario_id || '',
@@ -135,7 +156,10 @@ class AskUserManager {
       recommended: item.recommended,
       subSessionId: item.subSessionId,
       sessionId: item.sessionId,
+      context: item.context,
       deadline: item.deadline,
+      // 缺省无超时（ask_user timeout 缺省 -1 / 全局未配置）：不进入 busy 态。
+      noTimeout: !(item.deadline > 0),
       // 「聊一聊」出口（AskUser S1-1/§4.3）：**仅主窗口**提供 —— 该动作要在本窗口切到
       // 发起会话、把问题引用放进本窗口输入框；对话窗口（URL `#chat`，会话由 URL 固定绑定，
       // 24 §6.2）不提供。判定复用既有「视图分派」叶子模块（URL 唯一判据，不新造窗口判定）。
@@ -166,7 +190,7 @@ class AskUserManager {
         }
       },
       onCancel: () => {
-        // 取消：以"终止任务待讨论"文案作为回答提交（FP L363）
+        // 取消：以「用户选择了其他，可能需要进一步的信息才能确定」文案作为回答提交（S3 定稿）
         const text = i18n.global.t('chat.ask_user_cancel_answer')
         this.submitAnswer(item, text)
         this.closeAndAdvance(item)
@@ -232,16 +256,7 @@ class AskUserManager {
   // server 按 ask 状态权威路由——活跃回填当前 turn；已超时关闭则转为普通 user 消息（新 turn）。
   // 前端不再判断 deadline、不再 sendQueue 兜底、不再发 askUserQueued。
   submitAnswer(item, answer) {
-    // 命中所选项（按 value 比较，兼容对象选项）→ custom 为空；否则 answer 即自定义文本。
-    const custom = item.options.some(o => optionValue(o) === answer) ? '' : answer
-    mq.emit(EventNames.askReply, {
-      ask_id: item.askId,
-      answer: answer,
-      custom: custom,
-      // 会话标识（61 §4.2 ask-user-reply.dialog_id，§0.6 必带；AskUser S1-4）：
-      // **原样回带** `session-ask` 下发的同一值（不重算、不编造）。
-      dialog_id: item.dialogId || '',
-    })
+    sendAskReply(item, answer)
   }
 
   /**

@@ -1,6 +1,6 @@
 # 26 · Remote 远程接入（Remote 插件 + Remote Server + H5）
 
-> 状态：✅ **真机 E2E 通过（2026-11-01）**：Remote Server + H5 + Remote 插件（真机桌面）端到端联调通过；含共享会话竞争、任务详情、文件浏览/预览、vfts 会话索引联调。假设备端到端与三仓单测另行保留。
+> 状态：⚠️ **部分实现**（2026-11-04 核对：Server / H5 / 插件三处工程、路由与会话/停止/文件/inbox 均存在，Server 与插件有 `*_test.go`；但 **capability 协商未实现**、**反代下 Cookie 不置 Secure**、**工作区关闭不自动回列表**、**H5 E2E 无仓内可复现资产** —— 2026-11-01 只能视为**手工真机联调记录**，不是自动化 E2E 通过）
 > 取代：原 `26-h5-app.md`（H5 初稿）。命名口径统一为 **Remote**（不再使用 Bridge / registry）。
 > 关联：[19-单进程形态与实例隔离](19-单进程形态与实例隔离.md) · [22-实例与会话标识](22-实例与会话标识.md) · [28-plugins](../20-modules/28-plugins.md) · [2C-UI插件](../20-modules/2C-UI插件.md) · [61-消息一览](../60-reference/61-消息一览.md) · [33-对话](../30-function-points/33-对话.md) · [34-任务](../30-function-points/34-任务.md)
 
@@ -21,10 +21,12 @@
 | 概念 | 含义 | 是否必须让用户选 |
 |---|---|---|
 | 设备（device） | 开着 ChonkPilot 的一台电脑（一个 Remote 插件连接） | **默认自动选**（最近在线的一台）；多台时在会话列表顶部提供切换 |
-| 工作区（workspace） | 该电脑上**已打开的项目窗口**（一个 `work_dir` 对应一个顶层 instance） | **默认自动选**（最近使用的）；多项目时同样在顶部切换 |
+| 工作区（workspace） | 该电脑上**已打开的项目窗口**（一个 `work_dir` 对应一个顶层 instance） | **默认自动选**（上次上下文，否则第一个；无「最近使用」排序）；多项目时同样在顶部切换 |
 | 会话（session/dialog） | 工作区里的一条对话 | 用户主动选：列表点选继续，或「＋ 新建聊天」 |
 
 设计原则：**用户第一眼看到的是「会话列表」，不是设备/工作区选择页**。设备与工作区作为「当前上下文」显示在顶部，只有存在多个候选时才出现切换入口。
+
+> **2026-11-04 核对**：设备默认选「最近在线」✅（Server `last_seen DESC`）；工作区**不是「最近使用」** ⚠️ —— H5 取 `me.context.workspace_id`，否则 `workspaces[0]`，无最近使用记录/排序（`SessionListView.vue`）。
 
 ## 3. 拓扑与职责
 
@@ -41,8 +43,9 @@ chonkpilot-plugins/remote/
   client/     # Remote 插件（Go module，产物 chonkpilot-plugin-remote.exe）+ webui/
   server/     # Remote Server（Go module，产物 chonkpilot-remote-server.exe）
   server/web/ # H5（Vue + vite，构建产物 dist 由 server go:embed）
-  doc/
 ```
+
+> 2026-11-04 核对：仓内只有 `build.ps1 / client / dist / server`，**`doc/` 目录不存在**（原树中的 `doc/` 已删除）。
 
 **两处 Web UI 的归属（不要混）**：
 
@@ -59,7 +62,7 @@ chonkpilot-plugins/remote/
 | **Remote Server**（`server/`，产物 `chonkpilot-remote-server.exe`） | 用户 CRUD + 认证；设备绑定与目录；在线状态（心跳 TTL）；WSS 隧道 + H5 下行中转；H5 静态资源托管 | 不存会话 / 消息 / 任务；不调 LLM；不读桌面数据库 |
 | **H5**（`server/web/`，随 Server embed） | 登录 → 会话列表（继续 / 新建 / 搜索 / 筛选）→ 聊天（发送 / 排队中 / 停止 / ask-user / 任务树只读 / **浮动 inbox 图标 + 全量列表页：插话·取消插话·删除·撤回编辑**） | 不做桌面布局、多窗口、配置编辑 |
 
-> 插件 **零框架改造**：现有 `plugin/v1/session.start|send|cancel|list|get|history|content|active`、**`plugin/v1/session.inbox.add|list`**、`plugin/v1/ask.reply`、`plugin/v1/task.tree|tasks|task.stop`、`plugin/v1/file.list|read`、`plugin/v1/instance.resolve` 已覆盖全部所需能力（[capabilities.go](../../../chonkpilot-framework/plugin/src/bridge/capabilities.go)）。
+> 插件 **零框架改造**：现有 `plugin/v1/session.start|send|cancel|list|get|history|content|active`、**`plugin/v1/session.inbox.add|list`**、`plugin/v1/ask.reply`、`plugin/v1/task.tree|tasks|task.stop`、`plugin/v1/file.list|read`、`plugin/v1/instance.resolve` 已覆盖全部所需能力（[capabilities.go](../../../../chonkpilot-framework/plugin/src/bridge/capabilities.go)）。
 
 ## 4. 协议
 
@@ -79,7 +82,7 @@ chonkpilot-plugins/remote/
 
 | 帧 | 方向 | 载荷 |
 |---|---|---|
-| `hello` | 插件 → Server | `{username?, password?, token?, device:{id,name,platform,version}, client_version, protocol, workspaces:[{id,name,path,instance_id}]}`。首连带账号密码；重连带 `token`；`protocol` 用于能力协商（§5.1） |
+| `hello` | 插件 → Server | `{username?, password?, token?, device:{id,name,platform,version}, client_version, protocol, workspaces:[{id,name,path,instance_id}]}`。首连带账号密码；重连带 `token`；`protocol` 用于能力协商（§5.1；**当前仅透传存储，协商未实现** ⚠️） |
 | `hello-ok` | Server → 插件 | `{device_id, token, server_time}`（`token` 供重连；服务端只存哈希） |
 | `workspaces` | 插件 → Server | `{workspaces:[…]}`（实例增删 / 目录变化时全量覆盖） |
 | `call` | Server → 插件 | `{id, workspace_id, method, args}`（`method` = 设备 RPC，见 §4.4） |
@@ -151,6 +154,7 @@ H5 是普通 Vue 应用，只认下面这组端点；**不出现 topic / payload
 | `session-ask` | `ask` | `{ask_id,session_id,turn_id,question,options?,multi?,custom?}` |
 | `task-started` / `-updated` / `-done` | `task.update` | `{task_id,session_id,turn_id,state,tool,kind}` |
 | `tool-notify` | `notice` | `{message,plugin?,kind?}` |
+| `session-inbox-changed` | `inbox.changed` | `{session_id,action,ids?}`（2026-11-04 核对补登） |
 
 > **适配层放在插件**：桌面版本差异（字段增删、能力有无）由各版本的插件吸收；Server 与 H5 保持稳定契约，不随桌面版本改。
 
@@ -185,10 +189,10 @@ H5 是普通 Vue 应用，只认下面这组端点；**不出现 topic / payload
 
 **版本差异处理（A 的必要配套）**：
 
-- 插件 `hello` 上报 `client_version` 与 `protocol`（如 `remote/1`）；Server 存下并随 `/api/devices` 返回。
-- H5 按 `protocol` 做**能力协商**：不支持的入口隐藏（如旧桌面没有 `tasks.tree` 就不显示任务入口），不报错刷屏。
-- Server 对未知 RPC 返回 `method_not_allowed`；对 `protocol` 低于最低支持的设备返回 `unsupported_protocol`，H5 提示「请升级桌面端」。
-- 契约变更只增不改：新增 RPC / 事件对旧插件天然不可用（H5 按能力隐藏）。
+- 插件 `hello` 上报 `client_version` 与 `protocol`（如 `remote/1`）；Server 存下并随 `/api/devices` 返回。✅（仅存储/透传）
+- H5 按 `protocol` 做**能力协商**：不支持的入口隐藏（如旧桌面没有 `tasks.tree` 就不显示任务入口），不报错刷屏。🔵 **未实现（2026-11-04 核对：H5 仅把 `protocol` 存进设备对象，不据其隐藏入口）**
+- Server 对未知 RPC 返回 `method_not_allowed`；对 `protocol` 低于最低支持的设备返回 `unsupported_protocol`，H5 提示「请升级桌面端」。🔵 **未实现（2026-11-04 核对：全仓无 `unsupported_protocol`；Server 只原样透传 `protocol`，无最低版本校验）**
+- 契约变更只增不改：新增 RPC / 事件对旧插件天然不可用（H5 按能力隐藏）。🔵 待协商实现后生效。
 
 > 原生壳（P2）只包一个 URL（Server 的 H5），不另做一套前端。
 
@@ -212,7 +216,7 @@ H5 是普通 Vue 应用，只认下面这组端点；**不出现 topic / payload
  └─ 返回会话列表
 ```
 
-- **默认自动选**「最近在线设备 + 最近使用工作区」；切换只在多设备 / 多工作区时出现。
+- **默认自动选**「最近在线设备 + 上次上下文工作区（否则第一个）」；切换只在多设备 / 多工作区时出现。
 - **新建聊天**：`POST /api/sessions`（可带首条 `text`）→ 插件分配 `session` / `turn` 并起轮；H5 拿到 `{session_id, turn_id}` 进入聊天页。
 - **继续会话**：`GET /api/sessions` 列表项带 `session_id` + `dialog_id` → `GET /api/sessions/{id}/messages` 拉历史。
 - **筛选 / 搜索**：Server 只返回列表，过滤在 H5 本地做（不新增接口）。
@@ -222,7 +226,7 @@ H5 是普通 Vue 应用，只认下面这组端点；**不出现 topic / payload
 
 ### 5.3 事件订阅（H5 只消费产品事件）
 
-H5 消费 `message.delta` · `message.reasoning` · `message.tool` · `turn.start` · `turn.complete` · `ask` · `task.update` · `notice`。
+H5 消费 `message.delta` · `message.reasoning` · `message.tool` · `turn.start` · `turn.complete` · `ask` · `task.update` · `notice` · `inbox.changed`。
 
 > 插件按相对主题订阅 61 事件并**归一**为上述产品事件（§4.4）；Server 只按「设备 + 工作区」过滤转发，不改 `type` / `data`。
 
@@ -232,7 +236,7 @@ H5 消费 `message.delta` · `message.reasoning` · `message.tool` · `turn.star
 |---|---|
 | `users` | `id` · `username`（唯一）· `password_hash` · `role`（admin\|user）· `disabled` · `created_at` |
 | `devices` | `id`（主键）· `user_id` · `name` · `platform` · `version` · `token_hash` · `last_seen` · `created_at` |
-| `h5_sessions` | `id`（Cookie 值哈希）· `user_id` · `device_id?` · `workspace_id?` · `expires_at` |
+| `h5_sessions` | `token_hash`（Cookie 值哈希，主键；2026-11-04 核对，原 `id` 列名已订正） · `user_id` · `device_id?` · `workspace_id?` · `expires_at` |
 | `device_workspaces` | **不落库**，随隧道连接实时上报，断线即清空 |
 
 存储 = **SQLite 单文件**：`<exe 所在目录>\chonkpilot-remote-server.db`（与可执行文件同名；纯 Go 驱动 `modernc.org/sqlite`，无 CGO、无需安装 SQLite）。**无 `-data` 启动参数**，CLI（`user …`）与 `serve` 使用同一路径。
@@ -242,7 +246,7 @@ H5 消费 `message.delta` · `message.reasoning` · `message.tool` · `turn.star
 | 场景 | 行为 |
 |---|---|
 | 插件未连接 / 设备离线 | H5 设备列表标离线；`/api/call` 返回 `503 device_offline`；界面提示「电脑未连接」 |
-| 工作区已关闭（PC 关窗） | 插件 `workspaces` 更新；H5 提示「该工作区已关闭」，回会话列表 |
+| 工作区已关闭（PC 关窗） | 插件 `workspaces` 更新；H5 提示「该工作区未在电脑上打开」，**应**回会话列表。⚠️ **2026-11-04 核对：当前仅通用错误 toast，不自动回列表**（无 Server→H5 的主动工作区关闭事件，只能等下一次 RPC 失败） |
 | PC 在跑、H5 尝试发送 | 入 inbox 排队（`queued:true`，`next_turn`）；H5 显示「已排队 N 条 · 本轮结束后自动发送」，**不插话、不打断**；本轮结束自动起新一轮 |
 | H5 断网 / 切后台 | `EventSource` 自动重连；重连后重拉 `session.list` + `session.history` 对齐 |
 | 同一账号多台手机 | 各自独立绑定；同一事件广播给所有绑定该设备/工作区的 H5 会话 |
@@ -262,7 +266,7 @@ H5 消费 `message.delta` · `message.reasoning` · `message.tool` · `turn.star
 ## 9. 安全
 
 - 插件只**出站**连接；PC 不开放任何入站端口（NAT 友好）。
-- 生产部署必须 TLS（Server 侧反代或内置证书），H5 Cookie 置 `Secure`。
+- 生产部署必须 TLS（Server 侧反代或内置证书），H5 Cookie 置 `Secure`。⚠️ **2026-11-04 核对：实现为 `Secure: r.TLS != nil`（`server/httpapi.go`），nginx/Caddy 终结 TLS 时 `r.TLS == nil` → 不会置 Secure；需识别 `X-Forwarded-Proto` 或显式配置（🔵 待修）**。
 - Server 侧仅中继白名单方法；`args` 不解析、不落日志正文（只记方法名与耗时）。
 - 事件转发按「账号 → 设备 → 工作区」三级归属过滤，禁止跨账号。
 - 登录失败限频（同 IP + 用户名，5 次 / 分钟）。
@@ -273,11 +277,11 @@ H5 消费 `message.delta` · `message.reasoning` · `message.tool` · `turn.star
 |---|---|---|---|
 | S1 | Server：账号 CRUD / 认证 / 设备绑定 / 隧道 / SSE / H5 静态托管 | `chonkpilot-plugins/remote/server` | ✅ 已实现（单测全绿 + 联调） |
 | S2 | 插件：配置页 / 出站连接 / 工作区上报 / 方法转发 / 事件回推 / 状态栏 | `chonkpilot-plugins/remote/client` | ✅ 已实现（单测 + **桌面真机联调通过**） |
-| S3 | H5：登录 / 会话列表（搜索·筛选·新建）/ 聊天 / 任务树 / 文件 | `chonkpilot-plugins/remote/server/web` | ✅ 已实现（假设备 + 真机双端到端通过） |
-| S4 | 构建脚本 + manifest + plugin.ini 登记 | `build-plugins.ps1`、`src/initdata/capability/plugins/remote/`、`chonkpilot-plugins/remote/build.ps1` | ✅ 已实现 |
-| S5 | 测试：Server 单测、插件 L1、H5 端到端 | 各仓 `*_test.go` / `src/test` | ✅ Server / 插件 / H5 / 真机链路均通过 |
+| S3 | H5：登录 / 会话列表（搜索·筛选·新建）/ 聊天 / 任务树 / 文件 | `chonkpilot-plugins/remote/server/web` | ✅ 已实现（真机**手工**联调；无仓内自动化 E2E 资产） |
+| S4 | 构建脚本 + manifest + **`plugin.json`** 登记（2026-11-04 核对，原 `plugin.ini` 不存在） | `build-plugins.ps1`、`src/initdata/capability/plugins/remote/`、`chonkpilot-plugins/remote/build.ps1` | ✅ 已实现 |
+| S5 | 测试：Server 单测、插件 L1、H5 端到端 | 各仓 `*_test.go` / `src/test` | ⚠️ **Server / 插件单测存在**（本次未复跑）；**H5 端到端无仓内脚本/记录**（无 Playwright/E2E 资产），仅 §10.1 手工记录 |
 
-### 10.1 联调记录（2026-11-01，单机）
+### 10.1 联调记录（2026-11-01，单机；**手工记录，非可复现 E2E**）
 
 ```powershell
 # 构建

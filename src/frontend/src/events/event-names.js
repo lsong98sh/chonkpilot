@@ -118,7 +118,7 @@ export const EventNames = {
   askUserSelectOption: 'ask-user-select-option',
   askUserSubmit: 'ask-user-submit',
   askUserSkip: 'ask-user-skip', // 跳过当前提问（不回答，放到队列尾部稍后重问）
-  askUserCancel: 'ask-user-cancel', // 取消当前提问（以"终止任务待讨论"文案作为回答提交）
+  askUserCancel: 'ask-user-cancel', // 取消当前提问（以「用户选择了其他，可能需要进一步的信息才能确定」文案作为回答提交）
   askUserChat: 'ask-user-chat', // 「聊一聊」出口（仅主窗口；AskUser S1-1/S1-2：切会话 + defer 回填 + 问题引用入输入框）
   // 场景
   scenarioSelect: 'scenario-select',
@@ -271,6 +271,14 @@ export const EventNames = {
   // windowToggle / guiWindowStatus / guiWindowResize / windowMaximizedChanged
   // （窗口 chrome：顶栏移动 / 边缘 resize / 最大化同步）随窗口组件迁入 framework 分片。
   guiWindowOpenChat: 'gui.window.open-chat', // 打开/激活纯对话窗口（多窗口；幂等）：payload {session_id, dialog_id?}（G-105：带 dialog_id 直开该 dialog）
+  guiWindowOpenAsk: 'gui.window.open-ask', // Ask 中心（独立待办窗口；2026-11-05 全局）：打开/激活唯一窗口 + 并入进程级缓存：payload {ask}
+  guiAskList: 'gui.ask.list', // Ask 中心：读取**进程级**未办结待办缓存（全局跨项目）：payload {} → {ok, asks}
+  guiAskRemove: 'gui.ask.remove', // Ask 中心：作答/取消后摘除宿主缓存（幂等）：payload {ask_id}
+  askCenterSubscribe: 'ask-center-subscribe', // Ask 中心（2026-11-05）：向后端登记订阅并回快照（scope 缺省 user，跨 workdir）：payload {} → {ok, asks}
+  askCenterUnsubscribe: 'ask-center-unsubscribe', // Ask 中心：窗口卸载/关闭时退订（幂等）：payload {}
+  guiChatInsertText: 'gui.chat.insert-text', // Ask 中心「聊一聊」：把文本注入源会话窗口输入框（不发送）：payload {session_id, dialog_id?, work_dir?, text}
+  askCenterAdd: 'ask-center-add', // 宿主/server → Ask 中心：新增/更新待办 {ask, work_dir, received_at, seq?}
+  askCenterRemove: 'ask-center-remove', // 宿主/server → Ask 中心：待办已办结/摘除 {ask_id, reason?}
   guiWindowList: 'gui.window.list', // 查已开**对话窗口**（仅 chat；主窗口不入注册表）：payload {}
   guiWindowClosed: 'gui.window.closed', // 宿主 → 前端：对话窗口关闭广播 {window_id, session_id}（解除入口占用）
   guiWindowSetTitle: 'gui.window.set-title', // **仅独立对话窗口**：标题随会话摘要变化更新：payload {title}

@@ -162,8 +162,12 @@ def case_insert_during_tool():
     wait_topic("llm-tool-call", max_wait=30)
     if completed_turn(turn):
         raise TestError("工具派发后主轮不应立即终态")
-    # 工具执行中插入
-    c.mq_emit("llm-inbox-add", {"session": sid, "llm": _LLM_NAME, "content": "插话e2e"})
+    # 工具执行中插入（2026-11-01 语义：插话 = 用户**显式**动作 `insert=true`；
+    # 缺省会按相位降级为 next_turn → 本轮结束后才起新轮，不再算「执行中插话」）。
+    res = c.req("llm-inbox-add", {"session": sid, "llm": _LLM_NAME,
+                                  "content": "插话e2e", "insert": True})
+    if str((res or {}).get("type")) != "insert":
+        raise TestError("工具执行期 llm-inbox-add 应分类为 insert（实际 %r）" % ((res or {}).get("type"),))
     # 插话回显必须出现在主轮 complete 之前
     deadline = time.time() + 30
     while time.time() < deadline:

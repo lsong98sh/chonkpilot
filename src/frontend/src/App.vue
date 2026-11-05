@@ -3,13 +3,16 @@
   <LogView v-if="logOnly" />
   <template v-else>
     <!-- 视图分派（24 §6.1 / U-2 已决）：**以 URL 为准** —— `?session-id=…#chat` → 纯对话窗口；
-         其余 → 主窗口完整布局。宿主零视图判断（不注入 `__ck.view`）。
-         `route.dialogId`（G-105）：URL 可选 `dialog-id` → 直连该 dialog（免反查自举空库）。 -->
-    <ChatOnlyView v-if="ready && chatOnly" :session-id="route.sessionId" :dialog-id="route.dialogId" />
+         `#ask` → Ask 中心（独立待办窗口，2026-11-04）；其余 → 主窗口完整布局。
+         宿主零视图判断（不注入 `__ck.view`）。
+         `route.dialogId`（G-105）：URL 可选 `dialog-id` → 直连该 dialog（免反查自举空库）。
+         `route.draft`（Ask 中心「聊一聊」）：chat 窗口挂载后注入输入框（不发送）。 -->
+    <AskCenterView v-if="ready && askOnly" />
+    <ChatOnlyView v-else-if="ready && chatOnly" :session-id="route.sessionId" :dialog-id="route.dialogId" :draft="route.draft" />
     <!-- 项目就地切换（browser「打开目录」）：`:key="projectEpoch"` 自增 → 主布局整树重挂载，
          等价于整页重载后的组件重建（不整页重载）。见 utils/projectReinit.js。 -->
     <MainLayout v-else-if="ready" :key="projectEpoch" />
-    <div v-if="ready && !chatOnly && !logOnly && !pluginsReady" class="ck-plugin-boot">
+    <div v-if="ready && !chatOnly && !askOnly && !logOnly && !pluginsReady" class="ck-plugin-boot">
       <span class="ck-plugin-boot__dot" />
       {{ t('common.plugins_initializing') }}
     </div>
@@ -27,12 +30,13 @@ import { EventNames } from './events/event-names'
 import { getActiveSessionID } from './api/session'
 import MainLayout from './views/layout/MainLayout.vue'
 import ChatOnlyView from './views/chat/ChatOnlyView.vue'
+import AskCenterView from './views/ask/AskCenterView.vue'
 import LogView from '@ckfw/views/log/LogView.vue'
 import { useInstanceClaim, CLAIM_OK, CLAIM_UNANSWERED } from './composables/useInstanceClaim'
 import { useUserConfigSync } from './composables/useUserConfigSync'
 import { useGuiShowDialog } from './composables/useGuiShowDialog'
 import { maybeShowUnfinishedSubChats } from './composables/useSubChats'
-import { parseViewRoute, VIEW_CHAT, VIEW_LOG } from './utils/viewRoute.js'
+import { parseViewRoute, VIEW_ASK, VIEW_CHAT, VIEW_LOG } from './utils/viewRoute.js'
 import { prefetchInitData, invalidateInitDataCache } from './api/file'
 import { projectEpoch, setProjectReinitHandler } from './utils/projectReinit.js'
 import { useSelectionStore } from './stores/selection'
@@ -52,6 +56,7 @@ useGuiShowDialog()
 // URL 分派（一次性解析：无前端路由，URL 不再变）。
 const route = parseViewRoute(window.location.search, window.location.hash)
 const chatOnly = route.view === VIEW_CHAT
+const askOnly = route.view === VIEW_ASK
 const logOnly = route.view === VIEW_LOG
 // PRODSIM-1（多项目主窗口）：主窗口 URL 携带本项目的 work_dir（`?work-dir=`），
 // claim 时作为提议上送；缺失（对话窗口 / 旧链接）→ 服务端回落实例登记的 work_dir。
@@ -75,7 +80,7 @@ const textKey = computed(() => TEXT_KEYS[state.value] || 'common.instance_claimi
 // 对话窗口**跳过**：它绑定 URL 的 `session-id` → 不读活动会话（`session-active-get`）、
 // 不广播 `session-changed`（否则会覆盖该窗口绑定的会话，24 §3.3 C5 / §6.2）。
 async function init() {
-  if (!ready.value || chatOnly || logOnly) return
+  if (!ready.value || chatOnly || askOnly || logOnly) return
   try {
     const activeRes = await getActiveSessionID()
     const sessionId = activeRes?.session_id || null
@@ -125,14 +130,14 @@ async function waitPluginsReady() {
   }
   pluginsReady.value = true
 }
-if (!chatOnly && !logOnly) waitPluginsReady()
+if (!chatOnly && !askOnly && !logOnly) waitPluginsReady()
 
 // 日志窗口（PRODSIM-1）不参与认领 / 预取（只读 /api/log/tail）。
 if (!logOnly) {
   // 与认领**并行**预取 init-data：布局/UI 恢复（MainLayout.applyLayout）不再等主视图挂载
   // 才发起 → 首帧即按落盘布局渲染（消除默认布局闪现；见 api/file.js 预取说明）。
   // 对话窗口不预取：它不参与 layout/window 恢复（不写也不读几何，24 §3.3 C5）。
-  if (!chatOnly) prefetchInitData()
+  if (!chatOnly && !askOnly) prefetchInitData()
   // 主窗口 URL 携带本项目 work_dir（`?work-dir=`）→ 作为 claim 提议上送。
   claim(workDirParam ? { work_dir: workDirParam } : {}).then(async () => {
     await nextTick()

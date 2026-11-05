@@ -485,6 +485,12 @@ def route_tool_calls(text):
         # 长命令（task_run 同步执行）：等待期间用户 cancel（C11/五.8）
         return [("task_run", {"command": "Start-Sleep -Seconds 19",
                               "tool_call_display_name": "测试"})]
+    if "call ask-timeout" in t:
+        # ask_user 超时自动回复（2026-11-05）：8 秒未答 → 取推荐值 "B" 回填，不中断轮次。
+        # 8s 而非 2s：给 Ask 中心窗口/前端渲染留出稳定时间（避免用例与 UI 竞态）。
+        return [("ask_user", {"question": "超时自动回复测试？", "options": ["A", "B"],
+                              "recommended": ["B"], "timeout": 8,
+                              "tool_call_display_name": "超时测试"})]
     if "call ask-multi" in t:
         # user_ask 多选 + 推荐（附录 A 扩展）：multi=true + recommended 标注推荐项
         return [("ask_user", {"question": "测试多选：选择要执行的操作？",

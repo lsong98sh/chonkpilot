@@ -1,21 +1,21 @@
 # 28 · 插件体系（主仓零业务插件）
 
-> 状态：✅ 与代码一致
-> **〔订正（2026-11-03，SANDBOX-WRITE-1）〕插件写隔离**：gateway 在每次 `tools/call` 的 `_meta.chonkpilot.sandbox = {enabled, writable_dirs}` 下发可写白名单（`origin=builtin` 的插件均可见；sdk `CallContext.Sandbox`）。消费方：`file_*` 7 个写工具（越界 = 整次调用拒绝）、`task_run`（`chonkpilot-util/scriptrun` 的 `Sandbox{Enabled,Writable}` → Low IL + Job）、`web_download`（最终落盘路径）。未启用 = 不校验（旧行为）。crontab 插件尚未接入（待 `plugin/v1/sandbox.resolve`，见 [41](../40-roadmap/41-未决项登记.md)）。
+> 状态：⚠️ 部分与代码一致（2026-11-04 核对：主体架构真实落地；插件清单/数量、codegraph·vfts 插件侧编排、若干路径与测试引用已修正，见各节标注）
+> **〔订正（2026-11-03，SANDBOX-WRITE-1）〕插件写隔离**：gateway 在每次 `tools/call` 的 `_meta.chonkpilot.sandbox = {enabled, writable_dirs}` 下发可写白名单（`origin=builtin` 的插件均可见；sdk `CallContext.Sandbox`）。消费方：`file_*` 7 个写工具（越界 = 整次调用拒绝）、`task_run`（`chonkpilot-util/scriptrun` 的 `Sandbox{Enabled,Writable}` → Low IL + Job）、`web_download`（最终落盘路径）。未启用 = 不校验（旧行为）。**crontab 已接入沙箱**（2026-11-03 P2，见 §3.6）。**（2026-11-04 核对）**
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [21-llm-server](21-llm-server.md) · [29-codegraph](29-codegraph.md)
-> 代码目录：**主仓零业务插件（2026-10-24 PLUGIN-SPLIT-1；2026-10-29 TOPO-1 定稿目录）**。全部插件源码在同级仓 **`chonkpilot-plugins/<id>/{src,doc}`**（9 个：codegraph / browser / desktop / file / task / mcp / web / memory / history；嵌套 module = `browser/src/engine`、`codegraph/src/engines/{treesitter,vfts}`、`{file,history,memory}/src/lib`）；SDK / 宿主运行时 = 同级仓 **`chonkpilot-framework/plugin/src`**（module path 仍 `github.com/lsong98sh/chonkpilot-plugin-framework`，含 `sdk/ protocol/ runtime/ contract/ bridge/ mgr/`）；`file` 域契约 = `chonkpilot-plugins/file/src/tools/file/*.tool.md`（11 个）；引擎源码 = `chonkpilot-plugins/codegraph/src/engines/{treesitter,vfts}/`。平台基座（mq / paths / uds / 窗口层 / 单例）= `chonkpilot-framework/host/src`。主仓 `src/plugins/`、`src/lib/plugin-sdk`、`src/lib/pluginhost/`、`src/lib/core/` 均已不存在。
+> 代码目录：**主仓零业务插件（2026-10-24 PLUGIN-SPLIT-1；2026-10-29 TOPO-1 定稿目录）**。全部插件源码在同级仓 **`chonkpilot-plugins/<id>/{src,doc}`**（**11 个**：codegraph / browser / desktop / file / task / crontab / mcp / web / memory / history / remote；嵌套 module = `browser/src/engine`、`desktop/src/engine`、`codegraph/src/engines/{treesitter,vfts}`、`{file,history,memory}/src/lib`、`remote/{client,server}`）；SDK / 宿主运行时 = 同级仓 **`chonkpilot-framework/plugin/src`**（module path 仍 `github.com/lsong98sh/chonkpilot-plugin-framework`，含 `sdk/ protocol/ runtime/ contract/ bridge/ mgr/`）；`file` 域契约 = `chonkpilot-plugins/file/src/tools/file/*.tool.md`（11 个）；引擎源码 = `chonkpilot-plugins/codegraph/src/engines/{treesitter,vfts}/`。平台基座（mq / paths / uds / 窗口层 / 单例）= `chonkpilot-framework/host/src`。主仓 `src/plugins/`、`src/lib/plugin-sdk`、`src/lib/pluginhost/`、`src/lib/core/` 均已不存在。**（2026-11-04 核对）`chonkpilot-plugins/shared/` 不存在**（共享实现已上收 `chonkpilot-util`：`ignore` / `encodingx` / `sandbox` / `scriptrun` 等）。
 > **正文内的历史路径**（如 `src/lib/pluginhost/bridge/...`、`src/lib/gui/...`、`src/lib/core/...`）按此口径映射：`pluginhost/* → framework/plugin/src/*`、`gui/{窗口层,models,messages,fileserver,assetserver,folder,themefs} → framework/host/src/*`、`core/* → framework/host/src/core/*`；`gui/{host,bridge,mqpolicy}` 仍在主仓。
 
 ---
 
 ## 1. 职责与边界
 
-- **一句话**：**唯一形态 = 进程外 exe 插件**（`pluginsdk` + 插件桥 `plugin/v1`；codegraph / browser / desktop / file / task / mcp / web / memory / history）。压缩**已不是插件**：内建在会话侧（`chonkpilot-agent/session` 压缩内核）+ `llm/server` 编排，详见 §3.1。原进程内 lib Hook 兼容形态（codegraph / vfts）**已于 2026-10-27 删除**，`appwire.DefaultPlugins` 不再装配任何内嵌插件。
+- **一句话**：**唯一形态 = 进程外 exe 插件**（`pluginsdk` + 插件桥 `plugin/v1`；codegraph / browser / desktop / file / task / crontab / mcp / web / memory / history / remote）。压缩**已不是插件**：内建在会话侧（`chonkpilot-agent/session` 压缩内核）+ `llm/server` 编排，详见 §3.1。原进程内 lib Hook 兼容形态（codegraph / vfts）**已于 2026-10-27 删除**，`appwire.DefaultPlugins` 不再装配任何内嵌插件。**（2026-11-04 核对）**
 - **做**：事件订阅、按 instance/workdir 自持数据（经数据面消息）、向 gateway 注册/注销工具；进程外插件另含进程生命周期（拉起 / 健康 / 退避 / 停止）。
 - **不做**：插件不直接依赖宿主 Go 包（进程外走插件桥 / MCP；进程内 Hook 走 MQ 方法面）。
-- **依赖铁律（单向，2026-10-27 定稿）**：**主仓 → 插件 = 零依赖**。主仓只可依赖**插件框架契约**（`plugin-*` 管理面、视图注册、MCP 注册、`plugin/v1/*` 能力面）；**不得**读任何具体插件的业务键、业务文件或业务 UI（`codegraph.status` / `vfts.status` 这类运行态键，以及宿主内置的索引进度徽标 / 详情页均属违规残留，搬移见 [49 PLUGIN-UI-2](../40-roadmap/49-待实现项.md)）。插件 → 主仓、插件 → 其它插件：允许。
+- **依赖铁律（单向，2026-10-27 定稿）**：**主仓 → 插件 = 零依赖**。主仓只可依赖**插件框架契约**（`plugin-*` 管理面、视图注册、MCP 注册、`plugin/v1/*` 能力面）；**不得**读任何具体插件的业务键、业务文件或业务 UI（`codegraph.status` / `vfts.status` 这类运行态键，以及宿主内置的索引进度徽标 / 详情页均属违规残留，搬移见 [49 PLUGIN-UI-2](../40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)）。插件 → 主仓、插件 → 其它插件：允许。
 
-### 1.1 插件调工具 = 宿主准入三条件（2026-10-28 定案，[49 §2.19](../40-roadmap/49-待实现项.md)）
+### 1.1 插件调工具 = 宿主准入三条件（2026-10-28 定案，[49 §2.19](../40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)）
 
 插件经桥方法 `plugin/v1/tools.call` → 宿主 → `mcp-tools-call` 调工具时，`work_dir` 由**插件自报**（gateway 的沙箱根 / 池键按它判定）。桥入口在 **emit 之前**逐条校验，**任一不满足 → 只回桥错误（错误文本含契约码）、不发 `mcp-tools-call`**：
 
@@ -43,7 +43,7 @@
 | 数据访问 | 走 `src/lib/data`（`data.Prj(instanceID)` 或 payload 自带 work_dir/data_dir 自登记）；work_dir 解析走 `instance.Manager` |
 
 **实例视图**（`chonkpilot-framework/plugin/src/runtime/instance/manager.go`）：订阅 `instance-register` / `instance-heartbeat` / `instance-exit`，维护 `instance_id ↔ {ID, WorkDir, DataDir, ClientType, User, ParentInstance, LastBeat}`（`LastBeat` 仅记录最近心跳/注册时间；**`User`（🆕 2026-10-09）= 实例归属 OS 用户名**，`instance-register` 必填字段，供 `instance-bring-to-top` 的跨用户判定；**`ParentInstance`（🆕 2026-10-09）= 子窗口实例的宿主顶层实例 id** —— 由 `instance-register` 的 `parent_instance` 字段解析，非空即子实例，供托盘「列举实例」过滤，见 [61 §4.1](../60-reference/61-消息一览.md)）；提供 `Lookup/List/Count` 与 `ListTopLevel`（仅顶层）。
-> ⚠️ **心跳超时退出判定 = 编译开关**：心跳发布与超时判定**仅在编入 `-tags split` 时生效**；唯一形态 desktop 为空实现（`heartbeat_inprocess.go`：不发布、不判超时），实例失效以**显式 `instance-exit`** 清理（`instance-heartbeat` 订阅保留）。`-tags split` 编入时：`StartHeartbeat`（注册后起 30s 周期发布 `instance-heartbeat{instance_id}`）与 `Manager.Sweep(timeout)`（**90s = 3× 周期**的实例视同退出）的生产调用方 = 判定侧消费方两处 —— **llm-server** `startInstanceSweep`（`src/lib/llm/server/sweep_split.go`：30s ticker → `Manager.Sweep(90s)` → 逐个走既有 `exitInstance`：取消 running turn + 释放 `busy` 锁 + 注销 capability dir 节点）、**persist** `startStaleSweep`（`src/lib/data/persist/sweep_split.go`：30s 扫描 → `LastBeat` ≥90s → 既有 `instanceGone`：移除 `insts` 绑定 + `data.Unregister`）；插件 codegraph/vfts 的 `sweepInstances` 走各自 `instanceGone`（解绑 + 递减 workdir 引用）**均存在**（`chonkpilot-framework/plugin/src/runtime/instance/heartbeat_split.go`）。阈值单一来源 = `src/lib/heartbeat`：`persist` 的 `staleTimeout = heartbeat.Timeout`（90s）、llm-server 的 `sweepInterval = heartbeat.Interval`（30s）、`plugin/instance` 的 `HeartbeatInterval`/`HeartbeatTimeout` 亦为同名常量别名。见 [24-lib §2/§6](24-lib.md) · [61 §4.1](../60-reference/61-消息一览.md)。
+> ⚠️ **心跳超时退出判定 = 编译开关**：心跳发布与超时判定**仅在编入 `-tags split` 时生效**；唯一形态 desktop 为空实现（`heartbeat_inprocess.go`：不发布、不判超时），实例失效以**显式 `instance-exit`** 清理（`instance-heartbeat` 订阅保留）。`-tags split` 编入时：`StartHeartbeat`（注册后起 30s 周期发布 `instance-heartbeat{instance_id}`）与 `Manager.Sweep(timeout)`（**90s = 3× 周期**的实例视同退出）的生产调用方 = 判定侧消费方两处 —— **llm-server** `startInstanceSweep`（`src/lib/llm/server/sweep_split.go`：30s ticker → `Manager.Sweep(90s)` → 逐个走既有 `exitInstance`：取消 running turn + 释放 `busy` 锁 + 注销 capability dir 节点）、**persist** `startStaleSweep`（`src/lib/data/persist/sweep_split.go`：30s 扫描 → `LastBeat` ≥90s → 既有 `instanceGone`：移除 `insts` 绑定 + `data.Unregister`）；阈值单一来源 = `src/lib/heartbeat`：`persist` 的 `staleTimeout = heartbeat.Timeout`（90s）、llm-server 的 `sweepInterval = heartbeat.Interval`（30s）、`plugin/instance` 的 `HeartbeatInterval`/`HeartbeatTimeout` 亦为同名常量别名。**（2026-11-04 核对）插件 codegraph/vfts 不提供 `sweepInstances`、不订阅 `instance-heartbeat`、插件仓无 `sweep_*.go` / `instanceGone`；实例失效只走显式 `instance-exit`**（通用心跳能力仅在框架 `runtime/instance`，插件未使用）。见 [24-lib §2/§6](24-lib.md) · [61 §4.1](../60-reference/61-消息一览.md)。
 
 > **Stop 语义（🆕 2026-10-11；`plugin.Stopper` 可选接口）**：实现 `Stopper` 的插件在宿主退出时按 `Start` **逆序** `Stop()`，**幂等**（`stopOnce`）；进程外插件（memory / history / codegraph 等）的停止由 `host/mgr` 按 manifest `runtime.stop.grace_ms` 负责。**原进程内 Hook（codegraph / vfts）已删除**，其 Stop 顺序仅作历史留存。见 `chonkpilot-framework/plugin/src/runtime/hook` `Stopper`。
 
@@ -55,14 +55,14 @@
 4. **事件面以 workdir 为单位**：server 把 `instance-register` / `instance-exit` 翻译为 **`workdir-opened` / `workdir-closed`**（[61 §2.5](../60-reference/61-消息一览.md)），插件只管理 workspace；启动时拉一次当前活动 workdir，之后用事件增量维护。
 5. **索引不独立成插件**：索引回路 + 引擎**库内联**在 `codegraph` 插件进程，工具与索引同进程、经 **TCP/IP（MCP）** 暴露；`file`/`codegraph` 这类简单能力**不再起子 exe**。
 6. **子进程与安全上下文（以 crontab 类定时任务插件为例）**：插件可以自己 spawn 子 exe / Python 来执行任务。**可写目录等安全信息由宿主经「每次 `tools/call` 的 `_meta.chonkpilot.sandbox`」（有工具调用上下文）或「`plugin/v1/sandbox.resolve{work_dir}`」（定时任务等无上下文场景）下发**（**不是**握手协议头：header 是建连时静态、且跨 workdir 共享，见方案 §6 / C3），插件**必须自己处理**（据此约束自己拉起的子进程）；是否对子任务强制沙箱 = 该插件**配置页里的选项 / 任务级参数**，由插件自己读取并执行（例如定时任务默认沙箱运行，可在配置页或任务参数关闭）。
-7. **宿主索引队列已下线（2026-10-25 落地）**：`filesys` 不再写待索引表（`Options.IndexQueue` / `enqueueIndex` 删除）；框架 `host/bridge` 的 `plugin.index.{take,ack,pending,workdirs}` 四帧与 `IndexQueueHooks` / `WorkDirs` 删除；data 面 `index_queue` 域、门面 `IndexQueueAPI`、v10 桶由 **v16 `drop_index_queue`** 清理。索引改由插件**订阅 `filesys.changed`** 自管（vfts 走清单 diff，codegraph 走 `codegraph_index_paths`）。
+7. **宿主索引队列已下线（2026-10-25 落地）**：`filesys` 不再写待索引表（`Options.IndexQueue` / `enqueueIndex` 删除）；框架 `host/bridge` 的 `plugin.index.{take,ack,pending,workdirs}` 四帧与 `IndexQueueHooks` / `WorkDirs` 删除；data 面 `index_queue` 域、门面 `IndexQueueAPI`、v10 桶由 **v16 `drop_index_queue`** 清理。索引改由插件**订阅 `filesys.changed` / `session-complete`** 自管（当前两引擎均走**全量重建**：codegraph `codegraph_initialize`、vfts `vfts_index`；引擎虽支持增量，插件暂未编排）。**（2026-11-04 核对）**
 8. **快速「停用 → 重新启用」并发收口（2026-11-01）**：`setEnabled` 每次前进 **启停意图序号 `lifeSeq`**；在飞的旧 `supervise` 若发现 `lifeSeq` 已变（或进程代次 `gen` 前进 >1）→ 直接退出，不再写状态 / 再拉起。停用尾段（`stopPlugin`）只在其停用意图仍有效（`stopReq` 未被重新启用清回）时才回写 `enabled=false` / `status=disabled` 并注销 MCP。否则开→关→开会把新进程的运行态覆盖成 stopped（实测 history 卡在非 running、UI 显示已停止）。
 
 ---
 
 ## 2A. 插件清单与加载模型（PLUGIN-LOAD-1；✅ 2026-11-02 已全部落地）
 
-> 权威设计 = [插件加载与UI就绪设计方案](../plugin-platform/插件加载与UI就绪设计方案.md)。本节为**已落地口径**（✅ 2026-11-02，D1–D18）。
+> 权威设计 = [插件加载与UI就绪设计方案](../../plugin-platform/插件加载与UI就绪设计方案.md)。本节为**已落地口径**（✅ 2026-11-02，D1–D18）。
 > 变更摘要：`plugin.json` 极简、manifest 由插件进程上报、新增 `plugin-refresh`、启动并发上限 2、删除 `external`、新增 CK Store。
 
 ### 2A.1 清单归属
@@ -114,7 +114,7 @@
 
 ### 3.1 compress（历史压缩）
 
-> **〔2026-10-23 变更：压缩已内建，本节仅保留「算法口径」为权威〕** compress 的 **exe 插件形态已删除**（`src/plugins/compress/` · `src/initdata/capability/plugins/compress/` · 构建与注册全部移除）。压缩执行归 **session 组件内建**（[49 SESSION-1](../40-roadmap/49-待实现项.md)）：**不再订阅 `session-compress`**，触发与载荷构造在 `src/lib/llm/server/compress.go` 内完成（复用刚发出的 payload、去全部 system、末条 user 换压缩要求、单飞/串行覆盖队列、CAS 回填）。下表**三段定位 / 兜底归并 / 摘要提示词 / 阈值来源 / token 估算 / 子会话门控**仍为权威口径；凡出现「订阅 `session-compress`」「插件进程」「插件读快照写回」的表述，**按内建语义理解**（数据面同为 `data-session-snapshot-*`）。进度通知仍走 `tool-notify`（`compress-queued/start/done`），发布方 = 内建压缩宿主。
+> **〔2026-10-23 变更：压缩已内建，本节仅保留「算法口径」为权威〕** compress 的 **exe 插件形态已删除**（`src/plugins/compress/` · `src/initdata/capability/plugins/compress/` · 构建与注册全部移除）。压缩执行归 **session 组件内建**（[49 SESSION-1](../40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)）：**不再订阅 `session-compress`**，触发与载荷构造在 `src/lib/llm/server/compress.go` 内完成（复用刚发出的 payload、去全部 system、末条 user 换压缩要求、单飞/串行覆盖队列、CAS 回填）。下表**三段定位 / 兜底归并 / 摘要提示词 / 阈值来源 / token 估算 / 子会话门控**仍为权威口径；凡出现「订阅 `session-compress`」「插件进程」「插件读快照写回」的表述，**按内建语义理解**（数据面同为 `data-session-snapshot-*`）。进度通知仍走 `tool-notify`（`compress-queued/start/done`），发布方 = 内建压缩宿主。
 
 | 项 | 值 |
 |----|----|
@@ -144,7 +144,7 @@
 | 订阅 | `session-complete`（**主轮次 → 轮末补点**）· `filesys.changed`（该 workdir 文件变更 → 置「脏」位；广播由 filesys 侧 **60ms 去抖**合并）· `instance-register`（建 workState + 异步回读 `history.enabled`）· `data-prj-config-refresh`（开关 / 保留参数实时同步 + `history.clear` 清链）· **前置打点钩子** `history-pre-tool-hook`（gateway 执行工具前同步调用）· 工具回调 `history-tool-call`。**`session-turn-start` 不再消费** |
 | 启用/门控 | git 不可执行（`exec.LookPath("git")` 失败）→ `Start` 记日志 + `return nil`（**功能禁用，不算启动失败**）；workdir **非 git 仓库**（无 `.git`；worktree/submodule 的 `.git` 文件亦可）→ 功能禁用；`history.enabled` **仅显式 `"true"` 才开启（默认关闭）**，缺失 / `""` / `false` / 非法 / 未回读 → 关闭。**禁用或非 git 时 4 个工具一律摘除**（`syncTools` 收敛，判据 = 存在「hasGit 且 enabled」的 workdir） |
 | 打点触发 | ① **gateway 前置钩子**（执行**任意**工具前，同步；经 `tools/register` 可选字段 `pre_hook_subject` 声明）：启用 && 未熔断 && **脏** → 同步打点；**打点失败 → 写 error → gateway 拒绝该工具调用（工具不执行），LLM 可见失败并可重试**；**单次钩子调用超时与 `CallTimeout` 解耦**（`Params.PreHookTimeout`，默认 **10min**），超时同样按失败处理（拒绝该调用）；**payload 带 `touch_files` = 该工具是否「涉及文件变动」**：显式 `false` → 直接放行、**不打点**（省 8–9 次 git 进程），仍登记会话归属（轮末补点保底）；缺省 / `true` → 打点；② **轮末补点**（`session-complete` 主轮次）：保证「最后一步的产像」入链 —— **不依赖脏位（规避 `filesys.changed` 60ms 去抖竞态）、强制走一次打点流程**，流程内按 tree 比较**内容未变则不建点**。**前置钩子路径不脏 / 标「不涉及」= 零 git 调用**（直接放行） |
-| 「涉及文件变动」（打点粒度） | usr `tool_async.<工具暴露名>.touch_files`（布尔；前端「工具配置」页开关；**与异步档位同载体、同页**）。**缺省按工具来源**：**内置执行体**仅 `file_*` 写类 + `task_run`（2026-10-28 起替代 `script_run`）涉及（true），只读类（`file_read`/`file_find`/`file_diff`/`file_detect`）与 `web_fetch` 不涉及（false）；**dir 节点 / 第三方 MCP / 无法判定 → 保守按涉及（true）**。生效面 = gateway 前置钩子 payload（`resolveTouchFiles`：显式覆盖 > 来源缺省）。**标错只让检查点粒度变粗**（前后点仍在、`git diff` 一致性校验仍生效），**不丢安全**（见 [64 §3](../60-reference/64-配置项一览.md) `tool_async` / [61 §5.4a](../60-reference/61-消息一览.md)） |
+| 「涉及文件变动」（打点粒度） | usr `tool_async.<工具暴露名>.touch_files`（布尔；前端「工具配置」页开关；**与异步档位同载体、同页**）。**缺省按工具来源**（**2026-11-04 核对，以 `chonkpilot-agent/gateway/src/tooloverride.go:229-267` 为准**）：`selfTouchFiles` 仅 `filesys_run` / `script_run`（true）；`readOnlyToolDefaults` 仅 `web_search` / `web_fetch`（false，按名判定、与来源无关）；**`file_*` / `task_*` 已迁为插件来源 → 走保守 true**（故 `file_read` / `file_find` / `file_diff` / `file_detect` 实际按 true，`task_run` 也不在 `selfTouchFiles` 白名单）；**dir 节点 / 第三方 MCP / 无法判定 → 保守按涉及（true）**。生效面 = gateway 前置钩子 payload（`resolveTouchFiles`：显式覆盖 > 只读按名 > 来源缺省）。**标错只让检查点粒度变粗**（前后点仍在、`git diff` 一致性校验仍生效），**不丢安全**（见 [64 §3](../60-reference/64-配置项一览.md) `tool_async` / [61 §5.4a](../60-reference/61-消息一览.md)） |
 | 流程（打点） | 临时 index `add -A`（尊重 `.gitignore`；进入前 `ensureGitignore` 保证 `.chonkpilot/` 被忽略）→ `write-tree` → **新 tree == 链头 tree → 直接跳过（不建点、不 `update-ref`、不修剪）**；否则 → `commit-tree <tree> [-p <链头>] -m "chonk-ckpt: session=<slug> tool=<tool> ts=<RFC3339>"` → `update-ref refs/chonkpilot/<slug> <commit>` → **修剪** |
 | 链与 ref | `<slug>` = **根会话**（优先 `top_session`，缺省 `session`；**父子会话共享一条链**）；链 = parent 指针线性串联（`git rev-list` 可枚举、`git diff A B` 可用）；**ref 只指向链头**（对象靠可达性保活，gc 安全） |
 | 存储 | **独立 ref `refs/chonkpilot/<slug>`**（**废弃 `history.db`，纯 git**）+ **持久临时 index** `<workdir>/.chonkpilot/history/index`（经 `GIT_INDEX_FILE` 注入）；**绝不碰 `.git/index`、绝不碰 HEAD** → **不在用户分支产生任何提交** |
@@ -154,7 +154,7 @@
 | 状态回写（前端只读） | **会话级**内部键：`history.status.<slug>`（`{enabled, mode: active\|fused\|off, repo, dirty, failCount, checkpointCount, bytes, lastCheckpointAt, lastDurationMs, lastError}`）/ `history.timeline.<slug>`（**最新在前**、相对编号 `-1` 起、**≤200 条**）——`<slug>` = 链根会话，**多会话并发各自独立、互不覆盖**；落 **prjusr**（本机可重建派生物）。`history.clear`（前端写 JSON `{ts, session}`）→ **只清目标会话的链**（`update-ref -d refs/chonkpilot/<slug>`）并回写该会话空状态，其它会话链保留 |
 | 语义边界（有意为之） | 被 `.gitignore` 忽略的文件**不进检查点、也回滚不了**（含 `.env`/`node_modules`/`.chonkpilot/` —— 不把密钥写进对象库）；**未跟踪文件**回滚时**不动**；回滚以检查点 tree 为准、**不碰 `.git`**；检查点遵守 git 的 ignore，与「索引排除规则」（`lib/ignore`）是**两套独立规则、不联动** |
 
-> ⚠️ **效率注意**：文件历史在**每次工具执行前**打点（脏才打点）。**每次「脏」打点约需 8–9 次 git 进程**（写路径 + 状态/时间线回写的只读 git；逐行走查合计约 10–11 次，以实跑采数为准），**修剪**（仅在 `keep`/`ttl` 超限时发生；常见路径一次 `git replace --graft` 解链，**不逐点重放**）—— **大工程需慎重**（**默认关闭**）。已配「脏标记短路（不脏零 git 调用）+ **「不涉及文件变动」工具直接跳过**（省下每次调用的 8–9 次 git 进程）+ 前置钩子同步打点 + 连续失败熔断 + 固定提交身份（不读用户 git config）」。见 [49-待实现项](../40-roadmap/49-待实现项.md)。
+> ⚠️ **效率注意**：文件历史在**每次工具执行前**打点（脏才打点）。**每次「脏」打点约需 8–9 次 git 进程**（写路径 + 状态/时间线回写的只读 git；逐行走查合计约 10–11 次，以实跑采数为准），**修剪**（仅在 `keep`/`ttl` 超限时发生；常见路径一次 `git replace --graft` 解链，**不逐点重放**）—— **大工程需慎重**（**默认关闭**）。已配「脏标记短路（不脏零 git 调用）+ **「不涉及文件变动」工具直接跳过**（省下每次调用的 8–9 次 git 进程）+ 前置钩子同步打点 + 连续失败熔断 + 固定提交身份（不读用户 git config）」。见 [49-待实现项](../40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)。
 
 ### 3.3 codegraph（代码语义索引，插件侧）
 
@@ -162,14 +162,14 @@
 
 | 项 | 值 |
 |----|----|
-| 订阅 | `instance-register`（workdir 就位：旧键一次性迁移 + 按配置下发引擎 + 「启用且未 ready」自动全量索引）· `instance-exit`（清理实例记录）· `data-prj-config-refresh`（配置热生效 → 400ms 去抖重建）· `server-ready`（补跑旧键迁移）。**2026-10-27 起不再订阅 `filesys.changed` / `session-complete` / `vfts.reindex`**（自动增量跟随待恢复，见 [41 G-84](../40-roadmap/41-未决项登记.md)）；宿主侧仍无待索引队列 / `plugin.index.*` / 独立 indexer exe |
+| 订阅 | `instance-register`（workdir 就位：旧键一次性迁移 + 按配置下发引擎 + 「启用且未 ready」自动全量索引）· `instance-exit`（清理实例记录）· `data-prj-config-refresh`（配置热生效 → 400ms 去抖重建）· `server-ready`（补跑旧键迁移）· **`filesys.changed` / `session-complete`**（2026-10-31 G-84 恢复：按 workdir **5s 去抖 → 全量重建**启用引擎）。**`vfts.reindex` / `vfts.session.query` / `vfts.session.reindex` 是 UI 动作（`OnRequest`），不是总线订阅**；**不订阅 `instance-heartbeat`**。宿主侧无待索引队列 / `plugin.index.*` / 独立 indexer exe。**（2026-11-04 核对）** |
 | 配置键 | prj `plugins.codegraph.enabled` / `.exts` / `.skip-dirs` / `.stack-gitignore`（索引配置，变更即重建）。**运行态不写 prj 键**：`codegraph.status` 已随 PLUGIN-UI-2（2026-10-28）整体退场（宿主零引用），状态经插件动作 `engine-status` / `badge` 现取。旧宿主键（`enable-codegraph` / `codegraph.*`）仅由插件**一次性迁移**读取，写入不再生效 |
 | 引擎 | **〔2026-10-27 已落地〕引擎以库形式编入 `codegraph` 插件进程**（工具与索引同进程；treesitter / vfts 均在 `chonkpilot-plugins/codegraph/src/engines/`）——不 spawn stdio 引擎子进程，也无独立 indexer exe。按 workdir 管理索引状态（每 workdir 独立串行） |
 | 叠加 gitignore 体系 | 插件把 `plugins.codegraph.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `.stack-gitignore`（布尔）**原样下发**引擎（`codegraph_configure` / `codegraph_initialize` 的 `skip_dirs` + `stack_gitignore`）；**插件不再读/解析 `.gitignore`**。规则来源/优先级/匹配语义/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = `chonkpilot-util/ignore`，内核 + I/O 同包，与 vfts 引擎/插件**同一实现**） |
-| 注册工具 | **8 个查询工具**（`codegraph_symbol_search` / `_get_symbol_info` / `_callers` / `_callees` / `_get_dependency_graph` / `_find_circular_deps` / `_analyze_complexity` / `_get_module_summary`）+ **1 个 vfts 查询工具** `vfts_query`，均由插件按引擎 schema **原样热注册**（hot=true；**含必填 `workdir`**，R-11 显式绝对路径） |
-| 周期/超时 | sweep 15s · heartbeat 90s（**仅 `-tags split` 编入时判超时 → 既有 `instanceGone`；阈值 = `instance.HeartbeatTimeout`（与 llm-server `Manager.Sweep`、persist `staleTimeout` 同口径，见 §2 实例视图）；默认构建不判超时**）· data 5s · call 60s · init 15min；**`childIdle 5min` 已接线**（`sweepIdleClient` 于 15s 扫描中**逐 workdir**回收无引用且空闲超阈值的引擎子进程，下次 `clientFor(workdir)` 懒重建） |
+| 注册工具 | **8 个查询工具**（`codegraph_symbol_search` / `_get_symbol_info` / `_callers` / `_callees` / `_get_dependency_graph` / `_find_circular_deps` / `_analyze_complexity` / `_get_module_summary`）+ **1 个 vfts 查询工具** `vfts_query`。8 个 codegraph 查询按引擎 schema **原样热注册**（hot=true；**含必填 `workdir`**，R-11 显式绝对路径）；**`vfts_query` 由插件自注册，schema 已去掉 `workdir`**（由 `_meta.chonkpilot.work_dir` 注入，见 [2B §3.5](2B-vfts.md)）。工具注册为**静态 MCP hot 清单**（`src/initdata/capability/plugins/codegraph/manifest.json` 的 `hot_tools`），无按 workdir 的动态注册/注销。**（2026-11-04 核对）** |
+| 周期/超时 | data 5s · **MCP 调用超时 = 300s**（manifest `mcp.timeout_sec`；非 60s）· **全量重建 `rebuildTimeout = 15min`** · 配置去抖 400ms · 工作区事件去抖 5s。**无引擎子进程，故无 `childIdle` / `sweepIdleClient` / `clientFor` 空闲回收**（原描述已退场）；心跳能力仅在框架 `runtime/instance`，插件不订阅、不判超时。**（2026-11-04 核对）** |
 | 状态获取 / 自动重建 | 运行态**不回写 prj 键**（`codegraph.status` 已退场）：配置页 / 状态栏 `badge` / L4 门禁均经插件动作 `engine-status`（可选 `engine` 只查一个）现取引擎状态。配置生效后 **400ms 去抖**调度一轮全量重建（`codegraph_initialize`），实例登记「启用且未 ready」亦调度一次（SRCH-004-S01 / SRCH-005-S01，**零新增主题**，无 500ms 进度轮询） |
-| 可见性 | 工具仅在存在 `refs>0 且 enabled` 的 workdir 时注册；多 workdir 时**工具面仍全局一份**（归属排序后第一个 workdir），执行按 `context.instance_id` 路由（引擎子进程/索引状态已**按 workdir 独立**，仅**工具面差异注册留待 v2**） |
+| 可见性 | **工具静态注册，无 `refs>0` / `syncTools` 门控**（hot 清单固定，插件启用即注册）。多 workdir 时工具面全局一份，执行按 `_meta.chonkpilot.work_dir` / `context.instance_id` 路由到该 workdir 的**进程内 Workspace**（索引状态按 workdir 独立，非子进程）；工具面差异注册留待 v2。**（2026-11-04 核对）** |
 
 详见 [29-codegraph](29-codegraph.md)。
 
@@ -179,23 +179,23 @@
 
 | 项 | 值 |
 |----|----|
-| 订阅 | 与 §3.3 同一插件进程（`instance-register` / `instance-exit` / `data-prj-config-refresh` / `server-ready`）。**2026-10-31 起恢复 `filesys.changed` / `session-complete` / `vfts.reindex` 订阅**（[41 G-84](../40-roadmap/41-未决项登记.md)：按 workdir 去抖 5s 全量重建启用引擎；`vfts.reindex` 回执 `{ok,started:true}`）；宿主侧无待索引队列 / `plugin.index.*` / 独立 indexer exe |
-| 配置键 | prj `plugins.codegraph.vfts.enabled` / `.exts` / `.skip-dirs` / `.stack-gitignore` / `.docs` / `.doc-max-mb`（索引配置，变更即重建）。**运行态不回写 prj 键**：`vfts.status` 已随 PLUGIN-UI-2（2026-10-28）退场，状态（含插件探测的 `docsPort`）经插件动作 `engine-status` / `badge` 现取。旧宿主键（`enable-vfts` / `vfts.*`）仅由插件**一次性迁移**读取 |
+| 订阅 | 与 §3.3 同一插件进程（`instance-register` / `instance-exit` / `data-prj-config-refresh` / `server-ready`）。**2026-10-31 起订阅 `filesys.changed` / `session-complete`**（[41 G-84](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)：按 workdir 去抖 **5s → 全量重建**启用引擎）。**`vfts.reindex` / `vfts.session.query` / `vfts.session.reindex` 为 UI 动作（`OnRequest`），不是总线订阅**；无 `vfts-tool-call` 订阅、无 `instance-heartbeat` 订阅。宿主侧无待索引队列 / `plugin.index.*` / 独立 indexer exe。**（2026-11-04 核对）** |
+| 配置键 | prj `plugins.codegraph.vfts.enabled` / `.exts` / `.skip-dirs` / `.stack-gitignore` / `.docs` / `.doc-max-mb` / **`.encoding`**（D-73）/ **`.sessions`**（SESSION-FTS）。**运行态不回写 prj 键**：`vfts.status` 已随 PLUGIN-UI-2（2026-10-28）退场，状态（含插件探测的 `docsPort`）经插件动作 `engine-status` / `badge` 现取。旧宿主键（`enable-vfts` / `vfts.*`）仅由插件**一次性迁移**读取。**（2026-11-04 核对）** |
 | 引擎 | **〔2026-10-27 已落地〕vfts 引擎以库形式编入 `codegraph` 插件进程**（与 codegraph 同进程；zvec 集合在该进程内自持）——不 spawn stdio 引擎子进程，也无独立 indexer exe。按 workdir 隔离索引状态（全局 `recMu` 串行索引） |
-| 状态获取 / 自动重建 / 清单 | 运行态**不回写 prj 键**（`vfts.status` 已退场）：状态经插件动作 `engine-status` 现取（文档服务端口以 `docsPort` 透出）；配置生效后 400ms 去抖调度 `vfts_index` 全量重建，实例登记「启用且未 ready」亦调度；重建成功即按引擎 `indexed`（**唯一权威**，SRCH-007-S05）重建插件清单 `<workdir>/.chonkpilot/vfts/file_list.json`（字段 key/path/size/mtime/md5/doc_ids/chunks/indexed_at；key = sha1(绝对路径) 前 16 hex；`md5` 留空——增量由调用方 `vfts_index {files,remove}` 显式驱动）。**无 500ms 进度轮询** |
-| 注册工具 | **1 个查询工具** `vfts_query`（引擎 schema **原样热注册**，hot=true，**含必填 `workdir`**）；管理工具 `vfts_configure/index/status/dict_*` **不注册**（插件/插件配置页直接调引擎） |
-| 索引配置变更 | **去抖合并**：一次保存写 `plugins.codegraph.vfts.exts` + `.skip-dirs`(+`.stack-gitignore`) 多键 = 多次 `data-prj-config-refresh` → 经 **400ms 去抖窗口**合并为**一轮**强制重建（窗口外单键变更仍触发，不会漏重建）；**仅 dirty（值确有变化）才写库** |
-| 叠加 gitignore 体系 | 插件把 `plugins.codegraph.vfts.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `.stack-gitignore`（布尔）**原样下发**引擎（`vfts_configure` / `vfts_index` 的 `skip_dirs` + `stack_gitignore`）与**插件侧清单扫描**（`manifest.go scanFiles`）——**插件不再读/解析 `.gitignore`**。规则来源与优先级（低→高）：内置强制（`.git/`·`.svn/`·`.hg/`·`.chonkpilot/`，不可被 `!` 反选）→ 默认排除（`node_modules/`·`dist/`·`build/` 等，可被 `!` 反选）→ 全局 ignore（`$XDG_CONFIG_HOME/git/ignore` 或 `~/.config/git/ignore`）→ `.git/info/exclude` → 各级 `.gitignore`（目录越深优先级越高）→ 用户输入（最高优先级）；不勾选 = 只应用「内置强制 + 默认 + 用户输入」。**目录命中忽略 = 不下降；文件命中即跳过 → 支持文件级排除**。规则语法/匹配/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = 插件仓共享包 `chonkpilot-plugins/shared/ignore`） |
-| 文档索引 / 文档转换服务接入 | 键 `plugins.codegraph.vfts.docs`（默认关）+ `.doc-max-mb`（默认 50）。**插件只探测、不 spawn** 转换服务（`docsprobe.go`）：读候选状态文件（① 插件 exe 上溯三级 → 产品根 `mcps/markitdown/state.json` ② 插件 exe 同目录 ③ `<dataDir>/mcps/markitdown/state.json`）→ 校验 `pid` 与 `GET /vfts/health` 一致 → 取 `{port, token, version}`；失败一律当「未运行」（不报错、不阻塞）。**配置下发前强制复探**，其余读路径按 30s TTL 缓存（`vfts.status.docsPort` 取自该探测）。索引前把 `docs`/`doc_endpoint`/`doc_token`/`doc_max_bytes`/`doc_text_max_bytes`/`doc_cache_dir` **恒一并下发** `vfts_configure`（**服务不可用 = 空 `doc_endpoint`/`doc_token`**；引擎按「**键存在即覆盖（含空值）**」清掉残留旧值，`docsAvailable` 随之为 false）。**降级**：服务不可用 → 清单与引擎**同口径整批跳过文档类**（未索引的文档类**从插件清单移除**（`<workDir>/.chonkpilot/vfts/file_list.json`，2026-10-25 起清单插件自持、不经消息面））；单文件失败 → 降级为「仅索引文件名」（引擎侧，保留在清单）。**解析器版本**：清单文档类行 `md5` 携带转换器版本（`<md5hex>@<version>`，复用 md5 口径）→ 版本变化即失效重建 + 插件清缓存目录。**token 仅内存、绝不入日志**。 |
-| 进度推送 | 无 500ms 轮询：插件动作 `engine-status` / `badge` 现取当前快照（`state` / `progressDone` / `progressTotal` 取自引擎 `vfts_status`）；索引进行中的实时进度刷新随 [41 G-84](../40-roadmap/41-未决项登记.md) 待恢复 |
-| 周期/超时 | sweep 15s · heartbeat 90s（**仅 `-tags split` 编入时判超时 → 既有 `instanceGone`；阈值 = `instance.HeartbeatTimeout`（与 llm-server `Manager.Sweep`、persist `staleTimeout` 同口径，见 §2 实例视图）；默认构建不判超时**）· data 5s · call 60s · init 15min；**`childIdle 5min` 已接线**：`sweepIdleClient` 于 15s 扫描中回收**无活跃实例且空闲 ≥5min** 的共享引擎子进程（下次 `sharedClient()` 懒重建），`lastActiveAt` 由 register/heartbeat 刷新 |
-| 可见性 | 工具仅在存在 `refs>0 且 enabled=true` 的 workdir 时注册；v1 多 workdir 只全局注册一份，执行按 `context.instance_id` 路由 |
+| 状态获取 / 自动重建 / 清单 | 运行态**不回写 prj 键**（`vfts.status` 已退场）：状态经插件动作 `engine-status` 现取（文档服务端口以 `docsPort` 透出）；配置生效后 400ms 去抖、工作区事件 5s 去抖，调度 **`vfts_index` 全量重建**（插件当前**无增量调用方**，不传 `files`/`remove`）。重建成功即按引擎 `indexed`（**唯一权威**，SRCH-007-S05）重建插件清单 `<workdir>/.chonkpilot/vfts/file_list.json`（字段 key/path/size/mtime/md5/doc_ids/chunks/indexed_at；key = sha1(绝对路径) 前 16 hex；**`md5` 留空**——引擎支持 `vfts_index {files,remove}` 增量，但插件侧暂未编排）。**无 500ms 进度轮询**。**（2026-11-04 核对）** |
+| 注册工具 | **1 个查询工具** `vfts_query`（插件自注册；schema **已去掉 `workdir`**，由 `_meta.chonkpilot.work_dir` 注入）；管理工具 `vfts_configure/index/status/dict_* / vfts_session_*` **以 hot=false 注册进插件自带 MCP server**（不进 `hot_tools`，LLM 不可见），插件/配置页直接调引擎。**（2026-11-04 核对）** |
+| 索引配置变更 | **去抖合并**：一次保存是**一个多键 `data-prj-config-save` 请求**（exts + skip-dirs + stack-gitignore 同一次 Set），宿主刷新后经 **400ms 去抖窗口**合并为**一轮**强制重建（窗口外单键变更仍触发，不会漏重建）；**保存为全表单直写，不做 dirty 键过滤**（仅 apply 侧做幂等：新旧值相同不重建）。**（2026-11-04 核对）** |
+| 叠加 gitignore 体系 | 插件把 `plugins.codegraph.vfts.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `.stack-gitignore`（布尔）**原样下发**引擎（`vfts_configure` / `vfts_index` 的 `skip_dirs` + `stack_gitignore`）——**插件不再读/解析 `.gitignore`**；插件侧 `manifest.go` **只写清单**（无扫描/diff 逻辑）。规则来源与优先级（低→高）：内置强制（`.git/`·`.svn/`·`.hg/`·`.chonkpilot/`，不可被 `!` 反选）→ 默认排除（`node_modules/`·`dist/`·`build/` 等，可被 `!` 反选）→ 全局 ignore（`$XDG_CONFIG_HOME/git/ignore` 或 `~/.config/git/ignore`）→ `.git/info/exclude` → 各级 `.gitignore`（目录越深优先级越高）→ 用户输入（最高优先级）；不勾选 = 只应用「内置强制 + 默认 + 用户输入」。**目录命中忽略 = 不下降；文件命中即跳过 → 支持文件级排除**。规则语法/匹配/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = **`chonkpilot-util/ignore`**，非不存在的 `chonkpilot-plugins/shared/ignore`）。**（2026-11-04 核对）** |
+| 文档索引 / 文档转换服务接入 | 键 `plugins.codegraph.vfts.docs`（默认关）+ `.doc-max-mb`（默认 50）。**插件只探测、不 spawn** 转换服务（`docsprobe.go`）：读候选状态文件（① 插件 exe 上溯三级 → 产品根 `mcps/markitdown/state.json` ② 插件 exe 同目录 ③ `<dataDir>/mcps/markitdown/state.json`）→ 校验 `pid` 与 `GET /vfts/health` 一致 → 取 `{port, token, version}`；失败一律当「未运行」（不报错、不阻塞）。**配置下发前强制复探**，其余读路径按 30s TTL 缓存（`docsPort` 经 `engine-status` 透出）。索引前把 `docs`/`doc_endpoint`/`doc_token`/`doc_max_bytes`/`doc_text_max_bytes`/`doc_cache_dir` **恒一并下发** `vfts_configure`（**服务不可用 = 空 `doc_endpoint`/`doc_token`**；引擎按「**键存在即覆盖（含空值）**」清掉残留旧值，`docsAvailable` 随之为 false）。**降级**：服务不可用 → 清单与引擎**同口径整批跳过文档类**（未索引的文档类**从插件清单移除**（`<workDir>/.chonkpilot/vfts/file_list.json`，2026-10-25 起清单插件自持、不经消息面））；单文件失败 → 降级为「仅索引文件名」（引擎侧，保留在清单）。**解析器版本**：清单文档类行 `md5` 携带转换器版本（`<md5hex>@<version>`，复用 md5 口径）→ 版本变化即失效重建 + 插件清缓存目录。**token 仅内存、绝不入日志**。 |
+| 进度推送 | 无 500ms 轮询：插件动作 `engine-status` / `badge` 现取当前快照（`state` / `progressDone` / `progressTotal` 取自引擎 `vfts_status`）；索引进行中的实时进度刷新随 [41 G-84](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决) 待恢复 |
+| 周期/超时 | data 5s · **MCP 调用超时 = 300s**（manifest `mcp.timeout_sec`）· **全量重建 15min** · 配置去抖 400ms · 工作区事件去抖 5s。**无引擎子进程 / `sharedClient` / `sweepIdleClient` / `childIdle`**（D-71 后进程内引擎，原 5min 空闲回收退场）；插件不订阅 `instance-heartbeat`。**（2026-11-04 核对）** |
+| 可见性 | **工具静态注册，无 `refs>0` / `syncTools` 门控**；v1 多 workdir 只全局注册一份，执行按 `_meta.chonkpilot.work_dir` / `context.instance_id` 路由到进程内 Workspace。**（2026-11-04 核对）** |
 
 > **配置页与状态页（UIREG-1 / PLUGIN-UI-2）**：原宿主 `VftsConfig.vue` / `CodegraphConfig.vue` 已删除 —— 配置与状态全部由 `codegraph` 插件自己的 iframe 页承担（`webui/config.html` / `webui/status.html` / 栏内 `webui/badge.html`）。状态经插件动作 `engine-status` 现取（`state=""` = 未初始化；`phase` / `progressDone` / `progressTotal` / `err` / `indexedFiles` / `chunkCount` / `tokenizer` / `exts` / `docsService` / `docsPort` 同源），**不写 prj 键**；索引配置（exts/排除规则）**仅 dirty 才写库**（`plugin/v1/config.project.*`），并提供「恢复默认」（删项目级键 → 回落引擎默认集）。**文档索引区块**：开关 `plugins.codegraph.vfts.docs` + 体积上限 `.doc-max-mb` + 状态行（源 = `engine-status` 的 `docsService`/`docsPort`）+ MCP 注册指引；计数 `docsSkipped`/`docsFailed` 有值即显示。
 
-> **两引擎同进程（2026-10-27 起）**：codegraph 与 vfts 的引擎库**都内联在同一个 `codegraph` 插件进程**（不 spawn 子进程、无独立 indexer/查询 executor），按 workdir 隔离索引状态；差异仅在工具数（8 + 1）与索引编排（vfts 的 `vfts.exts` 变更强制重建）。
+> **两引擎同进程（2026-10-27 起）**：codegraph 与 vfts 的引擎库**都内联在同一个 `codegraph` 插件进程**（不 spawn 子进程、无独立 indexer/查询 executor），按 workdir 隔离索引状态；差异仅在 **LLM 可见工具面（codegraph 8 + vfts 1）**与引擎工具面（codegraph 12 / vfts 9）及索引编排。**（2026-11-04 核对）**
 
-> **发行产物中的引擎 exe**：`dist/desktop/mcps/{codegraph,vfts}/chonkpilot-{codegraph,vfts}-mcp-server.exe` 仍随构建投放，但**运行期插件不解析/不 spawn 它**；唯一消费方 = L4 门禁 `run_index_gate.py` 的只读自检 `-dump <ws>`（读落盘 `index.db`）。查询工具「一工具一 exe」已于 PLUGIN-EDGE-1（2026-10-28）退场（见 [03 §5](../00-overview/03-构建与部署.md)）。
+> **发行产物中的引擎 exe（2026-11-04 核对，已变更）**：`build-desktop.ps1` 默认**不向 `dist/desktop/mcps/` 投放引擎 exe**（「mcps 默认不接入；内置 MCP 时才单独投放」），当前 `dist/` 无 `desktop/mcps`。`build-codegraph.ps1` / `build-vfts.ps1` 仍可独立产出引擎 exe（用于自检/调试），但**运行期插件不解析/不 spawn 它**；L4 门禁 `run_index_gate.py` 已声明「发行根不再投放 mcps 引擎 exe；原 `-dump` 自检面退场，改经查询工具面探测」。查询工具「一工具一 exe」已于 PLUGIN-EDGE-1（2026-10-28）退场（见 [03 §5](../00-overview/03-构建与部署.md)）。
 
 ---
 
@@ -236,11 +236,24 @@
 | 通知 | Windows 系统通知（WinRT Toast，内嵌 `toast.ps1`，AUMID `ChonkPilot`）；失败按 `notify-fallback` 记日志或退化为 MessageBox 窗口；非 Windows 返回不支持 |
 | 安全（🆕 2026-11-03 P2/P3） | 与宿主同用户、不提权；`allowed-work-dirs` 非空时创建任务的 `work_dir` 必须命中白名单；**执行前 `os.Stat(work_dir)`**：不存在 → 任务停用（`disabled_reason=work_dir_missing`）+ `skipped:workdir-missing`，**只通知一次**、不执行（C14）；**执行前经宿主 `plugin/v1/workdir.ensure{work_dir, hidden:true}` 确保项目已打开**（未打开 → 宿主**隐藏打开**，C13/C17；失败 → `skipped:workdir-open-failed`，**本轮跳过、下轮重试，不 disable**）；随后经宿主 `plugin/v1/sandbox.resolve{work_dir}` 取可写白名单 → 对白名单目录 `sandbox.EnsureLowIL`（幂等/进程内缓存）→ `scriptrun.Options.Sandbox{Enabled, Writable}` 以 Low IL + Job 执行；**resolve 不可用 → fail-open（不隔离执行）+ `RunRecord.Detail` 留痕**。任务级开关 = `sandbox` 参数（缺省继承 `plugins.crontab.sandbox`）。任务文件不存密钥（命令里的密钥会明文落盘，页面已提示） |
 
-> **P2 落地范围（2026-11-03，SANDBOX-WRITE-1 / 方案 §5.5）**：执行前链路 = ① `os.Stat(work_dir)`（缺失 → 停用，C14）；② `plugin/v1/sandbox.resolve` 取白名单（宿主实现 = `llm/server.SandboxPolicyForWorkDir`，命中在册实例用内存态 `security-*`，未命中只用内置默认项）；③ 白名单目录打 Low IL；④ `scriptrun` 以 Low IL + Job 执行。**未做（留 P5/P6）**：PM 合并（C15）、数据能力端点（§9.1）。
+> **P2 落地范围（2026-11-03，SANDBOX-WRITE-1 / 方案 §5.5）**：执行前链路 = ① `os.Stat(work_dir)`（缺失 → 停用，C14）；② `plugin/v1/sandbox.resolve` 取白名单（宿主实现 = `llm/server.SandboxPolicyForWorkDir`，命中在册实例用内存态 `security-*`，未命中只用内置默认项）；③ 白名单目录打 Low IL；④ `scriptrun` 以 Low IL + Job 执行。**未做（留 P5）**：PM 合并（C15）。**数据能力端点已由 P6 落地（2026-11-03，§3A.10）**，原「未做」项作废。**（2026-11-04 核对）**
 >
-> **P3 落地范围（2026-11-03，隐藏打开）**：`run` 在 ① 之后、③ 之前插入 **`plugin/v1/workdir.ensure{work_dir, hidden:true}`**（C13/C17）——已在册 → 直接回主实例 id；未打开 → 宿主隐藏打开项目（`gui.ProjectConfig.Hidden`，窗口建好但不显示）并等 `instance-register`（≤12s）；失败 → `skipped:workdir-open-failed` + 本轮跳过（**不 disable**，与 `work_dir_missing` 区分）。副作用：`sandbox.resolve` 因此**必然命中在册实例** → 用户配置的 prj `security-*` 生效（消除 G-96 的退化口径）。生命周期与普通项目一致（常驻到关闭该项目主窗口或进程退出），**无引用计数自动关窗**（残留项 [41 G-98](../40-roadmap/41-未决项登记.md)）。
+> **P3 落地范围（2026-11-03，隐藏打开）**：`run` 在 ① 之后、③ 之前插入 **`plugin/v1/workdir.ensure{work_dir, hidden:true}`**（C13/C17）——已在册 → 直接回主实例 id；未打开 → 宿主隐藏打开项目（`gui.ProjectConfig.Hidden`，窗口建好但不显示）并等 `instance-register`（≤12s）；失败 → `skipped:workdir-open-failed` + 本轮跳过（**不 disable**，与 `work_dir_missing` 区分）。副作用：`sandbox.resolve` 因此**必然命中在册实例** → 用户配置的 prj `security-*` 生效（消除 G-96 的退化口径）。生命周期与普通项目一致（常驻到关闭该项目主窗口或进程退出），**无引用计数自动关窗**（残留项 [41 G-98](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)）。
 >
-> **P4 落地范围（2026-11-03，会话归属 C11 / C12）**：`run` 在 ② 之后、④ 之前把本轮挂到**该任务的子会话**下 —— 层级 = 项目根会话（`id = crontab-<8hex(work_dir)>`，`kind=crontab`，`parent_id=""`）→ 任务子会话（`id = crontab-<task_id>`，`kind=crontab_task`，`parent_id` = 根会话）→ 每轮一个 `turn`（`turn-cron-<ns>`）。**插件不直接开库（C8）**：一律经宿主 UDS 能力 `plugin/v1/session.ensure` / `.ensure-turn` / `.complete-turn`（宿主 = `src/lib/llm/server`，建会话走既有 `SessionEnsure` 并 `rememberDialog`），执行主体 `sessions.origin=scheduler`（**不冒充用户**）。归属失败**不阻断执行**（`RunRecord.Detail` 记 `session_bind_failed: …`）；任务详情页经既有只读面 `plugin/v1/session.{get,history}` 展示会话（轮次数 / 最近一轮），`Task.session_id` / `dialog_id` 在执行后写回 `tasks.json`。**顶层会话列表排除 `kind=crontab`**（`data-session-list` / `-latest` / 活动位回落），详见 [61 §0.6/§3.2a/§7.1](../60-reference/61-消息一览.md) 与 [12-数据层 §2](../10-architecture/12-数据层.md)。**G-99（2026-11-03 已实施）**：① 可选配置 `plugins.crontab.show-in-session-list`（缺省 `false`；`true` = 该顶层对话进入用户列表；`data-session-latest` / 活动位回落恒排除），消费方 = data 层 `ListVisibleDialogs(catalog, includeCrontab)`；② 任务详情页新增 `openable_sessions[]` 与「打开会话内容」按钮，点击经**既有** `gui.window.open-chat{session_id}` 打开对话窗口（零新增 MQ 主题/payload）。**残留**：开关关闭（缺省）时，从任务页打开的 crontab 子会话窗口无法解析所属 `dialog_id`（顶层列表不含该对话），前端自愈会为其自举空对话 → 需在窗口面补 `dialog_id` 通道（消息面变更待拍板，[41 G-105](../40-roadmap/41-未决项登记.md)）。
+> **P4 落地范围（2026-11-03，会话归属 C11 / C12）**：`run` 在 ② 之后、④ 之前把本轮挂到**该任务的子会话**下 —— 层级 = 项目根会话（`id = crontab-<8hex(work_dir)>`，`kind=crontab`，`parent_id=""`）→ 任务子会话（`id = crontab-<task_id>`，`kind=crontab_task`，`parent_id` = 根会话）→ 每轮一个 `turn`（`turn-cron-<ns>`）。**插件不直接开库（C8）**：一律经宿主 UDS 能力 `plugin/v1/session.ensure` / `.ensure-turn` / `.complete-turn`（宿主 = `src/lib/llm/server`，建会话走既有 `SessionEnsure` 并 `rememberDialog`），执行主体 `sessions.origin=scheduler`（**不冒充用户**）。归属失败**不阻断执行**（`RunRecord.Detail` 记 `session_bind_failed: …`）；任务详情页经既有只读面 `plugin/v1/session.{get,history}` 展示会话（轮次数 / 最近一轮），`Task.session_id` / `dialog_id` 在执行后写回 `tasks.json`。**顶层会话列表排除 `kind=crontab`**（`data-session-list` / `-latest` / 活动位回落），详见 [61 §0.6/§3.2a/§7.1](../60-reference/61-消息一览.md) 与 [12-数据层 §2](../10-architecture/12-数据层.md)。**G-99（2026-11-03 已实施）**：① 可选配置 `plugins.crontab.show-in-session-list`（缺省 `false`；`true` = 该顶层对话进入用户列表；`data-session-latest` / 活动位回落恒排除），消费方 = data 层 `ListVisibleDialogs(catalog, includeCrontab)`；② 任务详情页新增 `openable_sessions[]` 与「打开会话内容」按钮，点击经**既有** `gui.window.open-chat{session_id}` 打开对话窗口（零新增 MQ 主题/payload）。**残留**：开关关闭（缺省）时，从任务页打开的 crontab 子会话窗口无法解析所属 `dialog_id`（顶层列表不含该对话），前端自愈会为其自举空对话 → 需在窗口面补 `dialog_id` 通道（消息面变更待拍板，[41 G-105](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)）。
+
+### 3.7 remote（远程接入；🆕 2026-11-01，构建清单 11/11）
+
+> **形态**：进程外插件 = `chonkpilot-plugins/remote/client`（exe = `chonkpilot-plugin-remote.exe`，配置页/徽标 webui 自持并 embed）；配套 `remote/server`（`chonkpilot-remote-server.exe`，独立服务端）；设计见 [26-remote](../10-architecture/26-remote.md) §4。**（2026-11-04 核对）**
+
+| 项 | 值 |
+|----|----|
+| 工具 | **0**（`mcp.mode=none`、`hot_tools=[]`；本期只做通道 + UI） |
+| 通道 | 插件**主动出站 WSS** 到 Remote Server（桌面不开放端口）；上报设备 / 工作区；Server 的设备 RPC 转发为 `plugin/v1/*`，桌面事件归一为产品事件回推 |
+| 订阅 | `instance-register` / `instance-exit` + 转发主题 `session-receive` / `session-turn-start` / `session-complete` / `session-ask` / `session-inbox-changed` / `task-started` / `task-updated` / `task-done` / `tool-notify` |
+| 配置（`plugins.remote.*`，usr） | `serverUrl`（支持 `wss://` / `ws://`）· `username` · `password` |
+| UI | `ui.selfServe`；视图 `config`（远程接入设置）· `badge`（状态栏 96×20）；动作面 `load/save/reset/test/status/badge/ping` |
+| 安全 | 凭据只经插件配置读写；不注册 MCP 工具、不参与沙箱写隔离（无本地写工具） |
 
 ---
 
@@ -330,9 +343,9 @@
 
 ### 3A.7 instance 归属与定向投递（✅ 2026-10-27 定案 · 2026-10-28 已落地）
 
-> 现状（代码）：`plugin.publish` 已支持**可选** `instance_id`，`mgr.publishUIEvent` 广播时提升到顶层 `{id, instance_id?, topic, payload}` → GUI 桥 `forwardEvent` 的实例过滤直接生效；插件页 iframe URL 由 `usePluginReadiness` 拼 `instance_id`（承载窗口），`PluginPageHost` 按 `id` 过滤 + 桥按顶层实例过滤。缺省仍为广播（兼容旧插件）。落地清单见 [49 PLUGIN-INSTANCE-1](../40-roadmap/49-待实现项.md)。
+> 现状（代码）：`plugin.publish` 已支持**可选** `instance_id`，`mgr.publishUIEvent` 广播时提升到顶层 `{id, instance_id?, topic, payload}` → GUI 桥 `forwardEvent` 的实例过滤直接生效；插件页 iframe URL 由 `usePluginReadiness` 拼 `instance_id`（承载窗口），`PluginPageHost` 按 `id` 过滤 + 桥按顶层实例过滤。缺省仍为广播（兼容旧插件）。落地清单见 [49 PLUGIN-INSTANCE-1](../40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)。
 >
-> 主题名：`plugin-event`（2026-11-04 一次性正名，不做双发兼容期；见 [41 D-72](../40-roadmap/41-未决项登记.md)）。
+> 主题名：`plugin-event`（2026-11-04 一次性正名，不做双发兼容期；见 [41 D-72](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)）。
 >
 > 专题稿：[插件边界与实例归属设计方案](../../plugin-platform/插件边界与实例归属设计方案.md)（含前端取法 / 后端取法 / 定向投递 / 边界与重启恢复）。
 
@@ -349,7 +362,7 @@
 - 唯一构造点 = `usePluginReadiness.src`（`src/frontend/packages/plugin-ui/src/usePluginReadiness.js`），拼接：
   `/plugins/<id>/<entry>?p=<pageId>&instance_id=<currentInstanceId()>[&t=<seq>]`
 - 取值 = `currentInstanceId()`（认领优先、未认领回落首屏注入；`instance-claim` 为**入口绑定优先**、不会改写该值，[61 §4.1](../60-reference/61-消息一览.md)）。
-- **不影响资源面**：宿主按 `r.URL.Path` 取 `sub`、缓存键 = `(plugin_id, path, plugin_version)` → query 既不进路由也不进缓存（`src/lib/gui/pluginassets.go`）。
+- **不影响资源面**：宿主按 `r.URL.Path` 取 `sub`、缓存键 = `(plugin_id, path, plugin_version)` → query 既不进路由也不进缓存（`chonkpilot-framework/host/src/gui/pluginassets.go`）。**（2026-11-04 核对）**
 - 插件页**首帧读取并自行持有**（页内跳转 / 刷新不保证 query 仍在）；`instance_id` **不是凭据**（[22-实例与会话标识](../10-architecture/22-实例与会话标识.md)），可出现在 URL。
 - 宿主侧**不需要为 instance 新增注入接口**：`ckPlugin` 维持现状；`ckMq` 改为平台基座唯一入口 `window.top.ckMq.new(window)`（[2C §3.3/§4.3](2C-UI插件.md)；原 `public/shared/ck-mq.js` 已删除）。
 
@@ -462,7 +475,7 @@
    记录 `{at, action, actor_user, plugin, work_dir, target_user, result, reason?}`。
 3. **轮转**：写入前检查大小，**超过 8 MiB** → 轮转为 `audit.jsonl.1`，最多保留 **3** 个归档
    （`.1/.2/.3`，超出删除最旧的）；纯本地文件操作、未超限不动作（幂等）；失败只留诊断、不阻断能力。
-4. 留存**策略**（是否可关闭 / 项目级授权 / 留存期）仍属 [41 G-102](../40-roadmap/41-未决项登记.md) **待拍板**。
+4. 留存**策略**（是否可关闭 / 项目级授权 / 留存期）仍属 [41 G-102](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决) **待拍板**。
 
 **授权强制**：
 
@@ -490,7 +503,7 @@ server.Start
 
 - 插件各自持 `instance.Manager`（不共享 server 的实例表）。
 - 宿主侧插件桥**不自持**实例视图：`pluginhost/bridge` 的准入 / 实例解析 / 补发一律查 server 注入的 `instance.Manager`（2026-10-29 内存单源化，见 §1.1 末条）。
-- codegraph 的 `syncTools` 单飞：按"活跃且 enabled 的 workdir"决定注册/注销。
+- **codegraph 无 `syncTools` 单飞**：查询工具为静态 MCP hot 注册，不按 workdir 动态注册/注销（2026-11-04 核对）。
 
 ---
 
@@ -534,31 +547,31 @@ server.Start
     主题常量）· `hook`（原 `src/plugins/plugin/plugins.go`：`Deps/Notice/Hook/Stopper`）·
     `instance`（实例视图 + 心跳）· `dataclient`（data-* 请求-应答）· `bridgebus`（宿主主题子集
     ↔ 插件桥）· `heartbeat` · `datafmt`（`ChatMsg/ToolCall` + token 估算 + `LLMRefName`）；
-  - `host/`（2026-10-25 新增，**宿主侧**）：`bridge`（插件前门：帧传输/会话/能力面/过滤链/索引队列/GUI 反向通道，
+  - **`plugin/src/{bridge,mgr}`**（2026-10-25 新增，**宿主侧**，不是 `plugin/src/host/`）：`bridge`（插件前门：帧传输/会话/能力面/过滤链/GUI 反向通道，
     原 `src/lib/llm/pluginbridge`）· `mgr`（插件发现/进程守护/配置/UI 资产，原 `src/lib/llm/pluginmgr`）；
     **端口化** = Bus（`runtime/bus`）· ConfigStore（`mgr.ConfigStore`，宿主注入 `chonkpilot.db` 适配器）·
     Process（`protocol.SysProcAttr` + `os/exec`）· Assets（插件 `plugin/v1/ui.asset.get` RPC）；
-  - **已发布 `v0.1.2`**（含 `host/*`）；主仓与 plugins 仓均按**版本依赖**引用（无本地 `replace`）。
+  - **已发布 `v0.1.2`**（含 `bridge/` / `mgr/`）；主仓与 plugins 仓均按**版本依赖**引用（无本地 `replace`）。**（2026-11-04 核对：目录名以 `plugin/src/{bridge,mgr}` 为准）**
   - **宿主已改用框架契约（2026-10-25）**：`src/plugins/plugin`（Hook/instance/dataclient）与
     `src/lib/llm/{pluginbridge,pluginmgr}` **均已删除**，
     主仓 `src/lib/{appwire,llm,gui}`、`src/desktop`、`plugin-{compress,codegraph,vfts}` 全部改用
     `framework/runtime/{hook,instance,dataclient}`（后三者在 2026-10-27 已随 `src/plugins/` 删除）；`src/lib/core/mq` 收敛为 `runtime/bus` 的**类型别名**
-    （总线实现唯一在框架）；插件桥 / 管理器改用 `framework/host/{bridge,mgr}`（import 别名保持旧名）。
+    （总线实现唯一在框架）；插件桥 / 管理器改用框架 `plugin/src/{bridge,mgr}`（import 别名保持旧名）。
   - 依赖 = 标准库 + MCP go-sdk，**零主仓依赖**。
-- **`chonkpilot-plugins`**（独立仓）：`browser` / `codegraph` / `desktop` / `file` / `task` / `mcp` / `web` / `memory` / `history`，**每个插件一个 module**；`memory` / `history` 的 Go 业务包在同仓 `<id>/src/lib`；`browser` / `desktop` 的**引擎**在同仓 `<id>/src/engine`；`codegraph` 的**引擎**在同仓 `codegraph/src/engines/{codegraph,vfts}`；`shared/` 是插件侧共享工具（`pluginhost` / `pluginproto` / `trayconsole` / `indexkind` / `lockfile` / `pluginclient` / `winproc` / `ignore` 的副本）。
-  - **2026-10-25（能力随插件）**：browser / desktop 引擎、codegraph / vfts 引擎、**file 域 11 工具实现与契约**的**源码已全部迁出主仓**（原 `src/lib/mcp-tools/{plugins/*,internal/*,toolset}`、`src/plugins/{codegraph,vfts}`、`src/initdata/capability/tools/file/`）——主仓只保留 gateway / mcp-server / data / config 等平台能力（**插件宿主 bridge/mgr 在框架 `host/`**）；`file_*` 由 gateway 调插件 MCP server 执行（主仓 builtin 无 file 分派，`chonkpilot-tools-executor.exe` 已删除）。
+- **`chonkpilot-plugins`**（独立仓）：`browser` / `codegraph` / `crontab` / `desktop` / `file` / `task` / `mcp` / `web` / `memory` / `history` / `remote`（**11 个**），**每个插件一个 module**；`memory` / `history` 的 Go 业务包在同仓 `<id>/src/lib`；`browser` / `desktop` 的**引擎**在同仓 `<id>/src/engine`；`codegraph` 的**引擎**在同仓 `codegraph/src/engines/{treesitter,vfts}`；`remote` 分 `client/`（插件）与 `server/`（服务端）。**`shared/` 不存在**（共享工具已上收 `chonkpilot-util`）。**（2026-11-04 核对）**
+  - **2026-10-25（能力随插件）**：browser / desktop 引擎、codegraph / vfts 引擎、**file 域 11 工具实现与契约**的**源码已全部迁出主仓**（原 `src/lib/mcp-tools/{plugins/*,internal/*,toolset}`、`src/plugins/{codegraph,vfts}`、`src/initdata/capability/tools/file/`）——主仓只保留 gateway / mcp-server / data / config 等平台能力（**插件宿主 bridge/mgr 在框架 `plugin/src/{bridge,mgr}`**，非 `host/`）；`file_*` 由 gateway 调插件 MCP server 执行（主仓 builtin 无 file 分派，`chonkpilot-tools-executor.exe` 已删除）。
   - `browser/engine` 的 WebView2 绑定 = 同级 fork 仓 `chonkpilot-webview2`（**唯一源**；上游无 `EvalWithResult`/`Screenshot`）；**2026-10-25**：去除标题栏 / move / resize 已封装进 fork（`WebViewOptions.Frameless` + `WindowResizer.StartResize` + `HitCode(hit)`，宿主不再持 Win32 命中码表）。**2026-10-30**：插件仓 `third_party/go-webview2` 内嵌副本已删除（与 fork 仓逐字节一致，仅 FORK.md 台账文字不同），`browser/src/engine/go.mod` 改 `replace => ../../../../chonkpilot-webview2`；待独立仓发布后改按版本引用。
 - **主仓零插件（2026-10-24 定稿）**：全部业务插件（含 codegraph / vfts 引擎、compress 纯算法、memory / history 业务包）在**同级仓 `chonkpilot-plugins/`**；主仓 `src/plugins/` 整个目录已删除。引擎构建 `build-codegraph.ps1` / `build-vfts.ps1` 的源码取自插件仓。
 
 **依赖方向**：
 
-- 进程外插件（9 个，`chonkpilot-plugins/<id>`）→ framework `sdk` / `runtime/*` + 同仓 `<id>/src/lib` · `<id>/src/engine` · `shared/*` · `codegraph/src/engines/*`（**2026-10-25 起零主仓 `replace`**）。
+- 进程外插件（**11 个**，`chonkpilot-plugins/<id>`）→ framework `sdk` / `runtime/*` + `chonkpilot-util/*` + 同仓 `<id>/src/lib` · `<id>/src/engine` · `codegraph/src/engines/*`（**2026-10-25 起零主仓 `replace`**）。**（2026-11-04 核对）**
 - `memory` / `history` 业务包（`chonkpilot-plugins/<id>/src/lib`）→ **仅 framework `runtime/*`**（`hook` / `bus` / `topics` / `instance` / `dataclient` / `datafmt` / `heartbeat`）。
 - 进程内 Hook 接口 / 实例视图 / dataclient（宿主侧）→ **framework `runtime/{hook,instance,dataclient}`**（主仓以版本依赖引用）。
 - `src/plugins/plugin-compress` → **已于 2026-10-27 删除**（压缩自 SESSION-1 起内建在 `src/lib/llm/server/compress.go` + `chonkpilot-agent/session` 压缩内核）。
 - ~~`src/plugins/plugin-codegraph` / `plugin-vfts`~~ → **已随主仓 `src/plugins/` 一并删除**（插件仓承载全部实现）。
 - 内嵌 Hook 已全部退场（`appwire.DefaultPlugins` 返回 nil，2026-10-27）；进程外插件由框架 `host/mgr` 按 manifest 拉起（gui / server 共用）。
-- 构建：`build-plugins.ps1` 的 9 个进程外插件源码**全部**取自同级 `chonkpilot-plugins`。
+- 构建：`build-plugins.ps1` 的 **11 个**进程外插件源码**全部**取自同级 `chonkpilot-plugins`（第 11 个 = `remote/client`，exe `chonkpilot-plugin-remote.exe`）。**（2026-11-04 核对）**
 
 ---
 
@@ -566,11 +579,11 @@ server.Start
 
 | 决策 | 结论 | 理由 |
 |------|------|------|
-| 形态：**进程外 exe（主）+ 进程内 Hook（兼容）** | 进程外走插件桥 `plugin/v1` + MCP 工具面；Hook 走同一 Bus、编译期注入 | 插件可独立发版 / 崩溃隔离；Hook 仅保留给索引类紧耦合场景（codegraph / vfts，默认关） |
+| 形态：**进程外 exe（唯一形态）** | 走插件桥 `plugin/v1` + MCP 工具面；原进程内 Hook 已于 2026-10-27 删除 | 插件可独立发版 / 崩溃隔离；`appwire.DefaultPlugins` 返回 nil |
 | 无宿主函数注入 | 统一走 mq（`llm-simple`） | 解耦、可测试 |
 | history 纯 git | 废弃 history.db | 复用版本控制、零额外存储 |
 | **history = 独立 ref 的检查点链** | 打点走 `refs/chonkpilot/<slug>` + 持久临时 index（`GIT_INDEX_FILE`）；**绝不碰 `.git/index` / HEAD / 用户分支** | 不再污染用户仓库的提交历史；检查点对用户分支不可见、可随时丢弃；`commit-tree` 线性链天然支持相对步 diff/回滚 |
-| codegraph 引擎外置 exe | 插件管理子进程 | 引擎需 CGO（主模块禁令） |
+| codegraph / vfts 引擎**库内联** | 引擎以 Go module 编入 `codegraph` 插件进程（`replace` + 直接 import），不 spawn 子进程 | 同进程共享 workspace/索引状态；独立 exe 仅保留构建自检（发行默认不投放） |
 | 插件就绪 = server-starting | 全部 Start 成功才广播 | 明确就绪语义 |
 | **插件失败 = 上报 + 可见 + 可查** | 失败路径经可选 **`Deps.Notify(Notice)`** 如实上报一次 → 宿主 **`Server.pluginNotify`**（`src/lib/llm/server/pluginnotice.go`）**去重/限频**后经**既有通知面 `tool-notify`** 投递 **`notice="plugin-failure"`**（`payload` 只增字段，[61 §4.3](../60-reference/61-消息一览.md) 已登记）；**不阻塞**（仅 publish、不等应答、不改终态、不降级、不抛出）。**去重口径** = 键 `实例×会话×轮次×插件×失败类别` → **同轮同类只提示一次**（轮次或类别变化才再提示；判重表有界 FIFO 淘汰、上限 512）；**失败原因**同经 `Deps.Logf` → 统一出口落 `<dataDir>/logs/gui.log`（含原因），提示文案亦带原因（缺因回落"原因未知（详见日志文件）"） | 不再"记忆没沉淀 / 上下文没压缩"却无从诊断；**不新增 MQ 主题**（复用既有通知面）；前端零改动（`ChatPanel` 既有 `tool-notify` 订阅对非 `completion` 即以轻提示展示、`MessageList` 不落气泡） |
 
@@ -609,4 +622,4 @@ server.Start
 
 ## 10. 关联测试
 
-`src/test/chonkpilot-plugin/unittest/instance/manager_test.go`（实例视图）· `src/lib/llm/server/plugins_test.go`（`server-starting` 广播 / 装配机制；压缩链路由 `compress_test.go` / `compress_notice_test.go` 覆盖）· 插件仓 `chonkpilot-plugins/history/src/lib/chain_test.go`（检查点链内核：不碰用户分支 / 不脏零 git / 门控 / 修剪 / 熔断 / `history_restore`）· `chonkpilot-plugins/codegraph/src/config_test.go` / `tools_mcp_test.go` / `webui_asset_test.go`（配置面 / 9 个工具 / webui 资源）· `chonkpilot-plugins/file/src/tools_mcp_test.go`（11 个文件工具）。
+`src/test/chonkpilot-plugin/unittest/instance/manager_test.go`（实例视图）· `src/lib/llm/server/plugins_test.go`（`server-starting` 广播 / 装配机制；压缩链路由 `compress_test.go` / `compress_notice_test.go` 覆盖）· 插件仓 `chonkpilot-plugins/history/src/lib/chain_test.go`（检查点链内核：不碰用户分支 / 不脏零 git / 门控 / 修剪 / 熔断 / `history_restore`）· `chonkpilot-plugins/codegraph/src/{config_test.go,webui_asset_test.go,sessionindex_test.go,sessionreconcile_test.go}`（配置迁移/徽标/动作面 / webui 资源 / 会话索引 / 后台对账；**`tools_mcp_test.go` 不在 codegraph 仓**）· `chonkpilot-plugins/file/src/tools_mcp_test.go`（11 个文件工具）。**（2026-11-04 核对）**

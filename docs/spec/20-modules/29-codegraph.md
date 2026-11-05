@@ -1,6 +1,6 @@
 # 29 · codegraph（代码语义索引）
 
-> 状态：✅ 与代码一致（引擎已实现；插件多 workdir 已落地，工具面差异注册留待 v2，见 §9）
+> 状态：⚠️ 部分与代码一致（2026-11-04 核对：引擎层真实完整；插件形态/引擎定位/状态键/编排与测试章节已按「引擎库内联进插件」修正）
 > 关联：[28-plugins](28-plugins.md) · [12-数据层](../10-architecture/12-数据层.md)
 > 代码目录：`chonkpilot-plugins/codegraph/`（2026-10-24 起插件与引擎源码全部迁出主仓；含 `engines/{treesitter,vfts}/`）· 主仓已无 `src/plugins/plugin-codegraph/`
 
@@ -8,24 +8,24 @@
 
 ## 1. 职责与边界
 
-- **一句话**：进程内 **tree-sitter** 索引的**独立 console mcp-server**（引擎）+ 宿主侧插件（按 workdir 管理引擎子进程并向 gateway 注册查询工具）。**宿主侧插件形态以 `codegraph` exe 为准**（进程外，codegraph + vfts 合一，见 [28 §3.3](28-plugins.md)）；`plugin-codegraph` 为兼容的进程内 Hook（默认关闭）。
-- **做**：多语言符号/依赖/复杂度/**调用图（caller/callee）**抽取、索引持久化与增量自愈、8 个查询工具 + 3 个管理工具。
-- **不做**：不落 chonkpilot.db（索引独立目录）；管理工具不发 LLM（hot=false）；引擎侧不做可见性门控（门控在插件）。
+- **一句话**：**tree-sitter 代码语义索引引擎**（可独立 console 运行自检）+ **`codegraph` 进程外 exe 插件**（codegraph + vfts 合一）。**引擎以库形式编入插件进程**（`go.mod` require + `replace`，直接 import），运行期**不 spawn stdio 子进程**；独立 exe 仅用于单独构建/`-probe`/`-dump` 自检。`plugin-codegraph` **不是**可用的进程内 Hook（`appwire.DefaultPlugins` 返回 nil）。**（2026-11-04 核对）**
+- **做**：多语言符号/依赖/复杂度/**调用图（caller/callee）**抽取、索引持久化与增量自愈、8 个查询工具 + 4 个管理工具。
+- **不做**：不落 chonkpilot.db（索引独立目录）；管理工具不发 LLM（hot=false）；引擎侧不做可见性门控（插件以配置启用态决定是否重建/使用）。
 
 ---
 
 ## 2. 形态与部署
 
-| 项 | 引擎（codegraph-mcp-server） | 插件（plugin-codegraph） |
+| 项 | 引擎（codegraph-mcp-server） | 插件（codegraph 插件进程） |
 |----|------------------------------|--------------------------|
-| 形态 | 独立 exe（console，**CGO 允许**） | **`codegraph` exe 插件内侧（进程外，主形态）**；`plugin-codegraph` = 兼容的进程内 lib Hook（默认关闭） |
-| 运行 | `--http[=addr]`（默认 `127.0.0.1:5701`，端点 `/mcp`）· `--stdio` · `-probe <dir>` · `-dump <dir>`（只读自检：打印落盘命中文件集合 JSON） | stdio 子进程管理（懒建 client） |
-| 构建 | `build-codegraph.ps1`（`CGO_ENABLED=1`，PATH 前置 `msys64/ucrt64/bin`） | `build-plugins.ps1` 产出 `chonkpilot-plugin-codegraph.exe`（主形态）；兼容 Hook 随 server 内嵌（`build-desktop.ps1`） |
-| 产物 | `dist/plugins/codegraph/chonkpilot-codegraph-mcp-server.exe`；**发行落点 = `<exeDir>/mcps/codegraph/`**（插件 `resolveExe` 定位，见下注） | — |
+| 形态 | 独立 exe（console，**CGO 允许**），用于单独运行/自检 | **进程外 `codegraph` exe；引擎库内联**（`codegraph/src/go.mod:16-17,37-39`）。无进程内 Hook |
+| 运行 | `--http[=addr]`（默认 `127.0.0.1:5701`，端点 `/mcp`）· `--stdio` · `-probe <dir>` · `-dump <dir>`（只读自检：打印落盘命中文件集合 JSON） | **进程内直调引擎库**（`main.go:23-24`；`RegisterTools` + vfts 管理工具 + `vfts_query` 注册进插件自带 MCP server），**无 stdio 子进程** |
+| 构建 | `build-codegraph.ps1`（`CGO_ENABLED=1`，PATH 前置 `msys64/ucrt64/bin`） | `build-plugins.ps1` 产出 `chonkpilot-plugin-codegraph.exe`（主形态）；引擎经 `require` + `replace` 编入 |
+| 产物 | `dist/plugins/codegraph/chonkpilot-codegraph-mcp-server.exe`（独立自检用）；**发行默认不投放 `<exeDir>/mcps/codegraph/`** | `dist/plugins/codegraph/chonkpilot-plugin-codegraph.exe` + `zvec_c_api.dll` |
 
-> 插件 `resolveExe` 定位引擎：`Options.Exe` > 环境变量 `CODEGRAPH_EXE` > **`<exeDir>/mcps/codegraph/chonkpilot-codegraph-mcp-server.exe`**（**不多路径猜测**，缺失即失败）。
+> **无 `resolveExe` / `CODEGRAPH_EXE` / `<exeDir>/mcps/codegraph`**：插件不定位/不拉起引擎 exe（源码中无 `os/exec`、无 `engineclient`）；引擎由 Go module 直接编入。**（2026-11-04 核对）**
 
-> 与主模块 CGO 禁令不冲突：**禁令仅针对 `src/desktop`（`-H windowsgui` 单 exe）**，本组件是独立 console 组件，自由用 CGO（官方 `go-tree-sitter`）。
+> 与主模块 CGO 禁令不冲突：**禁令仅针对 `src/desktop`（`-H windowsgui` 单 exe）**；引擎库编入的 `codegraph` 插件（独立 exe，`build-plugins.ps1`）自由用 CGO（官方 `go-tree-sitter`）。**（2026-11-04 核对）**
 
 ---
 
@@ -50,7 +50,7 @@
 
 - 查询工具必填 `workdir`；`readyGate` 未就绪 → 结构化应答（`pending/indexing/error/not_initialized`，**不算协议错误**）。
 - **完整性门（2026-10-19 P5）**：`readyGate` 先读 `<workDir>/.chonkpilot/codegraph/status.json`（`{state,pending,message,updated_at}`）：`error` → 结构化 error；`indexing`/`pending>0` → 5s 有界等待（100ms 轮询）→ `pending`；`ready && pending==0` 或文件不存在 → 回落 `EnsureReady`。
-- 注册到 gateway 时（插件侧）去掉 `workdir`（由 `context.instance_id` 注入），`handler_subject=codegraph-tool-call`，hot=true，category=codegraph。
+- 插件侧：8 个查询工具**按引擎 schema 原样**注册进插件自带 MCP server（hot=true，**保留必填 `workdir`**）；manifest `mcp.category=codegraph`、`origin=builtin`，**无 `handler_subject`**。`vfts_query` 另由插件注册并去掉 `workdir`（见 [2B §3.2](2B-vfts.md)）。**（2026-11-04 核对）**
 - **调用图语义与限制（重要，工具 description 同步声明）**：`calls` 存的是**调用点文本的最后一段名**（如 `a.b.Foo()` → `Foo`、`fmt.Println` → `Println`、`new Widget()` → `Widget`、`println!` → `println`），查询匹配 = 忽略大小写的**全等** 或 **后缀 `.name`**（故 `pkg.Foo` 与 `Foo` 视为同一目标）。这是**名字级启发式**：**无类型解析、无重载/接收者区分、无跨包唯一性判定**——`Callees` 的 `resolved=true` 仅表示该名在索引内**唯一命中**一个符号，非真实绑定；`Callers` 同理（同名不同定义会一并列出）。仅覆盖**已索引文件**内的**直接**调用；动态派发（`a["x"]()`、反射、`eval`）与未索引符号不参与。
 
 ### 3.2 支持语言（7）
@@ -81,7 +81,7 @@ IndexPaths：按绝对路径增量（files 替换 / remove 删除 / 不可索引
 - ~~**引擎生命周期（2026-10-19）**：工作线程空闲 5s / 本批失败后即 `close` 引擎子进程（下批懒重连）——引擎对索引库（bbolt `index.db`）保持打开，常驻不关会阻塞插件侧 `clear` / 全量重建（删库失败）。~~
 - ~~env：`CHONKPILOT_PLUGIN_ADDR` / `CHONKPILOT_PLUGIN_ID`（缺省 `codegraph-indexer`）/ `CHONKPILOT_CODEGRAPH_ENGINE`（不再需要 `WORK_DIR` / `INDEX_DIR`）。~~
 >
-- **〔2026-10-25 退场，D-71〕**：`codegraph-indexer.exe`、`src/lib/llm/codegraphindexer`、`queuehooks`、`plugin.index.*` 四帧与宿主 `index_queue` **全部删除**。索引改由 **codegraph 插件进程内自管**：订阅 `filesys.changed` → 按 workdir 累积路径批（去抖 2s）→ `codegraph_index_paths{workdir, files, remove}` 增量 → `codegraph_status` 回写 `codegraph.status`；未就绪/在途重建时批次并回延后重试，由 `codegraph_initialize` 全量兜底。
+- **〔2026-10-25 退场，D-71；2026-11-04 核对〕**：`codegraph-indexer.exe`、`src/lib/llm/codegraphindexer`、`queuehooks`、`plugin.index.*` 四帧与宿主 `index_queue` **全部删除**。索引改由 **codegraph 插件进程内自管**：订阅 `filesys.changed` / `session-complete`（2026-10-31 G-84 恢复）→ 按 workdir **5s 去抖** → **全量 `codegraph_initialize`**；**插件当前不调用 `codegraph_index_paths`**（引擎能力保留，无调用方），**不回写 `codegraph.status`**。
 
 **排除语义（完整 gitignore 语义，`server/index.go:excludeOptions` + `collectSourceFiles`）**：
 遍历走 `chonkpilot-util/ignore` 的 `ignore.New(...).WalkDir` / `ignore.WalkDir`（2026-10-31 起内核 + I/O 同包，与 vfts 引擎、vfts 插件清单扫描**同一实现**），
@@ -123,7 +123,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 ### 4.3 持久化与调用图数据结构（`server/graph.go` / `server/store.go`）
 
-- 目录：`<workDir>/.chonkpilot/codegraph/`；**索引本体 = bbolt 单文件库 `index.db`**（纯 Go、无 CGO，依赖 `go.etcd.io/bbolt` v1.4.2）；工作区元信息 `meta.json`（`enabled/state/progressDone/progressTotal/err/lastIndexedAt/skipDirs/stackGitignore/exts`）仍为独立 JSON —— **不并入库**：插件需**跨进程**轮询索引进度（`startProgressPoll` 读 `meta.json`），而 bolt 写事务持独占锁 → 跨进程只读取 meta 不可行（见 §4.5）。
+- 目录：`<workDir>/.chonkpilot/codegraph/`；**索引本体 = bbolt 单文件库 `index.db`**（纯 Go、无 CGO，依赖 `go.etcd.io/bbolt` v1.4.2）；工作区元信息 `meta.json`（`enabled/state/progressDone/progressTotal/err/lastIndexedAt/skipDirs/stackGitignore/exts`）仍为独立 JSON —— **不并入库**：便于独立引擎 exe/自检工具直接读取，且索引库保持「单文件原子 + 增量只写变更」。**（2026-11-04 核对）插件进程内直接取引擎状态，无跨进程 `meta.json` 轮询**（原 `startProgressPoll` 已退场）。
 - **bucket 设计**（键一律为 store 相对 `/` 路径）：
 
   | bucket | 键 | 值 |
@@ -148,21 +148,14 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 `moduleOf`（读 go.mod module 行，带缓存）· `resolveImport`（JS/TS 相对、Go module 前缀、Py/Java 包路径、Rust `crate::` 尽力解析）· `probeRelative`。
 
-### 4.5 插件侧（`plugin-codegraph`）
+### 4.5 插件侧（`codegraph` exe）
 
-见 [28-plugins §3.3](28-plugins.md)：订阅 `instance-*` + `data-prj-config-refresh` + `codegraph-tool-call`；`plugins.codegraph.enabled` 门控；`syncTools` 单飞注册/注销；**每 workdir 独立引擎 client/子进程**（`p.clients[workdir]`，`clientFor(workdir)` 首调懒建；`engineCall` 按 `args["workdir"]` 取该 workdir 的 client；`onToolCall` 按 `r.workDir` 路由）（每 workdir 独立子进程，独立索引内存/独立串行、互不干扰）。
+见 [28-plugins §3.3](28-plugins.md)：插件订阅 `instance-register` / `instance-exit` / `data-prj-config-refresh` / `server-ready` / `filesys.changed` / `session-complete`；`vfts.reindex` / `vfts.session.*` 为 UI `OnRequest` 动作。**引擎以库内联**，`codegraph` 与 vfts 共用同一进程；索引状态按 workdir 由进程内 `wsReg`（`server/graph.go:149-199`）复用 Workspace。**（2026-11-04 核对）**
 
-**查询一工具一 exe（2026-10-19，G-68 第二步）**：8 个查询工具改为独立 executor（`chonkpilot-codegraph-<tool>-executor.exe`，源 `chonkpilot-plugins/codegraph` + 公共外壳 `execx`）；契约随插件（codegraph 插件内部注册），统一标记 `internal: true`（不进 core `tools/list`）并带 `runtime`。插件仍按启用状态经 gateway `tools/register` 暴露原工具名 `codegraph_*`；`onToolCall` **先委托 core**（`plugin.Deps.ToolExec → POST /internal/exec`，参数注入 `workdir`），core 不可用或失败且 ctx 未取消时回落本地引擎（`engineCall`）。查询 executor **直连 bbolt `index.db`**（每次操作即开即关、read-only 共享锁）→ 与插件/索引器并发读安全，不需要独占 LOCK。**LOCK 有界等待（2026-10-19）**：遇 bbolt 打开超时（另一进程排他持库）→ 约 **3s** 内重试，超时返回「正在索引，不可用…」；就绪门 `status=error` 保留原始错误文本（不吞锁错误）。**故障注入测试** = `execx/lock_test.go`（codegraph 插件仓）：子进程排他持库，executor 实测 ≈3.2s 返回统一文本。
-
-**索引编排（进度 / 重试 / 空闲回收）**：
-
-- **进度推送（复用既有 `codegraph.status` 面，零新增主题）**：插件在 `configure` / `initialize` 前经 `pushStatusPhase` 写 `codegraph.status`（JSON `{state:"indexing", phase, progressDone, progressTotal}`，`phase=configure|index|…`）；索引期间 `startProgressPoll` 每 **500ms** 轮询引擎落盘 `<workDir>/.chonkpilot/codegraph/meta.json` 的 `done/total`，变化即回写（收口写 `ready`/`error`，失败原因写 `message`/`err`）。UI 只读回显该 key（**补 `phase` / `error.message` / 进度**）。
-- **保存幂等 + 去抖（扩至 stack-gitignore）**：索引配置（`plugins.codegraph.exts` / `plugins.codegraph.skip-dirs` / `plugins.codegraph.stack-gitignore`）变更 → 经 `rebuildDebouncer`（一次保存写多键 = 多次 `data-prj-config-refresh`，短窗口合并为**一轮**强制重建；`readIndexConfig` 建基线 `cfgExts/cfgSkipDirs/cfgStack`，**新旧值相同（重复保存同一份配置）不排重建**）。前端 `CodegraphConfig.vue` 保存时三键一起写、`origExts/origSkipDirs/origStackGitignore` 为幂等基线。
-- **叠加 gitignore 体系（完整 gitignore 语义）**：插件把 `plugins.codegraph.skip-dirs`（用户规则，`splitRules` 保序且保留重复项）与 `plugins.codegraph.stack-gitignore`（布尔）**原样下发**引擎（`codegraph_configure` / `codegraph_initialize` 的 `skip_dirs` + `stack_gitignore`）；**插件不再读/解析 `.gitignore`**。规则来源与优先级、匹配语义、与 git 的已知差异见 §4.1（实现 = `chonkpilot-util/ignore` 内核 + I/O 同包，与 vfts 引擎/插件**同一实现**）。
-- **失败重试**：`configure` / `initialize` 经 `callWithRetry` 失败重试，参数取 `Options.RetryAttempts`（**缺省 2，含首次**）/ `Options.RetryBackoff`（**缺省 2s**）；≤0 回落缺省。
-- **空闲回收（按 workdir 独立）**：`childIdleTimeout=5min` 已接线 —— `loop` 每 `sweepInterval=15s` 调 `sweepIdleClient`：逐 workdir 判定，**该 workdir 无活跃实例**（`refs==0`）且距其 `lastUsed` ≥ 5min → `close()` **该 workdir 的**引擎子进程（下次调用 `clientFor(workdir)` 懒重建）；仍活跃的 workdir 在清扫中刷新其 `lastUsed`（某 workdir 被回收不影响其它 workdir 的子进程）。
-- **「重建索引」入口**：设置页 `CodegraphConfig.vue` 顶部按钮（开关关闭时禁用）—— 经**既有 `data-prj-config` 面**让索引配置产生一次变更（删 `plugins.codegraph.exts` 键 + 非空则立即回写原值）→ 插件据此**强制全量重建**（零新增消息主题；插件侧对同一次操作的去抖合并只重建一轮）。
-- **关闭开关遮蔽陈旧 status**：`cgEnabled=false` → UI 一律显示「已停用」，**不展示陈旧的 `codegraph.status`**（避免误判仍在索引/已就绪），进度/阶段/错误同样不在关闭态回显。
+- **查询执行**：插件直接 import 引擎并调用（`codegraph/src/main.go:23-24`）；8 个 codegraph 查询保留 `workdir`，`vfts_query` 由插件注入/去掉 `workdir`。**无「查询一工具一 exe」**（PLUGIN-EDGE-1，2026-10-28 退场；`execx/` 源码遗留但插件不构建/不使用），也**不再委托 core / 回落本地引擎**。原「每 workdir 独立 `p.clients[workdir]` / `clientFor` / `engineCall`」**不存在**（无子进程）。
+- **索引编排（进度 / 重试 / 空闲回收）**：配置变更 **400ms 去抖**、工作区事件 **5s 去抖** → 调度**全量 `codegraph_initialize`**（`rebuildTimeout = 15min`）。**不写 `codegraph.status`**（PLUGIN-UI-2 退场），**无 `pushStatusPhase` / `startProgressPoll` / 500ms 轮询**；状态经插件动作 `engine-status` / `badge` 现取。**无 `callWithRetry` / `RetryAttempts` / `RetryBackoff`**；**无 `childIdleTimeout` / `sweepIdleClient`**（无引擎子进程可回收）。
+- **「重建索引」入口**：插件配置页 `indexNow` 直调引擎 `codegraph_initialize` / `vfts_index`（`codegraph/src/webui/config.html`）并提供 `clear` 动作；不再经 `data-prj-config` 删/写 exts 触发。
+- **开启/关闭**：`plugins.codegraph.enabled` / `.vfts.enabled` 决定配置页与重建调度；UI 状态行读 `engine-status`，**不展示陈旧的 `codegraph.status`**。
 
 ---
 
@@ -173,14 +166,14 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 | 索引（`Index{Files, syms, byName, byCall}`；`Symbol.Calls` 调用图；bbolt bucket `meta/files/symbols`） | `<workDir>/.chonkpilot/codegraph/index.db`（bbolt 单文件库） |
 | 工作区元信息（`Meta`：enabled/state/进度/err/lastIndexedAt/skipDirs/stackGitignore/exts） | `<workDir>/.chonkpilot/codegraph/meta.json`（跨进程进度读取，见 §4.3） |
 | 启用开关 `plugins.codegraph.enabled` / 索引配置 `plugins.codegraph.exts`·`plugins.codegraph.skip-dirs`·`plugins.codegraph.stack-gitignore` | **prj 库** config（团队共享；插件读写） |
-| 状态 `codegraph.status` | **prjusr 库** config（个人运行态；插件回写、UI 只读回显） |
+| ~~状态 `codegraph.status`~~ | **已退场**（PLUGIN-UI-2，2026-10-28）：插件不回写、宿主不读；状态经插件动作 `engine-status` / `badge` 现取。**（2026-11-04 核对）** |
 
 ---
 
 ## 6. 依赖
 
 - 引擎：官方 `go-sdk` + `github.com/tree-sitter/go-tree-sitter` + 6 个 grammar（社区版）+ **`go.etcd.io/bbolt` v1.4.2（索引落盘，纯 Go、无 CGO）**。**CGO 仅来自 tree-sitter**（见 §2 注）。
-- 插件：主仓 `src/lib/plugin-sdk` · `chonkpilot-plugins/codegraph`；由宿主 `host/mgr` 拉起。
+- 插件：`chonkpilot-plugin-framework`（sdk/runtime）· `chonkpilot-util`；实现 = `chonkpilot-plugins/codegraph`，由宿主 `host/mgr` 拉起。**（2026-11-04 核对：主仓 `src/lib/plugin-sdk` 已不存在）**
 - **不依赖** mcp-tools / gateway / data（索引独立）。
 
 ---
@@ -189,13 +182,13 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 | 决策 | 结论 | 理由 |
 |------|------|------|
-| 独立 console exe | 与主模块分离，允许 CGO | 主模块 CGO 禁令；tree-sitter 官方绑定需 CGO |
+| 独立 console exe | 保留为**独立构建/自检**形态；生产路径以库编入插件 | 主模块 CGO 禁令；tree-sitter 官方绑定需 CGO；内联避免进程管理复杂度 |
 | 索引不入 chonkpilot.db | 独立目录 + 独立落盘 | 派生数据、体量大、可重建 |
 | 索引落盘 = **bbolt 单文件库**（`index.db`） | bucket `meta/files/symbols`；事务原子 + 增量只写变更文件 | 旧 JSON「整体重写」非原子且 O(N)；bolt 提供原子事务/增量写/多读单写，纯 Go 不引入 CGO |
-| 工作区元信息保留 `meta.json` | 与索引库分离 | 插件需**跨进程**读索引进度；bolt 写期独占锁 → 只读取 meta 不可行 |
+| 工作区元信息保留 `meta.json` | 与索引库分离 | 供独立引擎 exe/自检读取；插件进程内直接取状态，无跨进程轮询 |
 | 管理工具 hot=false | 不发 LLM | 管理动作由插件调用 |
-| workdir 在插件侧剥离 | gateway 工具去 `workdir` | 由 `context.instance_id` 路由 |
-| 就绪门控在插件 | 引擎不判可见性 | 职责单一 |
+| `vfts_query` 去 `workdir`，codegraph 查询保留 | 由插件从 `_meta.chonkpilot.work_dir` 注入 | 引擎 schema 统一保留 workdir；仅 LLM 可见的 vfts_query 隐藏它 |
+| 就绪门控在引擎 | 引擎 `readyGate` 结构化应答，插件不另设可见性门控 | 职责单一；工具静态注册 |
 
 ---
 
@@ -211,20 +204,20 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 
 ## 9. 现状与待办
 
-- ✅ **索引落盘由 JSON 改为 bbolt**：索引本体 = `<workDir>/.chonkpilot/codegraph/index.db`（bucket `meta/files/symbols`；事务原子 + 增量只写变更）；`meta.json` 保留为工作区元信息（跨进程进度）；旧 `index.json` **不自动迁移**（检测到即删除 + 全量重建），损坏/截断库自动删除重建。引擎新增只读自检 `-dump <dir>`（L4 命中集合断言用）。详见 §4.3。
-- ✅ **调用图（caller/callee）已落地**：新增 `codegraph_callers` / `codegraph_callees` 两个 hot 查询工具（引擎 11 工具 = 3 管理 + 8 查询；插件 gateway 同步注册 8 个）；`Symbol.Calls` + `Index.byCall` 反向索引；7 语言 AST 调用提取（口径与限制见 §3.1/§4.2）。**已知限制**：名字级启发式（无类型/重载/接收者解析、不区分跨包同名）、仅直接调用、动态派发与未索引符号不参与。
-- ✅ **多 workdir 已落地**：引擎子进程与索引状态**已按 workdir 独立**（`p.clients[workdir]` 每 workdir 一个子进程，独立索引内存/独立串行；空闲按 workdir 独立回收）——`codegraph.status` 键结构与 JSON 字段**未变**（写到该 workdir 实例的 prjusr 库）；**工具面/工具名/schema 未变**（LLM 不感知 workdir，靠 `context.instance_id → workdir` 路由）。**工具面差异注册（按 workdir 区分工具名/可见性）留待 v2**（gateway `tools/register` 无 scope，且契约要求工具名 = 引擎名 → 同名只能一份注册，多 workdir 同时启用时仍全局一份、归属排序后第一个 workdir）。
-- ⚠️ 引擎侧 `Configure` 的 `enabled` 仅记录，**真正门控在插件**（文档需以此为准）。
-- ✅ **索引进度 + 失败重试已落地**：进度经**既有** `codegraph.status` 面回写 `phase`/`progressDone`/`progressTotal`（**无新主题**，轮询引擎 `meta.json`）；`configure`/`initialize` 失败按 `RetryAttempts`/`RetryBackoff`（缺省 2 / 2s）重试。详见 §4.5。
-- ✅ **空闲回收已接线（按 workdir 独立）**：`childIdleTimeout`（5min）+ `sweepIdleClient`（15s 扫描）**逐 workdir**回收无引用且长期空闲的引擎子进程（`clientFor` 懒重建）。详见 §4.5。
-- ✅ **心跳超时退出判定 = 编译开关（按 `-tags split` 编入）**：本插件 `heartbeatTimeout`（90s）判定**按编译形态分流**——`tick()`（`codegraph.go:259`）调 `sweepInstances`：**编入 `-tags split` 时** 由 `sweep_split.go` 生效（实例最近注册/心跳超 `instance.HeartbeatTimeout`（90s）→ 视同退出，走**既有** `instanceGone`：解绑 + 递减所属 workdir 引用 → 引用归零按既有规则注销 gateway 工具面；引擎子进程随后由 `sweepIdleClient` 按既有空闲规则回收）；**唯一形态 desktop（默认构建）为空实现**（`sweep_inprocess.go`，实例失效以**显式 `instance-exit`** 清理）。`instance-heartbeat` 订阅保留。**空闲基准 = 每 workdir 的 `lastUsed`**——由 `sweepIdleClient` 对活跃 workdir 刷新；`instRec.last` 仅供记录时刻，默认构建下不用于退出判定，split 下用于心跳超时判定。通用口径见 [28-plugins §2](28-plugins.md)。
+- ✅ **索引落盘由 JSON 改为 bbolt**：索引本体 = `<workDir>/.chonkpilot/codegraph/index.db`（bucket `meta/files/symbols`；事务原子 + 增量只写变更）；`meta.json` 保留为工作区元信息；旧 `index.json` **不自动迁移**（检测到即删除 + 全量重建），损坏/截断库自动删除重建。引擎保留只读自检 `-dump <dir>`（独立 exe/调试用；**L4 已不再使用**，改经查询工具面探测）。详见 §4.3。**（2026-11-04 核对）**
+- ✅ **调用图（caller/callee）已落地**：引擎 **12 工具 = 4 管理 + 8 查询**（含 `codegraph_callers` / `codegraph_callees`）；插件注册 8 个查询（hot）+ vfts 1 个。`Symbol.Calls` + `Index.byCall` 反向索引；7 语言 AST 调用提取（口径与限制见 §3.1/§4.2）。**已知限制**：名字级启发式（无类型/重载/接收者解析、不区分跨包同名）、仅直接调用、动态派发与未索引符号不参与。
+- ✅ **多 workdir 已落地（进程内）**：索引状态按 workdir 独立（进程内 `wsReg` 复用 Workspace，`server/graph.go:149-199`），**非子进程**；**无 `codegraph.status` 键**（已退场）。工具面/工具名/schema 未变，执行按 `_meta.chonkpilot.work_dir` / `context.instance_id` 路由。**工具面差异注册留待 v2**。**（2026-11-04 核对）**
+- ⚠️ 引擎侧 `Configure` 的 `enabled` 仅记录，**真正门控在插件配置页/重建调度**（文档需以此为准）。
+- ⚠️ **索引进度推送与失败重试未实现**：插件**不回写** `codegraph.status`，无 `pushStatusPhase` / `startProgressPoll` / 500ms 轮询，也无 `callWithRetry` / `RetryAttempts` / `RetryBackoff`；状态经 `engine-status` / `badge` 现取。**（2026-11-04 核对）**
+- ⚠️ **空闲回收不存在**：无引擎子进程，`childIdleTimeout` / `sweepIdleClient` / `clientFor` 均无实现（D-71 后引擎库内联）。
+- ⚠️ **心跳 sweep 不存在**：插件仓无 `codegraph.go` / `sweep_*.go` / `sweepInstances`，不订阅 `instance-heartbeat`；实例失效只走显式 `instance-exit`。通用心跳口径见 [28-plugins §2](28-plugins.md)。**（2026-11-04 核对）**
 
 ---
 
 ## 10. 关联测试
 
 - 引擎：`chonkpilot-plugins/codegraph/src/engines/treesitter/server/{server,charenc}_test.go`（60 个测试：path / Index / Workspace 持久化 / 查询 / 语言 / 扫描-初始化-自愈 / 参数助手与 readyGate / **调用图** / **bbolt 索引落盘** / **编码归一（`TestIndexSource` / `TestIndexNonUTF8Source`：UTF-8 BOM、GBK、UTF-16LE 源码均能解析出中文标识符）**）。
-- 插件：`chonkpilot-plugins/codegraph/src/config_test.go`（工具定义 / schema / exe 路径解析）。
+- 插件：`chonkpilot-plugins/codegraph/src/{config_test.go,webui_asset_test.go,sessionindex_test.go,sessionreconcile_test.go}`（配置迁移/徽标/动作面、webui 资源、会话索引、后台对账）。**（2026-11-04 核对：`tools_mcp_test.go` 不在 codegraph 仓）**
 
 ### 单元测试计划
 
@@ -241,7 +234,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 | 7 调用图（`extract.go` `callKinds`/`callsWithin` + `graph.go` `Callers`/`Callees` + `server.go` 新工具） | `TestCallGraphExtraction`（+`persist round-trip`）· `TestCallers` · `TestCallees` · `TestCallGraphTools` | **7 语言真实语料**的调用提取（普通/方法/选择表达式最后一段/跨文件/`new`/宏/泛型剥离/内层函数剪枝）与 `Calls` 落盘往返；查询（精确名/大小写/`pkg.Foo`↔`Foo`/file 过滤/limit/未命中/无索引/调用方自带 calls）；`Callees`（id 或 file+name 定位/唯一解析回填/歧义 `resolved=false`/limit/未找到）；工具层（正常/未就绪/参数缺失/未命中 + `TextToolNames` 自检） |
 | 8 索引落盘（bbolt，`store.go`） | `TestIndexStoreUsesBoltDB` · `TestIndexReloadAfterClose` · `TestReconcileIncrementalPersists` · `TestLoadIndexCorruptDB`（garbage/truncated/empty）· `TestLegacyJSONNotMigrated` · `TestConcurrentReadIndex` | 落盘为 `index.db`（不再产出 `index.json`）；即开即关后新实例重开完整读回（符号 ID 重建/导入/基线字段）；增量（新增+修改+删除）只写变更并重开一致；损坏/截断/空库**兜底**（不 panic、视为未初始化可重建）；旧 JSON **不自动迁移**（删除 + 状态回未初始化 + 重建）；并发读安全（16 goroutine） |
 
-**插件测试**：`chonkpilot-plugins/codegraph/src/config_test.go`（不依赖 MQ）：`TestQueryToolDefinitions`（8 个查询工具名称/描述/schema 不含 workdir）· `TestSchemaJSON` · `TestToolReply` · `TestStrval`（string/bool/nil 归一）· `TestResolveExe`（模拟 dist 布局，验证 exe 搜索优先级）· **索引配置**：`TestSplitRules`（规则保序且保留重复项）· `TestReadIndexConfig`（`skip_dirs` 原样透传 + `stack_gitignore` 透传 + 幂等基线播种）· **编排白盒**：`TestRunWithRetry`（重试/退避）· `TestIdleReclaimDue`（空闲回收判定）· `TestPhaseStatusJSON`（进度快照 `{state,phase,progressDone,progressTotal}`）· `TestReadEngineProgress` / `TestPollEngineProgressSequence`（读/轮询引擎 `meta.json`）· **多 workdir**：`TestMultiWorkdirIndexAndQueryIsolation`（两 workdir 各自 `files:3`/`files:7` 互不覆盖、状态各写各的 prj 库、查询不串台）· `TestClientForPerWorkdirIdentity`（同 workdir 复用、异 workdir 各自独立 client）· `TestSweepIdleClientPerWorkdir`（空闲回收按 workdir 独立判定/回收）。
+**插件测试**：`chonkpilot-plugins/codegraph/src/config_test.go`（不依赖 MQ，实测函数）：`TestMigrateLegacyKeys` / `TestMigrateIdempotent` / `TestMigrateKeepsOldWhenNewExists` / `TestMigrateRetriesAfterPartialFailure` / `TestMigrateReadFailureKeepsOld` / `TestMigrateOnlyInMigrationFunc`（旧键迁移与幂等）· `TestBadgeText` / `TestHandleBadge` / `TestHandleBadgeNoWorkdir`（徽标）· `TestHandleStatus` / `TestHandleClearNoStatusMirror`（状态/清除不镜像状态键）· `TestHandleSaveWritesNamespaceAndPushesEngine` / `TestHandleSaveIdempotent` / `TestHandleSaveOnlyEnabledEngine` / `TestHandleSaveEngineErrorExplicit` / `TestHandleSaveWithoutWorkdir` / `TestHandleSaveValidation`（保存下发/幂等/校验）· `TestNormalizeValueAccepts` / `TestHandleLoadDefaults` · `TestOnPrjConfigRefreshApplies` / `TestOnPrjConfigRefreshIgnoresOtherKeys` · `TestOnInstanceRegisterMigratesAndApplies` · `TestConfigPageUsesAPISave`。另有 `sessionindex_test.go` / `sessionreconcile_test.go` / `webui_asset_test.go`。**原文档列举的 `TestQueryToolDefinitions` / `TestSchemaJSON` / `TestToolReply` / `TestStrval` / `TestResolveExe` / `TestSplitRules` / `TestReadIndexConfig` / `TestRunWithRetry` / `TestIdleReclaimDue` / `TestPhaseStatusJSON` / `TestReadEngineProgress` / `TestPollEngineProgressSequence` / `TestMultiWorkdir...` / `TestClientForPerWorkdirIdentity` / `TestSweepIdleClientPerWorkdir` 在插件仓 0 命中，已删除。**（2026-11-04 核对）**
 
 **测试数据**：分组 5 需真实源码——`t.TempDir()` 建 `testproj/`（`main.go` 含 `func main`/`type Config`、`utils/helper.go` 含 `func Helper`/`type Result`、`go.mod`）。
 

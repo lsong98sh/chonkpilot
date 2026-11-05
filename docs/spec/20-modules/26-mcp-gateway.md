@@ -1,14 +1,14 @@
 # 26 · chonkpilot-agent/gateway（MCP 网关）
 
-> 状态：✅ 与代码一致（2026-10-21 GATEWAY-2 L5/L6/L7/L8 同步；2026-10-28 L6 改「动态池 · 不保留 free 池」并实施；见 §0 现状订正、§9）
-> 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [25-mcp-server](25-mcp-server.md) · [27-mcp-tools](27-mcp-tools.md)
-> 代码目录：**内核 = `chonkpilot-agent/gateway/src/`**（独立目录，与主仓同级：`gateway/` 包 + `chonkpilot-util/{sandbox,winproc}`，零本仓依赖；`sandbox` 2026-11-03 从 `chonkpilot-agent/sandbox` 下沉）；**适配胶水层 = `src/lib/gwadapter/`**（`mqadapter/` + `facadeapi/` + `internal/facade/`，经 `require github.com/lsong98sh/chonkpilot-agent/gateway v0.1.0` 引用内核 —— 2026-10-22 起不再 `replace` 本地目录，见 [10 §3](../10-architecture/10-分层与依赖.md)）；**exe 外壳 = `src/others/mcp-gateway/`**（`main.go` + `gateway_service.go`；跨 module 经 `facadeapi` 转发 `internal/facade`，保持 internal 隔离）。**2026-10-27：主仓 `src/lib/gateway/` 旧副本已随 `src/plugins/` 清理一并删除**，内核唯一源 = 独立仓。
+> 状态：⚠️ **部分过时（2026-11-04 核对）** —— 内核（19 方法面/三传输/动态池/取消阶梯/Hooks/progress/沙箱/命名）与代码一致；**§2 Params、§3.1 管理 REST、§4.0 装配链、§4.1 启动、§4.3 mcp_find 语义、§6 依赖、§10 两个测试名已过时**，见 §0
+> 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [25-mcp-server](25-mcp-server.md) · [27-mcp-tools](27-mcp-tools.md)（🗄 已退场，仅留档）
+> 代码目录：**内核 = `chonkpilot-agent/gateway/src/`**（独立目录，与主仓同级：`gateway/` 包 + `chonkpilot-util/{sandbox,winproc}`，零本仓依赖；`sandbox` 2026-11-03 从 `chonkpilot-agent/sandbox` 下沉）；**适配胶水层 = `src/lib/gwadapter/`**（`mqadapter/` + `facadeapi/` + `internal/facade`，主仓各模块经 `require .../gateway v0.1.0` + **`replace` 本地目录**引用内核）；**exe 外壳 = `src/others/mcp-gateway/`**（`main.go` + `gateway_service.go`；跨 module 经 `facadeapi` 转发 `internal/facade`，保持 internal 隔离）。**2026-11-04 核对**：原「2026-10-22 起不再 `replace`」不成立——`src/lib/gwadapter/go.mod:42`、`src/lib/llm/go.mod:72` 等仍 `replace ... => .../gateway/src`，gateway 自身也 replace util/agent。**2026-10-27：主仓 `src/lib/gateway/` 旧副本已删除**，内核唯一源 = 独立仓。
 
 ---
 
-## 0. 现状订正（2026-10-21，GATEWAY-2 L5 / L6 / L7 / L8）
+## 0. 现状订正（2026-10-21，GATEWAY-2 L5 / L6 / L7 / L8；**2026-11-04 复核**）
 
-> ✅ **〔订正（2026-11-03，SANDBOX-WRITE-1）〕沙箱能力已下沉到 `chonkpilot-util/sandbox`**（原 `chonkpilot-agent/sandbox` 已删除；gateway 与插件共用同一实现）。
+> ✅ **〔订正（2026-11-03，SANDBOX-WRITE-1）〕沙箱能力已下沉到 `chonkpilot-util/sandbox`**（原 `chonkpilot-agent/sandbox` 已下沉；**2026-11-04 核对**：旧目录仍在盘上但为**空壳**，无文件）。
 > 新增 **`SetSandboxDirsProvider`**（宿主注入 `func(workdir) []SandboxRule` 快照查询）+ **`_meta.chonkpilot.sandbox = {enabled, writable_dirs}`**：
 > 在 `proxyProvider.Call` 里按 `sandboxOn(entry)`（usr `tool_sandbox.mcps`）决定是否注入，白名单 = `work_dir` + `<work_dir>/.chonkpilot/tmp` + `WritableRoots(entry.SandboxDirs)`（去重）。
 > `SandboxRule.Writable` 仅作旧值兼容（`WritableRoots` 不再按其过滤：`security-*` 已收敛为**只写白名单**，见 [14 订正块](../10-architecture/14-安全域-agentbox.md)）。
@@ -18,26 +18,26 @@
 | 组件 | 载体 | 职责 |
 |------|------|------|
 | **Contracts** | `registry.go` / `toolschema.go` / `serverslist.go` | 下游条目、工具暴露名 / 前缀 / 覆盖表、`_meta` 归一 |
-| **Policy** | `purpose.go`·`subjects.go`·`breaker.go`·`tooloverride.go`·`primitives.go` | 调用准入（`tool.before_call` 钩子）、熔断、异步覆盖、统一 `{status}` 结果封装 |
+| **Policy** | `provider.go`（purpose 逻辑）/ `subjects.go` / `breaker.go` / `tooloverride.go` / `primitives.go` | 调用准入（`tool.before_call` 钩子）、熔断、异步覆盖、统一 `{status}` 结果封装（**无独立 `purpose.go`**，2026-11-04 核对） |
 | **Dispatcher** | `provider.go` / `registered_provider.go` | 三类下游 provider（`stdio` 自持子进程 / `proxied` 远程 http·sse / `registered` 注册回调）+ `_meta` 注入 |
-| **TaskLayer** | `tasks.go` / `execsink` | 执行四态（同步 / 异步 / pending / awaiting）+ 取消 + 完成回报（**只发 server**） |
+| **TaskLayer** | `tasks.go` / `execsink`（窄接口在 `tasks.go:111`，**无独立 execsink 文件**） | 执行四态（同步 / 异步 / pending / awaiting）+ 取消 + 完成回报（**只发 server**） |
 
-- **① 零工具实现（L5）**：`Params.MCPServer`、self 内存节点（原 `selfnode.go`，已删除）、dir 目录节点（原 `dirnode.go`，已删除）、`ContractScanner`、资产注册表（`mcp_find/mcp_load` 的目录资产面）、`llmToolPick` **全部删除**。`Params` 现为 `Transport` / `Servers` / `NsPrefix` / `CallTimeout` / `CBThreshold` / `CBCooldown` / `MaxTasks` / `AsyncMode` / `ManageAddr` / `ExecSink` / `ProgressHandler` / `ElicitHandler` / `Logf`（无 `MCPServer` / 无 `MCPConfig`）。
+- **① 零工具实现（L5）**：`Params.MCPServer`、self 内存节点（原 `selfnode.go`，已删除）、dir 目录节点（原 `dirnode.go`，已删除）、`ContractScanner`、资产注册表（`mcp_find/mcp_load` 的目录资产面）、`llmToolPick` **全部删除**。**〔2026-11-04 核对〕** `Params` 实际字段 = `Transport` / `Servers` / `NsPrefix` / `CallTimeout` / `PreHookTimeout` / `CBThreshold` / `CBCooldown` / `MaxTasks` / `AsyncMode` / `ExecSink` / `ProgressHandler` / `ElicitHandler` / `Logf` / `Hooks`（`mcpgateway.go:34-73`）；**无** `MCPServer` / `MCPConfig` / `ServersFile` / `ManageAddr`。
 - **② 内置与第三方一视同仁（L5；P0a 2026-10-29 订正）**：全部下游都是**普通 provider**；`Origin=builtin` 仅决定是否注入 `_meta["chonkpilot"]`，**不再有 `builtin` 分支**。`tools/register` 的注册工具经 `registeredProvider` 参与路由，**暴露名 = 原名**（内置 `self` 节点不再加 `self_` 前缀，见 §4.3.1）。
 - **③ 池化（L6）**：`procSlot`（进程，仅 stdio）与 `connSlot`（连接，http/sse）**拆分**；`pool_key`、`pool_size`、`max_concurrent`（缺省 **5**）、`call_timeout`、`grace_ms`（缺省 **2000**）、`kill_policy`（固定 **cascade-report**）由 `ServerEntry` 下发；`inFlight` 升级为 **`call_id → inflight`** 注册表（可查询单次调用是否结束、连带影响范围）。**2026-10-28 起 `isolate=true` 走「动态池 · 不保留 free 池」**：键 = `(workdir, exe)`、每键等待队列、调用结束 1s 交接、实例数按需 0..`maxConcurrent`（无 free 队列 / 无空闲 TTL / 无后台回收线程；`pool_size` 不再消费）。**stdio 不跨 workdir 复用**（沙箱按 workdir 打标）。
 - **④ 取消阶梯（L7）**：`CancelCall`（`provider.go`）＝ **L0 协议取消 + 标记槽「取消中/不可复用」→ L1 宽限 `grace_ms` → L2 关连接/会话 → L3 杀进程树**；远程（proxied）无进程可杀 → **L3 回退 L2 断连**；同槽在飞调用按 **`cascade-report`** 连带终止（`ErrKindSlotKilled` + `Cascaded []call_id`）。**〔2026-11-04 D-68〕** L1 只认**对端应答**为「结束」（ctx 撤销后本地立刻返回不算），宽限到点即 kill 并退役该槽（取消后下一次调用拿到新进程）；插件 http 无网关侧进程 → 只断连。详见 [18 §3.9](../10-architecture/18-工具异步超时与取消.md)。
 - **⑤ 通知路由（L8）**：下游 `progress` / `elicitation` 按 **`progressToken`（= `call_id`）** 归位到具体调用（`Params.ProgressHandler` / `ElicitHandler`）；未注入 = progress 丢弃 + warn、elicitation 不注册 handler（客户端不声明该能力）。
-  - **〔2026-10-28 定案〕** `progress` **接**：llm server 注入 `ProgressHandler` → 新增下行事件 `mcp-tools-progress{instance_id, tool_call_id, progress, total?}` → 前端工具条目 **title** 显示 `进度 20%`（无 `total` 或无进度则**不显示**）。`elicitation` **不接**（`ElicitHandler` 保持不注入，提问由 `ask_user`：`session-ask` + `ask-user-reply` 承担）。详见 [49 §2.20](../40-roadmap/49-待实现项.md)。
+  - **〔2026-10-28 定案〕** `progress` **接**：llm server 注入 `ProgressHandler` → 新增下行事件 `mcp-tools-progress{instance_id, tool_call_id, progress, total?}` → 前端工具条目 **title** 显示 `进度 20%`（无 `total` 或无进度则**不显示**）。`elicitation` **不接**（`ElicitHandler` 保持不注入，提问由 `ask_user`：`session-ask` + `ask-user-reply` 承担）。详见 [49 §2.20](../40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)。
   - **✅ 已实施（2026-10-28）**：装配点 = `src/lib/assembly/assemble.go`（`mcpgateway.Params.ProgressHandler = mqadapter.Transport.ProgressHandler()`；`Bus` 缺省时不注入）。主题名/载荷由适配层决定（gateway 内核仍不 import msgkeys）：`src/lib/gwadapter/mqadapter/mqadapter.go` 把 `ProgressEvent{CallID, InstanceID, Tool, Progress, Total, Message}` 归一为 61 声明字段 `{instance_id, tool_call_id, progress, total?}` —— **`total` 未上报（≤0）→ 不带该键**，`tool`/`message` **不透出**（契约未声明）。前端 = `src/frontend/src/composables/useToolProgress.js`（模块级单例 `mq.on`，`tool_call_id → {progress,total}` 内存表）+ `views/chat/MessageItem.vue`（`tool_pair` 根节点 `:title`；无事件 / 无 `total` → 不渲染 title）。契约断言：`src/lib/gwadapter/mqadapter/mqadapter_test.go`（`TestProgressHandlerEmitsContractTopic`）· `src/test/chonkpilot-lib/unittest/msgkeys/tools_progress_keys_test.go` · 前端 `test/contractReconcile.test.js`。**`ElicitHandler` 仍恒 nil**。
-- **⑥ 沙箱（L7）**：仅 `stdio` 的 spawn 生效，`ServerEntry.Sandbox` / `SandboxDirs`（`prj security-*` 快照，类型 = `[]SandboxRule`）→ **独立仓 `chonkpilot-agent/sandbox/`**（2026-10-21 随 gateway 从 `core/sandbox` 迁入、2026-10-22 随内核迁出主仓；Windows **Low IL + Job Object**，只限写，允许目录须 `EnsureLowIL` 打标）。`SandboxRule` 类型与 `WritableRoots` 归 gateway 包；**配置的读取与持有仍在宿主**（llm/server 解析 `security-*` 后填入）。
+- **⑥ 沙箱（L7；2026-11-04 核对）**：仅 `stdio` 的 spawn 生效，`ServerEntry.Sandbox` / `SandboxDirs`（`prj security-*` 快照，类型 = `[]SandboxRule`）→ **`chonkpilot-util/sandbox`**（2026-11-03 起；原 `chonkpilot-agent/sandbox` 已于 2026-11-03 下沉，**旧目录仍为空壳**，仅盘上残留）。Windows **Low IL + Job Object**，只限写，允许目录须 `EnsureLowIL` 打标。`SandboxRule` 类型与 `WritableRoots` 归 gateway 包；**配置的读取与持有仍在宿主**（llm/server 解析 `security-*` 后填入）。
 
 ---
 
 ## 1. 职责与边界
 
-- **一句话**：**工具唯一入口**——聚合 self 能力 + 下游 server，做路由/前缀别名/scope 隔离/异步任务/熔断，并对外提供官方 MCP 门面（stdio/http/sse）与 `mcp-*` 消息方法面。
-- **做**：19 个方法面（四原语 + servers/* + gateway/*；`tasks/*` 已移除，见 §3.1）、三种下游传输（stdio/http/sse）、dir 节点 / self 内存节点、工具路由与 hot、异步四态、熔断。
-- **不做**：不 spawn executor（executor 只被 mcp-server 的 `callTool` spawn）；不感知 session/turn 语义（仅作执行上下文参数）。
+- **一句话**：**工具唯一入口**——聚合下游 server（含装配方预连接的 self 会话），做路由/前缀别名/scope 隔离/异步任务/熔断，并对外提供官方 MCP 门面（stdio/http/sse）与 `mcp-*` 消息方法面。
+- **做**：19 个方法面（四原语 + servers/* + gateway/*；`tasks/*` 已移除，见 §3.1）、三种下游传输（stdio/http/sse）、工具路由与 hot、异步四态、熔断。**2026-11-04 核对**：gateway 不再内建 self / dir 内存节点，二者分别变为「预连接 `ServerEntry`」与「普通 stdio 下游」。
+- **不做**：不 spawn 出厂 executor（出厂执行器已退场；仅 `stdio` 下游按 `runtime` spawn 进程并施加沙箱）；不感知 session/turn 语义（仅作执行上下文参数）。
 
 ---
 
@@ -51,22 +51,23 @@
 | 端点 | http：`/mcp` 与 `/`；sse：`/sse` 与 `/`（facade 门面） |
 | 构建 | `build-mcp-gateway.ps1`（源 = `dist/mcp-server/capability`） |
 
-`Params`：`Transport`(必填；上游通道端口 = 出站 `Call` + 入站 `Subscribe`，mq 实现 = `mqadapter.New(bus)`；MOD-1 M0.5 起内核零 `mq`/`msgkeys` 依赖) · **`Hooks`**（出站通知宿主回调 = `OnTaskReport` / `OnMCPChanged` / `OnToolsTimeout`；**主题名由宿主决定**，mq 实现 = `mqadapter.Hooks()`；`nil` = 该通知丢弃且 `Start` 打 Warn） · `MCPServer` · `MCPConfig` · `Servers` / `ServersFile` · `NsPrefix` · `CallTimeout`(60s) · `CBThreshold` / `CBCooldown`(30s) · `MaxTasks`(8) · `AsyncMode` · `ManageAddr` · `Logf`。
+`Params`（2026-11-04 核对）：`Transport`(必填；上游通道端口 = 出站 `Call` + 入站 `Subscribe`，mq 实现 = `mqadapter.New(bus)`；内核零 `mq`/`msgkeys` 依赖) · **`Hooks`**（出站通知宿主回调 = `OnTaskReport` / `OnMCPChanged` / `OnToolsTimeout`；**主题名由宿主决定**，mq 实现 = `mqadapter.Hooks()`；`nil` = 该通知丢弃且 `Start` 打 Warn） · `Servers` · `NsPrefix` · `CallTimeout`(60s) · `PreHookTimeout`(10min) · `CBThreshold` / `CBCooldown`(30s) · `MaxTasks`(8) · `AsyncMode` · `ExecSink` · `ProgressHandler` / `ElicitHandler` · `Logf`。**无 `MCPServer` / `MCPConfig` / `ServersFile` / `ManageAddr`**（均已随 L5/PRODSIM-1 删除）。
 
 > **通知面归属（2026-10-21）**：内核**不再持有任何消息主题名**。`mcp-tasks-report` / `mcp-gateway-changed` / `mcp-tools-timeout` 三个出站通知改由 `Hooks` 表达语义事件，「发到哪个主题」与序列化全部在宿主（`mqadapter.Hooks()`）；订阅侧（llm/server、facade）直接用 `msgkeys` 主题常量。`Dispatcher` 因此只保留 `Call`（`Publish` 已删除）。
 
-> **接入源三类**（gateway 无 DB，全部由装配方传入或按参数读取）：
-> ① **`MCPServer`（self）** = 装配方自建的 go-sdk server，能力来自 **capability 契约扫描**（含 mcp-tools，见 [21-llm-server §2.1](21-llm-server.md)、[25-mcp-server](25-mcp-server.md)）（装配链见 §4.0）；
-> ② **`Servers` 参数** = **宿主注入**的下游（llm 启动时把用户维护 MCP（usr `mcps` 表）转成 `ServerEntry` 传入；单体不读 exe 同目录 `config.json`。见 [21-llm-server §2.1](21-llm-server.md)、`src/lib/llm/server/gateway_servers.go`）；
-> ③ **`ServersFile`**（`servers.list` 文件）= 部署形态来源；**无源（空路径 / 未给文件）→ 空列表（不报错）**，gateway 照常启动、工具面可为空（仅 self/meta）；**显式路径存在却读取失败、或内容非法 → 报错**（真错误，启动失败）。**无「内置默认」回退**（`defaultServersList` 已移除；无源不报错）。
+> **接入源（2026-11-04 核对；gateway 无 DB，全部由装配方传入）**：
+> ① **`Servers` 中的预连接 `ServerEntry`（self）** = 装配方自建的 go-sdk server 经内存传输连成的 `ClientSession`（`src/lib/assembly/assemble.go:101-108`：`ServerEntry{ID:"self", Origin:builtin, Session:ss}`）；gateway 只走标准 client（`ListTools`/`Call`），**不持有能力源、不执行契约扫描**。
+> ② **`Servers` 参数中的其它下游** = 宿主注入（llm 启动时把用户维护 MCP（usr `mcps` 表）转成 `ServerEntry` 传入；**gateway lib 不读 `servers.list` 文件**，exe main 读文件后传入）。
+> ③ **静态 `servers.list`** 仅由 **exe main**（`-servers-file`）读取后转成 `Servers` 传入；**无「内置默认」回退**。
 > 运行时动态接入另走消息方法面 `servers/register`（§5.1.1，按 `scope` 隔离）。
-> **core-mcp-server（2026-10-19；2026-10-27 订正面；2026-10-28 口径订正）**：工具唯一前门由宿主拉起后，经 `servers/register` 登记为内置下游（`name=core`、`namespace="-"`（P0a：暴露名原样，不加 `self_`）、`origin=builtin`、`mcp_server={url,transport:"http",headers:{Authorization:"Bearer <token>"}}`）；**core 暴露面 = `--root` 下实际存在的非 internal 契约**——当前出厂仅 server 域 6（`capability/tools/server/`，源 `src/lib/llm/contracts/tools/`）。file 11 / task / mcp（`mcp_find/load/invoke`）/ web / codegraph 8 / vfts 1 均由各自插件 MCP server（manifest `namespace:"-"`）暴露；`internal` 契约不进 core 工具面。取消/超时由 core 按 call 落实（该次请求 ctx 取消 → `KillTree` 本次 executor），gateway 不做进程级 kill。
+>
+> **core-mcp-server（2026-11-04 核对）**：桌面单体**不再拉起 core**（`src/lib/llm/server/boot.go:216`）；独立 gateway 的 `-capability` 把契约根作为**普通 stdio 下游** `dir:<root>` 接入（`src/others/mcp-gateway/main.go:80-99`：`core-mcp-server --stdio --root <root>`），目录节点同法（`src/lib/llm/server/capnodes.go:252-275`）。core 暴露面 = `--root` 下实际存在的非 internal 契约（出厂 server 域 6，源 `src/lib/llm/contracts/tools/`）。file 11 / task 4 / mcp（`mcp_find/load/invoke`）/ web 3 / codegraph 8 / vfts 1 均由各自插件 MCP server（manifest `namespace:"-"`）暴露；`internal` 契约不进 core 工具面。取消/超时由 core 按 call 落实（该次请求 ctx 取消 → `KillTree` 本次 executor），gateway 不做进程级 kill。
 >
 > **纯远程（proxied）取消语义（2026-10-19 修正）**：`proxyProvider.Terminate` 对 `kind=proxied`（无自持子进程）为**协作式 no-op** —— 取消已由执行池 ctx 送达（MCP client 中止 HTTP 请求并发出 `notifications/cancelled`），对端进程可能继续运行 = 语义「尽力」；**不重建共享连接**。此前 proxied 走 `Invalidate`（断连 + `initialize` 握手）会在取消路径上同步阻塞 mq 同步派发线程（实测 30s ctx 打满 → `task-stop` / `/eval` 超时），并发取消还会把共享槽置空 → 后续调用报 `no transport connection`。`spawned`（自持子进程）仍按 `(instance, workdir)` kill + respawn。
 >
-> ~~meta 3 / domain 5 为一工具一 exe（`capability/executors/chonkpilot-{meta-*,ask-user,tool-result,tool-stop,subchat-*}-executor.exe`）~~ **〔2026-10-28 退场〕**：meta 3 由 `mcp` 插件承载、domain 6（`ask_user` / `next_run` / `subchat_open` / `subchat_finish` / `tool_result` / `tool_stop`）由 llm-server 经 `tools/register` 注册并在进程内执行；`capability/executors/` 现只有 `chonkpilot-{script,web}-executor.exe`。
+> ~~meta 3 / domain 5 为一工具一 exe~~ **〔2026-10-28 退场；2026-11-04 核对〕**：meta 3 由 `mcp` 插件承载、domain 6（`ask_user` / `next_run` / `subchat_open` / `subchat_finish` / `tool_result` / `tool_stop`）由 llm-server 经 `tools/register` 注册并在进程内执行；**`capability/executors/` 已整体不产出**（D-72，`src/lib/mcp-tools` 退场），原「现只有 `chonkpilot-{script,web}-executor.exe`」亦已失效。
 >
-> **来源标注与 `_meta` 内部上下文（R-11 边界）**：`ServerEntry.Origin` = `builtin`（本仓自有/内置）| `user`（用户定义/第三方），**缺省/未知 → `user`（安全默认）**。gateway 只向 `Origin=builtin` 的下游注入内部调用上下文 `_meta["chonkpilot"]{instance_id,work_dir,data_dir,session,turn,tool_call_id,purpose}`（`purpose` = 本次调用运行目的，C1 2026-10-15，见 §4.3）；`user` 一律不注入、也不产生 `CHONKPILOT_*`。判定**按来源（`IsBuiltin()`），与是否 in-process 无关**——内嵌 self/dir 节点经 `memNodeProvider`、standalone/独立部署的本仓下游经 `proxyProvider`，只要来源=builtin 均注入（`memNodeProvider.inject` / `proxyProvider.inject`）。标注点：self 节点、本仓 mcp-server、dir 节点 = `builtin`；usr `mcps`（第三方）= `user`；**`servers.list` 静态条目缺省 `builtin`**（部署方文件 → 本仓自有；第三方条目须显式 `<id>.origin=user`）；`servers/register` 动态接入按载荷 `origin`（缺省 user）。已废弃字段 `inject_context`（`servers.list` 键 + `mcp_server.inject_context`）已移除——注入判定统一由 `origin` 承载。
+> **来源标注与 `_meta` 内部上下文（R-11 边界）**：`ServerEntry.Origin` = `builtin`（本仓自有/内置）| `user`（用户定义/第三方），**缺省/未知 → `user`（安全默认）**。gateway 只向 `Origin=builtin` 的下游注入内部调用上下文 `_meta["chonkpilot"]{instance_id,work_dir,data_dir,session,turn,tool_call_id,purpose}`（`purpose` = 本次调用运行目的，C1 2026-10-15，见 §4.3）；`user` 一律不注入、也不产生 `CHONKPILOT_*`。判定**按来源（`IsBuiltin()`），与是否 in-process 无关**——self 预连接会话经 `memNodeProvider`（`entry.Session`）、standalone/独立部署的本仓下游经 `proxyProvider`，只要来源=builtin 均注入（`memNodeProvider.inject` / `proxyProvider.inject`）。**2026-11-04 核对**：gateway 已无 `memnode.go` / `dirnode.go`；self 由装配方建 `ClientSession` 后作为普通条目传入，dir 为普通 stdio 下游。标注点：self 条目、本仓 mcp-server 下游 = `builtin`；usr `mcps`（第三方）= `user`；**`servers.list` 静态条目缺省 `builtin`**（部署方文件 → 本仓自有；第三方条目须显式 `<id>.origin=user`）；`servers/register` 动态接入按载荷 `origin`（缺省 user）。已废弃字段 `inject_context` 已移除——注入判定统一由 `origin` 承载。
 
 ---
 
@@ -86,7 +87,7 @@
 
 主题 = `mcp-<组>-<动作>`（`/`→`-`）；`chonk.` 前缀由宿主 adapter（`mqadapter`）注入。
 通知：`mcp-gateway-changed`（工具/资源/技能/提示词/agent/server 变化）· `mcp-tasks-report`（**只回报 server**；`result_summary` = 终态结果全文）。
-管理 REST（`ManageAddr`）：`GET /mcp/list` · `/mcp/check`（`/mcp/tasks` 已删除）。
+**管理 REST 已删除（2026-11-04 核对，PRODSIM-1）**：`ManageAddr` / `--manage-addr` / `GET /mcp/list` / `/mcp/check` 均已移除（`mcpgateway.go:219`）；等价能力由插件桥 `plugin/v1/gateway.check` 承担。
 前端可经桥客户端主题 `tools-list`/`prompts-list`/`resources-list`（→ 相对主题 `mcp-tools-list`/`mcp-prompts-list`/`mcp-resources-list`）直取运行时能力面（见 [61-消息一览](../60-reference/61-消息一览.md) §4.5）。list 返回**全量**（含所有 instance），由**桥侧按实例过滤**后返回前端（仅 `scope=='' || scope==当前实例`）。
 
 ### 3.2 官方 MCP 门面（facade）
@@ -97,55 +98,43 @@
 
 ## 4. 内部控制流
 
-### 4.0 装配链（装配期 `New` → 启动期 `Start`）
+### 4.0 装配链（2026-11-04 核对：现行入口 = `src/lib/assembly`）
 
-> **结论（用户口径 4 步全部成立）**：① 装配方（单体 = `src/lib/llm` 的 `Server.New()`）用官方 go-sdk 建一个 **in-memory `mcp.Server` instance** → ② 对其执行 **capability 扫描 + 契约注册** → ③ 把**这个 instance 作为参数**交给 gateway 构建 → ④ gateway 在 **同一个 instance** 上注入 `mcp_find`/`mcp_load`/`mcp_invoke`。
+> **现行链路（L5 收口后）**：① 装配方建官方 go-sdk **in-memory `mcp.Server`** → ② 执行 `RegisterContracts` 扫描注册 → ③ 经 `mcp.NewInMemoryTransports` 连成标准 **`ClientSession`** → ④ 该会话作为 **`ServerEntry{ID:"self", Origin:builtin, Session:ss}`** 与其它下游一起放入 `Params.Servers` → ⑤ `gateway.Start` 只按普通下游 `connectServer`，**不再连接 self、不再注入 meta 工具**。
+>
+> **阶段 A · 装配期（`src/lib/assembly/assemble.go:78-136`）**：
+>
+> | 步 | 事实 | 证据 |
+> |:--:|------|------|
+> | ① 建 instance | `root` 缺省 `<exeDir>/capability`；`ms := mcp.NewServer(&mcp.Implementation{Name:"chonkpilot-server",Version:"1.0.0"}, nil)` | `assemble.go:78-86` |
+> | ② 扫描 + 注册 | `cfg = mcpms.DefaultConfig(); cfg.Root = root; mcpms.RegisterContracts(ms, root, cfg)`；失败仅打印告警、**空能力面继续** | `assemble.go:88-93` |
+> | ③ 连会话 | `connectSelf(ms)`：`mcp.NewInMemoryTransports()` + `Connect` → `ClientSession` | `assemble.go:102-108` |
+> | ④ 交参数 | `Servers` 追加 `ServerEntry{ID:"self", Name:"内置能力源", Category:"core", Origin:builtin, Session:ss}` → `mcpgateway.New(Params{Transport, Hooks, Servers: servers, …})` | `assemble.go:101-136` |
+>
+> **阶段 B · 启动期（`Gateway.Start`）**：只做 `warnMissingHooks` → `refreshRegistered` → 遍历 `Params.Servers` 逐个 `connectServer`（失败记日志继续）→ `subscribeAll`。**`New` 与 `Start` 均不建 server、不注入任何工具**（`mcpgateway.go:191-225`）。
+>
+> **3 处必须记住的细节**：
+> 1. **gateway 只持下行端口**：能力源由装配方建好并以 `Session` 形态传入；gateway 不执行契约扫描、不 import `mcp-server`。
+> 2. **条件性**：`opts.DisableMCP` → 装配方整段跳过（不建 instance / 不建 gateway）；`Servers` 为空 → 工具面为空（不报错）。
+> 3. **dir 节点不是 gateway 自建**：独立 gateway 的 `-capability` 与 llm server 的目录节点都改为 spawn **`core-mcp-server --stdio --root <dir>`** 的普通 stdio 下游（`src/others/mcp-gateway/main.go:80-99`、`src/lib/llm/server/capnodes.go:252-275`）；原 `gateway/dirnode.go:25-41` 已删除。
+>
+> **进程外模式（meta 3）已迁移（2026-11-04 核对）**：`mcp_find` / `mcp_load` / `mcp_invoke` **不再由 gateway `AddTool` 注入**，而由 **`mcp` 插件**经 `p.Tool` 注册并 `HotTool` 标记（`chonkpilot-plugins/mcp/src/main.go:65,75,84,95`）；`src/lib/mcp-server/cmd/self-tools/` 为空目录，`src/lib/llm/cmd/server-tools/` 不存在，`build-mcp-server.ps1:84` 明写 self-tools 已退役。见 [21 §3](21-llm-server.md) · [27-mcp-tools](27-mcp-tools.md)。
 
-**阶段 A · 装配期（`src/lib/llm/server/server.go:225-273`，仅在 `!opts.DisableMCP` 时执行）**：
-
-| 步 | 事实 | 证据 |
-|:--:|------|------|
-| ① 建 instance | `root = opts.MCPServerRoot`，缺省 `<exeDir>/capability` | `server.go:228-235` |
-| ① 建 instance | **`ms := mcp.NewServer(&mcp.Implementation{Name:"chonkpilot-server",Version:"1.0.0"}, nil)`** = 标准 go-sdk **in-memory server instance**（无传输、不 spawn） | `server.go:236` |
-| ② 扫描 + 注册 | `s.mcpCfg = mcpms.DefaultConfig(); s.mcpCfg.Root = root` → **`mcpms.RegisterContracts(ms, root, s.mcpCfg)`**：扫描 capability 并把契约工具注册进**这个 `ms`**；失败仅打印告警、**空能力面继续**。**P6 外部模式**（`CHONKPILOT_EXTERNAL_TOOLS=1`）下 `SkipTools=true`：只注册 prompts/skills/resources，工具改由 `chonkpilot-core-mcp-server --stdio` 作为下游接入（2026-11-02：`self-tools` 已退役） | `server.go:239-243` |
-| ② 留存 | `s.mcpServer = ms`（供运行期重扫/热生效） | `server.go:246` |
-| ③ 交参数 | **`mcpgateway.New(mcpgateway.Params{Transport: mqadapter.New(bus), MCPServer: ms, Servers…})`** = 把该 instance 作为参数构建 gateway | `server.go:259-268` |
-
-**阶段 B · 启动期（`Server.Start()` → `gw.Start()`）**：
-
-- `Server.Start()` 中 `s.gw.Start(ctx)`（`src/lib/llm/server/server.go:286-290`）。
-- `gw.New` **本身不建 server、不注入任何工具**：只保存 `params`、建 `regProv`/`reg`/`tm`（`gateway/mcpgateway.go:116-125`）。
-- `gw.Start()`（`gateway/mcpgateway.go:129-137`）：
-  1. `params.MCPServer != nil` → **`connectSelf()`**（`mcpgateway.go:178-204`）：`newMemNode("self", params.MCPServer)` 经官方 **`mcp.NewInMemoryTransports()`** 建同进程 client 会话（`gateway/memnode.go:25-41`）→ `ListTools` → `registerProvider` 成 self 节点（`selfKey = mem:global:self`，`Origin=builtin`）。
-  2. 紧接着 **`registerMetaTools()`**（`mcpgateway.go:136`）→ **`g.params.MCPServer.AddTool(t, handler)`**（`gateway/meta_tools.go:70-77`）把 **3 个**工具注入**同一个 `ms`**：**`mcp_find` / `mcp_load` / `mcp_invoke`**（不是 2 个），`Meta = {"hot":true,"category":"meta"}`。
-  3. 随后 `reconcileSelf()`（`meta_tools.go:80`）重拉 self list 并重建路由（`mcpgateway.go:206-220`），使注入工具进入 `tools/list` 与路由表。
-
-**3 处必须记住的细节**：
-
-1. **「装配」与「连接 + 注入」是两个阶段**：构建 gateway（`New`，仅参数交接）在**装配期**；连接 self 与注入 meta 工具在**启动期 `Start()`**。注入的是**同一个 `ms` 指针**（同一 instance 先 `Connect` 建会话、后 `AddTool` 追加工具、再 `reconcileSelf` 让新工具可见）。
-2. **条件性**：`opts.DisableMCP` 为真 → 整段跳过（不建 instance、不建 gateway）；`Params.MCPServer == nil` → gateway **跳过 self 节点与 meta 工具注入**（`meta_tools.go:47-50`，注释明写「无 MCPServer 时跳过（**不自建**）」），此时工具面仅来自下游 `Servers`/`ServersFile`。
-3. **例外：dir 目录节点是「gateway 自建 server」的另一条路**（不违反上条）——`@mcp` 等 dir 节点由 **gateway 自建**官方 server + `RegisterContracts` 扫描（`gateway/dirnode.go:25-41`：`mcp.NewServer(&mcp.Implementation{Name:"chonkpilot-gateway-dir"…})` → `ckmcpServer.RegisterContracts(ms, dir, cfg)`；注释见 `gateway/memnode.go:1-5`）。**准确表述**：**capability 主源 = 装配方传入的 instance**；**dir 节点 = gateway 自建**。不得写成「gateway 从不建 server」。
-
-> **进程外模式（2026-10-19；BRIDGE-2 T7 ①）**：`CHONKPILOT_EXTERNAL_TOOLS=1`（桌面单体 / server 形态）时 **`registerMetaTools()` 直接返回**（不 `AddTool`、不 `reconcileSelf`）——`mcp_find` / `mcp_load` / `mcp_invoke` 改由 **`chonkpilot-server-tools.exe`** 经 `plugin/v1/tools.register{handler_subject:"meta-tool-call-ext"}` 注册，契约在 `src/lib/llm/cmd/server-tools/contracts/meta/`。进程内（单测 / CLI）仍走本节链路。见 [21 §3](21-llm-server.md)。
-
-**由此推出的一条既有结论的「原因」（与 [18 §7 B5](../10-architecture/18-工具异步超时与取消.md) 呼应）**：进程内模式下 `mcp_find`/`mcp_load`/`mcp_invoke` 是 gateway 用 `AddTool` **注入到「装配方传入的 `ms`」里的本地 handler** →
-
-- (a) **它们没有契约 md** —— `registerMetaTools` 注入时**硬编码 `Meta{hot:true, category:"meta", async:"never", timeout:0}`**（`timeout:0` = 无上限），`_meta.async` 随之透出；[18 §3.7 B](../10-architecture/18-工具异步超时与取消.md) 的「类① 只能同步」约束以**方案 B 落地**（`explicitNever` 锁死，调用级不可覆盖）。
-- (b) 它们的 handler 在 **self 节点 server 侧（同进程）** 执行，gateway 调用要走 in-memory client 会话（`memNode.Call`，`gateway/memnode.go:61-63`）。**取消经 ctx 下沉可达 handler**（in-memory 传输的 `notifications/cancelled` 会取消请求 ctx，[18 §3.7](../10-architecture/18-工具异步超时与取消.md) 探针证「能传递」）；节点侧 `Terminate` 为**协作式 no-op**（`memnode.go`，真停在执行体侧；类① 取消由工具自身管理）。
+**关于 meta 工具的既有结论（2026-11-04 核对后仍成立的部分）**：`mcp_find` / `mcp_load` / `mcp_invoke` 由 `mcp` 插件注册，`_meta` 含 `hot=true`、`category=meta`（`async/timeout` 以插件注册值为准）；其 handler 在**插件进程内**执行，gateway 只做普通下游路由。原「gateway `AddTool` 注入同一 `ms` / `memNode.Call` / `memnode.go` 协作式 no-op」描述随 `memnode.go`、`meta_tools.go` 删除而失效；in-memory 下游（self `Session`）的取消仍为**协作式 no-op**（真停在执行体侧），经 ctx 下沉。
 
 ### 4.1 启动
 
 ```text
 New（默认值兜底；tm / instanceTracker）
 Start：
-  connectSelf（memNode("self", MCPServer)，selfKey=mem:self，scope=global，breaker disabled）
-  registerMetaTools（3 个：mcp_find / mcp_load / mcp_invoke，AddTool 注入 Params.MCPServer 同一 instance，均 _meta.hot=true；详见 §4.0）
-  # mcp_find 查 tool/skill/resource（type 收敛为 tool|skill|resource|all、**去 prompt/agent**，见 §4.3）：purpose 走 LLM 语义推荐（对所有 type 生效，候选按 type 收敛）
-  # （agent 退出资产面 → "子 agent 发现"改由**场景层团队列表注入**承担，`mcp_find(type=agent)` 不再支持，见 §4.3）
-  接入列表（Servers 优先，否则 loadServersList）→ 逐条 connectServer（disabled 跳过；失败记日志继续）
+  warnMissingHooks
+  refreshRegistered（tools/register 的本地/远程回调常驻入表）
+  接入列表 = Params.Servers（含装配方预连接的 self Session；gateway 不读文件、不自建 server）
+    → 逐条 connectServer（disabled 跳过；失败记日志继续）
   subscribeAll（19 个方法经 Transport.Subscribe 登记；`tasks/*` 已移除）
-  管理 REST
-Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾）→ 关管理 REST（**不关闭宿主通道**）
+  # 管理 REST 已删除（PRODSIM-1）；gateway.check 由 plugin/v1/gateway.check 承担
+  # mcp_find / mcp_load / mcp_invoke 由 mcp 插件注册，不在 gateway 注入
+Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾）→ 不关闭宿主通道
 ```
 
 - **订阅关停短路（`subscribeAll`）**：`Stop` 置 `stopped` 后**拒绝新订阅**（返回 `gateway: stopped, refusing new subscription`）；保存订阅句柄时**双检 `stopped`**——注册期间 `Stop` 已并发退订完毕 → **立即退订并拒绝**（避免句柄泄漏、停服后仍接收/派发方法调用）。
@@ -177,7 +166,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 
 - **执行侧控制面**：取消 / 转后台的**传输面**从 MQ 方法面改为**进程内 sink** —— `ExecSink.CancelExec` / `ExecSink.DetachExec`（gateway 包内窄接口，装配方 `src/lib/llm/server` 实现并转调 gateway 公开方法 `(*Gateway).CancelExec` / `(*Gateway).DetachExec`，复用既有 `tm.cancelRef` / `tm.detach`；`CancelExec` 仍**先问层**：层判不可逆终态 → 拒绝）。语义与既有等价：取消 = 级联标终态 + `provider.Terminate` 真打断（含已 detached 后台任务）；转后台 = 解绑在飞调用 + 原同步调用返回 `pending{task_id}` + 终态走 `mcp-tasks-report`。**sink 未注入 / 层未就绪 → 调用方返回明确错误、不动作**（gateway 单体 exe 仍可独立运行，直接调公开方法）。**异步结果 / 状态不再由 gateway 提供**：结果读 message 表（`{call,result,async}`）、状态以任务层为准。
 
-- **异步 / 超时 / 取消（已落地，详见 [18-工具异步超时与取消](../10-architecture/18-工具异步超时与取消.md)）**：gateway 是**唯一裁决点**（模式裁决 + 阈值/超时计时 + 裁决事件 + 取消编排）。取消**按 provider 执行线分派**（`onTaskCancel` → `Provider.Terminate`）：spawned/自持 = `InvalidateScoped`（kill + respawn）、in-memory（`memNode`/`registered`）= 协作式 no-op、纯远程 = 仅断请求；`execCtx` 经 `withTurnContext` 注入，其取消经 in-memory 传输送达执行体（§3.7 探针证「能传递」）→ 执行体侧真停（mcp-server `callTool` + `CommandContext`）。
+- **异步 / 超时 / 取消（已落地，详见 [18-工具异步超时与取消](../10-architecture/18-工具异步超时与取消.md)）**：gateway 是**唯一裁决点**（模式裁决 + 阈值/超时计时 + 裁决事件 + 取消编排）。取消**按 provider 执行线分派**（`onTaskCancel` → `Provider.Terminate`）：spawned/自持 = `InvalidateScoped`（kill + respawn）、in-memory（预连接 `Session`）/`registered` = 协作式 no-op、纯远程 = 仅断请求；`execCtx` 经 `withTurnContext` 注入，其取消经 in-memory 传输送达执行体（§3.7 探针证「能传递」）→ 执行体侧真停（mcp-server `callTool` + `CommandContext`）。
   - **工具分类与异步模式约束** —— 分类按「**执行线**」共 **10 类**（**归属按提供方、处理按执行线**：类① gateway 自有 `mcp_find`/`mcp_load`/`mcp_invoke` · 类② `llm_run` · 类③ `tool_stop`/`tool_result` · 类④ `ask_user` · 类⑤ mcp-server 执行器 · 类⑥ stdio · 类⑦ http·spawned · 类⑧ http·remote · 类⑨ sse·spawned · 类⑩ sse·remote）；模式约束 = **类①③④ 仅同步 / 类② 仅异步 / 类⑤–⑩ 四档全支持**；配置⑤（超时自动取消 `cancel_on_timeout`，usr 键）**类①③④ 不定义**、**类⑤⑥⑦⑨ 支持**、**类⑧/⑩ 降级「尽力」**；组合数重算 = 10 类 × 5 配置 = 50 → **有效 34（按「不支持」口径 32）· 可用 28 · 缺失 6**。细节见 [18 §3.1/§3.2/§4](../10-architecture/18-工具异步超时与取消.md)。
 
 ### 4.3 路由与隔离（`registry.go`）
@@ -186,23 +175,25 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 - 暴露名 = alias 优先，否则前缀 `applyPrefix`（namespace `-` 禁前缀 / 空 → `<id>_` / 否则 `<ns>`）；dir 节点 = `NsPrefix + 原名`。
 - **同名注册报错**（按 `(scope, 暴露名)`）；global 与各 instance scoped 为独立名字空间。
 - `findFor`：instance scoped 命中**遮蔽** global，未命中回退 global；`allToolsFor` = global ∪ 归属 instance。
-- 目录资产 `catalogAsset` 按 `(scope, kind, name)` 唯一；字段含 `Path`（运行时内容来源路径）与 `Content`（**兼容兜底**，仅无 `path` 的资产驻留）——**有 `path` → 内容按需读盘**（`assetContent()`，`registry.go:118-147`；`prompts/get` · `mcp_load` 同源）。`prompts/register`（`{name, description, arguments?, content?, path?, asset_kind?}`）/ `resources/register`（`{name, uri?, description?, mimetype?, content?, path?}`）的 payload **以 [61 §5.1.1](../60-reference/61-消息一览.md) 为准**（本行仅为描述对齐，不改 61）。
+- 目录资产 `catalogAsset` 按 `(scope, kind, name)` 唯一；字段含 `Path`（运行时内容来源路径）与 `Content`（**兼容兜底**，仅无 `path` 的资产驻留）——**有 `path` → 内容按需读盘**（`assetContent()`，`registry.go:135-147`；`prompts/get` · `mcp_load` 同源）。`prompts/register`（`{name, description, arguments?, content?, path?, asset_kind?}`）/ `resources/register`（`{name, uri?, description?, mimetype?, content?, path?}`）的 payload **以 [61 §5.1.1](../60-reference/61-消息一览.md) 为准**（本行仅为描述对齐，不改 61）。
 - `_meta` 组装（`tools/list`）：工具自身契约/注册 meta（`title/category/hot/async/…`）为基底，gateway 追加 `server`；写入**副本**，不污染 provider 侧工具对象。（`find`/`version` 死 meta 已删除。）
 - **`_meta.server`**：`{alias, node, category, description[, url]}`（`registry.serverInfoOf`；alias = server 别名，url 仅 proxied/有端点时出现）。`tools/list` 每项 `_meta.server` 与 `mcp_find`/`mcp_load` 返回的 `server` 字段同源——UI/LLM 一眼识别工具归属哪台 server，不必再查 `servers/get`。
 - **`mcp_find`/`mcp_load` 对 tool 必带 `inputSchema`（参数定义）+ `provider` + `server`**：仅 `_meta.hot=true` 的工具进 LLM 的 `tools` 参数，非 hot 工具 LLM 无法直接 tool-call，只能经 `mcp_invoke`（`mcp_invoke` 自身亦 `hot=true`）——故必须能从这里取到入参 schema 以组装 `arguments`。
-- **`mcp_load` 对 `resource` 的内容承载**（2026-10-14）：经 `ReadResource` **实时**读取——内容 = 资源「正文」（markdown）或 meta `path` 指向的**外部内容文件**；**文本经 `content`、二进制经 `blob`（base64，对齐 MCP）**，`mimetype` 按文件后缀识别（见 [25 §3.1](25-mcp-server.md)）。
-- **meta 工具 hot**：self 节点 `entry` 无 `HotTools`，故 `isHot` 不会自动补；`registerMetaTools` 显式置 `_meta.hot=true`（否则 LLM 连工具发现入口都拿不到）。
-- **`mcp_find` 检索语义**：
-  - `query`/`purpose` **均省略 → 返回该类型全部条目**（受 `limit`，默认 20）；schema 已去掉 `required:["query"]`（原实现缺参报错 `query or purpose is required`）。`type` 收敛为 `tool|skill|resource|all`（**去 `prompt`/`agent`**）→ `type=agent` 不再支持（agent 只"注入"不"注册"，原 server 域工具 `agent_list` 注册已移除）；`mcp_load` 的 `kind` 同步为 `tool|skill|resource`；prompt 移出 LLM 检索面。见 [25 §5](../10-architecture/25-MCP与场景分层模型.md)。
-  - `purpose`（任务目标）→ **LLM 语义推荐，对*所有* `type` 生效**（非仅 tool/all）：候选清单按 `type` 收敛（`findTypeScope`，口径与本地检索一致），交无上下文单轮 LLM mq `llm-simple` 推荐（可返回组合，候选收敛为 **tool/skill/resource**（去 agent/prompt），见上条）；LLM 不可用（无订阅/超时/未知 type）→ 降级把 `purpose` 当关键词走本地。
-  - `query` → 本地关键词检索（name/description 子串；工具按 `type`/category 过滤，资产按 kind）。
+- **`mcp_load` 对 `resource` 的内容承载（2026-10-14 历史口径；2026-11-04 核对）**：gateway 侧目录资产仍支持 `path` 按需读盘（`assetContent()`，§上条）；但现行 `mcp_load` 已由 `mcp` 插件实现并返回 entry，**不再走 gateway 的单条 `mcp_load` handler**；资源正文/外部文件读取以插件实现与 [28-plugins](28-plugins.md) 为准。
+- **meta 工具 hot（2026-11-04 核对）**：`mcp_find` / `mcp_load` / `mcp_invoke` 由 `mcp` 插件显式 `p.HotTool(n)` 标记（`chonkpilot-plugins/mcp/src/main.go:95`），不依赖 gateway 的 `registerMetaTools`（已删除）。
+- **`mcp_find` 检索语义（2026-11-04 核对：已迁至 `mcp` 插件，gateway 不再实现）**：
+  - 实现 = `chonkpilot-plugins/mcp/src/main.go:118-172`；schema = `query`（关键词，缺省空）+ `type`（`tool`（默认）/`prompt`/`resource`/`all`）+ `limit`（缺省 20，上限 200）。**无 `purpose` 参数**（原 LLM 语义推荐已移除），**`query`/`purpose` 均省略 → 返回该类型全部条目**；`type=agent` / `type=skill` 不支持。
+  - `query` → 本地关键词检索（name/description 子串、忽略大小写）；`type` → 候选集按工具 / prompt / resource 收敛。
+  - 返回 `{ok,type,count,entries}`；每条 entry 含 `name`/`description`/`server`/`inputSchema`（工具）等。**gateway 侧只负责路由与 `_meta` 归一**，排查发现逻辑请到 `mcp` 插件。
+  - `mcp_load`（插件 `main.go:174-196`）= 按 `name` 加载条目完整定义（**无 `kind` 参数**）；`mcp_invoke`（`main.go:198-235`）= 按 `name` + `arguments` + `timeoutSec` 经 `plugin/v1/tools.call` 调用。
+  - **`mcp_load` 对 `resource` 的内容承载（2026-10-14 历史口径）**：经 gateway `ReadResource` 实时读取，文本 `content` / 二进制 `blob`；现行 `mcp_load` 由插件返回 entry，内容读取口径以插件实现与 [28-plugins](28-plugins.md) 为准。
 - **调用展示名参数的注入与剥离**：`injectDisplayName` 给**每个**工具注入展示参数 **`tool_call_display_name`**（≤20 字符，UI 展示调用名；写入 `properties` + `required`，除非契约已定义同名）；`doCall` 执行前**统一剥离**，不传下游工具。
-  - **为何不叫 `purpose`**：`purpose` 是工具可自有的语义参数（`mcp_find` 的 `purpose` = 任务目标，驱动 LLM 语义推荐）。旧实现把注入参数命名为 `purpose`，导致 `doCall` 的剥离把 `mcp_find` 的语义参数一并吞掉；且旧实现需 `_meta.purpose_injected` 标记来区分两者。**更名后无需标记**（不再有名字冲突），剥离逻辑恢复为无条件。
+  - **为何不叫 `purpose`**：`purpose` 是工具可自有的语义参数（插件工具亦可定义）；旧实现把注入参数命名为 `purpose`，导致 `doCall` 的剥离把工具自身的 `purpose` 一并吞掉。**更名后无需标记**，剥离逻辑无条件。【2026-11-04 核对】现行 `mcp_find` 已无 `purpose` 参数，此条仅解释历史命名与仍存在的注入参数。
   - **消费方与语义**：server `tasks.go taskDisplay`（任务节点 `name`/`simplified` 取该参数值；事件字段仍为 `purpose`/`simplified`，属消息面不变）。该参数**即 purpose（运行目的）**——代表本次工具调用/子 LLM 的目的，并**直接充当 tasktree 节点 label**；参数名不叫 `purpose` 的原因见上条（避免与工具自有 `purpose` 冲突）。
   - **C1 · 运行目的（`purpose`）注入通道（2026-10-15 · SUBCHAT-1）**：展示名 = 本次调用的**运行目的**（`purpose`）；原被剥离后下游任何 handler 都取不到（唯一消费方 = server `tasks.go taskDisplay` 的任务树 label，且单聊不进任务树 → 该消费方不存在）。故 `doCall` **在剥离前**取值写入调用上下文 `req.Context.Purpose`（`gateway/mcpgateway.go:856-865`；**`delete(args, …)` 剥离逻辑保持不变**，注入的是「上下文」、剥离的是「工具参数」，二者不冲突），随后经**三条通道**下发：
     - ① **进程内**（gateway 自持 handler）：`withTurnContext` → `ctxKeyPurpose` → 工具侧 `PurposeFromContext(ctx)`（`gateway/provider.go:843` · `:874-876` · `:906-908`）；
     - ② **域工具**（bus 回调）：`turnContextPayload` 增 `purpose` 键 → handler 读 `payload["context"]["purpose"]`（`gateway/registered_provider.go:111-132`）；
-    - ③ **进程外**（spawn executor）：协议 `_meta.chonkpilot.purpose` 写入 / 还原（`gateway/memnode.go:186-190` · `:232-234`）→ mcp-server 解析（`server/server.go:31-56` · `:66-79`）→ spawn 时落环境变量 **`CHONKPILOT_PURPOSE`**（`server/config.go:659`；executor 侧 `mcp-tools/internal/fileops/toolenv.go:27` · `:59`）。
+    - ③ **下游协议**（含 stdio/http/sse 下游）：`purpose` 写入 / 还原 `_meta.chonkpilot.purpose`（`provider.go` `inject` / `callContextMeta`）→ mcp-server 解析为 `CallContext.Purpose`（`server/server.go:53-79`）。**〔2026-11-04 核对〕** spawn 子进程**不再**落 `CHONKPILOT_PURPOSE`（`config_test.go` 断言不注入）；原 `gateway/memnode.go:186-190` / `:232-234` 与 `mcp-tools/internal/fileops/toolenv.go` 路径已随文件删除失效。
     - **空值不注入**：`purpose` 为空 → 不写 ctx key / payload 键 / `_meta` 键 / env（既有无 purpose 形态逐字节不变）；`Origin=user` 第三方仍不带 `_meta`/`CHONKPILOT_*`（§4.2 边界不变）。
     - **域工具侧消费（已闭环，SUBCHAT-2 阶段 A，2026-10-16）**：`llm/server/domainmcp.go` 的 `domainToolMsg.Context` 增 `purpose` 字段（`registered_provider.turnContextPayload` 写入）→ `onDomainToolCall` 取出后经 `domainExecute(..., purpose)` 送达 handler；本阶段用于 `domainNode` 对域工具任务节的 `purpose` 兜底（args 里的展示名已被 `doCall` 剥离），后续 `subchat_open` 等 handler 直接消费该参数。
 
@@ -226,7 +217,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 
 - **显式 `http`/`sse` 无 `url` → 前置报错、不 spawn**（`transport %q needs url`）。
 - **spawned 子进程 `env`**：基线 `os.Environ()` + `entry.Env`（`K=V`），值经 `expandVars` 展开 **`%VAR%` 与 `${VAR}`**（与 `servers.list` 字段同一展开函数；**未定义变量 → 空串**）。
-- **进程级沙箱（仅 stdio 下游，2026-10-21 起）**：`ServerEntry` 保留 `Sandbox *bool`（旧 usr `mcps[].sandbox`，仅作兼容写入口；开关来源 = usr `tool_sandbox.mcps[<mcp 名>]`）；`buildConn` 的 **stdio** 分支在 spawn 时由 `chonkpilot-agent/sandbox`（独立仓）以 **Low IL + Job Object** 施加**只写隔离**（允许目录 = 在线实例 `security-*` 并集；判据 = 开关 + stdio + 允许目录非空；http/sse **不施加**）。**不再注入 `CHONKPILOT_SANDBOX` 环境变量**（`agentbox` 包与服务端消费方已删除）。**与 `isolate`（连接池按 `(instance, workdir)` 隔离）是两条独立轴**。见 [14 §7.1](../10-architecture/14-安全域-agentbox.md) · [18 §2](../10-architecture/18-工具异步超时与取消.md) · [64 §6](../60-reference/64-配置项一览.md)。
+- **进程级沙箱（仅 stdio 下游，2026-10-21 起；2026-11-04 核对路径）**：`ServerEntry` 保留 `Sandbox *bool`（旧 usr `mcps[].sandbox`，仅作兼容写入口；开关来源 = usr `tool_sandbox.mcps[<mcp 名>]`）；`buildConn` 的 **stdio** 分支在 spawn 时由 **`chonkpilot-util/sandbox`** 以 **Low IL + Job Object** 施加**只写隔离**（允许目录 = 在线实例 `security-*` 并集；判据 = 开关 + stdio + 允许目录非空；http/sse **不施加**）。**不再注入 `CHONKPILOT_SANDBOX` 环境变量**（`agentbox` 包与服务端消费方已删除）。**与 `isolate`（连接池按 `(instance, workdir)` 隔离）是两条独立轴**。见 [14 §7.1](../10-architecture/14-安全域-agentbox.md) · [18 §2](../10-architecture/18-工具异步超时与取消.md) · [64 §6](../60-reference/64-配置项一览.md)。
 - `needsSpawn = runtime != "" && (http|sse)`：spawn 进程 → `waitEndpointReady`（TCP 轮询 + 子进程提前退出检测）→ 连接。
 > 实现细节见 `provider.go buildConn`。
 
@@ -250,7 +241,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 
 ## 5. 数据结构与存储
 
-- 无持久存储（纯运行态）：`reg`（提供方/路由/资产表）、`tm`（任务表）、`nodes`（dir 节点）、`self`（内存节点）；连接面 `shared`（共享槽）/ `keys`（workdir → 动态池键）/ `callSlots`（`pool_key=call` 独占实例）。
+- 无持久存储（纯运行态）：`reg`（提供方/路由/资产表）、`tm`（任务表）；连接面 `shared`（共享槽）/ `keys`（workdir → 动态池键）/ `callSlots`（`pool_key=call` 独占实例）。**2026-11-04 核对**：无 `nodes`（dir 节点映射）与 `self`（内存节点）字段；self 仅是 `Servers` 中带 `Session` 的普通条目，dir 是普通 stdio 下游。
 - 执行池（`execPool`，原 `TaskManager`）上限 `MaxTasks`（默认 8）；动态池每键实例上限 = `min(maxConcurrent, MaxTasks)`。
 - 接入配置：`servers.list` 分组式（`mcp.alias=<id>` 开始，字段 `<id>.<field>`；支持 `%VAR%`/`${ENV}` 展开）+ `ServerEntry` 全字段。
 
@@ -258,7 +249,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 
 ## 6. 依赖
 
-- **上游**：`src/lib`(mq/winsvc/winlog/exedir) · `src/lib/mcp-server`（`RegisterContracts`，用于 dir 节点扫描） · 官方 go-sdk。
+- **上游（2026-11-04 核对）**：`chonkpilot-agent`（含 `chonkpilot-util/{sandbox,winproc}`）· 官方 go-sdk。**gateway `go.mod` 不依赖 `src/lib/mcp-server`**（`gateway/src/go.mod:1-12`，仅 agent + util + go-sdk）；契约扫描由装配方 / core 下游完成，不在 gateway 内。
 - **下游**：server（会话层经 `gwClient` 调用）、独立 MCP 客户端。
 
 ---
@@ -269,7 +260,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 |------|------|------|
 | 单一 `mcp-*` 主题域 | 方法名 ↔ 相对主题一一对应；HTTP 侧统一由 facade 暴露于 `/mcp` | 统一、可映射 |
 | 同主题 promise | 回执 = 同一次派发 `v.Result`，无 `-reply`/`req_id` | 与 MQ 门面一致 |
-| self 走 memNode | 同进程用 `mcp.NewInMemoryTransports` | 零 HTTP；`inprocess://` 分支实际未接线 |
+| self 走预连接 Session | 装配方用 `mcp.NewInMemoryTransports` 建 `ClientSession`，作为普通 `ServerEntry{ID:"self"}` 传入（gateway 不自建/不连 self） | 零 HTTP、零 gateway 内契约扫描；`inprocess://` 分支未接线 |
 | scope 隔离 | `(scope,name)` 独立名字空间，scoped 遮蔽 global | instance 级注册不污染全局 |
 | 完成回报只发 server | `mcp-tasks-report` 订阅方仅 server | 终态单源 |
 | 熔断豁免 | `ServerEntry.CBDisabled` | 本地/受信下游无需熔断 |
@@ -320,7 +311,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 ## 10. 关联测试
 
 `src/test/chonkpilot-mcp-gateway/unittest/gateway_test.go`（内存总线 + 自备能力源官方 server → New/Start → 总线驱动）：
-`TestSyncCall` · `TestAsyncByMeta` · `TestAsyncByRequest` · `TestBackgroundManual` · `TestTaskReport` · `TestTaskCancel` · `TestTaskError` · `TestMCPFindAllNoQuery` · `TestMCPFindPurposeAllTypes`。
+`TestSyncCall` · `TestAsyncByMeta` · `TestAsyncByRequest` · `TestBackgroundManual` · `TestTaskReport` · `TestTaskCancel` · `TestTaskError`；另有 `TestNeverTimeoutAwaitsDecision` · `TestAutoTimeoutConverts` · `TestExecControlRemovedFaces` 等。**〔2026-11-04 核对〕原列的 `TestMCPFindAllNoQuery` / `TestMCPFindPurposeAllTypes` 在 gateway 与主仓均不存在**（`mcp_find` 语义已迁至 `chonkpilot-plugins/mcp`）。
 
 `chonkpilot-agent/gateway/src/pool_test.go`（动态实例池白盒；2026-10-28 改「动态池 · 不保留 free 池」）：
 `TestDynamicPoolQueueHandoffReuse`（同键并发 3 调用 / `maxConcurrent=2` → 峰值 2 实例、第 3 个排队后**复用同一实例**、创建次数=2）· `TestInstanceDestroyedAfterHandoffGrace`（无同键等待 → 1s（±容差）销毁进程，下次调用重新 spawn）· `TestDifferentWorkdirsDoNotQueueEachOther`（不同 workdir 实例数独立、互不排队）· `TestInstanceExitedRemovedAndRespawn`（进程自退 → 立即移出 + 重新 spawn）· `TestInflightCallBindsInstanceAndProgress`（`call_id → inflight{实例}` 精确，progress 归位到该实例）· `TestSameWorkdirInstancesShareKeyAndScopedClear`（同 workdir 不同 instance 共享键；作用域终止整键清且不影响其他 workdir）· `TestIsolateFalseSharesSingleConn` · `TestIsolateMissingWorkdirFallsBackShared` · `TestIsolateDefaultInferredByTransport` · `TestParseServersListIsolateAndInvalidatePool` · `TestRegisterSpecCarriesIsolate` · `TestProxiedTerminateDoesNotRebuildSharedConn`。

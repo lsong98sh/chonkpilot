@@ -379,6 +379,8 @@ func (s *Server) onLLMCancel(_ context.Context, _ string, v *mq.Value) error {
 	// 同步回到 `onGatewayTaskDone`，后者 `s.mu.Lock()`；持锁级联 = 同一 goroutine 对
 	// 非重入互斥自锁 → 永久挂起（宿主 publish 走 WebView2 UI 线程 → 窗口整体冻结）。
 	s.tasks.cancelByTurn(tc.req.InstanceID, tc.req.Turn)
+	// 委派子代理：父轮次取消 → 级联关闭其派生（递归）子轮次。
+	s.closeDelegatedChildren(tc.req.InstanceID, tc.req.Turn)
 	s.complete(tc, "interrupted", "interrupted", "")
 	tc.Close()
 	v.Result = map[string]any{"cancelled": true, "turn": req.Turn}

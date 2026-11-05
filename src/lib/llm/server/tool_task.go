@@ -88,14 +88,27 @@ func (s *Server) runToolStop(parent *turnCtx, node *TaskNode, args map[string]an
 	if cancelled == 0 {
 		return session.ToolStopNotFoundText(taskID), false
 	}
+	// 委派子代理（kind=llm 节点）：任务态已级联取消，但子轮次循环独立运行 —— 显式关闭
+	// （递归下一级；与被取消子树同 instance 归属）。只在任务层已授权取消后执行。
+	s.closeDelegatedInSubtree(turnInstance(parent), taskID)
 	return session.ToolStopOKText(taskID, cancelled), false
+}
+
+// closeDelegatedInSubtree 关闭被取消子树内的委派子轮次（task-stop / tool_stop 共用）。
+// 仅处理 kind=llm 且持有子 turn 的节点；幂等（closeDelegatedTurn 未命中即 no-op）。
+func (s *Server) closeDelegatedInSubtree(instanceID, rootID string) {
+	for _, n := range s.tasks.subtree(instanceID, rootID) {
+		if n.Kind == TaskKindLLM && n.TurnID != "" {
+			s.closeDelegatedTurn(n.InstanceID, n.TurnID)
+		}
+	}
 }
 
 // ─── tool_result：返回转后台结果 ─────────────────────────────
 
 // runToolResult 获取转后台任务结果（对齐 tool_result.md）：id 支持 server
 // 任务节点 / gateway 异步任务 / 子会话 turn id；timeout 秒内轮询至终态，超时返回
-// 「任务尚未结束」（不取消任务，可加大 timeout 再次调用）。
+// 「任务尚未结束」+ **已产出的部分输出**（不取消任务，可加大 timeout 再次调用）。
 // 返回 (结果文本, isErr)；isErr=true = 工具级失败（参数缺失 / 未找到任务；B-17）。
 // execCtx = 工具执行 ctx（I-83 收尾）：gateway 取消回报 → cancel → 轮询及时退出
 // （不空耗到 timeout；被查询任务本身未受影响）。
@@ -111,10 +124,10 @@ func (s *Server) runToolResult(parent *turnCtx, node *TaskNode, args map[string]
 		if execCtx.Err() != nil {
 			return session.ToolResultCancelledText(id), false
 		}
-		if text, state, found := s.taskResult(parent, id); found {
+		if text, state, partial, found := s.taskResultDetail(parent, id); found {
 			if state == "running" {
 				if time.Now().After(deadline) {
-					return session.ToolResultRunningText(id, timeout), false
+					return session.ToolResultRunningText(id, timeout, partial), false
 				}
 				sleepCtx(execCtx, 500*time.Millisecond)
 				continue
@@ -125,40 +138,49 @@ func (s *Server) runToolResult(parent *turnCtx, node *TaskNode, args map[string]
 	}
 }
 
-// taskResult 查询任务结果：返回 (结果文本, 状态, 是否找到)。
+// taskResult 查询任务结果：返回 (结果文本, 状态, 是否找到)（既有调用方口径）。
+func (s *Server) taskResult(parent *turnCtx, id string) (string, string, bool) {
+	text, state, _, found := s.taskResultDetail(parent, id)
+	return text, state, found
+}
+
+// taskResultDetail 同 taskResult，额外返回**部分输出**（running 时已产出的内容）：
+// 任务节点 Output（执行器上报的进度文本）/ 委派子轮次当前 assistant 文本。
 // 查找顺序：server 任务节点 → gateway 执行 id 反查节点 → message 表（按 tool_call_id）→
 // 子会话 turn（读该 turn 最后一条 assistant）。
 //
 // 2026-09-18（用户决定）：不再经 gateway `tasks/status|result` 方法面——**状态以任务层为权威、
 // 异步结果读 message 表**（role=tool 消息 content 的 {call,result,async}）。
-func (s *Server) taskResult(parent *turnCtx, id string) (string, string, bool) {
+func (s *Server) taskResultDetail(parent *turnCtx, id string) (string, string, string, bool) {
 	// 任务节点直取（限本 instance 归属，缺口 3：不跨 instance 读他人任务结果）
 	if n := s.tasks.nodeIn(turnInstance(parent), id); n != nil {
-		return s.nodeTaskResult(parent, n)
+		return s.nodeTaskResultDetail(parent, n)
 	}
 	// gateway 执行 id（未挂 server 节点）→ 按已登记 gwTaskID 反查节点（限本 instance，缺口 3）
 	if n := s.tasks.findByGwTask(turnInstance(parent), id); n != nil {
-		return s.nodeTaskResult(parent, n)
+		return s.nodeTaskResultDetail(parent, n)
 	}
 	// gateway 原生异步任务（无 server 节点）：id 可能即 LLM tool-call id → 直接读 message 表
 	if txt, state, ok := s.asyncResultFromMessage(parent, id); ok {
-		return txt, state, true
+		return txt, state, "", true
 	}
-	// 子会话 turn id（llm_run 委派/DSL 子轮次）
+	// 子会话 turn id（委派子代理 / DSL 子轮次）
 	if txt, ok := s.turnResultText(parent, id); ok {
-		return txt, "done", true
+		return txt, "done", "", true
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
-// nodeTaskResult 由任务节点给出查询结果：
+// nodeTaskResultDetail 由任务节点给出查询结果：
 //   - 节点终态（done/error/cancelled）→ 节点摘要（既有行为：终态摘要随 mcp-tasks-report 回填；
 //     文案映射在组件 `session.TaskNodeResultText`）；
 //   - 非终态 → **层为权威**判定终态：层判终态但 message 表无结果行 → 明确文案
 //     「异步结果已不可用」（不静默返回空）；否则读 message 表（已落 result = 完成；仅 async.pending = 在飞）。
-func (s *Server) nodeTaskResult(parent *turnCtx, n *TaskNode) (string, string, bool) {
+//   - partial = 节点 Output 或委派子轮次的当前 assistant 文本（running 时返回已产出内容）。
+func (s *Server) nodeTaskResultDetail(parent *turnCtx, n *TaskNode) (string, string, string, bool) {
+	partial := s.nodePartial(parent, n)
 	if text, state, ok := session.TaskNodeResultText(n); ok {
-		return text, state, true
+		return text, state, partial, true
 	}
 	layerTerminal := false
 	if layer := s.taskState(); layer != nil { // RB-5 L4：经窄接口读层权威状态
@@ -171,13 +193,33 @@ func (s *Server) nodeTaskResult(parent *turnCtx, n *TaskNode) (string, string, b
 	}
 	if n.ToolCallID != "" {
 		if txt, state, ok := s.asyncResultFromMessage(parent, n.ToolCallID); ok {
-			return txt, state, true
+			return txt, state, partial, true
 		}
 	}
 	if layerTerminal {
-		return session.AsyncResultUnavailableText, "error", true
+		return session.AsyncResultUnavailableText, "error", partial, true
 	}
-	return "", "running", true
+	return "", "running", partial, true
+}
+
+// nodePartial 取任务节点已产出的部分输出（不改变终态判定）：
+//   - 执行器经 `TaskTree.Progress` 上报的 Output 优先；
+//   - 委派子轮次（kind=llm）→ 读子 turn 最后一条 assistant（流式增量回填同一主键 = 当前累计）。
+func (s *Server) nodePartial(parent *turnCtx, n *TaskNode) string {
+	if n == nil {
+		return ""
+	}
+	if n.Output != "" {
+		return n.Output
+	}
+	if n.Kind == TaskKindLLM && n.TurnID != "" {
+		inst := n.InstanceID
+		if inst == "" {
+			inst = turnInstance(parent)
+		}
+		return s.partialTurnText(inst, n.TurnID)
+	}
+	return ""
 }
 
 // asyncResultFromMessage 读 message 表取该 tool_call_id 的异步结果（交付 1：读路径 = 层 + message 表）：

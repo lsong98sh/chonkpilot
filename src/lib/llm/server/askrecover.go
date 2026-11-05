@@ -95,8 +95,10 @@ func (s *Server) replyExpiredAsk(instanceID, askID, answer string) error {
 	}
 
 	// 新轮：复用该 ask 所属会话（turn 由宿主分配）。
+	// 投递实例 = 源会话所在窗口 / 同 workdir 顶层实例（Ask 中心作答时不能把新轮挂到中心实例）。
+	target := s.expiredReplyTarget(instanceID, it.SessionID)
 	res := s.acceptStart(StartReq{
-		InstanceID: instanceID,
+		InstanceID: target,
 		Session:    it.SessionID,
 		Turn:       "turn-" + newID(),
 	})
@@ -106,7 +108,7 @@ func (s *Server) replyExpiredAsk(instanceID, askID, answer string) error {
 	}
 	turnID, _ := res["turn"].(string)
 	body, _ := json.Marshal(SendReq{
-		InstanceID: instanceID,
+		InstanceID: target,
 		Session:    it.SessionID,
 		Turn:       turnID,
 		Type:       SendTypeTextUser,
@@ -115,7 +117,7 @@ func (s *Server) replyExpiredAsk(instanceID, askID, answer string) error {
 	if err := s.onLLMSend(context.Background(), "", &mq.Value{Payload: body}); err != nil {
 		return methodErr("ask 已失效：新轮投递失败（" + err.Error() + "）")
 	}
-	logf("[chonkpilot-server] ask 已失效，答案转新轮：ask_id=%s session=%s turn=%s\n",
-		askID, it.SessionID, turnID)
+	logf("[chonkpilot-server] ask 已失效，答案转新轮：ask_id=%s session=%s turn=%s target=%s\n",
+		askID, it.SessionID, turnID, target)
 	return nil
 }

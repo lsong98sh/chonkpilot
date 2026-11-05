@@ -1,9 +1,9 @@
 # LLM 桥接端口设计方案（独立稿）
 
-> **入口现状（BRIDGE-3，2026-10-24）**：桥入口 = **UDS-only**，默认 `%LOCALAPPDATA%\chonkpilot\llm.sock`（socket `0600` / 父目录 `0700`；`CHONK_LLM_UDS` 覆盖，`off` / `-` 关闭），**不监听任何 TCP 端口**；需要 TCP 的客户端自建 loopback→UDS 字节代理（demo 见 `capability/plugins/demo-python/llm_bridge_proxy.py`）。路由 `/llm/<name>/<rest>`、字节级透传、覆盖鉴权头、只读 `ResolveBridgeTarget`、零新增 MQ 主题。权威现状见 [62 §3](../spec/60-reference/62-命令行与参数.md) · [19 §6](../spec/10-architecture/19-单进程形态与实例隔离.md) · [49 BRIDGE-3](../spec/40-roadmap/49-待实现项.md)。
-> 状态：✅ **已实施**（步骤 1–8，2026-10-16 / 步骤 8 于 2026-10-19 / 2026-10-24 入口改 UDS）
-> 日期：2026-10-16
-> 关联（**spec**）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md)（登记项 `BRIDGE-1`）· [21-llm-server](../spec/20-modules/21-llm-server.md) · [19-单进程形态与实例隔离](../spec/10-architecture/19-单进程形态与实例隔离.md) · [62-命令行与参数](../spec/60-reference/62-命令行与参数.md) · [2D-router](../spec/20-modules/2D-router.md) · [11-MQ与消息](../spec/10-architecture/11-MQ与消息.md) · [50-测试体系](../spec/50-testing/50-测试体系.md)
+> **入口现状（BRIDGE-3，2026-10-24）**：桥入口 = **UDS-only**，默认 `%LOCALAPPDATA%\chonkpilot\llm.sock`（socket `0600` / 父目录 `0700`；`CHONK_LLM_UDS` 覆盖，`off` / `-` 关闭），**不监听任何 TCP 端口**；需要 TCP 的客户端自建 loopback→UDS 字节代理（demo 见 `capability/plugins/demo-python/llm_bridge_proxy.py`）。路由 `/llm/<name>/<rest>`、字节级透传、覆盖鉴权头、只读 `ResolveBridgeTarget`、零新增 MQ 主题。权威现状见 [62 §3](../spec/60-reference/62-命令行与参数.md) · [19 §6](../spec/10-architecture/19-单进程形态与实例隔离.md) · [49 BRIDGE-3](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)。
+> 状态：✅ **已实施**（步骤 1–8，2026-10-16 / 步骤 8 于 2026-10-19 / 2026-10-24 入口改 UDS；**2026-11-04 核对：主体与代码一致**，仅 §3.3 转义路径与 §3.5 上游传输错误两处按实现修正）
+> 日期：2026-10-16（2026-11-04 核对修订）
+> 关联（**spec**）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)（登记项 `BRIDGE-1`）· [21-llm-server](../spec/20-modules/21-llm-server.md) · [19-单进程形态与实例隔离](../spec/10-architecture/19-单进程形态与实例隔离.md) · [62-命令行与参数](../spec/60-reference/62-命令行与参数.md) · [2D-router](../spec/20-modules/2D-router.md) · [11-MQ与消息](../spec/10-architecture/11-MQ与消息.md) · [50-测试体系](../spec/50-testing/50-测试体系.md)
 > 代码目录：`src/lib/llm/llmbridge/`（入口）· `src/lib/llm/server/bridge.go`（只读查询）· `src/lib/gui/host/main.go`（唯一装配点）
 
 ---
@@ -66,7 +66,8 @@ python 脚本 ──（自选 LLM、自用该协议的 SDK）──▶ UDS %LOCA
 
 ### 3.3 转发与鉴权注入
 
-- 目标 URL = `provider.base_url` + `/<rest>`（`rest` 逐字保留，含查询串）。
+- 目标 URL = `provider.base_url` + `/<rest>`（查询串原样保留）。
+- **2026-11-04 核对（与实现对齐）**：`<rest>` 取自**已解码**的 `URL.Path`，拼接时显式清空 `RawPath`（`src/lib/llm/llmbridge/llmbridge.go:199-207,250-266`）。因此普通路径逐字保留，但含 `%2F` / `%3F` 等**转义段会被解码后再拼**，不严格逐字。若后续使用侧依赖原始转义，应改用 `EscapedPath()`（当前未改）。
 - body / 流式（SSE）/ 非流式**直 pipe**，不缓冲、不改写。
 - **鉴权头覆盖**（先删后设、不追加；确保用服务端 key，防客户端自报）：
 
@@ -106,6 +107,8 @@ c.messages.create(model="claude-...", max_tokens=1024, messages=[...])
 ```
 
 > 约定：`provider.base_url`（即配置里的 `baseUrl`）配到该 provider 的 **API 前缀**——OpenAI 型通常含 `/v1`，Anthropic 型不含。
+>
+> **2026-11-04 核对**：代理使用 `ReverseProxy.Rewrite`，目标路径 = 解码后的 `base.Path` 与 `rest` 拼接，`RawPath` 置空；普通路径与查询串保持，**转义段（`%2F` 等）不逐字保留**（见 §3.3）。上游 HTTP 响应原样回；dial / 流中断等**传输错误**归一为 502。
 
 ### 3.5 失败语义
 
@@ -116,7 +119,8 @@ c.messages.create(model="claude-...", max_tokens=1024, messages=[...])
 | provider 不存在 / 非 `llms[]` 名 | 404 + 明确文案 |
 | `base_url` 为空 | 回落 `--llm-base`（与 `specFor` 同口径） |
 | 协议未识别 | 400 + 明确文案 |
-| 上游错误 | 原样透传（状态码 + body） |
+| 上游 HTTP 错误 | **原样透传**（状态码 + 头 + body；由 `ReverseProxy` 完成） |
+| 上游传输错误（dial / 流中断） | **归一为 502** + 明确文案，丢弃上游 body（`llmbridge.go:213-217`；文档原写「原样透传」，2026-11-04 按实现修正） |
 
 ---
 
@@ -126,7 +130,7 @@ c.messages.create(model="claude-...", max_tokens=1024, messages=[...])
 |----|------|------|
 | 入口 | 本机 UDS `llm.sock`，默认开（`off` / `-` 关闭） | 独立于业务消息面，脚本零配置可用（TCP 客户端自建代理） |
 | 监听 | UDS-only，目录 `0700` / socket `0600` | 免鉴权 → 必须由文件 ACL fail-closed |
-| 选 provider | 路径段 `/llm/<name>` | SDK 的 `base_url` 直接可用；转发路径逐字不变，无需猜 `/v1` |
+| 选 provider | 路径段 `/llm/<name>` | SDK 的 `base_url` 直接可用；转发路径按解码路径拼接（转义段不逐字保留，见 §3.3），无需猜 `/v1` |
 | 鉴权 | 桥注入服务端存的 key，**覆盖**客户端头 | 使用侧免 key；防客户端自报 |
 | 协议 | **不解析 body** | 天然支持任意协议；无需翻译器 |
 | 工具 | 不注入、不代执行 | 使用侧自行执行 |
@@ -165,16 +169,17 @@ c.messages.create(model="claude-...", max_tokens=1024, messages=[...])
 | 7 | 测试体系登记：HTTP 面豁免「MQ 驱动」断言（见 [50-测试体系](../spec/50-testing/50-测试体系.md)） | ✅ | docs（50 §7） |
 | 8 | 桌面单体形态**同开**（2026-10-17 用户定案「需要」） | ✅ 已实施 | `src/lib/gui/host/main.go`（`FormDesktop`；默认 `llm.sock`、`CHONK_LLM_UDS` 覆盖 / `off` 关闭；UDS-only、免 api-key、零 MQ 变更；冒烟 `run_llm_bridge.py`） |
 
-> **实施说明（2026-10-16）**：
+> **实施说明（2026-10-16；2026-11-04 核对补充）**：
 > - **步骤 2 落点** = `src/lib/llm/server/bridge.go`（同 `package server`；设计稿 §7 原记 `server.go`，为避免与既有实现文件混杂而独立成文件）。
 > - **`protocol` 返回原值（关键）**：`ResolveBridgeTarget` 读 usr `llms[].protocol` 的**原始值**，**不经** `NormalizeLLMProtocol` —— 后者把 `anthropic` 折叠为 `openai`（`llm.go`：未知/缺省 → openai），而归一化只属 router 出网口径；桥接入口是**不经 router 的透明反代**，必须按原值区分鉴权头（anthropic → `x-api-key`）。**零行为变更**（既有 router 路径与归一表均未改）。
+> - **入口开关只有 env**：`CHONK_LLM_UDS`（`src/lib/gui/host/main.go:624-627`）；代码注释里提到的 `--llm-bridge-uds` **不是实际 flag**（`llmbridge.go:8` 注释残留），文档按现状以 `CHONK_LLM_UDS` 为准。
 > - **装配范围**：单点 `src/lib/gui/host`（`FormDesktop`；✅ 步骤 8 已实施）。
-> - **步骤 8（2026-10-17 定案 / 2026-10-19 实施 / 2026-10-24 改 UDS）**：桌面单体**同开**本入口（默认 UDS `llm.sock`、`CHONK_LLM_UDS` 覆盖、`off` / `-` 关闭、免 api-key、零 MQ 主题/payload 变更）；启动失败不致命、收尾先于 srv 停止；冒烟 = `src/test/chonkpilot-gui/systest/run_llm_bridge.py`（转发 / 鉴权头覆盖 / 未知 provider 404 / 客户端自建 TCP 代理，全绿）；已同步 [62 §3](../spec/60-reference/62-命令行与参数.md) / [19 §6](../spec/10-architecture/19-单进程形态与实例隔离.md) / [49 BRIDGE-1](../spec/40-roadmap/49-待实现项.md)。
+> - **步骤 8（2026-10-17 定案 / 2026-10-19 实施 / 2026-10-24 改 UDS）**：桌面单体**同开**本入口（默认 UDS `llm.sock`、`CHONK_LLM_UDS` 覆盖、`off` / `-` 关闭、免 api-key、零 MQ 主题/payload 变更）；启动失败不致命、收尾先于 srv 停止；冒烟 = `src/test/chonkpilot-gui/systest/run_llm_bridge.py`（转发 / 鉴权头覆盖 / 未知 provider 404 / 客户端自建 TCP 代理，全绿）；已同步 [62 §3](../spec/60-reference/62-命令行与参数.md) / [19 §6](../spec/10-architecture/19-单进程形态与实例隔离.md) / [49 BRIDGE-1](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)。
 
 ---
 
 ## 8. 关联文档
 
-- [49-待实现项](../spec/40-roadmap/49-待实现项.md)（登记项 `BRIDGE-1`）
+- [49-待实现项](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)（登记项 `BRIDGE-1`）
 - [21-llm-server](../spec/20-modules/21-llm-server.md) · [19-单进程形态与实例隔离](../spec/10-architecture/19-单进程形态与实例隔离.md) · [62-命令行与参数](../spec/60-reference/62-命令行与参数.md)
 - [2D-router](../spec/20-modules/2D-router.md) · [11-MQ与消息](../spec/10-architecture/11-MQ与消息.md) · [50-测试体系](../spec/50-testing/50-测试体系.md)

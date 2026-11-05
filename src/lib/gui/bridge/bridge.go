@@ -474,6 +474,9 @@ var frontMethodSubjects = map[string]string{
 	msgkeys.TopicLlmInboxPromote: "inbox-promote",
 	msgkeys.TopicLlmInboxRevert:  "inbox-revert",
 	msgkeys.TopicAskUserReply:    "session-ask-reply",
+	// Ask 中心订阅（后端唯一分发，2026-11-05）：前端 Ask 中心窗口挂载/卸载时登记/退订。
+	msgkeys.TopicAskCenterSubscribe:   msgkeys.TopicAskCenterSubscribe,
+	msgkeys.TopicAskCenterUnsubscribe: msgkeys.TopicAskCenterUnsubscribe,
 	msgkeys.TopicTaskStop:        msgkeys.TopicTaskStop,
 	msgkeys.TopicTaskBackground:  msgkeys.TopicTaskBackground,
 	msgkeys.TopicToolRetry:       msgkeys.TopicToolRetry,

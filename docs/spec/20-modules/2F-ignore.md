@@ -1,6 +1,6 @@
 # 2F · gitignore 语义匹配（`chonkpilot-util/ignore`）
 
-> 状态：✅ 与代码一致（2026-10-31 更新：I/O 外壳亦迁入 `chonkpilot-util/ignore`，`plugins/shared` 已整体删除；对外改为**实例 API** `ignore.New(root, opts)`）
+> 状态：⚠️ **内核/外壳已实现**（2026-10-31 更新：I/O 外壳亦迁入 `chonkpilot-util/ignore`，`plugins/shared` 已整体删除；对外改为**实例 API** `ignore.New(root, opts)`；2026-11-04 核对：4 处表述已校正）
 > 关联：[75-utility](../70-conventions/75-utility.md) · [29-codegraph §4.1](29-codegraph.md) · [38-检索与索引](../30-function-points/38-检索与索引.md) · [61-消息一览 §3.6](../60-reference/61-消息一览.md) · [10-分层与依赖](../10-architecture/10-分层与依赖.md)
 > 代码目录：`chonkpilot-util/ignore/`（module `github.com/lsong98sh/chonkpilot-util`）：`ignore.go` = 纯内核；`io.go` = I/O 外壳 + `Matcher` 实例
 
@@ -10,7 +10,7 @@
 
 - **纯内核（同包 `ignore.go`）**：gitignore(5) 的解析与匹配 —— `Parse` / `Match` / `MatchesAny` / `LastMatch` / `Rule.Match` / `Rule.Negate` / `BuiltinRules` / `DefaultRules` / `NormalizeRel` / `AncestorDirs`。只做「文本/路径 → 布尔」，不读盘、不缓存、不依赖业务包。
 - **I/O 外壳（同包 `io.go`）**：规则来源叠加与遍历 —— `FileRules` / `GlobalRules` / `ExcludeRules`、逐级 `.gitignore` 装载、`New` / `Matcher`（惰性规则缓存）、`Matcher.Ignored` / `Matcher.WalkDir`、`ConfigOptions`。
-- **做**：codegraph / vfts 两个索引引擎与 vfts 插件清单扫描共用同一套规则语义（纯内核唯一实现，外壳只负责取规则）。
+- **做**：codegraph / vfts 两个索引引擎共用同一套规则语义（纯内核唯一实现，外壳只负责取规则）；插件 `file_list.json` 清单由引擎 `indexed` 派生，**不直接调用 ignore**（2026-11-04 核对，`codegraph/src/manifest.go:1-28`）。
 - **不做**：不查 git 索引（已跟踪文件照样受忽略规则约束）；不解析 `core.excludesFile`（仅 XDG 默认位置）；不要求 workdir 是 git 仓库（勾选即生效）；纯内核不持库、无 MQ、无 exe。
 
 ---
@@ -52,13 +52,13 @@
 | `(*Matcher).Ignored(rel)` | 相对实例根、`/` 分隔的路径 | `bool`（自身命中 **或**任一祖先目录「目录剪枝」命中） |
 | `(*Matcher).WalkDir(fn)` | 回调 | 深度优先遍历实例根：**跳过被忽略目录（不下降）与文件**，其余交 `fn`；根自身恒以 `rel=""` 调用 |
 | `WalkDir(root, opts, fn)` | 根 + 配置 + 回调 | 一次性实例的便捷入口（等价 `New(root, opts).WalkDir(fn)`） |
-| `ConfigOptions(keys, get, workdir)` | 显式键名 + 配置读取器 + workdir | 构造 `*Options` 与 `enabled`；`workdir` 为空 → error |
+| `ConfigOptions(keys, get, workdir)` | 显式键名 + 配置读取器 + workdir | 构造 `*Options` 与 `enabled`；`workdir` 为空 → error。**当前仅测试使用，无生产调用方**（2026-11-04 核对） |
 | `FileRules(path, base)` | 文件路径 + 来源目录 | 读取并解析；文件不存在 / 不可读 → `nil`（静默） |
 | `GlobalRules()` / `ExcludeRules(root)` | — / 根目录 | 全局 ignore / `.git/info/exclude` 规则（缺失 → `nil`） |
 
 ### 3.3 引擎配置键（`ConfigOptions`）
 
-`ConfigOptions` 不再内置引擎名拼接，由调用方给出显式键名：
+`ConfigOptions` 不再内置引擎名拼接，由调用方给出显式键名。**注意**：本节是**预留/测试辅助**口径 —— 5 仓 grep 显示 `ConfigOptions` **零生产调用方**（定义 `io.go:63`，使用仅 `io_test.go:218`）；引擎实际自行构造 `ignore.Options`（`treesitter/server/index.go:118-124`、`vfts/server/index.go:104-110`；2026-11-04 核对）。
 
 | `Keys` 字段 | 取值 | 效果 |
 |----|------|------|
@@ -66,7 +66,7 @@
 | `SkipDirs` | 逗号 / 分号 / 换行分隔（保序不去重） | → `UserRules`（空串 = 无规则） |
 | `StackGitignore` | `"true"` | `StackGitignore`（false → 不读任何 ignore 文件） |
 
-codegraph / vfts 的调用方分别传入 `plugins.codegraph.{enabled,skip-dirs,stack-gitignore}` 与 vfts 对应键。
+codegraph / vfts 的实际键命名空间（2026-11-04 核对 `codegraph/src/config.go:39-52`）：codegraph = `plugins.codegraph.{enabled,exts,skip-dirs,stack-gitignore}`；vfts = **`plugins.codegraph.vfts.{enabled,exts,skip-dirs,stack-gitignore}`**（挂在 codegraph 插件下，不是 `plugins.vfts.*`）。当前生产调用方直接构造 `Options`，未走 `ConfigOptions`。
 
 ---
 
@@ -84,10 +84,10 @@ codegraph / vfts 的调用方分别传入 `plugins.codegraph.{enabled,skip-dirs,
      · 默认排除 DefaultRules（node_modules/ __pycache__/ .venv/ venv/ .trae/ dist/ build/ .next/ .nuxt/ out/ target/ vendor/；可被 '!' 反选，最低）
 ```
 
-> base 组内优先级来自实现：`newRuleSet` 按 `DefaultRules() ++ GlobalRules() ++ ExcludeRules()` 追加，`LastMatch` **从尾部反向取首个命中**（末位 = info/exclude，优先胜出）；详情见 §4.2。
+> base 组内优先级来自实现：`Matcher` 初始化时按 `DefaultRules() ++ GlobalRules() ++ ExcludeRules()` 追加，`LastMatch` **从尾部反向取首个命中**（末位 = info/exclude，优先胜出）；详情见 §4.2（2026-11-04 核对：无 `newRuleSet` 函数）。
 > `GlobalRules` / `ExcludeRules` 与各级 `.gitignore` **仅在 `Options.StackGitignore=true` 时参与**（默认排除恒参与）。
 
-### 4.2 求值（外壳 `ruleSet.decide`）
+### 4.2 求值（外壳 `Matcher.decide`）
 
 ```text
 decide(rel, isDir)
@@ -141,9 +141,9 @@ Rule.Match(rel, isDir)：dirOnly 且非目录 → false；base 非空 → 仅适
 - **外壳上游依赖**：同包纯内核 + `chonkpilot-util/strlist`（用户规则拆分）。
 - **下游消费者**：
   - `chonkpilot-plugins/codegraph/src/engines/treesitter/server`（索引遍历排除）· `chonkpilot-plugins/codegraph`（`skip-dirs` / `stack-gitignore` 解析）；
-  - `chonkpilot-plugins/codegraph/src/engines/vfts/server`（索引遍历排除）· `chonkpilot-plugins/codegraph`（`vfts.go` / `manifest.go` 清单扫描）。
+  - `chonkpilot-plugins/codegraph/src/engines/vfts/server`（索引遍历排除）· `chonkpilot-plugins/codegraph`（`vfts_query.go`；`manifest.go` 的清单由引擎 `indexed` 派生，不调用 ignore）。
   - ~~`src/lib/data/internal/indexignored`~~（2026-10-25 随 `data-index-ignored` 主题下线删除）。
-- **边界**：**排除判定单一实现** —— 引擎 `WalkDir` 与插件 `file_list.json` 清单两处共用同一 `ruleSet`，故 `Ignored(p) ⇔ WalkDir 会跳过 p`（与 git 的已知差异见 §1）。
+- **边界（2026-11-04 核对）**：**排除判定单一实现**在**引擎遍历内部**成立 —— `Matcher.WalkDir` 与 `Matcher.Ignored` 共用同一实例，故对引擎遍历而言 `Ignored(p) ⇔ WalkDir 会跳过 p`。插件 `file_list.json` 清单来自引擎 `indexed` 派生（`codegraph/src/manifest.go:1-28,61-86`），**不另调 ignore**；与 git 的已知差异见 §1。
 
 ---
 
@@ -151,7 +151,7 @@ Rule.Match(rel, isDir)：dirOnly 且非目录 → false；base 非空 → 仅适
 
 - ✅ 2026-10-31：I/O 外壳并入 `chonkpilot-util/ignore`（实例 API `New` / `Matcher`）；`plugins/shared`（含 `ignore` / `pluginhost` / `pluginproto` / `winproc` / `trayconsole` / `indexkind` / `lockfile` / `pluginclient`）整体删除。
 - ✅ 2026-10-29：纯内核迁入 `chonkpilot-util/ignore`；主仓孤儿 `src/lib/ignore` 删除、go.mod 引用清零。
-- ✅ 已实施：gitignore 语义匹配单一实现；`ConfigOptions` / `Matcher.Ignored` 供引擎遍历与插件清单扫描（~~数据面 `data-index-ignored`~~ 已于 2026-10-25 下线）。
+- ✅ 已实施：gitignore 语义匹配单一实现；`Matcher.Ignored` / `WalkDir` 供引擎遍历（`ConfigOptions` 为预留/测试辅助，无生产调用方；2026-11-04 核对；~~数据面 `data-index-ignored`~~ 已于 2026-10-25 下线）。
 - 已知与 git 的差异（刻意，见 §1）：不查 git 索引；不解析 `core.excludesFile`；不要求 workdir 是 git 仓库。
 - 遗留 / 规划：无。
 
@@ -163,4 +163,4 @@ Rule.Match(rel, isDir)：dirOnly 且非目录 → false；base 非空 → 仅适
 
 **L1 外壳（`chonkpilot-util/ignore/io_test.go`）**：`WalkDir`（stack 开关 / 父目录剪枝 / info/exclude + 全局 ignore / 用户规则最高优先级）、`ConfigOptions`、`Matcher` 实例复用、`Ignored` 与 `WalkDir` 等价性。
 
-**间接**：引擎侧经 `codegraph/server` / `vfts/server` 白盒与 L4 `run_index_gate` / `run_project_cfg`；vfts 插件清单扫描经 `run_docs_gate`。
+**间接**：引擎侧经 `codegraph/server` / `vfts/server` 白盒与 L4 `run_index_gate` / `run_project_cfg`；vfts 清单（由引擎 `indexed` 派生）经 `run_docs_gate`。

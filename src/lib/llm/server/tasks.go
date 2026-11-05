@@ -188,6 +188,11 @@ func (tm *taskManager) cancelSubtree(instanceID, rootID string) int {
 	return tm.tree.CancelSubtree(instanceID, rootID)
 }
 
+// subtree 返回子树节点快照（取消时级联关闭委派子轮次用；未知 → 空）。
+func (tm *taskManager) subtree(instanceID, rootID string) []*TaskNode {
+	return tm.tree.Subtree(instanceID, rootID)
+}
+
 // cancelByTurn 取消某轮次在飞的**全部**任务节点（I-35：llm-cancel 级联）；返回取消节点数。
 func (tm *taskManager) cancelByTurn(instanceID, turnID string) int {
 	return tm.tree.CancelByTurn(instanceID, turnID)

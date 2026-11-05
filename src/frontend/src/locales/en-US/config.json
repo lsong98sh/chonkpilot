@@ -98,6 +98,7 @@
     "inheritSystem": "Inherit system",
     "overriddenByProject": "Overridden by project",
     "timeoutSec": "Service Timeout (s)",
+    "askTimeoutSec": "Ask Timeout (s, 0 = no timeout)",
     "maxConcurrency": "Max Concurrency",
     "skipDirs": "Skip Directories"
   },

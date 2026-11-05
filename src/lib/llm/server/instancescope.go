@@ -9,7 +9,6 @@ package server
 
 import (
 	"strings"
-	"time"
 
 	"github.com/lsong98sh/chonkpilot-agent/session/runner"
 )
@@ -125,13 +124,24 @@ func (s *Server) turnBySessionLocked(instanceID, session string) *turnCtx {
 	return tc
 }
 
+// stopAskTimerLocked 停掉显式超时定时器（**须持 s.mu**；取走/清理登记时防泄漏）。
+func stopAskTimerLocked(w *askWaiter) {
+	if w != nil && w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+}
+
 // takeAskLocked 取走并注销 ask 等待登记（**须持 s.mu**；返回 (等待项, 是否命中)）。
-// instance 非空 → 只在该 instance 的桶内命中；空 → 先按原键，再全桶回退（ask id 全局唯一，
-// 兼容未带 instance_id 的旧调用方）。
+// instance 非空 → 先按该 instance 的桶，再按 `deliverInstance` 兜底，最后按 ask_id 全局兜底；
+// 空 → 先按原键，再全桶回退（ask id 全局唯一，兼容未带 instance_id 的旧调用方）。
 //
 // **定向投递兜底**（SUBCHAT-3 阶段 F-2）：`ask_user` 卡片按会话所在窗口投递 → 应答来自**投递目标
 // 窗口**（其实例 ≠ 登记实例）→ 按 askID 命中「`deliverInstance` == 该实例」的登记（ask id 全局唯一；
 // 仅在按 instKey 未命中时兜底，不放松既有按 instance 精确命中语义）。
+//
+// **Ask 中心兜底**（2026-11-04）：Ask 中心是独立待办窗口（不归属任何会话），按 ask_id 作答 →
+// 前两级均不命中时按 ask_id 全局命中（ask_id 全局唯一、登记取走即销，不存在跨 ask 串味）。
 func (s *Server) takeAskLocked(instanceID, askID string) (*askWaiter, bool) {
 	if askID == "" {
 		return nil, false
@@ -139,12 +149,22 @@ func (s *Server) takeAskLocked(instanceID, askID string) (*askWaiter, bool) {
 	key := instKey(instanceID, askID)
 	if w, ok := s.asks[key]; ok {
 		delete(s.asks, key)
+		stopAskTimerLocked(w)
 		return w, true
 	}
 	if instanceID != "" {
 		for k, w := range s.asks {
 			if w.askID == askID && w.deliverInstance == instanceID {
 				delete(s.asks, k)
+				stopAskTimerLocked(w)
+				return w, true
+			}
+		}
+		// Ask 中心（独立待办窗口）按 ask_id 作答：与归属/投递实例均不同 → 全局命中。
+		for k, w := range s.asks {
+			if w.askID == askID {
+				delete(s.asks, k)
+				stopAskTimerLocked(w)
 				return w, true
 			}
 		}
@@ -153,28 +173,20 @@ func (s *Server) takeAskLocked(instanceID, askID string) (*askWaiter, bool) {
 	for k, w := range s.asks {
 		if w.askID == askID {
 			delete(s.asks, k)
+			stopAskTimerLocked(w)
 			return w, true
 		}
 	}
 	return nil, false
 }
 
-// purgeExpiredAsksLocked 惰性回收**已过期**的 ask 等待登记（**须持 s.mu**）：expiresAt 到期未应答
-// → 摘除，避免无答复的 ask 常驻内存（expiresAt 与 payload `expires_at` 同源，见 ask/askTTL）。
-// 无答题的轮次若正常收尾，其等待登记由 clearAsksByTurnLocked 摘除；本回收兜住"轮次未收尾"的场景。
-func (s *Server) purgeExpiredAsksLocked(now time.Time) {
-	for k, w := range s.asks {
-		if !w.expiresAt.IsZero() && now.After(w.expiresAt) {
-			delete(s.asks, k)
-		}
-	}
-}
-
 // clearAsksByTurnLocked 摘除某轮次的全部 ask 等待登记（轮次收尾；**须持 s.mu**）。
 // instanceID 非空 → 只清该实例；空 → 全桶（turn id 全局唯一，旧语义等价）。
-func (s *Server) clearAsksByTurnLocked(instanceID, turnID string) {
+// 返回被摘除的登记（调用方解锁后发 ask-center-remove）。
+func (s *Server) clearAsksByTurnLocked(instanceID, turnID string) []*askWaiter {
+	var removed []*askWaiter
 	if turnID == "" {
-		return
+		return removed
 	}
 	for k, w := range s.asks {
 		if w.turnID != turnID {
@@ -184,19 +196,27 @@ func (s *Server) clearAsksByTurnLocked(instanceID, turnID string) {
 			continue
 		}
 		delete(s.asks, k)
+		stopAskTimerLocked(w)
+		removed = append(removed, w)
 	}
+	return removed
 }
 
 // clearAsksByInstanceLocked 摘除某实例的**全部** ask 等待登记（实例退出；**须持 s.mu**）。
 // 退出清理时该实例的轮次可能已被移出 s.turns，故按 instance 归属整体清（不依赖 turn 存活）。
 // 含**定向投递目标为该实例**的登记（SUBCHAT-3 阶段 F-2：群聊窗口关闭 → 其名下卡片一并失效）。
-func (s *Server) clearAsksByInstanceLocked(instanceID string) {
+// 返回被摘除的登记（调用方解锁后发 ask-center-remove）。
+func (s *Server) clearAsksByInstanceLocked(instanceID string) []*askWaiter {
+	var removed []*askWaiter
 	if instanceID == "" {
-		return
+		return removed
 	}
 	for k, w := range s.asks {
 		if w.instanceID == instanceID || w.deliverInstance == instanceID {
 			delete(s.asks, k)
+			stopAskTimerLocked(w)
+			removed = append(removed, w)
 		}
 	}
+	return removed
 }

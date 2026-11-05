@@ -63,6 +63,8 @@ func (s *Server) onTaskStop(_ context.Context, _ string, v *mq.Value) error {
 	if cancelled == 0 {
 		return methodErr("任务不存在或已结束: " + taskID)
 	}
+	// 委派子代理：任务态已级联取消 → 关闭对应子轮次（递归下一级）。
+	s.closeDelegatedInSubtree(req.InstanceID, taskID)
 	v.Result = map[string]any{"cancelled": true, "task_id": taskID}
 	return nil
 }

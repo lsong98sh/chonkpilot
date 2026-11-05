@@ -27,6 +27,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chonk_client import ChonkClient, TestError, run_case
+import ask_center as ac_mod
 
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
 _G = _h.acquire_gui(2346)  # 复用优先；无实例则自起并在结束时回收
@@ -409,45 +410,35 @@ def case_ask_task_content():
     ev_session = p0.get("session") or p0.get("session_id") or ""
     if ev_session and ev_session != sid:
         raise TestError(f"ask-user 事件会话不匹配: {ev_session} != {sid}")
-    time.sleep(1.2)
-    # ① 弹窗必须显示问题内容 + 可交互项（选项按钮或输入框）
-    dialog = deep_loads(c.eval("""(() => {
-      const conts = [...document.querySelectorAll('.ask-user-content')].filter(e => e.offsetParent !== null);
-      const cont = conts[conts.length - 1];
-      if (!cont) return { text: '', opts: 0, ta: 0 };
-      return {
-        text: cont.textContent || '',
-        opts: cont.querySelectorAll('.option-btn').length,
-        ta: cont.querySelectorAll('textarea').length,
-      };
-    })()"""))
-    if not isinstance(dialog, dict) or not dialog.get("text", "").strip():
-        raise TestError(f"ask 弹窗未显示内容: {dialog!r}")
-    if q.strip() not in dialog["text"]:
-        raise TestError(f"ask 弹窗未显示问题内容: q={q!r} text={dialog['text'][:120]!r}")
-    if dialog.get("opts", 0) < 1 and dialog.get("ta", 0) < 1:
-        raise TestError(f"ask 弹窗无可交互项（选项/输入）: {dialog!r}")
-    r = c.eval("""(() => {
-      const conts = [...document.querySelectorAll('.ask-user-content')].filter(e => e.offsetParent !== null);
-      const cont = conts[conts.length - 1];
-      if (!cont) return 'no-dialog';
-      const opt = cont.querySelector('.option-btn');
-      if (opt) { opt.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 'opt'; }
-      const ta = cont.querySelector('textarea');
-      if (!ta) return 'no-input';
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-      setter.call(ta, '继续执行');
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-      return 'typed';
-    })()""", 5000)
+    # Ask 中心（2026-11-04）：ask_user 不再弹 dialog → 自动打开独立待办窗口；
+    # 右侧详情必须显示问题内容 + 可交互项（选项按钮或输入框）。
+    aid = p0.get("ask_id") or ""
+    if not aid:
+        raise TestError(f"ask-user 事件缺 ask_id: {p0}")
+    _wid, ac = ac_mod.ask_client(c, 30)
+    if not ac_mod.wait_item(ac, aid):
+        raise TestError(f"Ask 中心左列未出现 {aid}")
+    ac_mod.select_item(ac, aid)
+    time.sleep(0.3)
+    shown = ac_mod.question_text(ac)
+    if not shown.strip():
+        raise TestError(f"Ask 中心未显示内容: {shown!r}")
+    if q.strip() not in shown:
+        raise TestError(f"Ask 中心未显示问题内容: q={q!r} shown={shown[:120]!r}")
+    labels = ac_mod.option_labels(ac)
+    has_ta = ac_mod.set_custom(ac, "继续执行") == "ok"
+    if not labels and not has_ta:
+        raise TestError("Ask 中心无可交互项（选项/输入）")
+    if not labels and has_ta:
+        time.sleep(0.3)
+    elif labels:
+        # 已有选项：恢复 custom 输入可能为空，点第一个选项作答。
+        ac_mod.click_option(ac, labels[0])
     time.sleep(0.4)
-    c.eval("""(() => {
-      const conts = [...document.querySelectorAll('.ask-user-content')].filter(e => e.offsetParent !== null);
-      const cont = conts[conts.length - 1];
-      const btn = cont ? cont.querySelector('.submit-btn') : null;
-      if (btn) btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-      return btn ? 'ok' : 'no-btn';
-    })()""", 5000)
+    ac.mq_on_capture(["ask-user-reply"])
+    ac_mod.click_submit(ac)
+    if not ac_mod.wait_reply(ac, aid, max_wait=15):
+        raise TestError("ask-user-reply 未发送（Ask 中心作答失败）")
     deadline = time.time() + 40
     done = False
     while time.time() < deadline:

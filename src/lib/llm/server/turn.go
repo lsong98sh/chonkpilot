@@ -1102,6 +1102,7 @@ func (tc *turnCtx) loop() {
 		// 仅删仍指向本 turnCtx 的项（同键换实例时，旧 tc 的陈旧索引也须清掉，避免 taskTurnFor
 		// 命中已关闭的旧 tc 而漏续轮）。
 		tc.server.forgetPendingTaskIndexLocked(tc)
+		var removedAsks []*askWaiter
 		if tc.server.turns[key] == tc {
 			delete(tc.server.turns, key)
 			if tc.server.busy[instKey(tc.req.InstanceID, tc.req.Session)] == tc.req.Turn {
@@ -1109,9 +1110,12 @@ func (tc *turnCtx) loop() {
 			}
 			delete(tc.server.continuePending, key)
 			// 轮次关闭 → 摘除本轮的 ask 等待登记（E2-1：否则无答复的 ask 常驻内存）。
-			tc.server.clearAsksByTurnLocked(tc.req.InstanceID, tc.req.Turn)
+			removedAsks = tc.server.clearAsksByTurnLocked(tc.req.InstanceID, tc.req.Turn)
 		}
 		tc.server.mu.Unlock()
+		for _, w := range removedAsks {
+			tc.server.notifyAskCenterRemove(w, "turn_closed")
+		}
 		// 空闲自动结束 → **只释放该 dialog** 的运行态归属（SCOPE-1 第二条释放路径：turn 结束
 		// ∧ inbox 无 pending ∧ 无 async task）。放在 busy 已摘除之后、tc.Close 之前；仍有排队
 		// 输入 / 异步任务 → 归属保留（不释放）。
@@ -1361,14 +1365,18 @@ func toolNodeLevel(t ToolDef) string {
 }
 
 // dispatchToolCall 复刻生产「单个工具调用」的完整处理（策略 → running 落库 → 任务节点 →
-// ask/异步/同步 → 结果落库 → 任务终态）。
+// ask/异步/worker → 结果落库 → 任务终态）。
 //
 // 引擎的 ToolInvoker 端口直连本函数——逐字搬迁自原内联块，
 // 文案 / 顺序 / 通知 / 任务节点字段 / `tasks.start|complete` / `taskTurnIndex` / `markInflight` /
 // `gatewayArgs` / task·dsl 特判一律未改。
 //
-// pending=true 表示结果将经回执异步到达（ask_user / 转异步工具），此时 toolMsg 为空、本次调用
-// 不参与聚合回喂。err 非 nil = 该次调用以失败结果回喂（toolMsg 已含落库的失败文本；引擎端口据此填 IsError）。
+// 2026-11-04：**不再在 turn 协调线程上执行 `gc.Call`**——同步 / 异步 / 裁决工具统一交
+// `dispatchToolWorker`（独立 goroutine），本函数恒在毫秒级返回；结果经引擎 Inbox 回喂。
+//
+// pending=true 表示结果将经回执异步到达（ask_user / 全部 gateway 工具），此时 toolMsg 为空、
+// 本次调用不参与聚合回喂。err 非 nil = 该次调用在**派发前**已被拒绝（白名单 / 建节点失败），
+// toolMsg 已含落库的失败文本；引擎端口据此填 IsError。
 func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending bool, err error) {
 	name := call.Name
 	args := parseArgs(call.Arguments)
@@ -1423,7 +1431,12 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 	if isTaskTool(canon) {
 		// task 型域工具（tool_stop/tool_result）：经 gateway 唯一执行入口
 		// （21-llm-server）——内嵌 mcp-server 的域工具 handler 执行并返回文本，
-		// 任务节点由 handler 建/广播（对齐 21-llm-server 任务树）。结果同步喂回本 turn。
+		// 任务节点由 handler 建/广播（对齐 21-llm-server 任务树）。
+		//
+		// 2026-11-04（工具派发去阻塞）：执行体在**独立 worker** 中跑（`toolWorker`），本函数
+		// 立即返回 pending —— turn 协调器（LLM 循环）不再阻塞在 `gc.Call` 上；结果经引擎
+		// Inbox 回喂（与异步回执 / ask 同一通道），同一 turn id 续轮。`tool_result` 的轮询
+		// 等待因此不再冻结插话 / 取消 / 后续工具派发。
 		topSession, _ := tc.server.taskNodeBase(tc) // 树归属随调用上下文下发（I-90）
 		ctxMsg := mcpgateway.Context{
 			WorkDir:    tc.req.WorkDir,
@@ -1435,15 +1448,8 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 			TopSession: topSession,
 		}
 		// A5：非主会话强制同步（gatewayArgs 附调用级 async=never；主会话原样）。
-		res, _, cerr := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(name, args), ctxMsg)
-		if cerr != nil {
-			errText := "错误: " + cerr.Error()
-			tc.persistToolResult(call.ID, errText, "failed", nil)
-			return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText}, false, cerr
-		}
-		text := resultTextFromMap(res)
-		tc.persistToolResult(call.ID, text, "completed", nil)
-		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text}, false, nil
+		tc.dispatchToolWorker(call, name, args, nil, ctxMsg)
+		return ChatMsg{}, true, nil
 	}
 
 	// 树归属：子会话内节点挂该子会话的 kind=llm 节点之下（top_session 归主会话聚合根）；
@@ -1500,51 +1506,79 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 		TopSession: topSession,
 		Parent:     parentTask,
 	}
-	// 主路径工具调用**不设硬 deadline**（评估结论，2026-10-11）：本调用沿 tc.ctx（仅 WithCancel，
+	// 主路径工具调用**不设硬 deadline**（评估结论，2026-10-11）：worker 沿 tc.ctx（仅 WithCancel，
 	// 无 deadline）出网，与 onToolRetry 的 15s 重试超时**口径不同、有意为止**——
 	//   - 异步工具（gateway 契约声明 async / 超阈值转后台）经 gwClient.Call 立即返回 pending +
-	//     task_id（见下方 taskID 分支），turn 挂起等回执，**不阻塞在单次 Call**，无需超时；
-	//   - 同步长时工具（read/build/… 无异步能力者）会真实阻塞在本 Call 直至 gateway 完成——
-	//     加硬上限会**误杀**长时工具（破坏功能），故不加；
+	//     task_id（见 worker 的 taskID 分支），turn 挂起等回执；
+	//   - 同步长时工具（read/build/… 无异步能力者）在**独立 worker goroutine** 中跑完，turn
+	//     协调器不阻塞（2026-11-04 去阻塞）；加硬上限会**误杀**长时工具（破坏功能），故不加；
 	//   - 收敛途径：用户停止（llm-cancel → tc.Close 取消 ctx）或实例退出（exitInstance → tc.Close →
 	//     cancel）会取消 tc.ctx，Call 随 ctx 取消返回；上游 gateway 自身的执行超时策略另行兜底。
 	// A5：非主会话强制同步（gatewayArgs 附调用级 async=never → 工具不得转后台；主会话原样）。
-	res, taskID, cerr := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(name, args), ctxMsg)
-	if cerr != nil {
-		errText := "错误: " + cerr.Error()
-		tc.persistToolResult(call.ID, errText, "failed", nil)
-		if node != nil {
-			tc.server.tasks.done(node.TaskID, TaskStateError, "", cerr.Error())
+	tc.dispatchToolWorker(call, name, args, node, ctxMsg)
+	return ChatMsg{}, true, nil
+}
+
+// dispatchToolWorker 把一次 gateway 工具调用交给**独立 worker** 执行：
+//   - 发起立刻登记 inflight（续轮闸门 / 插话相位判定与 ask 同口径）后返回，调用方（引擎
+//     工具循环）立即进入 PendingWait，**不占用 turn 协调线程**；
+//   - 结果（同步完成 / 失败 / 超时裁决取消）由 worker 落库并经引擎 Inbox 回喂 → 同一 turn
+//     续轮；转异步（task_id）则由既有的 `registerPending` + `onGatewayTaskDone` 通道回喂。
+//
+// node 可空（task 型域工具由 domain handler 自行建节点）。
+func (tc *turnCtx) dispatchToolWorker(call ToolCall, name string, args map[string]any, node *TaskNode, ctxMsg mcpgateway.Context) {
+	tc.markInflight(call.ID)
+	go func() {
+		res, taskID, cerr := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(name, args), ctxMsg)
+		if cerr != nil {
+			if tc.ctx.Err() != nil {
+				// 轮次已取消：终态由取消路径统一推进（不落伪失败、不续轮）。
+				tc.clearInflight(call.ID)
+				return
+			}
+			errText := "错误: " + cerr.Error()
+			tc.persistToolResult(call.ID, errText, "failed", nil)
+			if node != nil {
+				tc.server.tasks.done(node.TaskID, TaskStateError, "", cerr.Error())
+			}
+			tc.finishBackgroundTool(call.ID, errText, "failed")
+			return
 		}
-		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText}, false, cerr
-	}
-	if taskID != "" {
-		// 转异步：登记 task_id → 发起信息（tool-call-id + 转后台时间）；任务节点挂 gateway
-		// 任务，turn 挂起等回执；结果在 onAsyncDone 落一条 role=tool（含 async 段）。
-		// 同步登记 task_id → 本 turn 运行态索引（onGatewayTaskDone 免全表扫描定位）。
-		tc.registerPending(taskID, call.ID)
-		if node != nil {
-			tc.server.tasks.setGwTask(node.TaskID, taskID)
-			tc.server.tasks.setState(node.TaskID, TaskStatePending)
+		if taskID != "" {
+			// 转异步：登记 task_id → 发起信息；任务节点挂 gateway 任务，turn 挂起等回执。
+			tc.clearInflight(call.ID)
+			tc.registerPending(taskID, call.ID)
+			if node != nil {
+				tc.server.tasks.setGwTask(node.TaskID, taskID)
+				tc.server.tasks.setState(node.TaskID, TaskStatePending)
+			}
+			return
 		}
-		return ChatMsg{}, true, nil
-	}
-	text := resultTextFromMap(res)
-	if resultStatus(res) == "cancelled" {
-		// 超时裁决「取消」的同步返回（gateway 结构化标记）：任务节点落 cancelled（而非 done，
-		// I-62）；结果照常喂回续轮（LLM 需感知该工具已取消）。done 幂等：若回报路径已先落终态，
-		// 此处不重复广播、也不把 cancelled 覆盖成 done。
-		tc.persistToolResult(call.ID, text, "cancelled", nil)
-		if node != nil {
-			tc.server.tasks.done(node.TaskID, TaskStateCancelled, "", text)
+		text := resultTextFromMap(res)
+		if resultStatus(res) == "cancelled" {
+			// 超时裁决「取消」的同步返回（gateway 结构化标记）：任务节点落 cancelled（而非 done，
+			// I-62）；结果照常喂回续轮（LLM 需感知该工具已取消）。done 幂等：若回报路径已先落终态，
+			// 此处不重复广播、也不把 cancelled 覆盖成 done。
+			tc.persistToolResult(call.ID, text, "cancelled", nil)
+			if node != nil {
+				tc.server.tasks.done(node.TaskID, TaskStateCancelled, "", text)
+			}
+			tc.finishBackgroundTool(call.ID, text, "cancelled")
+			return
 		}
-		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text}, false, nil
-	}
-	tc.persistToolResult(call.ID, text, "completed", nil)
-	if node != nil {
-		tc.server.tasks.done(node.TaskID, TaskStateDone, text, "")
-	}
-	return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: text}, false, nil
+		tc.persistToolResult(call.ID, text, "completed", nil)
+		if node != nil {
+			tc.server.tasks.done(node.TaskID, TaskStateDone, text, "")
+		}
+		tc.finishBackgroundTool(call.ID, text, "completed")
+	}()
+}
+
+// finishBackgroundTool 摘除 inflight 登记并把 worker 结果投递进引擎 Inbox（tool_result）：
+// 与 `onAsyncDone` / ask 回执同一消费点（引擎 PendingWait），保证只续轮一次。
+func (tc *turnCtx) finishBackgroundTool(callID, text, status string) {
+	tc.clearInflight(callID)
+	tc.engineInbox.Push(engineToolResultItem(callID, text, status != "completed"))
 }
 
 // publishInterrupted 发布 `session-interrupted`（前端 `llm-interrupted`）：载荷与

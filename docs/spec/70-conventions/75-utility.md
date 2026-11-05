@@ -1,6 +1,6 @@
 # 75 · utility 复用规范（chonkpilot-util）
 
-> 状态：✅ 与代码一致（2026-10-29 建立）
+> 状态：✅ 与代码一致（2026-10-29 建立；2026-11-04 核对：补 `sandbox`、对齐 CATALOG、标注守卫无测试）
 > 关联：[71-编程规范](71-编程规范.md) · [10-分层与依赖](../10-architecture/10-分层与依赖.md) · [2F-ignore](../20-modules/2F-ignore.md)
 > 代码目录：同级仓 `chonkpilot-util/`（module `github.com/lsong98sh/chonkpilot-util`）
 
@@ -12,7 +12,7 @@
 
 它是**单一实现**：同一语义不允许在业务包再写一份。`ignore` 只是其中一个子包（gitignore），不是整个库的名字。
 
-例外：少量**跨仓复用的有状态 / I/O 实现**（如命令执行、进程属性、托盘窗口、gitignore I/O 外壳）也收在本仓（见 §3.1）——它们不满足「纯函数」约束，但仍遵守**单一实现**，不得在业务包另写一份。
+例外：少量**跨仓复用的有状态 / I/O / 系统调用实现**（如命令执行、进程属性、进程级写隔离、托盘窗口、gitignore I/O 外壳）也收在本仓（见 §3.1）——它们不满足「纯函数」约束，但仍遵守**单一实现**，不得在业务包另写一份。
 
 ---
 
@@ -36,15 +36,15 @@
 
 | 子包 | 职责 | 典型函数 |
 |------|------|---------|
-| `strx` | 字符串 | `FirstNonEmpty` / `TruncRunes` / `TruncBytes` / `SafeSeg` / `Slug` / `NormalizeEnum` |
+| `strx` | 字符串 | `FirstNonEmpty` / `TruncRunes` / `TruncRunesEllipsis` / `TruncBytes` / `SafeSeg` / `Slug` / `NormalizeEnum` / `ScopedKey` |
 | `strlist` | 分隔符列表 | `Split` / `SplitDedup` / `TrimDropEmpty` / `SplitKV` |
 | `convx` | 标量转换 | `ToStr` / `Truthy` / `IntLoose` / `IntStrict` / `Clamp` |
-| `pathx` | 路径 | `ExpandHome` / `ResolveDir` / `Resolve` / `SanitizeInstance` / `Within` / `Same` / `ToLogical` / `FromLogical` |
-| `namex` | 文件名 | `Sanitize` / `ReplaceIllegal` / `EnsureExt` / `SafeExt` / `ExtAllowed` |
+| `pathx` | 路径 | `ExpandHome` / `ResolveDir` / `Resolve` / `SanitizeInstance` / `Within` / `Same` / `ToLogical` / `FromLogical` / `Clean` / `JoinUnderRoot` / `InvalidPathMessage` / `TrimTempPrefix` |
+| `namex` | 文件名 | `Sanitize` / `ReplaceIllegal` / `EnsureExt` / `SafeExt` / `ExtAllowed` / `Base` |
 | `glob` | 通配匹配 | `Match` / `MatchAny` / `MatchCSV`（支持 `**`） |
-| `ignore` | gitignore 完整实现（纯内核 + I/O 外壳；实例 API） | `Parse` / `Match` / `MatchesAny` / `LastMatch` / `BuiltinRules` / `DefaultRules` / `New` / `Matcher.Ignored` / `Matcher.WalkDir` / `WalkDir` / `ConfigOptions` |
+| `ignore` | gitignore 完整实现（纯内核 + I/O 外壳；实例 API） | `Parse` / `Match` / `MatchesAny` / `LastMatch` / `BuiltinRules` / `DefaultRules` / `New` / `Matcher.Ignored` / `Matcher.WalkDir` / `WalkDir` / `ConfigOptions` / `ExcludeRules` / `FileRules` / `GlobalRules` / `AncestorDirs` / `NormalizeRel` / `Matcher.Root` |
 | `textx` | 文本/行/二进制 | `SplitLines` / `CountLines` / `NormalizeNewlines` / `IsBinary` / `HasUTF16BOM` / `EstimateTokens` |
-| `encodingx` | 编码识别/解码/编码（依赖白名单 `golang.org/x/text`） | `Normalize` / `BOMName` / `Decode` / `Encode` / `Candidates` / `Confidence` / `DecodeAuto` / `AutoName` / `DisplayName` / `Visible` / `Sample` / `IsUTF8Text` / `LooksLikeChinese` |
+| `encodingx` | 编码识别/解码/编码（依赖白名单 `golang.org/x/text`） | `Normalize` / `BOMName` / `Decode` / `Encode` / `Candidates` / `Confidence` / `DecodeAuto` / `AutoName` / `BestAuto` / `DisplayName` / `Visible` / `Sample` / `IsUTF8Text` / `LooksLikeChinese` |
 | `jsonval` | JSON 取值 | `Str` / `Int` / `Bool` / `Unwrap` / `UnwrapMap` / `MergeMissing` / `Clone` / `Lookup` |
 | `configkit` | 配置脚手架 | `IntPtr` / `NormalizeInt` / `NormalizeBool` / `SaveEntries` / `ExplicitKeys` / `ExplicitKeysInOrder` / `IsKnownKey` |
 | `mqmatch` | MQ 主题匹配 | `Match` / `MatchTokens` / `Split` |
@@ -61,14 +61,17 @@
 
 ### 3.1 IO / 有状态共享实现（例外，仍单源）
 
-> 2026-10-31 上收：判据 = 跨 ≥2 仓 / 安全相关 / 易错。以下包**不满足** §2 的纯函数约束，但属于「全仓唯一实现」，业务包不得再写一份。
+> 2026-10-31 上收；2026-11-03 补收 `sandbox`（从 `chonkpilot-agent/sandbox` 下沉）：判据 = 跨 ≥2 仓 / 安全相关 / 易错。以下包**不满足** §2 的纯函数约束，但属于「全仓唯一实现」，业务包不得再写一份。
 
 | 子包 | 职责 | 说明 |
 |------|------|------|
-| `pathutil` | 工具参数路径（R-11）/ 宿主 CHONKPILOT_* 环境 | `Resolve` / `TempRoot` / `HostEnv`；依赖 `pathx` |
-| `winproc` | Windows 进程创建属性（隐藏控制台 / Job Object / `KillTree`） | spawn 子进程的安全与体验基线 |
-| `scriptrun` | 多 runtime 命令执行（超时杀进程树 / 输出上限 / env） | `task_run` 与 `crontab` 共用；依赖 `pathutil` + `winproc` |
-| `trayconsole` | Windows 托盘 + 控制台式输出窗口 | browser / desktop 引擎共用 |
+| `pathutil` | 工具参数路径（R-11）/ 宿主 CHONKPILOT_* 环境 | `Resolve` / `TempRoot` / `HostEnv` / `InvalidMessage`；依赖 `pathx` |
+| `winproc` | Windows 进程创建属性（隐藏控制台 / Job Object / `KillTree`） | `SysProcAttr` / `EnsureKillOnCloseJob` / `KillTree`；spawn 子进程的安全与体验基线 |
+| `sandbox` | **进程级写隔离**（Windows Low IL + Job Object；只限写、读不受限） | `Spec` / `Limits` / `Prepare` / `Start` / `EnsureLowIL` / `EnsureLowILCached` / `Policy.AllowsPath` / `RealPath` / `ExistingRealPath`（非 Windows → `ErrUnsupportedPlatform`）。**2026-11-03 从 `chonkpilot-agent/sandbox` 下沉**，供 gateway（stdio 下游）与 task / crontab / file / web 插件、`scriptrun` 共用 |
+| `scriptrun` | 多 runtime 命令执行（超时杀进程树 / 输出上限 / env / 可选沙箱） | `Run` / `ElevationMessage`；依赖 `pathutil` + `winproc` + `sandbox` |
+| `trayconsole` | Windows 托盘 + 控制台式输出窗口 | `Start` / `Options` / `Console` / `ErrAlreadyRunning`；browser / desktop 引擎共用 |
+
+> 说明：上述 5 个 I/O / 有状态包**当前均无 `doc.go`**（历史上收，职责注释在入口文件），与 §7.1「新子包建 `doc.go`」存在偏差；新增包仍按 §7.1 执行。
 
 ---
 
@@ -104,7 +107,7 @@
 
 ## 6. 守卫（utilguard）
 
-新增 `chonkpilot-util/cmd/utilguard`：扫描所有同级仓（排除 old / old2 / webview2 / util 自身），检查：
+守卫 = `chonkpilot-util/cmd/utilguard`：扫描所有同级仓（排除 old / old2 / webview2 / util 自身），检查：
 
 - 函数名黑名单：`firstNonEmpty`、`splitRules`、`splitList`、`splitComma`、`parseHiddenDirs`、`sanitizeInstance`、`sanitizePluginID`、`sanitizeIDSeg`、`sanitizeFilename`、`truncRunes`、`truncateEventMsg`、`countLines`、`isBinary`、`IsBinaryBytes`、`HasUTF16BOM`、`samePath`、`matchSubject`、`matchTokens`、`normalizeExts`、`newExtSet`、`intPtr`、`atoiSafe`、`isTruthy`；编码域：`DecodeText`、`detectEncoding`、`decodeByName`、`encodeByName`、`normalizeEncoding`、`scoreDecoded`、`sortCandidates`、`confidenceOf`、`sampleOf`、`looksLikeUTF8`、`encodeUTF16`、`stripUTF16BOM`、`utf16OrderOf`、`hasVisible`、`EncodingName`、`encodeFor`、`looksLikeChinese`。
 - 特征实现：`RuneCountInString … / 2`、`IndexByte(…, 0)`、`FieldsFunc` 分号列表、`EqualFold + filepath.Clean`。
@@ -122,6 +125,8 @@ go run ./cmd/gencatalog -check          # 校验 CATALOG 是否过期
 
 迁移期用 `utilguard-baseline.txt` 冻结存量，只拦新增；存量随重构逐步清零（棘轮）。
 
+**守卫自身无测试（2026-11-04 核对）**：`cmd/utilguard` 与 `cmd/gencatalog` 均**没有 `*_test.go`** —— 黑名单匹配、baseline 读写、`CATALOG.md` 生成/`-check` 目前只靠人工执行守护；改动守卫逻辑需手动跑两条命令并检查输出。
+
 **当前存量（2026-10-31 收尾后）**：**0 条**。7 个插件的 `normalizeInt` / `saveEntries` / `explicitKeys` 已全部改为 `configkit` 薄封装（`ExplicitKeysInOrder` 保留各插件 `allKeys` 声明序）；`settingsOf` 是插件各自的 schema 字段映射（字段集不同），不属于通用 utility，已从黑名单移除。**编码域 3 处旧实现已上收**：`file` 插件 `fileops`/`filetool`、主仓 `mcp-tools/internal/fileops`、vfts 引擎（`server/charenc.go` 只留索引策略）→ 统一 `encodingx`。
 
 ---
@@ -133,3 +138,6 @@ go run ./cmd/gencatalog -check          # 校验 CATALOG 是否过期
 3. 写 table-driven 单测（`package <pkg>_test`）。
 4. 运行 `gofmt -w`、`go test ./...`、`go run ./cmd/gencatalog`。
 5. 把该包加入本文第 3 节、`README.md` 与 utilguard 黑名单（如有旧实现）。
+6. 有状态 / I/O 包同时登记到 §3.1，并说明调用方与平台回退行为（如 `sandbox` 的非 Windows `ErrUnsupportedPlatform`）。
+
+> 本文「典型函数」只列常用 API；**完整导出签名以 `CATALOG.md` 为准**。`CATALOG.md` 由 `cmd/gencatalog` 生成，当前覆盖 25 个包（§3 的 20 个纯包 + §3.1 的 5 个 I/O/有状态包）。

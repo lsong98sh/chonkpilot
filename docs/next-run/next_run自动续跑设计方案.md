@@ -1,9 +1,9 @@
 # next_run 自动续跑设计方案（独立稿）
 
-> 状态：✅ **已实施（2026-10-21）** —— 落地清单与验证记录见 [49-待实现项 `NEXTRUN-1`](../spec/40-roadmap/49-待实现项.md)
-> 日期：2026-10-20
-> 关联（spec）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md)（登记项 `NEXTRUN-1`）· [21-llm-server](../spec/20-modules/21-llm-server.md) · [22-data-persist](../spec/20-modules/22-data-persist.md) · [3A-工具与编排](../spec/30-function-points/3A-工具与编排.md) · [61-消息一览](../spec/60-reference/61-消息一览.md) · [64-配置项一览](../spec/60-reference/64-配置项一览.md) · [71-编程规范 §3.3](../spec/70-conventions/71-编程规范.md) · [中途插话设计方案](../agent-chat/中途插话设计方案.md)
-> 代码目录（规划）：`src/lib/llm/contracts/tools/next_run.tool.md`（新）· `src/lib/llm/server/nextrun.go`（新）· `src/lib/llm/server/{turn,inbox,server,domainmcp,plugin_caps}.go` · `src/lib/llm/cmd/next-run-exec/`（新）· `src/lib/llm/servertools/exec/exec.go` · `src/lib/data/{facade/api.go, internal/session/session_nextrun.go}`（新）· `src/lib/data/internal/config/userconfig.go` · `src/frontend/src/views/config/SettingsParamsPage.vue` · `build-mcp-server.ps1`
+> 状态：✅ **已实施（2026-10-21；2026-11-04 核对：功能仍完整，仅「执行体路径」已由进程外 executor 改为 builtin 控制面工具）** —— 落地清单与验证记录见 [49-待实现项 `NEXTRUN-1`](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)
+> 日期：2026-10-20（2026-11-04 核对修订）
+> 关联（spec）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)（登记项 `NEXTRUN-1`）· [21-llm-server](../spec/20-modules/21-llm-server.md) · [22-data-persist](../spec/20-modules/22-data-persist.md) · [3A-工具与编排](../spec/30-function-points/3A-工具与编排.md) · [61-消息一览](../spec/60-reference/61-消息一览.md) · [64-配置项一览](../spec/60-reference/64-配置项一览.md) · [71-编程规范 §3.3](../spec/70-conventions/71-编程规范.md) · [中途插话设计方案](../agent-chat/中途插话设计方案.md)
+> 代码目录（2026-11-04 订正）：`src/lib/llm/contracts/tools/next_run.tool.md`（`runtime: builtin`）· `src/lib/llm/server/nextrun.go` · `src/lib/llm/server/{turn,inbox,server,domainmcp,plugin_caps}.go` · `src/lib/mcp-server/toolmeta/toolmeta.go`（builtin 分支 → `plugin/v1/next.run`）· `src/lib/data/{facade/api.go, internal/session/session_nextrun.go}` · `src/lib/data/internal/config/userconfig.go` · `src/frontend/src/views/config/SettingsParamsPage.vue`。**已删除的过时路径**：`src/lib/llm/cmd/next-run-exec/`、`chonkpilot-next-run-executor.exe`、`src/lib/llm/servertools/exec/exec.go`、`build-mcp-server.ps1` 中的 executor 产物步骤。
 
 ---
 
@@ -86,9 +86,11 @@ category: server
 core-only: true
 hot: true
 output: stdout
-runtime: ../../executors/chonkpilot-next-run-executor.exe
+runtime: builtin
 timeout: 0
 ```
+
+> **2026-11-04 核对**：`next_run.tool.md` 的 `runtime` 现为 **`builtin`**（不再是 `../../executors/chonkpilot-next-run-executor.exe`）；执行由内嵌 gateway / `core-mcp-server` 的 builtin 控制面路由完成。
 
 `[摘要]`（给 LLM 的触发判据）：
 
@@ -124,14 +126,16 @@ timeout: 0
 | `prompt` 为空 | `错误: prompt 必填` | true |
 | 落库失败 | `错误: 登记下一轮失败（<原因>）` | true |
 
-### 3.2 执行链路（两形态）
+> **2026-11-04 核对（顺序差异）**：实现先判非主会话、再判 `nextRunMax<=0`（`nextrun.go:53-65`）。因此「非主会话 + max=0」返回 `仅支持主会话` 而非 `未启用`；主流程文案一致。
+
+### 3.2 执行链路（2026-11-04 核对：单一 builtin 路径）
 
 | 形态 | 路径 |
 |---|---|
-| **进程内**（单测 / CLI，未设 `CHONKPILOT_EXTERNAL_TOOLS`） | 契约 embed → `registerDomainTools` 注册进 gateway 工具面；`chatOnce` 工具循环新增 `next_run` **同步分支**（`persistToolRunning` 已落行 → `runNextRun` → `persistToolResult` → 回喂 `role=tool`）；`domainExecute` 增同名 case 作为直调兜底 |
-| **进程外**（桌面单体 / server，`CHONKPILOT_EXTERNAL_TOOLS=1`） | core-mcp-server 按 `core-only` 契约注册 → spawn `chonkpilot-next-run-executor.exe`（`src/lib/llm/cmd/next-run-exec`）→ `plugin/v1/next.run` → server 内 `runNextRun` |
+| **builtin 控制面（现行）** | 契约 `runtime: builtin` → 内嵌 gateway / `core-mcp-server` 的 `toolmeta` 识别 `next_run`（`src/lib/mcp-server/toolmeta/toolmeta.go:161-177`）→ `plugin/v1/next.run`（`src/lib/llm/server/plugin_caps.go:277-292`）→ server 内 `runNextRun`（`src/lib/llm/server/nextrun.go:44-116`）→ 结果回 `role=tool` |
+| ~~进程外 executor（历史）~~ | ~~`chonkpilot-next-run-executor.exe`（`src/lib/llm/cmd/next-run-exec`）→ `plugin/v1/next.run`~~ —— 目录 / exe / `servertools/exec` **均不存在**，2026-11-02 起随 executor 退场 |
 
-与 `ask_user` / `tool_*` / `subchat_*` 同构：执行实体始终在 llm-server（turn 状态唯一所有者），外部进程只做「工具 → 原子能力」适配。
+与 `ask_user` / `tool_*` / `subchat_*` 同构：执行实体始终在 llm-server（turn 状态唯一所有者），builtin 控制面只做「工具 → 原子能力」适配。
 
 ### 3.3 会话级计数器（核心）
 
@@ -249,7 +253,7 @@ llm-server 已直调 `s.cfg`（如 `SessionGet`），沿用同一方式，在 `f
 
 - [21-llm-server](../spec/20-modules/21-llm-server.md)：域工具 **5 → 6**（新增 `next_run`，`category=server` / `async=never` / `timeout=0` / `hot=true` / `core-only=true`）。
 - [3A-工具与编排](../spec/30-function-points/3A-工具与编排.md)：新增工具功能点与场景（正常 / 到限 / 关闭 / 非主会话 / 覆盖 / 失败）。
-- [03-构建与部署](../spec/00-overview/03-构建与部署.md)：域工具 executor **5 → 6**（新增 `chonkpilot-next-run-executor.exe`，`build-mcp-server.ps1` 产出）。
+- [03-构建与部署](../spec/00-overview/03-构建与部署.md)：~~域工具 executor **5 → 6**（新增 `chonkpilot-next-run-executor.exe`，`build-mcp-server.ps1` 产出）~~ **〔2026-11-04 核对：executor 已退场，`next_run` 为 `runtime: builtin`，构建无新增 exe 产物〕**。
 - [64-配置项一览](../spec/60-reference/64-配置项一览.md)：新增 `nextRunMax`（默认 30，`0` = 关闭）。
 - [22-data-persist](../spec/20-modules/22-data-persist.md)：`sessions` 数据字典增 `next_run_count`。
 
@@ -293,11 +297,11 @@ llm-server 已直调 `s.cfg`（如 `SessionGet`），沿用同一方式，在 `f
 | 4 | server：`runNextRun`（校验 / 计数 / last-wins / 来源 / 到限文案） | 🔵 | `src/lib/llm/server/nextrun.go` |
 | 5 | server 接线：`chatOnce` 同步分支 · `domainExecute` 兜底 · 用户输入重置 · 外部 `llm-start` 重置 · 终态丢弃 | 🔵 | `src/lib/llm/server/{turn,server,domainmcp}.go` |
 | 6 | 消费收敛：`consumeNextTurn` 读 `source` + `turn_id` 失效判定；落消息 `kind=next_run` | 🔵 | `src/lib/llm/server/inbox.go` |
-| 7 | 进程外：executor + 插件桥能力 `plugin/v1/next.run` + 构建脚本 | 🔵 | `src/lib/llm/cmd/next-run-exec/` · `src/lib/llm/servertools/exec/exec.go` · `src/lib/llm/server/plugin_caps.go` · `build-mcp-server.ps1` |
+| 7 | 进程外：~~executor + 插件桥能力 `plugin/v1/next.run` + 构建脚本~~ → **2026-11-04 核对：`plugin/v1/next.run` 已落；`cmd/next-run-exec` / executor exe / `servertools/exec` 已删除；改为 builtin 控制面路由** | 🟡 | `src/lib/llm/server/plugin_caps.go` · `src/lib/mcp-server/toolmeta/toolmeta.go` |
 | 8 | 配置：`nextRunMax` 默认 30 + 设置页 UI + i18n + `configIO` + 镜像测试 | 🔵 | `src/lib/data/internal/config/userconfig.go` · `SettingsParamsPage.vue` · `configIO.js` · locales |
 | 9 | 文档同步：21 / 22 / 3A / 61（md + schema）/ 64 / 03 | 🔵 | `docs/spec/**` |
 | 10 | 测试：L1（计数器原子 / mq 驱动的 next_run 全矩阵）+ L2（`self_next_run` 注册 / 默认值镜像） | 🔵 | `src/lib/llm/server/next_run_test.go` · `src/lib/data/internal/session/session_nextrun_test.go` · `src/test/chonkpilot-llm/unittest/llm_test.go` |
-| 11 | 收尾构建：`.\build-desktop.ps1` + `.\build-mcp-server.ps1` | 🔵 | 构建脚本 |
+| 11 | 收尾构建：`.\build-desktop.ps1` 即可（**2026-11-04 核对：`next_run` 无独立 executor，`build-mcp-server.ps1` 不再产出该 exe**） | 🔵 | 构建脚本 |
 
 ### 7.1 测试用例（L1，mq 驱动 + mq 断言）
 
@@ -314,7 +318,7 @@ llm-server 已直调 `s.cfg`（如 `SessionGet`），沿用同一方式，在 `f
 
 ## 8. 关联文档
 
-- [49-待实现项](../spec/40-roadmap/49-待实现项.md)（`NEXTRUN-1`）
+- [49-待实现项](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)（`NEXTRUN-1`）
 - [21-llm-server](../spec/20-modules/21-llm-server.md) · [22-data-persist](../spec/20-modules/22-data-persist.md)
 - [3A-工具与编排](../spec/30-function-points/3A-工具与编排.md) · [33-对话](../spec/30-function-points/33-对话.md)（如需前端标识）
 - [61-消息一览](../spec/60-reference/61-消息一览.md) + [61-messages.schema.json](../spec/60-reference/61-messages.schema.json)

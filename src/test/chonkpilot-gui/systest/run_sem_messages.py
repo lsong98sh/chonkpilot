@@ -106,6 +106,55 @@ def case_m3_history_roundtrip():
           flush=True)
 
 
+SCROLL_JS = r"""(() => {
+  const list = document.querySelector('.message-list');
+  if (!list) return {found:false};
+  const items = [...document.querySelectorAll('.message-item.user .message-content')];
+  const last = items[items.length-1];
+  if (!last) return {found:false};
+  const lr = list.getBoundingClientRect(), br = last.getBoundingClientRect();
+  return {found:true, sh:list.scrollHeight, ch:list.clientHeight,
+          sw:list.scrollWidth, cw:list.clientWidth,
+          top:list.scrollTop, gap:list.scrollHeight - list.scrollTop - list.clientHeight,
+          bubbleRight:br.right, listRight:lr.right,
+          bubbleSW:last.scrollWidth, bubbleCW:last.clientWidth};
+})()"""
+
+
+def case_m4_scroll_and_clip():
+    """M4：长消息 —— 消息区出现纵向滚动且自动置底；无水平溢出 / 长串不撑破气泡（裁剪合理）。
+
+    断言（值级，非“存在级”）：
+      - scrollHeight > clientHeight 且 auto-scroll 后距底 <= 4px；
+      - 列表 scrollWidth <= clientWidth + 1（不产生水平滚动条）；
+      - 气泡右边界不越过列表右边界；超长无空格串在气泡内可换行（scrollWidth 不超 clientWidth）。
+    """
+    _h.install_session_history_spy(gui)
+    activate(SID)
+    cf.wait_session_history(gui, SID)
+    cf.wait_session_active(gui, SID)
+    lines = "\n".join("第%02d行 长消息内容，用于验证滚动与裁剪。" % i for i in range(60))
+    long_text = "SCROLL-9c3\n" + lines + "\n" + ("A" * 160)
+    cf.send_msg(gui, SID, long_text)
+    v = cf.wait_upto(gui, SCROLL_JS,
+                     lambda x: isinstance(x, dict) and x.get("found") and x.get("sh", 0) > x.get("ch", 0),
+                     max_wait=15.0)
+    if not (isinstance(v, dict) and v.get("found") and v.get("sh", 0) > v.get("ch", 0)):
+        raise TestError("长消息未产生纵向滚动：%r" % (v,))
+    # 自动置底（发送后新消息应可见，而不是停在顶部）
+    v = cf.wait_upto(gui, SCROLL_JS,
+                     lambda x: isinstance(x, dict) and x.get("gap", 999) <= 4.0, max_wait=6.0)
+    if not (isinstance(v, dict) and v.get("gap", 999) <= 4.0):
+        raise TestError("新消息未自动滚动到底部：gap=%r" % (v.get("gap") if isinstance(v, dict) else v,))
+    if v["sw"] > v["cw"] + 1:
+        raise TestError("消息列表出现水平溢出（裁剪不当）：scrollW=%s clientW=%s" % (v["sw"], v["cw"]))
+    if v["bubbleRight"] > v["listRight"] + 1:
+        raise TestError("气泡横向越出列表：bubble=%r list=%r" % (v["bubbleRight"], v["listRight"]))
+    if v["bubbleSW"] > v["bubbleCW"] + 1:
+        raise TestError("超长无空格串未在气泡内换行：sw=%s cw=%s" % (v["bubbleSW"], v["bubbleCW"]))
+    print("[EVIDENCE] " + json.dumps({"case": "M4 滚动/裁剪", **v}, ensure_ascii=False), flush=True)
+
+
 def main():
     _g.client.console(clear=True)
     print("依赖：--test-port GUI（harness 自起）+ 隔离 work-dir/data-dir/HOME；"
@@ -115,6 +164,7 @@ def main():
         ("M1 user 消息渲染可辨识内容片段", case_m1_user_renders_identifiable),
         ("M2 assistant 消息渲染片段 + markdown 结构", case_m2_assistant_semantic),
         ("M3 切走→切回：user 气泡经受历史往返一致（回环）", case_m3_history_roundtrip),
+        ("M4 长消息滚动置底 + 无水平溢出/裁剪", case_m4_scroll_and_clip),
     ]:
         total += 1
         ok += run_case(name, fn)

@@ -47,6 +47,8 @@ func New(bus mq.Bus, opts Options) *Server {
 		turns:           runner.NewRegistry[turnSession](),
 		busy:            runner.NewRegistry[string](),
 		asks:            runner.NewRegistry[*askWaiter](),
+		askCenterSubs:   make(map[string]askCenterSub),
+		askSeq:          make(map[string]int64),
 		groupRuns:       make(map[string]*groupSched),
 		taskExecCancels: make(map[string]context.CancelFunc),
 		cleaned:         make(map[string]bool),

@@ -1,9 +1,24 @@
 # LLM 重试分层设计方案（独立稿）
 
-> 状态：✅ **已实施（2026-10-20；router 报文级重试 + llm 续写/提示条 + 配置 UI + 61/64 同步 + 测试全绿）**
-> 日期：2026-10-19（定案）· 2026-10-20（实施）
-> 关联（spec）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md)（登记项 `RETRY-2`）· [2D-router](../spec/20-modules/2D-router.md) · [21-llm-server](../spec/20-modules/21-llm-server.md) · [61-消息一览 §4.3](../spec/60-reference/61-消息一览.md) · [64-配置项一览](../spec/60-reference/64-配置项一览.md) · [35-错误处理与恢复](../spec/30-function-points/35-错误处理与恢复.md) · [RETRY-1](../spec/40-roadmap/49-待实现项.md)（可见重试，已实施）
-> 代码目录：`src/lib/router/`（重试循环 + 策略端口）· `src/lib/llm/server/`（次数配置 + 上报 + 自动续写）· `src/frontend/src/views/chat/ChatPanel.vue`（提示条）· `src/frontend/src/views/config/SettingsParamsPage.vue`（配置 UI）
+> 状态：🟡 **主体已实施，部分用户可见规则未落地（2026-11-04 核对）**：router 报文级重试 / 续写事件 / 配置 / UI / 61+64 主体均在。
+> 日期：2026-10-19（定案）· 2026-10-20（实施）· 2026-11-04（核对修订）
+> 关联（spec）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)（登记项 `RETRY-2`）· [2D-router](../spec/20-modules/2D-router.md) · [21-llm-server](../spec/20-modules/21-llm-server.md) · [61-消息一览 §4.3](../spec/60-reference/61-消息一览.md) · [64-配置项一览](../spec/60-reference/64-配置项一览.md) · [35-错误处理与恢复](../spec/30-function-points/35-错误处理与恢复.md) · [RETRY-1](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)（可见重试，已实施）
+> 代码目录（2026-11-04 订正）：同级仓 `chonkpilot-agent/router/src/`（重试循环 + 策略端口；主仓 `src/lib/router/` 已于 2026-10-27 删除）· `src/lib/llm/server/`（次数配置 + 上报 + 自动续写）· `chonkpilot-agent/chat/src/`（引擎内续写编排）· `src/frontend/src/views/chat/ChatPanel.vue`（提示条）· `src/frontend/src/views/config/SettingsParamsPage.vue`（配置 UI）
+>
+> **2026-11-04 核对结论**：
+>
+> | 项 | 现状 |
+> |---|---|
+> | 报文级重试 / 判据 / Phase / 退避预算 / Observer | ✅ 已实施（router） |
+> | 同 turn 续写（length / 有文本断流） | ✅ 已实施（chat 引擎 + 宿主适配） |
+> | **切会话取消自动续写** | ❌ 未实现（无 `continueSeq` / 不读 `data-session-active-get`；仅收到本 turn Inbox 输入时取消） |
+> | **关窗取消自动续写** | ✅ 已实现（关窗 → `instance-exit` → `exitInstance` → `Close()` 取消 turn ctx，宽限期等待随 ctx 结束；N2） |
+> | **每次中断最多自动续写 1 次** | ❌ 未实现（`AutoContinueMax=3` 为同帧累计，连续中断最多 3 次） |
+> | **`autoContinue=false` 的流断连提示条** | ❌ 未实现（`length` 会补发 `llm-interrupted`；有文本的 `done.Err` 直接走 `TerminalError`，不补发） |
+> | `retryBudgetSec` 校验 | ⚠️ 文档写「正整数」，实现允许 `<=0`（关闭预算，`-1` 传 router；UI `allowZero=true`） |
+> | 首次重试 `<1s` 不显示 | ❌ 未实现（收到 `llm-retry` 即显示） |
+> | payload 键名 | ⚠️ 实际为 `instance_id/session/turn`（文档 §1.2/§5.1 写的 `session_id/turn_id` 已订正） |
+> | `CallOptions.Meta` | 🟡 已定义，llm 侧未向 router 填充（当前功能不依赖） |
 >
 > **spec 已同步（2026-10-20）**：2D-router / 21-llm-server / 61 §§4.3 / 64 / 49 随代码一并落。
 
@@ -33,8 +48,8 @@
    - 断连类（`stream` 中断且 `Emitted == 0`）：**最多 1 次**。
 4. **次数单一所有者**：`retryCount` 归 router；llm 层重试循环删除，不再二次计数。
 5. **可见重试**：重试期间前端显示「错误，正在重试 n/N（等待 s 秒）」，复用 RETRY-1 的 `llm-retry` 消息与提示条（`session-retry` 形状不变）。
-6. **语义级续写**：`Emitted > 0` 后中断或 `finish_reason=length` → 立即发**新增** `session-interrupted`（前端 `llm-interrupted`），前端显示提示条「服务器错误，是否继续。」+「继续」**链接**；同时后端启动 `autoContinueDelaySec`（默认 600s = 10 分钟）宽限期，**用户仍在原会话且无任何操作**才在**同一 turn 内追加**一条续写消息（默认「继续」），**不填输入框、不结束 turn**；**每次中断最多自动续写 1 次，续写后再失败不再自动写**；报文级重试耗尽**不续写**。
-7. **消息面唯一新增**：`session-interrupted`（前端 `llm-interrupted`，payload = `{session_id, turn_id, code, message, retryable, auto_continue_delay_ms}`）；`session-retry` / `session-complete` / `llm-error` **形状零变更**。新增主题**须按 [61 §0](../spec/60-reference/61-消息一览.md) 登记**。
+6. **语义级续写**：`Emitted > 0` 后中断或 `finish_reason=length` → 立即发**新增** `session-interrupted`（前端 `llm-interrupted`），前端显示提示条「服务器错误，是否继续。」+「继续」**链接**；同时后端启动 `autoContinueDelaySec`（默认 600s = 10 分钟）宽限期，**用户仍在原会话且无任何操作**才在**同一 turn 内追加**一条续写消息（默认「继续」），**不填输入框、不结束 turn**；**每次中断最多自动续写 1 次，续写后再失败不再自动写**；报文级重试耗尽**不续写**。**〔2026-11-04 核对：实际为每帧最多 `AutoContinueMax=3` 次，不是「每次中断 1 次」；切会话不取消，关窗经 `instance-exit` 已取消〕**
+7. **消息面唯一新增**：`session-interrupted`（前端 `llm-interrupted`，payload = `{instance_id, session, turn, code, message, retryable, auto_continue_delay_ms}`；2026-11-04 订正：原写 `session_id/turn_id`）；`session-retry` / `session-complete` / `llm-error` **形状零变更**。新增主题**须按 [61 §0](../spec/60-reference/61-消息一览.md) 登记**。
 
 ### 1.3 非目标
 
@@ -96,7 +111,7 @@ const (
 )
 ```
 
-落点：`src/lib/router/internal/canon/error.go`（定义）+ 适配器（`internal/adaptor/**`）在错误构造处赋值。该字段**不进消息面**，仅用于重试分流。
+落点：`chonkpilot-agent/router/src/internal/canon/error.go`（定义）+ 适配器（`internal/adaptor/**`）在错误构造处赋值。该字段**不进消息面**，仅用于重试分流。
 
 ### 3.3 重试矩阵
 
@@ -206,12 +221,17 @@ type CallOptions struct {
    - 用户在该 session 发送**任意消息**（含手动输入「继续」、点击提示条「继续」链接）→ 取消；
    - **关闭该会话窗口 / 切换到其他会话** → 取消；
    - 上述操作**只取消自动续写**，**提示条「服务器错误，是否继续。」保留**（回到该会话仍可点链接手动继续）；
-   - 其他 session 的操作**不影响**本 session 的自动续写；
+   - 其他 session 的操作**不影响**本 session 的自动续写。
+   - **〔2026-11-04 核对〕**：已实现「收到本 turn 的 Inbox 输入 → 取消」与「关窗 → `instance-exit` → `exitInstance` → `Close()` 取消 turn ctx → 宽限期等待结束」；**「切换到其他会话」未实现**（无 `continueSeq`，后端不读 `data-session-active-get`）。
 7. **手动继续不受限**（用户输入 / 点击链接不检查宽限期与次数）；
 8. **每次中断最多自动续写 1 次**；自动续写后又失败 → **不再自动写**（终态报错，等用户手动继续）；`maxAutoContinue`（现有 = 3）保留为同一 turn 内的硬上限兜底。
+   - **〔2026-11-04 核对〕**：实际只判 `fr.continues < AutoContinueMax`（默认 3，同帧累计），**没有**「每次中断最多 1 次」的独立计数；连续两次中断可在无用户操作下自动续写 3 次。
 9. **开关关闭（`autoContinue=false`）**：中断即终态（发 `session-complete{status:error}`），**不进入宽限期**；提示条**照旧显示**「服务器错误，是否继续。」+ 链接，点击 = 发送 `continueText` 作为新消息。
+   - **〔2026-11-04 核对〕**：`length` 分支由宿主补发 `llm-interrupted`（提示条可见）；**有文本的流断连（`done.Err`）直接走 `TerminalError`，不补发中断提示**——与上文不一致。
 
 > **「仍在原会话」的判定（复用既有消息，零新增）**：到期时读既有 `active_session_id`（`data-session-active-set` / `data-session-active-get`）——不等于本 session → **不自动续写**；前端切会话写该键、关窗置空即可满足「切会话/关窗取消」。
+>
+> **〔2026-11-04 核对〕**：该判定**未实现**——后端不读 `data-session-active-get`，`scope_test.go:30-48` 明确 `active_session` 只是 UI 运行态；切会话不会取消自动续写。关窗取消由 `instance-exit → Close()` 生效（不依赖 active_session）。
 
 **展示**：
 
@@ -230,7 +250,7 @@ type CallOptions struct {
 | 已输出后中断（已自动续写 / 已取消） | 同上 | 提示条保留，链接仍可点；**自动续写不再触发** |
 | 报文级重试耗尽 | 同上（提示条） | 终态错误；**不续写** |
 
-延迟显示：首次重试若 <1s 内成功则不显示（避免闪烁）。
+延迟显示：~~首次重试若 <1s 内成功则不显示（避免闪烁）~~**〔2026-11-04 核对：未实现；收到 `llm-retry` 即显示，成功终态才清除〕**。
 
 ### 3.7 配置 UI（LLM Router）
 
@@ -252,7 +272,7 @@ type CallOptions struct {
 1. `SettingsParamsPage.vue`：拆出 `routerFields`（4 项）与 `sessionFields`（3 项）；`SYSTEM_DEFAULTS` 增 `retryBudgetSec: '60'`、`retryCount` 改 `'5'`、`autoContinueDelaySec: '600'`；
 2. i18n（`zh-CN` / `en-US` 的 `config.json`）：`config.llmRouter`、`config.session`、`config.retryBudgetSec`、`config.autoContinue*`；
 3. `configIO.js`：键白名单增 `retryBudgetSec` 与续写三项；
-4. 校验：`retryBudgetSec` 正整数、`retryCount` 允许 0（沿用 `allowZero`）、`autoContinueDelaySec` 非负整数；
+4. 校验：~~`retryBudgetSec` 正整数~~ → **2026-11-04 按实现订正：`retryBudgetSec` 允许 `<=0`（显式 <=0 = 关闭预算，`-1` 传 router；UI `allowZero=true`；`llmconfig.go:468-476`）**、`retryCount` 允许 0（沿用 `allowZero`）、`autoContinueDelaySec` 非负整数；
 5. 系统默认镜像测试 `TestSystemDefaultParamsMirror` 同步（后端 `userconfig.go` + 前端 `SYSTEM_DEFAULTS`）。
 
 **已定（UI 形态）**：A —— 在「设置 → 参数」的**用户页签**内新增两个分组（「LLM Router」与「会话」），**不新增页面、不动项目级页签**。
@@ -285,7 +305,7 @@ type CallOptions struct {
 
 ### 5.1 消息面（61）
 
-- **新增 1 条**：`session-interrupted` → 前端 `llm-interrupted`，payload `{session_id, turn_id, code, message, retryable, auto_continue_delay_ms}`；由 llm 层在「`Emitted > 0` 中断 / `finish_reason=length`」时发布（**同一 turn 不结束**）；**须按 61 §0 登记**。
+- **新增 1 条**：`session-interrupted` → 前端 `llm-interrupted`，payload `{instance_id, session, turn, code, message, retryable, auto_continue_delay_ms}`（2026-11-04 按实现订正；原写 `session_id/turn_id`）；由 llm 层在「`Emitted > 0` 中断 / `finish_reason=length`」时发布（**同一 turn 不结束**）；**须按 61 §0 登记**。
 - `session-retry`（前端 `llm-retry`）`retryable / retry_attempt / retry_count / retry_wait_ms` **零变更**；
 - `retry_count` 的**取值来源**由「llm 层 `retryCount`」改为「router `MaxRetries`（同源于配置）」，字段语义（允许上限）不变；
 - `session-complete{status:error}` 的 `retry_attempt` / `retry_count` 同样改由 router 结果回填，形状不变；**续写场景不再发它**（turn 未结束）。
@@ -308,13 +328,13 @@ type CallOptions struct {
 
 | 文件 | 变更 |
 |------|------|
-| `src/lib/router/internal/canon/error.go` | `Error.Phase` |
-| `src/lib/router/internal/adaptor/**` | 错误构造处赋 `Phase` |
-| `src/lib/router/retry.go` | 判据改为 `Emitted`、两类分流、预算、Policy/Observer |
-| `src/lib/router/types.go` / `router.go` | `CallOptions` 新字段 |
+| `chonkpilot-agent/router/src/internal/canon/error.go` | `Error.Phase` |
+| `chonkpilot-agent/router/src/internal/adaptor/**` | 错误构造处赋 `Phase` |
+| `chonkpilot-agent/router/src/retry.go` | 判据改为 `Emitted`、两类分流、预算、Policy/Observer |
+| `chonkpilot-agent/router/src/types.go` / `router.go` | `CallOptions` 新字段 |
 | `src/lib/llm/server/turn.go` | 删除可见重试循环与 `probeBeforeRetry`（TCP 预检由 router 的 `dial` 分流取代）；`retryCount` 传入 router；Observer → `emitRetry` |
 | `src/lib/llm/server/routercall.go` | 事件折算处接 `Meta` / Observer |
-| `src/lib/llm/server/server.go` | 配置读取（`retryBudgetSec` / `autoContinue` / `autoContinueDelaySec` / `continueText`）；`llmRetryCount` 回落常量 2 → **5**；发布 `session-interrupted` + 宽限期计时 / 活动会话校验 |
+| `src/lib/llm/server/server.go` / `engine_turn.go` | 配置读取与续写编排装配（引擎内续写在 `chonkpilot-agent/chat/src/engine.go`）；发布 `session-interrupted` + 宽限期计时 |
 | `src/lib/data/internal/config/userconfig.go` | 系统默认 `retryCount` 2 → **5**（与前端 `SYSTEM_DEFAULTS` 镜像，`TestSystemDefaultParamsMirror` 同步） |
 | `src/frontend/src/views/chat/ChatPanel.vue` | 提示条「服务器错误，是否继续。」+「继续」链接（点击 = 发送 `continueText`）；收到 `llm-interrupted` 显示、收到后续 `llm-receive` / `llm-complete` 清除 |
 
@@ -344,7 +364,7 @@ RETRY-1（可见重试）已实施，提供 `llm-retry` 主题与前端提示条
 
 1. **状态落在哪**：重试预算、attempt 计数、`Emitted` 全部在**单次 `Call` 的内存**中，无新增持久化状态；续写宽限期计时器与同 turn 计数随 `turnCtx` 在内存，重启后该 turn 收口即失效。
 2. **输入是否受理即持久化**：自动续写由**后端直接发送**，发送即落 `user` 消息（`kind=text`），不存在"草稿未发送"状态；**中断提示条不落新状态**——由已落库的 assistant 部分消息 + 终态错误派生，重启后照常显示，可手动点「继续」。
-3. **非终态谁收口**：进程崩溃时该 step 随 turn 终止；turn 的非终态由既有 sweep / `reapInflight` 收口，本次**不新增**非终态。**重启后自动续写不再进行**（计时器随内存消失），仅保留手动入口。
+3. **非终态谁收口**：进程崩溃时该 step 随 turn 终止；turn 的非终态由既有启动清理 / `CleanupStaleTurns` 收口，本次**不新增**非终态。**重启后自动续写不再进行**（计时器随内存消失），仅保留手动入口。
 4. **重启后重建还是收敛**：收敛。重试不跨进程续跑（重试是传输层瞬时行为，恢复后重新发起新一轮请求即可）。
 5. **副作用语义**：报文级重发对 LLM 请求为「至多一次可见输出」，但**可能重复计费**（上游已生成、连接中断）；因此断连严格限制 1 次、总预算封顶。
 
@@ -354,20 +374,20 @@ RETRY-1（可见重试）已实施，提供 `llm-retry` 主题与前端提示条
 
 | 步骤 | 内容 | 状态 | 关联代码 |
 |------|------|:---:|---------|
-| 1 | `canon.Error` 增 `Phase`，适配器赋值 | 🔵 | `src/lib/router/internal/canon/error.go` |
-| 2 | `CallOptions` 增 `MaxRetries` / `Budget` / `Policy` / `Observer` / `Meta` | 🔵 | `src/lib/router/types.go` |
-| 3 | 重试循环改造（`Emitted` 判据 + 两类分流 + 预算 + 非阻塞回调） | 🔵 | `src/lib/router/retry.go` |
+| 1 | `canon.Error` 增 `Phase`，适配器赋值 | 🔵 | `chonkpilot-agent/router/src/internal/canon/error.go` |
+| 2 | `CallOptions` 增 `MaxRetries` / `Budget` / `Policy` / `Observer` / `Meta` | 🔵 | `chonkpilot-agent/router/src/types.go` |
+| 3 | 重试循环改造（`Emitted` 判据 + 两类分流 + 预算 + 非阻塞回调） | 🔵 | `chonkpilot-agent/router/src/retry.go` |
 | 4 | llm 层删除重试循环与 `probeBeforeRetry`，传次数 + Observer → `emitRetry` | 🔵 | `src/lib/llm/server/turn.go`、`routercall.go` |
-| 5 | 配置读取：`retryCount`（默认 5）· `retryBudgetSec` · `autoContinue` · `autoContinueDelaySec` · `continueText` | 🔵 | `src/lib/llm/server/server.go` |
-| 6 | 后端自动续写（中断后 10 分钟无操作 → 自动 1 次；再失败即停）；前端提示条「服务器错误，是否继续。」+「继续」链接（点击 = 发送 `continueText`，不预填输入框） | 🔵 | `src/lib/llm/server/turn.go`、`server.go`、`ChatPanel.vue` |
+| 5 | 配置读取：`retryCount`（默认 5）· `retryBudgetSec` · `autoContinue` · `autoContinueDelaySec` · `continueText` | 🔵 | `src/lib/llm/server/llmconfig.go`、`server.go` |
+| 6 | 后端自动续写（中断后 10 分钟无操作 → 自动 1 次；再失败即停）；前端提示条「服务器错误，是否继续。」+「继续」链接（点击 = 发送 `continueText`，不预填输入框） | 🟡 | `src/lib/llm/server/turn.go`、`engine_turn.go`、`chonkpilot-agent/chat/src/engine.go`、`ChatPanel.vue`（**核对：次数上限实际 3/帧；切会话不取消；autoContinue=false 流断连无提示条**） |
 | 7 | **消息面**：新增 `session-interrupted`（前端 `llm-interrupted`）→ 61 §0 登记 + `msgkeys` 重生成 + `61-messages.schema.json` + 桥映射 + browser 前缀；spec 同步：2D-router（重试章节）· 21-llm-server · 61 §4.3 注（`retry_count` 来源变更 + 新主题）· 64（配置项）· 35 | 🔵 | `docs/spec/**`、`src/lib/core/msgkeys/`、`src/frontend/src/events/` |
-| 8 | 测试：L1（router 分流/预算/判据）· L2（mq 驱动：可见重试 + 自动续写（宽限期）+ 取消语义）· L4（提示条视觉 + 链接点击） | 🔵 | `src/lib/router/*_test.go`、`src/test/chonkpilot-llm/unittest/`、`src/test/chonkpilot-gui/systest/` |
+| 8 | 测试：L1（router 分流/预算/判据）· L2（mq 驱动：可见重试 + 自动续写（宽限期）+ 取消语义）· L4（提示条视觉 + 链接点击） | 🟡 | `chonkpilot-agent/router/src/*_test.go`、`src/test/chonkpilot-llm/unittest/`、`src/test/chonkpilot-gui/systest/`（**核对：切会话 / 单次上限 / 断流提示用例无对应实现**） |
 
 ---
 
 ## 8. 关联文档
 
-- [49-待实现项 §2](../spec/40-roadmap/49-待实现项.md)（`RETRY-2`）
+- [49-待实现项 §2](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)（`RETRY-2`）
 - [2D-router](../spec/20-modules/2D-router.md)
 - [21-llm-server](../spec/20-modules/21-llm-server.md)
 - [61-消息一览 §4.3](../spec/60-reference/61-消息一览.md)（`session-retry` / `llm-retry`）

@@ -1,6 +1,7 @@
 # 插件与 MCP 统一设计方案（Plugin Platform v2）
 
-> 状态：🔵 **设计稿 v2（2026-10-22 重新设计，待评审，未实现）** ｜ 待实施登记：[49 · PLUGIN-1](../spec/40-roadmap/49-待实现项.md)
+> 状态：🟡 **部分落地（2026-11-04 核对）** ｜ 平台主体（发现/守护/UDS/MCP/UI/data/hooks/`plugin-*`）、`mcp` 插件、插件 RPC（`plugin-call → plugin.ui.rpc`）已落地；**未落地**：`mcp.mode=tools`、`plugin/v1/tools.exec`、`plugin/v1/group.open`、`plugin/v1/llm.chat`。原文“设计稿 v2 未实现”已过时。
+> 待实施登记：[49 · PLUGIN-1](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)；落地进度与偏差见文末 §16「2026-11-04 状态核对」。
 > 本稿**整体替代** v1（2026-10 上旬）——v1 的 `managed-stdio` / JSON-Schema 表单 / `inproc` 插件三处方向已作废，原因见 §1.2。
 > 前置事实：**PRODSIM-1 主体已完成（L1–L4，2026-10-22）** —— 唯一产物 `chonkpilot.exe`（WebView2 宿主 + 常驻 server），`gui` / `flash` / `browser` 形态与 `--plugin-http-*` 已删除，插件桥只保留 **UDS** 免认证前门（`transport` 仍支持显式 `tcp://`）。
 > 关联：[28-plugins](../spec/20-modules/28-plugins.md) · [2C-UI插件](../spec/20-modules/2C-UI插件.md) · [25-mcp-server](../spec/20-modules/25-mcp-server.md) · [26-mcp-gateway](../spec/20-modules/26-mcp-gateway.md) · [27-mcp-tools](../spec/20-modules/27-mcp-tools.md) · [29-codegraph](../spec/20-modules/29-codegraph.md) · [2B-vfts](../spec/20-modules/2B-vfts.md) · [31-窗口与布局](../spec/30-function-points/31-窗口与布局.md) · [61-消息一览](../spec/60-reference/61-消息一览.md) · [71-编程规范 §3.3](../spec/70-conventions/71-编程规范.md)
@@ -10,7 +11,7 @@
 
 ## 0. 结论速览
 
-**一句话**：插件 = `capability/plugins/<id>/` 下的 **manifest + 可执行体 + 可选 webui**；宿主新增一个 `PluginManager` 负责发现 / 拉起 / 守护 / 注册；插件与宿主只走 **一条 UDS（可配 TCP）控制通道**；MCP 是插件**在该通道上向 gateway 登记的工具面**（插件内可自带 MCP server，但**不走 stdio**）；UI 是 manifest 声明的 **iframe view**，作为普通 view 参与布局、页签、抽屉、对话框与状态栏。
+**一句话**：插件 = `<插件根>/plugins/<id>/` 下的 **极简 `plugin.json`（启动）+ 完整 `manifest.json`（插件自报）+ 可执行体 + 可选 webui**；宿主新增一个 `PluginManager` 负责发现 / 拉起 / 守护 / 注册；插件与宿主只走 **一条 UDS（可配 TCP）控制通道**；MCP 是插件**在该通道上向 gateway 登记的工具面**（插件内可自带 MCP server，但**不走 stdio**）；UI 是 manifest 声明的 **iframe view**，作为普通 view 参与布局、页签、抽屉、对话框与状态栏。
 
 需求 → 设计落点：
 
@@ -89,6 +90,8 @@
 | 静态资源 | 每窗口 `appHandler` 的路由（`/publish`、`/api/log/tail`、`/show/`、静态 dist） | [main.go](file:///e:/BizWorks/chonkpilot/src/lib/gui/main.go#L352-L364) |
 
 ### 2.2 结构性缺口（本设计要补的）
+
+> **2026-11-04 核对**：本节是 2026-10-22 的设计前现状，**已不成立**。当前平台主体、动态 view、iframe view、插件管理页、状态栏注入、插件能力面与 `plugin-*` 消息均已落地；真正剩余缺口见 §16。
 
 1. **无插件发现/注册中心**：`DefaultPlugins` 是编译期清单（[adapters.go](file:///e:/BizWorks/chonkpilot/src/lib/appwire/adapters.go#L15-L28)），无 manifest / 无 id / 无启停。
 2. **无 manifest 目录**：`capability/` 下只有 `tools/prompts/resources/skills/agents/scenarios/system` 与 `mcps/`，没有 `plugins/`。
@@ -174,7 +177,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 | 层 | 内容 | 面向 |
 |----|------|------|
 | 协议（唯一契约） | §5 的帧 + 方法名 + payload（行分隔 JSON，UTF-8） | 所有语言 |
-| Go SDK（产品插件） | `chonkpilot-plugin-sdk/go`：通道客户端、订阅、MCP HTTP 骨架、配置读取、日志 | 产品插件（websearch / codegraph / compress） |
+| Go SDK（产品插件） | `github.com/lsong98sh/chonkpilot-plugin-framework/sdk`（+ `contract`）：通道客户端、订阅、MCP HTTP 骨架、配置读取、日志 | 产品插件（web / codegraph / crontab） |
 | 其他语言 SDK（后续） | Python / Node / Rust 薄封装（只包 §5，不引入新语义） | 用户插件 |
 
 > 协议**不依赖** protobuf / gRPC：复用现有 `transport` 帧（一行一 JSON），任何语言 30 行可接入。UDS 在 Windows 由 Go 侧抽象（现有 `transport` 已同时支持 `uds://` 与 `tcp://`）。
@@ -186,19 +189,20 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 ### 4.1 目录与四级
 
 ```text
-<级别根>/capability/plugins/<id>/
-  plugin.json          # 唯一入口（必填）
-  <exe>                # runtime.mode=managed 时必填
+<插件根>/plugins/<id>/          # 2026-11-04 核对：实际路径（旧稿 capability/plugins）
+  plugin.json          # 极简启动信息（id/cmd/enabled/name/icon）
+  manifest.json        # 完整 manifest（插件自读，plugin.hello 上报）
+  <exe>                # 缺省按 chonkpilot-plugin-<id>.exe
   webui/               # 可选：iframe 页面静态资源（只读）
   README.md            # 可选
 ```
 
 | 级别 | 路径 | 用途 |
 |------|------|------|
-| app | `<exeDir>/capability/plugins/<id>/` | 出厂插件（websearch / codegraph / compress） |
-| user | `~/.chonkpilot/capability/plugins/<id>/` | 用户安装 |
-| project | `<workDir>/.chonkpilot/capability/plugins/<id>/` | 项目自带（团队共享） |
-| prjusr | `<prjusr 数据根>/capability/plugins/<id>/` | 本机覆盖 + 密钥 + 运行快照（不入库） |
+| app | `<exeDir>/plugins/<id>/` | 出厂插件（web / codegraph / crontab …） |
+| user | `~/.chonkpilot/plugins/<id>/` | 用户安装 |
+| project | `<workDir>/.chonkpilot/plugins/<id>/` | 项目自带（团队共享） |
+| prjusr | `<prjusr 数据根>/plugins/<id>/` | 本机覆盖 + 密钥 + 运行快照（不入库） |
 
 - 同名跨级 = **最具体级整条覆盖**（`prjusr > project > user > app`），与 `capability/mcps` 同语义。
 - 插件私有数据：`<dataDir>/plugins/<id>/`（索引、缓存、日志），宿主建目录并注入路径。
@@ -217,7 +221,6 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
   "product": true,                         // true = 产品插件（origin=builtin，受信）
 
   "runtime": {
-    "mode": "managed",                     // managed（默认）| external（用户自行拉起，宿主不 spawn）
     "exe": "chonkpilot-websearch.exe",     // 相对插件目录；禁止绝对路径/.. 越界
     "args": [],
     "env": {},                             // 静态环境变量；密钥不写这里
@@ -226,15 +229,12 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
     "health":  { "interval_ms": 15000, "timeout_ms": 3000, "fail_threshold": 3 },
     "stop":    { "grace_ms": 5000 }
   },
-
-  "channel": {
-    "transport": "uds",                    // uds（默认，用宿主前门地址）| tcp（显式 addr）
-    "addr": ""                             // 空 = 宿主注入 CHONK_PLUGIN_ADDR
-  },
+  // 2026-11-04：`runtime.mode` 与 `channel.*` 已按 PLUGIN-LOAD-1 D14 删除；
+  // 现存 12 份 manifest.json 仍带死字段（见 §16.3 第 2 条），宿主不再消费。
 
   "mcp": {
     "mode": "http",                        // http（默认）| tools | none
-    "namespace": "self_",                  // "-" = 原样；"self_" = 与既有 self_* 工具面一致
+    "namespace": "-",                      // "-" = 原样（实际缺省）；其他值 = 前缀（产品插件旧稿写 self_）
     "hot_tools": ["web_search"],           // 缺省 = "*"（全部进默认下发面）
     "timeout_sec": 120,
     "category": "search",
@@ -289,15 +289,17 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 
 **字段口径**
 
-- `mcp.namespace` 缺省取 **产品插件 `self_`**（与 `self_file_read` / `self_codegraph_*` 一致）、用户插件 `"-"`（gateway 会补 `<id>_`）。
-- `ui.views[].entry` 必须是相对路径，只允许 `webui/` 前缀；宿主以 `/plugin-ui/<id>/<entry>` 提供。
-- `ui.statusbar[].command` 二选一：`target:"host"`（§7.5 宿主命令）或 `target:"plugin"`（转发插件 `plugin.command`）。
-- `config.fields[]` 是**唯一可写键**；未声明的键 `plugin-config-set` 直接拒绝。
+- **2026-11-04 核对**：`mcp.namespace` 实际缺省 **`"-"`**（`normalizeManifest`），全部内置 manifest 均为 `-`；旧稿“产品插件 `self_`”未落地。
+- **2026-11-04 核对**：`ui.views[].entry` 必须是相对路径，只允许 `webui/` 前缀；宿主以 **`/plugins/<id>/<entry>`** 提供（旧稿 `/plugin-ui/<id>/<entry>` 已下线，`/plugin-ui/_sdk/plugin.js` 保留）。
+- `ui.statusbar[].command` 二选一：`target:"host"`（§7.5 宿主命令）或 `target:"plugin"`（转发插件 `plugin.command`）；`view` 非空时内嵌插件视图。
+- `config.fields[]` 是插件配置页的**可写键声明**；未声明键由插件管理面拒绝（`config_invalid`）。
 
-### 4.3 校验规则（PluginManager 启动强制）
+### 4.3 校验规则（设计目标；**实际仅校验 ID**）
+
+> **2026-11-04 核对**：PLUGIN-LOAD-1 D13 之后，宿主只校验 `plugin.json/meta.id == 目录名` 与 `manifest.id == 插件 id`（且 `manifest.id` **为空也接受**）；下列 1–9 条**未实现**（`normalizeManifest` 只补默认值，不拒绝）。保留为后续收紧目标。
 
 1. `id` 匹配 `^[a-z][a-z0-9-]{1,31}$`，且等于目录名。
-2. `runtime.mode=managed` → `exe` 必填、存在、解析后仍在该插件目录内（拒绝绝对路径与 `..` 越界）。
+2. ~~`runtime.mode=managed` → `exe` 必填、存在、解析后仍在该插件目录内（拒绝绝对路径与 `..` 越界）~~ —— `mode` 已删除；exe 路径越界校验未实现。
 3. `mcp.mode=http` → 插件上报的 `url` 必须 `http://127.0.0.1:<port>`（仅回环 + 随机端口），且 `token` 非空；非回环 → 拒绝注册并 `status=error`。
 4. `mcp.mode=tools` → `mcp.tools[]` 非空，工具名全局唯一（与 gateway 冲突即注册失败，不静默改名）。
 5. `mcp.mode` 不得为 `stdio` / `sse`（`stdio` 明确报错：见 §5.7.1；`sse` 本期不支持）。
@@ -310,7 +312,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 
 > **进程级不隔离**：插件 exe 以当前 OS 用户运行，能读写用户可访问的文件、能访问网络。`permissions` 只约束**插件经宿主能力面**能做什么（数据 / 钩子 / LLM / 会话 / UI），**不是 OS 沙箱**。若将来需要强隔离，另立「插件进程沙箱」专题（Job Object / 受限令牌 / AppContainer），不在本期。
 
-- **声明 vs 强制**：`permissions.*` 由 PluginManager 在**每次能力调用**时校验；未声明 = 拒绝（fail-closed）。
+- **声明 vs 强制（2026-11-04 核对）**：实际只有 `permissions.data` 在 `data.read|write` 时校验，**空数组直接放行**；`hooks/llm/session/network` 无消费点，不存在通用“未声明 = 拒绝”。下列为设计目标。
 - **数据权限**：`resource.op[:selector]`，selector 支持前缀通配（`compress.*`）与键名（`summary_prompt`）。
 - **网络权限**：仅用于**宿主代理**（插件经宿主代理发起请求时）与审计；插件自行 `http.Client` 无法被宿主阻止 —— **如实告知**。
 - **密钥**：`permissions` 不含密钥；插件读取的是宿主注入的 `secrets.json` 文件路径（同用户可读，属既有边界）。
@@ -335,17 +337,19 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 ### 5.2 握手与注册
 
 ```text
-插件 → plugin.hello        { id, name, version, features }
+插件 → plugin.hello        { id, name, version, work_dir?, features?, manifest? }
 宿主 →                     { plugin_id, instance_id:"plugin:<id>:<8hex>", version, methods:[...] }
 插件 → plugin.register     { features, subscriptions:[...], ui?, mcp?, status? }
-宿主 →                     { ok, subscriptions, capabilities:{granted:[...]}, config:{path,...} }
+宿主 →                     { ok, subscriptions, config:{path,...} }
 插件 → plugin.ready        {}                       // 初始化完成（可选）
 宿主 → server-ready        {}                       // 晚连接补发（既有）
 ```
 
+- **2026-11-04 核对**：`plugin.hello` 实际还带 `manifest`（完整 manifest）与可选 `work_dir`；`plugin.register` 应答**没有** `capabilities.granted`（旧文要求，未实现）。
+
 - `plugin.register` 的 `ui` / `mcp` 可**省略**（宿主用 manifest）；携带时用于**运行时覆盖**（第三方插件无 manifest 的场景）。
 - `subscriptions[]` = `{ topic, filter?:{instance_id?,project_id?,session_id?,direction?}, mode:"async" }`；只支持 `async`（不阻塞总线）。
-- 注册返回值里的 `capabilities.granted` = 实际生效的权限（可能少于 manifest 声明，便于插件自检）。
+- ~~注册返回值里的 `capabilities.granted` = 实际生效的权限~~（2026-11-04 核对：未实现；权限实际只校验 `permissions.data`，见 §4.4）。
 
 ### 5.3 能力方法面（插件 → 宿主）
 
@@ -357,8 +361,8 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 | 订阅 | `plugin.subscribe` / `plugin.unsubscribe` | 既有 |
 | 工具绑定 | `plugin.tool.bind` / `plugin.tool.unbind` | 既有（`tools` 模式必需） |
 | 过滤器 | `plugin.filter.register` | 既有 |
-| 索引队列 | `plugin.index.take|ack|pending|workdirs` | 既有（codegraph / vfts 用） |
-| 实例 | `plugin/v1/instance.claim|list` | 既有 |
+| 索引队列 | `plugin.index.take|ack|pending|workdirs` | ~~既有~~ **2026-10-25 退场（D-71）**：改为订阅 `filesys.changed` 自管索引 |
+| 实例 | `plugin/v1/instance.claim|list|resolve` | 既有；`resolve` 为 PLUGIN-INSTANCE-1 新增 |
 | 会话 | `plugin/v1/session.start|send|cancel|list|get|history|content|snapshot|rename|delete|active` | 既有 |
 | 插话 | `plugin/v1/session.inbox.add|list|discard|promote` | 既有 |
 | 会话写 ★ | `plugin/v1/session.snapshot.set` / `session.summary.set` / `session.messages` / `session.context` | 新增（compress 需要） |
@@ -368,13 +372,15 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 | 数据 ★ | `plugin/v1/data.read` / `plugin/v1/data.write` | 新增统一业务数据面（§6.1） |
 | 文件 | `plugin/v1/file.list|read|write|mkdir|remove|rename|copy` | 既有（限 `work_dir`） |
 | 工具 | `plugin/v1/tools.list|call|wait|timeout` | 既有 |
-| 执行器 ★ | `plugin/v1/tools.exec` | 新增：宿主转发 core `/internal/exec`（单工具 executor，供 codegraph 复用既有查询执行器） |
+| 执行器 ★ | `plugin/v1/tools.exec` | 🔵 **未实现**（全仓 0 命中；设计新增项） |
 | MCP ★ | `plugin.mcp.register` / `plugin.mcp.unregister` | 新增（§5.7，替代插件直调 `servers.register`） |
 | UI ★ | `plugin.ui.register` / `plugin.status.report` | 新增（§5.8 / §3.3） |
 | 事件上报 ★ | `plugin.publish{topic,payload}` | 新增：仅允许 `plugin-event`（推给自己的 iframe），**不开放任意 MQ 发布** |
 | 命令 | `plugin/v1/gui.apply`（既有） | 插件 → 宿主窗口命令（白名单动作，§5.6） |
 | LLM | `plugin/v1/llm.step` | 既有（单次调用，无会话/工具） |
 | 运维 | `plugin/v1/memory.flush` / `vfts.reindex` / `vfts.dict.set` / `prompt.optimise` | 既有 |
+
+> **2026-11-04 核对**：除本表外，实际还注册了 `plugin/v1/gui.list|apply`、`subchat.open|finish`、`session.ensure|ensure-turn|complete-turn`、`turn.context`、`task.node.start|done`、`task.result`、`task.cancel`、`agent.delegate`、`ask.user`、`next.run`、`tool.stop`、`data.kv.*`、`data.bucket.*`、`prj.users.list`、`session.export`、`config.prjusr.*`、`workdir.ensure` 等；完整清单以 `插件与MCP-Server开发指南` §4.3 为准。
 
 > **收口原则**：插件**不得**直接调 `plugin/v1/servers.register` / `plugin/v1/tools.register`（白名单里保留是历史兼容）；manifest 插件统一走 `plugin.mcp.register`，由 PluginManager 校验后转发 gateway。第三方无 manifest 插件在过渡期仍可用旧方法，但会标记 `legacy:true`。
 
@@ -449,7 +455,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 | mode | 插件侧 | 注册动作 | 工具名 | 适用 |
 |------|--------|---------|--------|------|
 | **http**（默认） | 进程内起 Streamable HTTP MCP server（`127.0.0.1:0`，随机端口，Bearer token） | `plugin.mcp.register{url,token,hot_tools?}` → 宿主 `servers/register{mcp_server:{url,transport:"http",headers:{Authorization:"Bearer <token>"},namespace,hot_tools,timeout,origin,category}}` | 由 `namespace` 决定（`self_` / `-`） | 产品插件；需要标准 MCP / 精确工具名 |
-| **tools** | 不发 HTTP；声明工具 schema，绑定回调主题 | `plugin.mcp.register{mode:"tools",tools:[...]}` → 宿主逐条 `tools/register{handler_subject:"plugin:<id>:tool",...}` + `plugin.tool.bind` | `self_<name>`（gateway 固定前缀） | 极简插件 / 不想开端口 |
+| **tools** | 不发 HTTP；声明工具 schema，绑定回调主题 | `plugin.mcp.register{mode:"tools",tools:[...]}` → 宿主逐条 `tools/register{handler_subject:"plugin:<id>:tool",...}` + `plugin.tool.bind`（**2026-11-04 核对：宿主直接报错“tools 模式暂未实现”，`mgr/api.go:293-296`**） | `self_<name>`（gateway 固定前缀） | 极简插件 / 不想开端口 |
 | **none** | 无工具面 | 不注册 | — | 纯 UI / 后台插件（compress） |
 
 **http 模式细节**
@@ -495,7 +501,7 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 
 | 项 | 规定 |
 |----|------|
-| 错误码 | 沿用 `pluginbridge`：`args_invalid` / `plugin_unregistered` / `plugin_unauthorized` / `method_not_found` / `filter_dropped` / `internal` + 本期新增 `permission_denied` / `mcp_conflict` / `config_invalid` / `ui_rpc_denied` |
+| 错误码 | 沿用 `pluginbridge`：`args_invalid` / `plugin_unregistered` / `plugin_unauthorized` / `method_not_found` / `filter_dropped` / `internal` / `permission_denied` 等；**2026-11-04 核对：`mcp_conflict` / `ui_rpc_denied` 不存在**，`config_invalid` 为管理面普通错误串 |
 | 幂等 | `plugin.register` / `plugin.mcp.register` / `plugin.ui.register` / `plugin-config-set` 均幂等；`unregister` 对不存在项返回成功 |
 | 重试 | 宿主**不自动重试**插件工具调用（除非 manifest 标 `idempotent:true`）；RPC 超时不重发（避免副作用翻倍） |
 | 背压 | 单插件并发请求上限 32；超出直接 `internal: busy`（不排队到无限） |
@@ -510,6 +516,8 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 **原则**：插件**永远不直接打开** `chonkpilot.db` / 不写 `capability/` 内部文件 / 不拿 bbolt 句柄；一律经 `plugin/v1/data.*`（内部转发既有 `data-*` 主题 + 门面），由宿主做**归属 + 字段 + 状态机**校验。
 
 资源表（`permissions.data` 的合法值）：
+
+> **2026-11-04 核对**：实际闭集是 `resource.op` 精确匹配（如 `session.list` / `session.snapshot.set` / `config.prj.get`），下表旧写法（`session.read` / `session.snapshot.read` 等）仅为设计分类；`config.prjusr.*` 由 `bridge/configprjusr.go` 单独注册，不在本闭集。实现清单见开发指南 §6.1。
 
 | 资源.操作 | 对应既有面 | 额外校验 |
 |-----------|-----------|---------|
@@ -570,7 +578,7 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 | 插话 | `plugin/v1/session.inbox.add|list|discard|promote` | 对**当前轮**插话（`insert`）/ 排下一轮（`next_turn`）；语义同前端「插话」 |
 | 取消 | `plugin/v1/session.cancel` + `tool.stop` | 取消轮次 / 取消单个工具 |
 | 工具调用 | `plugin/v1/tools.call` | 走 gateway（含第三方 MCP、executor）；`async` 支持 |
-| 单工具执行 ★ | `plugin/v1/tools.exec` | 宿主直转 core `/internal/exec`（不经 gateway 路由，避免递归） |
+| 单工具执行 ★ | `plugin/v1/tools.exec` | 🔵 **未实现**（设计新增项，宿主转发 core `/internal/exec`） |
 | 工具结果等待 | `plugin/v1/tools.wait` | 异步工具结果 |
 
 - **会话归属**：插件起的会话 `kind` / `purpose` 必须显式声明；宿主据此在 UI 区分（如「由插件创建」）。
@@ -583,8 +591,8 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 |------|------|
 | 配置 | `plugin-config-get/set`（UI 与插件共用，**只按 `{id}` 定位、无等级参数**）；非密 = 插件自身配置，密钥恒 usr 级；原子写 + 广播 `plugin-config-changed` |
 | 私有存储 | `storage.self`（§6.1）；路径 `<dataDir>/plugins/<id>/storage/` |
-| 索引队列 | `plugin.index.*`（既有）；codegraph / vfts 消费 |
-| 日志 | 插件 stderr 由宿主捕获 → `<dataDir>/plugins/<id>/logs/plugin.log`（滚动 2MB×3）；插件也可 `plugin.log{level,msg}`（自动脱敏：拒绝含 `sk-` 的长串） |
+| 索引队列 | ~~`plugin.index.*`~~ **2026-10-25 退场（D-71）**；插件订阅 `filesys.changed` 自管索引 |
+| 日志 | 插件 stdout/stderr 由宿主捕获 → `<dataDir>/plugins/<id>/logs/plugin.log`（**2026-11-04 核对：追加、不滚动**，旧稿“2MB×3 滚动”未实现）；插件也可经 iframe `log` 追加 `[ui]` 行 |
 | 实例视图 | `plugin/v1/instance.claim|list`；多项目 workdir 由插件自管 |
 
 ***
@@ -638,8 +646,8 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 - 打开方式：插件管理页「配置」按钮 / 插件菜单 / 状态栏命令 → 宿主发 `preview-tab-open{kind:'plugin-page', plugin:'websearch', page:'config', title:'联网搜索'}`。
 - CodeView：`kind === 'plugin-page'` → `plugin-page` 组件 + `plugin`/`page` props；页签 key = `plugin-page:<id>:<page>`（同插件同页去重）。
 - 宿主组件 `PluginPageHost.vue`：
-  - 从 `usePlugins()` 取 `entry` → 计算 `src = /plugin-ui/<id>/<entry>?v=<version>&p=<page>`；
-  - 渲染 `<iframe sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer">`（**不授予** `allow-same-origin`）；
+  - 从 `usePlugins()` 取 `entry` → 计算 `src = /plugins/<id>/<entry>?p=<page>&instance_id=<当前窗口实例>`（2026-11-04 核对；旧稿 `/plugin-ui/...`、`v=<version>` 已变）；
+  - 渲染 `<iframe sandbox="allow-scripts allow-forms allow-same-origin" referrerpolicy="no-referrer">`（**2026-11-04 核对：实际有 `allow-same-origin`**，CK Store/ckMq 依赖同源）；
   - 加载中骨架 / 失败占位（含「重试」「打开日志」）；
   - 卸载时清理 postMessage 监听与未完成请求。
 - 插件被禁用：已开页签保留（显示「插件已禁用」占位 + 启用按钮），避免用户丢上下文。
@@ -657,7 +665,7 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 | 视图 | `views[]` 列表，每项「在预览区打开」按钮（→ §7.3） |
 | 配置 | 「打开配置页」按钮（→ §7.3 的 `config` view） |
 | 操作 | 启用/禁用、启动/停止/重启、打开日志、刷新 manifest、复制插件目录 |
-| 注册（三方） | 外部插件注册令牌（仅 `runtime.mode=external` 时需要） |
+| 注册（三方） | ~~外部插件注册令牌（仅 `runtime.mode=external` 时需要）~~ —— **2026-11-04 核对：`external` 已删除，无此能力** |
 
 - **禁用** = `plugin-set-enabled{id,false}` → 停进程 + 注销 MCP + 隐藏状态栏/菜单（视图保留注册但置为禁用态）。
 - 列表数据源 = `plugin-list`；状态变化经 `plugin-status` 事件链更新（不轮询）。
@@ -701,11 +709,11 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 
 | method | 转发 | 说明 |
 |--------|------|------|
-| `config.get` | 父窗口 → `plugin-config-get`（server 直读） | 返回 `values`（密钥掩码）+ `fields` + `dirty` |
+| `config.get` | 父窗口 → `plugin-config-get`（server 直读） | 返回 `{ok,fields,values}`（密钥掩码）；**无 `dirty`**（2026-11-04 核对） |
 | `config.set` | 父窗口 → `plugin-config-set`（server 直写） | 只接受 manifest `config.fields[].key`；成功后广播 `plugin-config-changed` |
 | `config.reset` | 父窗口 → 既有 `data-*` 删除覆盖（server 校验） | 回落默认值 |
 | `data.read` / `data.write` | 父窗口 → `plugin-call{id,method:"data.read|write"}` → server §6.1 | 仍需过 `permissions.data` |
-| `rpc` | 父窗口 → `plugin-call` → server → 插件 `plugin.ui.rpc` | `method` 必须在 `ui.rpc` 白名单 |
+| `rpc` | 父窗口 → `plugin-call` → server → 插件 `plugin.ui.rpc` | **2026-11-04 核对：无 `ui.rpc` 白名单校验**，任何 `OnRequest` 方法均可被调；`ui.rpc` 仅为声明/约定 |
 | `open-url` | 前端 `window.open`（WebView2 交系统浏览器） | 首次域名由用户确认，之后记入允许集 |
 | `close` | 父窗口 | 关闭当前页签/抽屉/对话框 |
 | `log` | 父窗口 → 插件日志文件 | 只写插件日志，限 4KB/条 |
@@ -713,14 +721,14 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 **安全**
 
 - 父窗口校验 `e.source === iframe.contentWindow`（每个 host 实例持有自己的 ref）；
-- 不校验 `e.origin`（sandbox 无 `allow-same-origin` 时 origin 为 `null`），改用**实例绑定 + 请求白名单**；
+- **2026-11-04 核对：iframe 实际同源（`allow-same-origin`）**，因此不能用“sandbox origin 为 null”的假设；安全边界是实例绑定 + 请求方法分发，`e.origin` 仍未校验；
 - iframe **不暴露** `window.mq` / `/publish` / 任意 `data-*`；
 - 页面资源只读、禁止 `../` 越界；`Cache-Control: no-store`。
 
 ### 7.7 静态资源服务
 
-- 新路由：`GET /plugin-ui/<id>/<path...>` → `<pluginRoot>/webui/<path>`。
-- 校验：id 必须在注册表；`path` 经 `filepath.Clean` 后仍在 `webui/` 内；拒绝 `.` 开头段与符号链接逃逸。
+- **2026-11-04 核对**：实际路由统一为 `GET /plugins/<id>/<path...>`（`pluginUiRoute.js`；宿主经 `plugin/v1/ui.asset.get` 向已就绪插件取资源）。旧 `/plugin-ui/<id>/...` 已下线，仅保留 `GET /plugin-ui/_sdk/plugin.js` 共享 SDK。
+- 校验：id 必须在注册表且插件 `running`；插件侧只暴露 `webui/`，路径越界防护在宿主 `pluginassets.go`。
 - MIME 按扩展名（html/js/css/svg/png/woff2/json）；无目录列表；`Cache-Control: no-cache, no-store, must-revalidate`。
 - 共享 SDK：`GET /plugin-ui/_sdk/plugin.js`（宿主提供，版本随主程序；iframe 只需 `<script src="/plugin-ui/_sdk/plugin.js">`）。
 
@@ -735,6 +743,8 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 ## 8. 样板插件：websearch（DeepSeek）
 
 ### 8.1 包结构
+
+> **2026-11-04 核对**：实际样板插件 id = **`web`**（源码 `chonkpilot-plugins/web`，出厂 `src/initdata/capability/plugins/web`），工具为 `web_search` / `web_fetch` / `web_download`；下文 `websearch` 为设计期名称。
 
 ```text
 src/initdata/capability/plugins/websearch/
@@ -801,6 +811,8 @@ src/initdata/capability/plugins/websearch/
 
 ### 9.1 `codegraph`（codegraph + vfts 合二为一）
 
+> **2026-11-04 核对**：合并已落地（`chonkpilot-plugins/codegraph` 单插件）；`plugin.index.*` 待索引队列已于 2026-10-25 退场（D-71），改为订阅 `filesys.changed` 自管索引；`tools.exec` 未实现，插件直接内嵌引擎回答查询（不再经 executor）。以下为迁移期设计快照。
+
 **目标形态**
 
 | 现状 | 数量 | 目标 |
@@ -864,7 +876,7 @@ src/initdata/capability/plugins/websearch/
 
 ### 10.2 MQ 新增（前端 ↔ server）
 
-> 现状：`ui-plugin-*` 仅在 [61 §预留主题族](../spec/60-reference/61-消息一览.md#L19-L21) 声明、**零实现**。本期改用 `plugin-*` 并删除 `ui-plugin-*` 预留族（等价于「新增主题 + 删除未实现预留」，**实施前需按 61 §变更口径报用户确认**）。
+> 现状：`ui-plugin-*` 仅在 [61 §预留主题族](../spec/60-reference/61-消息一览.md) 声明、**零实现**。本期改用 `plugin-*` 并删除 `ui-plugin-*` 预留族（等价于「新增主题 + 删除未实现预留」，**实施前需按 61 §变更口径报用户确认**）。
 
 | 主题 | 方向 | payload | 说明 |
 |------|------|---------|------|
@@ -874,7 +886,7 @@ src/initdata/capability/plugins/websearch/
 | `plugin-status` | server → 前端（event） | `{id,status,detail?}` | `discovered\|starting\|registering\|running\|degraded\|error\|stopping\|stopped\|disabled` |
 | `plugin-set-enabled` | 前端 → server（call） | `{id,enabled}` → `{ok}` | 启停（同时摘/挂工具面） |
 | `plugin-command` | 前端 → server（call） | `{id,name,params?}` → `{ok,result?}` | 状态栏/管理页命令 → 插件 |
-| `plugin-config-get` | 前端 → server（call） | `{id}` → `{fields,values,dirty}` | 密钥掩码 |
+| `plugin-config-get` | 前端 → server（call） | `{id}` → `{fields,values}` | 密钥掩码；**2026-11-04 核对：无 `dirty`** |
 | `plugin-config-set` | 前端 → server（call） | `{id,values}` → `{ok}` | 原子写 + 广播 |
 | `plugin-config-changed` | server → 前端（event） | `{id,keys:[...]}` | 配置变更；同内容另经 `plugin.config.changed` 控制帧发插件 |
 | `plugin-call` | 前端 → server（call） | `{id,method,params}` → `{ok,result}` | iframe 桥的数据/RPC 统一入口（§7.6） |
@@ -890,6 +902,8 @@ src/initdata/capability/plugins/websearch/
   "statusbar":[{"id":"websearch","zone":"right","icon":"search"}],
   "tools":["self_web_search"], "pid":12345, "started_at":"..." }
 ```
+
+> 2026-11-04 核对：示例为设计期形状；实际 `web` 插件 `namespace:"-"`，`tools` 为 `web_search`/`web_fetch`/`web_download`（无 `self_` 前缀）。
 
 - `preview-tab-open`：**只增** payload 字段 `plugin` / `page`（`kind:'plugin-page'`）；主题不变。
 - 禁用 = `plugin-set-enabled` → `plugin-status{disabled}` → 前端隐藏菜单/状态栏、MCP 注销。
@@ -925,7 +939,7 @@ src/initdata/capability/plugins/websearch/
 | iframe 发未授权方法 | 父窗口拒绝并记审计；不转发 |
 | 插件崩溃 | 工具面摘除、UI 灰点；退避重启；`_meta` 路由的进行中调用失败（不重试） |
 | 禁用插件时有进行中调用 | 先摘工具面（新调用失败），等 `stop.grace_ms` 后 kill；已发出的调用按失败返回 |
-| 宿主退出 | `PluginManager.Stop` 按启动**逆序**：先禁新调用 → `plugin.shutdown` → 超时 kill；`external` 只注销不杀 |
+| 宿主退出 | `PluginManager.Stop` 按启动**逆序**：先禁新调用 → `plugin.shutdown` → 超时 kill（`external` 模式已于 D14 删除，无“只注销不杀”分支） |
 | 插件目录被删 | 下次启动视为卸载：清注册表、广播 `plugin-unregistered`；布局引用保留 |
 
 ***
@@ -935,7 +949,7 @@ src/initdata/capability/plugins/websearch/
 1. **状态落在哪**：manifest / 配置 / 密钥 / 启用表 / UI 快照 → 落盘（`capability/plugins/<id>/` + prjusr 快照）；进程 pid、连接、MCP 端口、会话池 → 内存（崩溃即丢，可重建）。
 2. **是否受理即持久化**：配置保存**先原子落盘再应用**；启用/禁用先落启用表再执行；插件注册（视图/MCP）属于**运行态**，重启后由 manifest 重建（无需持久化）。
 3. **非终态谁收口**：运行态不持久化 → 宿主启动后每个插件状态一律从 `starting` 重建（不存在「上次残留 running」）；每个 `starting` 受 `health.interval_ms × fail_threshold` 上限约束，超时 → `error`（可手点重试）；**不出现永久 `starting`**。
-4. **重启后重建还是收敛**：`managed` 插件 **重建**（重新 spawn → hello/register → MCP 注册）；`external` 插件 **重连**，连不上则 `degraded`，UI 用快照保留入口；工具面只注册已连通的插件。
+4. **重启后重建还是收敛**：插件一律**重建**（重新 spawn → hello/register → MCP 注册）；`external` 模式已删除（PLUGIN-LOAD-1 D14），不存在“重连 / degraded”分支；工具面只注册已 hello 的插件。
 5. **副作用语义**：注册/注销幂等；配置写入幂等（同值不写）；工具调用默认**不自动重试**，仅 `idempotent:true`（如 `web_search`）允许自动重试；索引任务由 `plugin.index.*` 队列保证「至少一次」，插件按自身清单（`<workdir>/.chonkpilot/vfts/file_list.json`）幂等重算〔2026-10-25：`plugin.index.*` 队列与该清单均改插件自持/已下线，见 D-71〕。
 
 ***
@@ -998,7 +1012,7 @@ src/initdata/capability/plugins/websearch/
 |---|------|--------|------|
 | 1 | 前端消息族命名 | `plugin-*`（删除未实现的 `ui-plugin-*` 预留族） | 保留 `ui-plugin-*`（需两套命名并存） |
 | 2 | 插件捆绑 MCP 的默认方式 | `http`（回环 + Bearer，端口 0） | `tools`（无端口，但工具名固定 `self_`） |
-| 3 | 产品插件工具名前缀 | `self_`（与现有 `self_*` 一致；契约名不带前缀） | `-`（原样，工具面出现裸名） |
+| 3 | 产品插件工具名前缀 | ~~`self_`~~ **2026-11-04 核对：实际 `namespace` 缺省 `-`（原样），内置 manifest 均为 `-`** | `-`（原样，工具面出现裸名） |
 | 4 | 插件配置页承载 | 预览区 iframe（主）+ 同页可注册为抽屉/对话框 view | 仅预览区 |
 | 5 | compress 迁移时机 | codegraph 稳定后（P5） | 与 codegraph 并行 |
 | 6 | 插件 UI 静态资源 | 宿主 `/plugin-ui/<id>/` 只读提供 | 插件自带 HTTP（多端口，不推荐） |
@@ -1011,3 +1025,43 @@ src/initdata/capability/plugins/websearch/
 - [31-窗口与布局](../spec/30-function-points/31-窗口与布局.md) · [61-消息一览](../spec/60-reference/61-消息一览.md) · [64-配置项一览](../spec/60-reference/64-配置项一览.md) · [71-编程规范](../spec/70-conventions/71-编程规范.md)
 - [工具面重构与Gateway二次优化设计方案](../tool-plane/工具面重构与Gateway二次优化设计方案.md)
 - [DeepSeek Search 文档](https://api-docs.deepseek.com/zh-cn/guides/search/)（外部参考，不进 spec）
+
+***
+
+## 16. 2026-11-04 状态核对（落地清单）
+
+**结论：部分落地**。平台主体、`mcp` 插件、插件 RPC 已可用；剩余缺口是少数明确能力项，不是“整体未实现”。
+
+### 16.1 已落地
+
+| 块 | 证据 |
+|----|------|
+| 发现 / 拉起 / 守护 / 退避 / 健康 | `chonkpilot-framework/plugin/src/mgr/manager.go`；`enabled.json` |
+| UDS 帧 / hello / register / 订阅 / filter | `bridge/{server,control,filter}.go` |
+| MCP `http` 模式 / `none` | `sdk/plugin.go` startMCP；`mgr/api.go`；`plugin.mcp.register` |
+| UI 注册 / iframe / 动态 view / 管理页 / 状态栏 / `plugin-*` | `bridge/plugins.go`、`bridge/gui.go`、`src/frontend/packages/plugin-ui/*`、`mgr/manager.go` |
+| 数据面 / 配置 / storage / hooks | `bridge/{plugins,configuser,configprjusr,data,capabilities}.go` |
+| 实例归属 / 定向投递 | `bridge/instresolve.go`、`sdk/plugin.go`、`usePluginReadiness.js` |
+| 样板/产品插件 | `chonkpilot-plugins/{web,codegraph,crontab,file,task,mcp,browser,desktop,…}` |
+| 插件 RPC（`plugin-call → plugin.ui.rpc`） | `mgr/api.go` `call()`；`sdk/plugin.go` `OnRequest` |
+
+### 16.2 真实缺口（保持登记，勿写成“已实现”）
+
+| 缺口 | 代码事实 |
+|------|---------|
+| `mcp.mode=tools` | 宿主直接报错「tools 模式暂未实现」（`mgr/api.go:293-296`） |
+| `plugin/v1/tools.exec` | 全仓 0 命中（`grep`） |
+| `plugin/v1/group.open` | 全仓 0 命中 |
+| `plugin/v1/llm.chat` | 全仓 0 命中（原文即标“本期不做”） |
+
+### 16.3 与本文旧口径的偏差（按代码为准）
+
+1. 插件根 = `<root>/plugins/<id>/`（非 `capability/plugins`）；`plugin.json` 极简 + `manifest.json` 完整（PLUGIN-LOAD-1 D12）。
+2. `runtime.mode` / `channel.*` 已删（D14）；但 **12 份 `manifest.json` 仍保留死字段**（browser/codegraph/crontab/demo-python/desktop/file/history/mcp/memory/remote/task/web）。
+3. `mcp.namespace` 缺省 `-`（非 `self_`）。
+4. 宿主只校验 `id`（且 `manifest.id` 为空也接受），§4.3 其余规则未实现。
+5. 权限仅 `permissions.data` 有校验，且空数组放行；`hooks/llm/session/network` 无消费点。
+6. iframe 为**同源**（`allow-same-origin`）；`ui.rpc` 无白名单；`config.get` 无 `dirty`。
+7. 静态资源路由 `/plugins/<id>/…`（非 `/plugin-ui/<id>/…`）。
+8. `plugin.register` 无 `capabilities.granted`；无 `mcp_conflict` / `ui_rpc_denied`；插件日志**不滚动**。
+9. `plugin.index.*` 队列已退场（D-71）；`compress` 已内建，非插件。

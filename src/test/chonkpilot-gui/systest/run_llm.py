@@ -21,6 +21,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chonk_client import ChonkClient, TestError, run_case
+import ask_center as ac_mod
 
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
 # 2026-10-27（42 (290)）：本套件自建会话/任务，不依赖共享工作区既有状态；改**独立临时 work-dir**
@@ -522,9 +523,9 @@ def case_session_switch_cancel():
 
 
 def case_ask_user_duplex():
-    """C14 ask_user 双路由：user_ask → 前端弹窗 → ask-reply 提交 → 回答回填 LLM。"""
+    """C14 ask_user 双路由：user_ask → Ask 中心待办 → ask-user-reply 提交 → 回答回填 LLM。"""
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
-    c.mq_on_capture(EVENTS + ["ask-reply"])
+    c.mq_on_capture(EVENTS + ["ask-user"])
     sid = create_session()
     activate_session(sid)
     start_turn(sid, "please call ask")
@@ -532,36 +533,77 @@ def case_ask_user_duplex():
     pair = wait_event("tool-pair", max_wait=60)
     p = pair[0]["payload"] or {}
     ask_id = p.get("tool_id") or p.get("task_id") or p.get("ask_id") or ""
-    # 断言 AskUser 弹窗出现（.ask-user-content；tool-pair 消息也会显示 question，不能用 bodyText）
-    deadline = time.time() + 10
-    if not wait_el_exists(".ask-user-content", max_wait=10):
-        raise TestError("AskUser 弹窗未出现（user_ask 双路由断链）")
-    if not ask_id:
-        raise TestError(f"tool-pair payload 无 ask_id（tool_id/task_id）: {p}")
-    # 走真实 UI 路径：填 custom textarea + 点提交（v-mq ask-user-submit → onAnswer →
-    # emit ask-reply + closeAndAdvance）
-    r = _loads_deep(c.eval("""(() => {
-      const ta = document.querySelector('.ask-user-content .custom-input textarea');
-      if (ta) {
-        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(ta, '继续');
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-        return 'ok';
-      }
-      return 'no-textarea';
-    })()""", 5000))
-    if r != "ok":
-        raise TestError(f"AskUser 弹窗无 custom 输入框: {r}")
-    time.sleep(1.0)  # 等 Vue 更新 canSubmit（disabled 按钮 click 无效，须先解除）
-    c.click(".ask-user-content .submit-btn", 5000)
-    # 回答回填 LLM → 最终 llm-complete
-    done = wait_event("llm-complete", max_wait=90)
-    # 弹窗关闭（onAnswer → closeAndAdvance）
-    deadline = time.time() + 8
+    # Ask 中心（2026-11-04）：自动打开独立待办窗口；从 ask-user 事件取 ask_id（tool-pair 兼容保留）。
+    ask_payload = None
+    deadline = time.time() + 30
     while time.time() < deadline:
-        if c.exists(".ask-user-content").get("count", 0) == 0:
-            return
+        for e in c.events_of("ask-user", clear=False):
+            ap = e.get("payload") or {}
+            if ap.get("ask_id") and ap.get("question"):
+                ask_payload = ap
+        if ask_payload:
+            break
         time.sleep(0.5)
-    raise TestError("ask-reply 提交后弹窗未关闭（回答未回填）")
+    if not ask_payload:
+        raise TestError("未收到 ask-user（Ask 中心未收到提问）")
+    ask_id = ask_payload["ask_id"] or ask_id
+    if not ask_id:
+        raise TestError(f"ask-user 载荷无 ask_id: {ask_payload}")
+    _wid, ac = ac_mod.ask_client(c, 30)
+    if not ac_mod.wait_item(ac, ask_id):
+        raise TestError(f"Ask 中心左列未出现 {ask_id}")
+    ac_mod.select_item(ac, ask_id)
+    time.sleep(0.3)
+    # 自由文本问题：在右侧详情填 custom textarea 并提交（与真实 UI 路径一致）。
+    r = ac_mod.set_custom(ac, "继续")
+    if r != "ok":
+        # 有选项的问题：点第一个选项
+        labels = ac_mod.option_labels(ac)
+        if not labels:
+            raise TestError(f"Ask 中心既无 textarea 也无选项: {r}")
+        ac_mod.click_option(ac, labels[0])
+    time.sleep(0.4)
+    ac.mq_on_capture(["ask-user-reply"])
+    ac_mod.click_submit(ac)
+    reply = ac_mod.wait_reply(ac, ask_id, max_wait=15)
+    if not reply:
+        raise TestError("ask-user-reply 未发送（回答未提交）")
+    # 回答回填 LLM → 最终 llm-complete
+    wait_event("llm-complete", max_wait=90)
+    if not ac_mod.wait_no_item(ac, ask_id, 8):
+        raise TestError("作答后待办未移出 Ask 中心左列（回答未回填）")
+
+
+def case_ask_timeout_auto():
+    """C14b ask_user 显式超时：到点自动回复推荐值 → 本轮继续（不中断）→ 待办移除。"""
+    c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
+    c.mq_on_capture(EVENTS + ["ask-user"])
+    sid = create_session()
+    activate_session(sid)
+    start_turn(sid, "please call ask-timeout")
+    confirm_turn(sid, max_wait=60)
+    ask_payload = None
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        for e in c.events_of("ask-user", clear=False):
+            ap = e.get("payload") or {}
+            if ap.get("ask_id") and ap.get("question"):
+                ask_payload = ap
+        if ask_payload:
+            break
+        time.sleep(0.5)
+    if not ask_payload:
+        raise TestError("未收到 ask-user（超时用例前置）")
+    ask_id = ask_payload["ask_id"]
+    if not ask_payload.get("expires_at"):
+        raise TestError(f"显式 timeout 应下发 expires_at: {ask_payload}")
+    _wid, ac = ac_mod.ask_client(c, 30)
+    if not ac_mod.wait_item(ac, ask_id):
+        raise TestError(f"Ask 中心左列未出现 {ask_id}")
+    # 不点任何作答：等 server 定时器自动回复并续轮。
+    wait_event("llm-complete", max_wait=90)
+    if not ac_mod.wait_no_item(ac, ask_id, 20):
+        raise TestError("超时自动回复后待办未从 Ask 中心移除")
 
 
 def case_notify_dedup():
@@ -784,7 +826,8 @@ def main():
     total += 1; ok += run_case("五.12 chat 显示内容确认", case_chat_display)
     total += 1; ok += run_case("五.13 tool-pair 显示、展开、详情", case_toolpair_dom)
     total += 1; ok += run_case("C11 会话切换取消（llm-cancel 级联）", case_session_switch_cancel)
-    total += 1; ok += run_case("C14 ask_user 双路由（弹窗 + 回填）", case_ask_user_duplex)
+    total += 1; ok += run_case("C14 ask_user 双路由（Ask 中心 + 回填）", case_ask_user_duplex)
+    total += 1; ok += run_case("C14b ask_user 显式超时自动回复（推荐值 + 本轮继续）", case_ask_timeout_auto)
     total += 1; ok += run_case("C15 断链恢复（resumePartial 续写）", case_resume_partial)
     total += 1; ok += run_case("C17 通知按 message_id 去重", case_notify_dedup)
     # ── 工具任务节点（原五.4/5/6/7 + C13/C16/C18 等价场景；dsl_run 已随 DSL 删除）──

@@ -182,6 +182,7 @@ const SYSTEM_DEFAULTS = Object.freeze({
   turnEventLog: 'outline',
   turnEventLogRetentionDays: '7',
   timeout_sec: '300',
+  ask_timeout_sec: '0',
   max_concurrency: '16',
   skip_dirs: '.git, .svn, node_modules, .trae, .chonkpilot, __pycache__, .venv, venv, build, dist, .next, .nuxt',
 })
@@ -189,6 +190,7 @@ const SYSTEM_DEFAULTS = Object.freeze({
 // 服务参数（系统默认 + 项目级）；int = 须为「大于 0 的整数」（后端 Atoi + n>0 口径，见 settingsValidation）
 const serviceFields = computed(() => [
   { key: 'timeout_sec', label: t('config.page.timeoutSec'), hint: SYSTEM_DEFAULTS.timeout_sec, int: true },
+  { key: 'ask_timeout_sec', label: t('config.page.askTimeoutSec'), hint: SYSTEM_DEFAULTS.ask_timeout_sec, int: true, nonNeg: true },
   { key: 'max_concurrency', label: t('config.page.maxConcurrency'), hint: SYSTEM_DEFAULTS.max_concurrency, int: true },
   { key: 'skip_dirs', label: t('config.page.skipDirs'), hint: SYSTEM_DEFAULTS.skip_dirs, int: false },
 ])
@@ -455,9 +457,9 @@ async function commitProject(f) {
       prjErrors.value = { ...prjErrors.value, [key]: '' }
       return 'saved'
     }
-    const r = validatePositiveInt(rawStr)
+    const r = f.nonNeg ? validateNonNegativeInt(rawStr) : validatePositiveInt(rawStr)
     if (!r.ok) {
-      const text = positiveIntErrorText(t, r.reason)
+      const text = f.nonNeg ? nonNegativeIntErrorText(t, r.reason) : positiveIntErrorText(t, r.reason)
       prjErrors.value = { ...prjErrors.value, [key]: text }
       message.error(text)
       return 'invalid'

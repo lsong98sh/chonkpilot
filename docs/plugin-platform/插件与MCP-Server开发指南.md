@@ -2,7 +2,7 @@
 
 > 适用：ChonkPilot `PLUGIN-1` 插件平台。**本文是插件开发与实现的唯一操作手册**；设计背景见
 > [插件与MCP统一设计方案](插件与MCP统一设计方案.md)。
-> 状态：🟡 随实现同步（2026-10-22 起；2026-10-23 对齐实际 SDK / pluginmgr / 数据面并补 §14/§15）。
+> 状态：🟡 随实现同步（2026-10-22 起；2026-10-23 对齐实际 SDK / pluginmgr / 数据面并补 §14/§15；**2026-11-04 核对** SDK/contract 包路径、iframe 同源、ui.rpc/actions 校验、权限与能力表）。
 > 示例与代码以**同级仓 `chonkpilot-plugins/*`** 为准（2026-10-24 起主仓 `src/plugins/` 已整体迁出；SDK/宿主运行时 = `chonkpilot-framework/plugin`）。
 
 ---
@@ -27,7 +27,7 @@ import (
     "log/slog"
     "os"
 
-    "github.com/chonkpilot/chonkpilot-plugin-sdk/pluginsdk"
+    pluginsdk "github.com/lsong98sh/chonkpilot-plugin-framework/sdk"
 )
 
 func main() {
@@ -164,7 +164,7 @@ func main() {
 | `config.fields[]` | | `{key,type,default,secret,required,min,max,label}` |
 | `ui.views[]` | | `{id,title,icon,entry,containers,default_size}`；`id=config` 视为**配置视图**（插件维护卡片显示「配置」按钮） |
 | `ui.menus[]` | | `{location:"plugin",label,icon,view}` |
-| `ui.statusbar[]` | | `{id,zone,icon,tooltip,command}` |
+| `ui.statusbar[]` | | `{id,zone,icon,tooltip,command,view}`；`view`（PLUGIN-UI-2）非空时内嵌该插件 view（如 badge），此时 `command` 不再使用 |
 | `ui.actions[]` | | 插件维护卡片的**动作按钮**：`{id,label,icon,tooltip,style,view,container}` 或 `{…,command}`（见 §7.4） |
 | `ui.rpc[]` | | 允许 iframe 调用的插件方法名 |
 | `permissions.data[]` | | `resource.op[:selector]`（见 §6.1） |
@@ -233,13 +233,14 @@ degraded = 插件自报（plugin.status.report），不触发重启
 ### 4.2 握手
 
 ```text
-plugin.hello    {id,name,version,features?}
+plugin.hello    {id,name,version,work_dir?,features?,manifest?}
                 → {plugin_id,instance_id,version,methods[]}
 plugin.register {features?,subscriptions[]?,ui?}   → {ok,plugin_id,instance_id,subscriptions}
 plugin.ready    {}                                 → {ok}        # 可选：声明已就绪
 ```
 
 - `plugin.hello` 后宿主分配 `instance_id`（`plugin:<id>:<n>`），**同一连接内 id 不可变更**；
+- **2026-11-04 核对**：`plugin.hello` 载荷实际额外含 `manifest`（插件自读的完整 manifest，D12）与可选 `work_dir`；宿主只校验 `manifest.id`。`plugin.register` 应答**没有** `capabilities.granted`（设计稿要求，未实现）。
 - `ui` 段 = manifest `ui` 同构的运行时覆盖（`plugin.ui.register` 走同一入口）；
 - 晚连接插件会自动收到一次 `server-ready` 事件（宿主就绪时补发）。
 
@@ -266,16 +267,21 @@ plugin.ready    {}                                 → {ok}        # 可选：�
 | 前缀 | 方法 |
 |------|------|
 | LLM | `plugin/v1/llm.step`（`{prompt,system?,instance_id?,llm?}` → `{text}`） |
-| 会话 | `session.start/send/cancel/list/get/history/content/snapshot/rename/delete/active` · 写：`session.snapshot.set` / `session.summary.set` / `session.messages` / `session.context` |
-| 插话 | `session.inbox.add/list/discard/promote` |
-| 任务 | `task.tree/tasks/stop/background/verify` · `tool.retry` · `ask.reply` |
-| 配置 | `config.user.get/load` · `config.project.get/load/set/delete` · ~~`config.filelist.list`~~（2026-10-25 退场：清单改插件自持本地文件） · `config.memory.list` · `config.mcp.list` · `config.scenario.list` · `config.prompt.get/load/set` |
+| 会话 | `session.start/send/cancel/list/get/history/content/snapshot/rename/delete/active/active.get` · 写：`session.snapshot.set` / `session.summary.set` / `session.messages` / `session.context` / `session.export`（2026-11-04 补） |
+| 子聊 / 轮次 | `subchat.open` / `subchat.finish` · `session.ensure` / `session.ensure-turn` / `session.complete-turn` · `turn.context` · `agent.delegate` · `next.run` · `ask.user`（2026-11-04 补） |
+| 插话 | `session.inbox.add/list/discard/promote/revert` |
+| 任务 | `task.tree/tasks/stop/background/verify/cancel` · `task.node.start` / `task.node.done` / `task.result` · `tool.retry` / `tool.stop` · `ask.reply` |
+| 配置 | `config.user.get/load/set/delete` · `config.project.get/load/set/delete` · `config.prjusr.get/load/set/delete` · ~~`config.filelist.list`~~（2026-10-25 退场：清单改插件自持本地文件） · `config.memory.list` · `config.mcp.list` · `config.scenario.list` · `config.prompt.get/load/set/delete` |
 | 知识 | `knowledge.list/read` |
 | 文件 | `file.list/read/write/mkdir/remove/rename/copy`（限 workdir） |
 | 工具 | `tools.list/call/wait/timeout/register/unregister` · `tool.notify` |
 | 资产 | `prompts.list/get` · `resources.list/read` · `servers.list/get/register/unregister` · `gateway.check` |
-| 运维 | `memory.flush` · `vfts.reindex` · `vfts.dict.set` · `prompt.optimise` |
+| 数据面（扩展 KV / 桶） | `plugin/v1/data.kv.get/set/del/list/del-prefix` · `plugin/v1/data.bucket.ensure/list/query` · `plugin/v1/prj.users.list`（2026-11-04 补；与 §6.1 的 `data.read/write` 闭集并存） |
+| UI / 命令 | `plugin/v1/gui.list` / `plugin/v1/gui.apply`（插件 → 宿主窗口动作白名单） |
+| 运维 | `memory.flush` · `memory.delete` · `vfts.reindex` · `vfts.dict.set` · `prompt.optimise` |
 | 宿主策略 | `instance.resolve{work_dir}`（→ `{found, instance_id?}`）· `sandbox.resolve{work_dir}`（→ `{writable_dirs}`；定时任务等**无 tools/call 上下文**的场景用）· `workdir.ensure{work_dir, hidden?}`（→ `{instance_id, work_dir, opened}`；未打开的项目由宿主**隐藏打开**并等 `instance-register` ≤12s；超时/失败回明确错误） |
+
+> 2026-11-04 核对：上表按 `bridge/capabilities.go`、`bridge/configuser.go`、`bridge/configprjusr.go`、`bridge/data.go`、`bridge/gui.go`、`bridge/instresolve.go`、`bridge/workdirensure.go` 与主仓 `src/lib/llm/server/plugin_caps.go` 的实际方法名重列；旧表漏掉的 GUI / subchat / session.ensure / data.kv / 导出等已补。
 
 > **项目已打开保证（SANDBOX-WRITE-1 P3，2026-11-03）**：后台类插件（定时任务等）在需要项目数据面/
 > 用户白名单之前调 `plugin/v1/workdir.ensure{work_dir, hidden:true}`：
@@ -292,7 +298,7 @@ plugin.ready    {}                                 → {ok}        # 可选：�
 > Low IL + Job（`scriptrun.Options.Sandbox`，执行前先 `sandbox.EnsureLowILCached`）。
 > **拿不到策略 → fail-open**（不阻断业务，但必须在自身状态/运行记录里写明原因）。
 
-> **未声明权限 = 拒绝**（`permission_denied`）。方法名与 payload 以本文为准，新增须同步
+> **权限实际口径（2026-11-04 核对）**：只有 `permissions.data` 在 `data.read|write` 时逐次校验，且**空数组 = 不校验直接放行**；`hooks` / `llm` / `session` / `network` 目前无消费点（仅解构声明），不存在“未声明权限 = 拒绝”的通用拦截。方法名与 payload 以本文为准，新增须同步
 > `docs/spec/60-reference/61-消息一览.md` 或协议附录。
 
 ### 4.4 订阅事件
@@ -355,9 +361,12 @@ plugin.ready    {}                                 → {ok}        # 可选：�
 { "_meta": { "chonkpilot": {
     "instance_id":"...", "work_dir":"...", "data_dir":"...",
     "session":"...", "turn":"...", "tool_call_id":"...",
-    "top_session":"...", "parent":"...", "purpose":"..."
+    "top_session":"...", "parent":"...", "purpose":"...",
+    "sandbox": { "enabled": true, "writable_dirs": ["..."] }
 } } }
 ```
+
+> 2026-11-04 核对：`sandbox{enabled,writable_dirs}` 为 SANDBOX-WRITE-1 新增（C3 经 gateway 随每次 `tools/call` 下发），旧文档漏写。
 
 多项目插件必须按 `instance_id → work_dir` 路由。
 
@@ -406,17 +415,20 @@ p.MCPHot("codegraph_symbol_search", "vfts_query")
 | `session` | `snapshot.get` | 读 | 返回 `{snapshot}`（无快照 = `null`） |
 | `session` | `snapshot.set` | 写 | `{session_id,snapshot}`；`snapshot` 形状 = `{history[],snapshot_turn}` |
 | `session` | `summary.set` | 写 | 会话摘要 |
-| `session` | `inbox.list` / `add` / `discard` / `promote` | 读/写 | 插话 |
+| `session` | `inbox.list` / `add` / `discard` / `promote` / `revert` | 读/写 | 插话（`revert` 2026-11-04 补） |
 | `task` | `tree` / `tasks` | 读 | 任务树 |
 | `task` | `stop` / `background` / `verify` | 写 | 任务控制 |
-| `config` | `prj.get` / `prj.set` / `prj.delete` | 读/写 | 项目配置 |
+| `config` | `prj.get` / `prj.list` / `prj.set` / `prj.delete` | 读/写 | 项目配置（`prj.list` 2026-11-04 补） |
 | `config` | `usr.get` | 读 | 密钥字段恒掩码 |
 | `prompt` | `get` / `set` | 读/写 | `summary_prompt` 等 |
 | ~~`filelist`~~ | ~~`list` / `put` / `del`~~ | — | **2026-10-25 退场**：索引清单改插件自持本地文件 `<workdir>/.chonkpilot/vfts/file_list.json`（不再经能力面） |
 | `memory` | `list` / `read` / `write` | 读/写 | 记忆 |
+| `memory` | `extract.load` / `extract.save` | 读/写 | 记忆提取进度（2026-11-04 补） |
 | `knowledge` | `list` / `read` | 读 | 只读 |
 | `filesys` | `list` / `read` / `write` / `mkdir` / `remove` / `rename` / `copy` | 读/写 | 限 workdir |
 | `storage.self` | `get` / `set` / `del` / `list` | 读/写 | 插件私有 KV（`params.key` 仅 `[A-Za-z0-9._-]{1,64}`） |
+
+> 2026-11-04 核对：`config.prjusr.*`（get/load/set/delete）**不走**本表，由 `bridge/configprjusr.go` 单独注册为能力方法；其余新增项见上表。
 
 权限串 = `resource.op`（如 `session.snapshot.set`）；`resource.*` 与 `*` 为通配。
 
@@ -467,7 +479,7 @@ p.MCPHot("codegraph_symbol_search", "vfts_query")
 
 - 宿主注册为 viewKey `plugin:<id>:<view>`；可用 `open-view{viewKey,target}` 打开到
   `tabs` / `drawer` / `dialog`；`preview` 走 `preview-tab-open{kind:'plugin-page',plugin,page}`。
-- iframe 以 `sandbox="allow-scripts allow-forms"` 加载（无 `allow-same-origin`）。
+- iframe 以 `sandbox="allow-scripts allow-forms allow-same-origin"` 加载（**2026-11-04 核对：有 `allow-same-origin`**）。同源是 CK Store（`window.top.ckStore`）/ `ckMq` 注入与事件通道的前提，收掉会同时打断插件 UI 事件与状态读取。
 
 ### 7.2 iframe ↔ 宿主桥
 
@@ -479,7 +491,9 @@ parent.postMessage({ ckPlugin: 1, id: "r1", type: "call", method: "config.get", 
 ```
 
 允许方法：`config.get` / `config.set` / `config.reset` / `data.read` / `data.write` /
-`rpc`（白名单 = `ui.rpc`）/ `open-url` / `close` / `log`。
+`rpc` / `action` / `open-url` / `close` / `log`。
+
+> 2026-11-04 核对：`PluginPageHost.vue` 的 `dispatch` 实际还支持 `action`（`POST /plugins/<id>/api/<action>`，请求头带插件 id）。`config.get` 返回 `{ok,fields,values}`，**无 `dirty`**。`rpc` **没有** `ui.rpc` 白名单校验：宿主直接转发 `plugin.ui.rpc`，插件 SDK 的任何 `OnRequest` 方法都可被调用——`ui.rpc` 目前只是声明/约定。
 
 #### 7.2.1 实例归属与定向投递（PLUGIN-INSTANCE-1）
 
@@ -503,7 +517,7 @@ parent.postMessage({ ckPlugin: 1, id: "r1", type: "call", method: "config.get", 
     "command": { "target":"host", "action":"open-view", "view":"status" } } ] }
 ```
 
-`command.target=plugin` → 宿主发 `plugin.command{name,params}` 给插件。
+- **2026-11-04 核对**：状态栏条目还可写 `view`（如 `"view":"badge"`），宿主内嵌该插件视图（PLUGIN-UI-2，codegraph/crontab 均用）；此时 `command` 不再使用。仍支持 `command.target=plugin` → 宿主发 `plugin.command{name,params}` 给插件。
 
 ### 7.4 插件维护卡片（`ui.actions`）
 
@@ -539,8 +553,8 @@ parent.postMessage({ ckPlugin: 1, id: "r1", type: "call", method: "config.get", 
 | `container` | | ① 的打开位置：`preview`（缺省）/ `tab` / `drawer` / `dialog`；缺省 = 该 view `containers[0]` |
 | `command` | ② ✅ | 布局命令对象：`open-dialog` / `open-tabs` / `open-drawer` / `toggle-drawer` / `close-tabs-active` / `publish-mq`；`plugin-command` 载荷缺 `id` 时自动补当前插件 id |
 
-约束（宿主 `loadManifest` 校验）：`id` 非空且唯一；`view` 与 `command` 至少一个；`view` 必须已注册；
-`container` 仅限上述四值；`style` 仅限上述三值。校验失败 → 该插件不加载（`status=error`，日志可见）。
+约束（**2026-11-04 核对：宿主 `normalizeManifest` 只补默认值，不校验、不拒绝**）：`id` 非空且唯一；`view` 与 `command` 至少一个；`view` 必须已注册；
+`container` 仅限上述四值；`style` 仅限上述三值。以上为**插件侧约定**；误配不会让插件 `status=error`（D13 仅校验 `manifest.id`，且 `id` 为空也接受），只会在 UI 打开时表现为找不到视图/命令无效。
 
 ---
 
@@ -596,10 +610,10 @@ iframe config.set
 ```
 
 - `data` 是**当前唯一强制校验项**：`plugin/v1/data.read|write` 逐次比对 `resource.op`
-  （支持 `resource.*` / `*`）；未命中 → `permission_denied`。
-- 其余段（`hooks` / `llm` / `session` / `network`）目前为**声明 + 审计**，不做逐次拦截。
+  （支持 `resource.*` / `*`）；未命中 → `permission_denied`。**但 `permissions.data = []`（空数组）时直接放行**（兼容 legacy，2026-11-04 核对）。
+- 其余段（`hooks` / `llm` / `session` / `network`）**仅解构声明，当前没有任何消费点**（既非审计也非拦截；2026-11-04 核对）。
 - **不是 OS 沙箱**：插件以当前用户运行，能读写用户可访问文件、能直连网络；
-  `network` 仅用于审计与后续代理校验。
+  `network` 仅用于声明（及后续代理校验）。
 
 ---
 
@@ -607,9 +621,9 @@ iframe config.set
 
 - 日志：stdout/stderr 由宿主重定向到 `<dataDir>/plugins/<id>/logs/plugin.log`（追加、不滚动）；
   iframe 侧 `ckPlugin.call('log',{message})` 追加 `[ui]` 行。**不要**自己再开日志窗口。
-- 错误码（`pluginbridge.Code*`）：`args_invalid` / `plugin_unregistered` / `plugin_unauthorized` /
-  `permission_denied` / `method_not_found` / `mcp_conflict` / `internal`。
-  `config_invalid` 由插件管理面返回（非桥错误码）。
+- 错误码（`pluginbridge.Code*`，2026-11-04 核对）：`args_invalid` / `plugin_unregistered` / `plugin_unauthorized` /
+  `permission_denied` / `method_not_found` / `internal`（另有 `plugin_disabled` / `config_key_forbidden` / `subscription_denied` / `filter_*` / `value_too_large` / `auth_required` / `unsupported` / `not_found`）。
+  **不存在** `mcp_conflict` / `ui_rpc_denied`；`config_invalid` 由插件管理面以普通错误字符串返回（非桥错误码）。
 - 幂等要求：`plugin.mcp.register/unregister`、`plugin.ui.register`、`config.set` 可重复调用；
   工具调用由 gateway 决定是否重试（插件声明 `idempotent` 时才安全）。
 - **宿主未实现**并发上限与耗时熔断：单插件长耗时调用会占用该连接的请求处理，
@@ -633,7 +647,7 @@ dist/plugins/<id>/
   zvec_c_api.dll       # 仅 codegraph：必须与 exe 同目录（vfts 引擎运行时加载）
 ```
 
-- `build-plugins.ps1` → staging `build/plugin-apps/<id>/`；`build-desktop.ps1` 步骤 4.5 先复制
+- `build-plugins.ps1` → staging `build/plugin-apps/<id>/`；`build-desktop.ps1` **`[4/7] stage plugins`**（2026-11-04 核对，旧称“步骤 4.5”）先复制
   plugin.json / manifest.json / webui 到 `dist/plugins/<id>/`，再调 `build-plugins.ps1` 把 exe 覆盖进去。
 - codegraph 插件 = codegraph 引擎 + vfts 引擎合并（CGO：tree-sitter + zvec），构建脚本已注入 zvec 头/库路径。
 - 禁止把插件私有数据 / 密钥写入产物目录。
@@ -728,8 +742,8 @@ dist/plugins/<id>/
 | 补默认参数 | `pluginsdk.MergeMissing(args, defaults)` | 显式入参优先，永不覆盖 |
 | 调 LLM | `(*Plugin).LLM(ctx, prompt, system, timeout)` | 走 `plugin/v1/llm.step` 并直接返回文本（插件不持有 apiKey） |
 | 标准 RPC | `pluginsdk.PingHandler(v)` / `StatusHandler(v, build)` | 统一 `{ok,version,...}` 形状，管理页/健康检查共用 |
-| 契约即工具 | `pluginsdk/contract`：`LoadDir` / `Register` / `HotNames` | 把 `*.tool.md` 直接变成 MCP 工具（file 插件即此模式） |
-| 桥接既有引擎 | `pluginsdk/engineclient`：`New` / `Ensure` / `Call` | legacy pluginhost 的 UDS 行 JSON（start/stop/operation/ping），browser/desktop 共用 |
+| 契约即工具 | `github.com/lsong98sh/chonkpilot-plugin-framework/contract`：`LoadDir` / `Register` / `HotNames` | 把 `*.tool.md` 直接变成 MCP 工具（file 插件即此模式）。**2026-11-04 核对：包路径是框架仓的 `contract/`，不在 `sdk/` 下** |
+| 桥接既有引擎 | `pluginsdk/engineclient`（包位于 `sdk/engineclient`）：`New` / `Ensure` / `Call` | legacy pluginhost 的 UDS 行 JSON（start/stop/operation/ping），browser/desktop 共用 |
 | 工具注册 / 配置 / 事件 / 反向调用 | `pluginsdk.Plugin` | `Tool` / `HotTool` / `OnMCPServer` / `OnRequest` / `Subscribe` / `Call` / `DataRead` / `DataWrite` |
 
 典型插件骨架（≈30 行）：

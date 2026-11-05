@@ -12,7 +12,7 @@ timeout: 0
 ```
 
 # 摘要
-获取转后台任务的结果：id 支持转后台任务 id（gateway 异步任务 / server 任务节点）或子会话 turn id（`llm_run` 委派返回的 sub turn id）；timeout 秒内轮询等待完成，超时返回「任务尚未结束」（可用更长 timeout 再次调用）。
+获取任务结果：id 支持任务节点 id（gateway 异步任务 / server 任务节点）、gateway 执行 id 或子会话 turn id（委派子代理返回的 sub turn id）；timeout 秒内轮询等待完成。任务仍在运行时返回「任务尚未结束」+ **已产出的部分输出**（不取消任务，可用更长 timeout 再次调用）；终态返回最终结果。
 
 # 参数
 ```json

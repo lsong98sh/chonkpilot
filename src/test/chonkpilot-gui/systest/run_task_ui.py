@@ -157,11 +157,129 @@ def case_hover_stop():
     sid = new_sid()
     activate(sid)
     task_started(sid, "t-stop", kind="command", tool="command_execute", name="可停止任务")
-    # 模拟 hover：mouseenter 到 status-wrap（CSS hover 需真实鼠标，改用事件冒泡触发 v-mq hover 动作？
-    # v-mq 只绑 click/stop/emit，hover 由 CSS :hover 控制 → 无法用合成事件触发。
-    # 改验证停止按钮元素存在（hidden，hover 显示）——DOM 存在即链路具备。
-    if not c.exists(".session-tree-node .node-stop").get("count", 0) > 0:
-        raise TestError("running 节点缺 stop 按钮元素")
+    # 真实 hover 需指针事件（测试通道无 mousemove）→ 从**渲染后的样式表**验证：
+    # 默认 .hover-act 不可见；存在 :hover 规则把 running 节点的动作位切为可见。
+    v = deep_loads(c.eval("""(() => {
+      const btn = document.querySelector('.session-tree-node .node-stop');
+      if (!btn) return {ok:false, why:'no button'};
+      const def = getComputedStyle(btn).display;
+      let hoverRule = false;
+      for (const ss of document.styleSheets) {
+        let rules = [];
+        try { rules = [...ss.cssRules]; } catch (e) { continue; }
+        for (const r of rules) {
+          const sel = (r.selectorText || '');
+          if (sel.includes(':hover') && sel.includes('.hover-act') && sel.includes('has-action')) {
+            hoverRule = (r.style.display || '').includes('inline-flex') || (r.style.display || '').includes('flex');
+          }
+        }
+      }
+      return {ok:true, def, hoverRule};
+    })()"""))
+    if not v.get("ok"):
+        raise TestError("running 节点缺 stop 按钮元素：%r" % (v,))
+    if v.get("def") != "none":
+        raise TestError("stop 按钮默认应隐藏（hover 才显示），实际 display=%r" % (v.get("def"),))
+    if not v.get("hoverRule"):
+        raise TestError("缺 :hover 规则把 running 节点动作位切为可见（交互不可达）")
+
+
+def node_geometry():
+    """取任务树第一个节点 / 滚动容器的几何（裁剪与滚动断言共用）。"""
+    return deep_loads(c.eval("""(() => {
+      const panel = document.querySelector('.tree-scroll');
+      const node = document.querySelector('.session-tree-node .node-header');
+      if (!panel || !node) return {ok:false};
+      const r = node.getBoundingClientRect(), p = panel.getBoundingClientRect();
+      return {ok:true, left:r.left, right:r.right, top:r.top, bottom:r.bottom,
+              panelLeft:p.left, panelRight:p.right, panelTop:p.top, panelBottom:p.bottom,
+              clientW:panel.clientWidth, scrollW:panel.scrollWidth,
+              clientH:panel.clientHeight, scrollH:panel.scrollHeight};
+    })()"""))
+
+
+def case_node_no_horizontal_clip():
+    """节点不得横向溢出任务面板（长标题 ellipsis，不撑破布局）。"""
+    sid = new_sid()
+    activate(sid)
+    longname = "超长任务标题-" + ("X" * 120)
+    task_started(sid, "t-wide", kind="tool", tool="file_read", name=longname)
+    time.sleep(0.5)
+    g = node_geometry()
+    if not g.get("ok"):
+        raise TestError("任务节点/滚动容器未渲染")
+    if g["right"] > g["panelRight"] + 1 or g["left"] < g["panelLeft"] - 1:
+        raise TestError("节点横向越出面板（裁剪/溢出）：node=%r panel=[%r,%r]"
+                        % (g["right"], g["panelLeft"], g["panelRight"]))
+    if g["scrollW"] > g["clientW"] + 1:
+        raise TestError("任务面板出现水平溢出：scrollW=%s clientW=%s"
+                        % (g["scrollW"], g["clientW"]))
+    # 标题本身必须 ellipsis（不把整行撑宽）
+    t = deep_loads(c.eval("""(() => {
+      const el = document.querySelector('.session-tree-node .node-title');
+      return {sw: el.scrollWidth, cw: el.clientWidth, ow: getComputedStyle(el).overflow,
+              ws: getComputedStyle(el).whiteSpace};
+    })()"""))
+    if t.get("ow") != "hidden" or t.get("ws") != "nowrap":
+        raise TestError("超长标题应 ellipsis（overflow/white-space 异常）：%r" % (t,))
+
+
+def case_nested_indent_and_scroll():
+    """多层任务：子节点缩进递增、嵌在父节点内；超出一屏时可滚动且末节点可完整看到。"""
+    sid = new_sid()
+    activate(sid)
+    # 父 → 子 → 孙（kind=tool），验证三层嵌套渲染
+    task_started(sid, "t-n0", kind="command", tool="command_execute", name="父任务")
+    task_started(sid, "t-n1", kind="tool", tool="file_read", name="子任务", parent_id="t-n0")
+    task_started(sid, "t-n2", kind="tool", tool="file_read", name="孙任务", parent_id="t-n1")
+    # 再灌入若干顶层节点制造滚动
+    for i in range(24):
+        task_started(sid, "t-bulk-%02d" % i, kind="tool", tool="file_read", name="批量任务 %02d" % i)
+    time.sleep(0.8)
+
+    geo = deep_loads(c.eval("""(() => {
+      const byId = id => document.querySelector('.node-header[data-node-id="' + id + '"]');
+      const r = el => el ? el.getBoundingClientRect() : null;
+      const a = byId('t-n0'), b = byId('t-n1'), d = byId('t-n2');
+      if (!a || !b || !d) return {ok:false, missing:true};
+      const ra = r(a), rb = r(b), rd = r(d);
+      const panel = document.querySelector('.tree-scroll').getBoundingClientRect();
+      return {ok:true, indent0:parseFloat(getComputedStyle(a).paddingLeft),
+              indent1:parseFloat(getComputedStyle(b).paddingLeft),
+              indent2:parseFloat(getComputedStyle(d).paddingLeft),
+              left0:ra.left, left1:rb.left, left2:rd.left,
+              right0:ra.right, right1:rb.right, right2:rd.right,
+              panelLeft:panel.left, panelRight:panel.right,
+              nested:document.querySelectorAll('.node-children .session-tree-node').length};
+    })()"""))
+    if not geo.get("ok"):
+        raise TestError("三层任务节点未渲染：%r" % (geo,))
+    if not (geo["indent0"] < geo["indent1"] < geo["indent2"]):
+        raise TestError("子节点缩进未递增：%r" % (geo,))
+    if not (geo["left0"] < geo["left1"] < geo["left2"]):
+        raise TestError("子节点实际左边界未递增（层级不可读）：%r" % (geo,))
+    if geo["nested"] < 2:
+        raise TestError("子/孙节点未嵌在父节点内（node-children 命中 %s）" % geo["nested"])
+    for k in (0, 1, 2):
+        if geo["right%d" % k] > geo["panelRight"] + 1:
+            raise TestError("第 %d 层节点横向越界：%r" % (k, geo))
+
+    # 滚动：内容高于容器 → 可滚到底，末节点完整可见（不在裁剪区外）。
+    sc = deep_loads(c.eval("""(() => {
+      const p = document.querySelector('.tree-scroll');
+      p.scrollTop = p.scrollHeight;
+      const last = [...document.querySelectorAll('.node-header')].pop();
+      const pr = p.getBoundingClientRect(), lr = last.getBoundingClientRect();
+      return {top:p.scrollTop, sh:p.scrollHeight, ch:p.clientHeight,
+              lastBottom:lr.bottom, panelBottom:pr.bottom};
+    })()"""))
+    if not (sc["sh"] > sc["ch"]):
+        raise TestError("节点数超过一屏但任务面板不可滚动：sh=%s ch=%s" % (sc["sh"], sc["ch"]))
+    if not (sc["top"] > 0):
+        raise TestError("滚到底后 scrollTop 仍为 0（滚动被阻断）")
+    if sc["lastBottom"] > sc["panelBottom"] + 1:
+        raise TestError("滚到底后末节点仍被裁剪：lastBottom=%s panelBottom=%s"
+                        % (sc["lastBottom"], sc["panelBottom"]))
 
 
 def case_detail_view():
@@ -302,7 +420,9 @@ def main():
     ok &= run_case("G2 节点创建 + running 转圈 + 类型图标", case_node_create_running)
     ok &= run_case("G3 完成/失败状态图标", case_terminal_states)
     ok &= run_case("G4 llm 会话节点运行耗时", case_llm_elapsed)
-    ok &= run_case("G5 运行中节点 stop 按钮元素", case_hover_stop)
+    ok &= run_case("G5 运行中节点 stop 按钮（默认隐藏 + :hover 规则可达）", case_hover_stop)
+    ok &= run_case("G5b 长标题横向不裁剪 / 无水平溢出", case_node_no_horizontal_clip)
+    ok &= run_case("G5c 多层嵌套缩进 + 面板滚动到底末节点可见", case_nested_indent_and_scroll)
     ok &= run_case("G6 点击任务节点查看详情（PID/命令/参数）", case_detail_view)
     ok &= run_case("G7 详情底部操作按钮", case_detail_close_stop)
     ok &= run_case("G8 关闭（逻辑删除）后节点只读可见 + 子节点在 + 无动作", case_closed_readonly)

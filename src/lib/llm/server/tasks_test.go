@@ -270,8 +270,16 @@ func TestTaskAskUserMultiRecommended(t *testing.T) {
 	if rec, ok := askEv["recommended"].([]any); !ok || len(rec) != 1 || rec[0] != "y" {
 		t.Fatalf("recommended=%v want [y]", askEv["recommended"])
 	}
-	if askEv["expires_at"] == nil || askEv["ask_id"] == nil {
-		t.Fatalf("missing expires_at/ask_id: %+v", askEv)
+	if askEv["ask_id"] == nil {
+		t.Fatalf("missing ask_id: %+v", askEv)
+	}
+	// 2026-11-05：缺省不超时（timeout 缺省 -1 / 全局未配置）→ 不下发 expires_at。
+	if askEv["expires_at"] != nil {
+		t.Fatalf("缺省不应有 expires_at: %+v", askEv)
+	}
+	// owner_instance = 发起 turn 的窗口实例（跨窗口作答归属）。
+	if askEv["owner_instance"] != "ins-test" {
+		t.Fatalf("session-ask 缺 owner_instance: %+v", askEv)
 	}
 	// 业务 payload 一律必带 instance_id（61 §0.1）：从 turn 归属取（本轮实例 ins-test）
 	if askEv["instance_id"] != "ins-test" {

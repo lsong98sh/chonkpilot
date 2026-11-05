@@ -1,7 +1,8 @@
 # 插件加载与 UI 就绪设计方案（PLUGIN-LOAD-1）
 
-> 状态：✅ **已全部落地**（2026-11-02）：D1–D18 完成 —— `plugin-refresh` 差量刷新、启动并发闸门 2、先登记后拉起、就绪态「未安装/启动中」文案、刷新遮罩 / 失败关闭；`plugin.json` 极简化（`id/cmd/enabled/name/icon`）+ 完整 manifest 由插件在 `plugin.hello` 上报（Go SDK 读 `<插件目录>/manifest.json`，Python/Node 自读）；只校验 ID；`external` 模式与 `channel.*` 删除；CK Store（`window.ckStore` getter 仓库 + 状态栏抽屉）
-> 关联：[28-plugins](../spec/20-modules/28-plugins.md)（插件体系，权威）· [2C-UI插件](../spec/20-modules/2C-UI插件.md)（插件 UI 四通道）· [61-消息一览](../spec/60-reference/61-消息一览.md)（§7.2 `plugin-*`）· [41-未决项登记](../spec/40-roadmap/41-未决项登记.md) · [49-待实现项](../spec/40-roadmap/49-待实现项.md)
+> 状态：✅ **D1–D18 均有实现**（2026-11-02；**2026-11-04 核对**）：`plugin-refresh` 差量刷新、启动并发闸门 2、先登记后拉起、就绪态文案、刷新遮罩 / 失败关闭；`plugin.json` 极简化（`id/cmd/enabled/name/icon`）+ 完整 manifest 由插件在 `plugin.hello` 上报（Go SDK 读 `<插件目录>/manifest.json`，Python/Node 自读）；只校验 ID；`external` 模式与 `channel.*` 删除；CK Store（`window.ckStore` getter 仓库 + 状态栏抽屉）。
+> 2026-11-04 核对偏差：**D5 遮罩可见**（旧审计“不可达”系误判，实为 Teleport 内 `v-if=refreshing` 兄弟节点；仅单行卡片，无双行/并发进度、无 Esc 处理）；**D11 文案未统一**（按状态分 5–7 种）；**D13 校验偏松**（`manifest.id` 为空也接受）；**D14 只清代码、未清数据面**（12 份 `manifest.json` 仍留 `channel`/`runtime.mode`）。
+> 关联：[28-plugins](../spec/20-modules/28-plugins.md)（插件体系，权威）· [2C-UI插件](../spec/20-modules/2C-UI插件.md)（插件 UI 四通道）· [61-消息一览](../spec/60-reference/61-消息一览.md)（§7.2 `plugin-*`）· [41-未决项登记](../spec/40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决) · [49-待实现项](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)
 > 代码落点：`chonkpilot-framework/plugin/src/{mgr,bridge}` · `src/lib/gui/host` · `src/frontend/packages/plugin-ui/src/*` · `src/frontend/src/{pluginHost.js,layout/*,views/codeview/CodeView.vue}` · 框架仓 `chonkpilot-framework/host/web/src/layout-free/*`
 > 口径来源：2026-11-02 用户逐条裁决；**本文 §2 为唯一决策表**，实现与文档冲突时以本文为准并回改 spec。
 
@@ -47,17 +48,17 @@
 | D1 | `plugin-list` 保留 | 语义不变：读缓存快照；**每个前端实例启动时调一次**（首窗口 / 第二个窗口 / 另一个 workdir / F5 重载） |
 | D2 | 新增 `plugin-refresh` | 打开布局编辑框、新建布局对话框**之前**调用；重扫插件根 + 差量收敛 + 拉起新插件；返回与 `plugin-list` 同结构的全量快照 |
 | D3 | 差量只做新增/消失 | 新增 → 登记 + 拉起；消失 → `plugin-unregistered` + 停进程；未变化 → 不动作、不发事件。**不做版本变化重启** |
-| D4 | 刷新失败 → 关闭对话框 | 不提供“继续编辑”，弹错误提示后直接关掉布局编辑/新建布局对话框 |
-| D5 | 刷新期间遮罩 | 对话框已弹出，遮罩「正在刷新插件」并禁止一切操作；最多两行（并发 2），每行一个正在启动的插件；**不可关闭、不可 Esc** |
-| D6 | 刷新完成判定 = 新插件全部 hello 上报 | 拿到 manifest / views / 能力 / MCP 登记即算完成；**不等 `status=running`**（`mcp.mode=none` 插件可能永不 running） |
+| D4 | 刷新失败 → 关闭对话框 | 不提供“继续编辑”，弹错误提示后直接关掉布局编辑/新建布局对话框。**2026-11-04 核对：实际是“刷新失败则不打开对话框 + `message.error`”**（`LayoutProfilesView.vue:134-158`），效果等价 |
+| D5 | 刷新期间遮罩 | 对话框已弹出/即将弹出，遮罩「正在刷新插件」并禁止一切操作；最多两行（并发 2），每行一个正在启动的插件；**不可关闭、不可 Esc**。**2026-11-04 核对**：遮罩实为 `<Teleport to="body">` 内与弹层**兄弟**的 `v-if="refreshing"` 节点（`LayoutProfilesView.vue:8,43-49`），`newLayout()/editCurrent()` 先 `close()` 再 refresh 时**仍可见**（Teleport 常驻），旧审计“不可达”作废；实现为**单行卡片**、无每插件两行/并发展示，也没有 Esc 监听（遮罩本身无关闭入口）。 |
+| D6 | 刷新完成判定 = 新插件全部 hello 上报 | 拿到 manifest / views / 能力 / MCP 登记即算完成；**不等 `status=running`**（`mcp.mode=none` 插件可能永不 running）。**2026-11-04 核对**：另设 10s 超时兜底（`refreshWaitTimeout`），超时即返回 |
 | D7 | 无启动预算 | 卡在 `starting` 就一直是 `starting`；用户可感知，自行 disable |
 | D8 | 取消 `plugin-ready` | 不新增“批次结束”哨兵；状态判定只靠快照 + `plugin-registered` / `plugin-status` |
 | D9 | 启动并发上限 2 | 闸门只约束 `spawn → hello` 段，进程起来后不占槽 |
 | D10 | 先扫描 → 先登记 → 再并发拉起 | 扫描同步全量；登记后入口即可见（仅 `id/name/icon`）；拉起按 D9 分批 |
-| D11 | 失败文案统一「插件未安装」 | 只显示状态文字（`运行中` / `启动中` / `启动失败` / `已停止` / `已禁用` / `未安装`），**不加 detail 行** |
-| D12 | `plugin.json` 极简 | `{ id, cmd(exe+args), enabled, name?, icon? }`；manifest（`version/description/ui/mcp/permissions`…）由插件进程上报（Go embed、Python/Node 自读文件） |
-| D13 | 只校验 ID | 上报 `id` 必须等于目录名（`plugin.json` 若写 `id` 也须一致）；其余字段一律信任 |
-| D14 | 删除 `external` | 去掉 `runtime.mode`、`channel.{transport,addr}`、「等待外部进程连接」分支；插件一律由宿主 spawn |
+| D11 | 失败文案统一「插件未安装」 | 只显示状态文字（`运行中` / `启动中` / `启动失败` / `已停止` / `已禁用` / `未安装`），**不加 detail 行**。**2026-11-04 核对：文案未统一**——`PluginPageHost.vue:100-116` 按 status 渲染 未安装/启动中/启动失败/已停止/已禁用；`PluginManagerPage.vue` 另有“失败/降级/注册中”。不加 detail 行这一点符合。 |
+| D12 | `plugin.json` 极简 | `{ id, cmd(exe+args), enabled, name?, icon? }`；manifest（`version/description/ui/mcp/permissions`…）由插件进程上报。**2026-11-04 核对：Go SDK 读 `<插件目录>/manifest.json`（文件，非 embed）**；Python/Node 自读同一文件 |
+| D13 | 只校验 ID | 上报 `id` 必须等于目录名（`plugin.json` 若写 `id` 也须一致）；其余字段一律信任。**2026-11-04 核对：偏松**——`manifest.id` **为空时被默认为插件 id 并接受**（`mgr/api.go:366-393`），并非“必须相等”。 |
+| D14 | 删除 `external` | 去掉 `runtime.mode`、`channel.{transport,addr}`、「等待外部进程连接」分支；插件一律由宿主 spawn。**2026-11-04 核对：框架代码已删**（`mgr/manager.go`；`grep external` 仅注释/图标），**但 12 份 `manifest.json` 仍保留 `"channel":{...}` 和/或 `"runtime":{"mode":"managed"}`**（browser/codegraph/crontab/demo-python/desktop/file/history/mcp/memory/remote/task/web）——数据面未清理。 |
 | D15 | 监管参数宿主默认 + 上报可选覆盖 | `restart` / `health` / `stop.grace_ms` / `mcp.timeout` 宿主内置默认；插件上报后以上报值为准（hello 之后生效） |
 | D16 | CK Store | 前端全局 getter 仓库：组件注册 `key → () => value`；只提供 `get`；未注册返回空；**仅 iframe 可读**（`window.top.ckStore`）；无权限白名单、无 key 登记表 |
 | D17 | CK Store 抽屉 | 状态栏加一个图标，点击打开抽屉；列表 = 当前窗口已注册 key + 当前值；打开时求值一次 + 手动「刷新」按钮；不做搜索/附加列/展开交互 |
@@ -100,14 +101,14 @@
 
 ```text
 前端打开布局编辑框 / 新建布局对话框
-  → 弹框 + 遮罩「正在刷新插件」（禁操作，不可关闭）
+  → 先 close() 菜单弹层，置 refreshing=true（遮罩「正在刷新插件」仍在 Teleport 内可见、禁操作）
   → plugin-refresh
         宿主：scan 四个插件根（读 plugin.json）
               → 差量：新增登记（id/name/icon）/ 消失 unregistered + stop / 未变不动
               → 对新增：按并发闸门 2 拉起（spawn → 等 hello → 放槽 → 下一个）
-              → 等本批新增插件全部 hello 上报
+              → 等本批新增插件全部 hello 上报（10s 超时兜底）
   → 返回 {plugins:[pluginView…]}
-  → 遮罩撤除，开始编辑
+  → refreshing=false，再打开编辑框 / 新建对话框（2026-11-04 核对：实际顺序）
 ```
 
 | 环节 | 约束 |
@@ -139,8 +140,8 @@
 ```text
 框挂载（viewKey = plugin:<id>:<view>）
   ├─ 台账里没有该 id            → 「未安装」
-  ├─ status = disabled/stopped  → 「已禁用 / 已停止」→ 统一文案「未安装」
-  ├─ status = error             → 「未安装」
+  ├─ status = disabled/stopped  → 「已禁用 / 已停止」（2026-11-04 核对：未统一为「未安装」）
+  ├─ status = error             → 「启动失败」（2026-11-04 核对：未统一为「未安装」）
   ├─ status = starting          → 「启动中」（一直如此 = 卡住，用户可感知）
   └─ status = running           → HEAD 探活 → 挂 iframe（失败则占位 + 自动重试，沿用现状）
 ```
@@ -229,7 +230,7 @@ await ckStore.get('chat.currentSession')   // 未注册 → 空
 
 | 层 | 内容 |
 |---|---|
-| L1 Go（framework `mgr`） | 差量刷新（新增/消失/未变）；消失时停进程；并发闸门最多 2；`external` 删除后校验报错；`id` 不一致 → error；`hello.manifest` 合并 |
+| L1 Go（framework `mgr`） | 差量刷新（新增/消失/未变）；消失时停进程；并发闸门最多 2；`manifest.id` 不一致 → error、为空 → 接受；`hello.manifest` 合并 |
 | L1 Go（bridge） | `plugin.hello` 携带 manifest 的解析与 `id` 校验 |
 | L1 前端（node:test） | `usePlugins`（`plugin-refresh` 应答替换快照、`plugin-unregistered` 摘除视图）；`usePluginReadiness`（未知 id → 未安装；starting → 启动中；running → 探活/iframe）；`ckStore`（注册/get/未注册返回空/重复注册告警）；抽屉渲染（key + 值 + 刷新） |
 | L4 systest（mq 驱动） | `plugin-list` 快照 → `plugin-refresh` 新增/消失 → 断言 `plugin-registered` / `plugin-unregistered` / `plugin-status`；卡死插件保持 `starting` |

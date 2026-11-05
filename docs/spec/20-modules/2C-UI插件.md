@@ -1,6 +1,6 @@
 # 2C · 插件 UI 扩展（iframe view / 预览页 / 管理页 / 状态栏）
 
-> 状态：✅ **已落地**（2026-10-28 重写；PLUGIN-1 · PLUGIN-UI-1 · PLUGIN-UI-2 · PLUGIN-INSTANCE-1）
+> 状态：⚠️ **主体已落地**（2026-10-28 重写；PLUGIN-1 · PLUGIN-UI-1 · PLUGIN-UI-2 · PLUGIN-INSTANCE-1；2026-11-04 核对：actions/permissions/脚手架/测试/消费面等描述已校正）
 >
 > **本文口径变更**：原稿为「UI 插件扩展设计（🔵 规划中）」——`<PluginSlot location>` 插入点 + `ui-plugin-*` 消息族 + JSON 装配 + JS bundle 沙箱「12 种内容形态」的设计稿。**本期实现口径收敛为 iframe view**（[插件与MCP统一设计方案](../../plugin-platform/插件与MCP统一设计方案.md) §「2C 收敛」）：插件以 `manifest.json` 的 `ui.*` 声明视图 / 栏条目 / 动作按钮，前端统一用 **同源 iframe** 承载插件自持页面（`webui/*.html`），宿主**不装配插件内容、不执行插件 JS、不读插件业务状态键**。bundle / JSON 装配 / `PluginSlot` 插入点**本期不做**（见 §6）。
 >
@@ -60,9 +60,9 @@
 | `ui.views[]` | array | `{id, title?, icon?, entry, containers?, default_size?}`。`id=config` 视为**配置视图**（插件维护卡片显示「配置」按钮，`pluginView.config_view`）；`entry` 形如 `webui/config.html`（相对插件资源根）；`default_size` = `{width,height}`（栏内嵌尺寸） |
 | `ui.statusbar[]` | array | `{id, zone: left\|center\|right, icon?, tooltip?, view?, command?}`。**`view` 非空 → 栏内嵌该插件视图**（PLUGIN-UI-2，`command` 不再使用）；否则按 `command` 渲染按钮 |
 | `ui.menus[]` | array | `{location, label, icon?, view}`。**当前仅透传**（`pluginView.menus`），前端**无消费方**（见 §6 遗留） |
-| `ui.actions[]` | array | 插件维护卡片上的动作按钮：`{id, label, icon, tooltip?, style?, view?, container?, command?}`。`style ∈ {icon, icon-text, text}`（缺省 `icon-text`）；`container ∈ {preview, tab, drawer, dialog}`（缺省 = 该 view 的 `containers[0]`）；`view` 必须已在 `ui.views` 注册；**`view` 与 `command` 二选一**，皆缺 → 注册失败 |
+| `ui.actions[]` | array | 插件维护卡片上的动作按钮：`{id, label, icon, tooltip?, style?, view?, container?, command?}`。`style ∈ {icon, icon-text, text}`（缺省 `icon-text`）；`container ∈ {preview, tab, drawer, dialog}`（缺省 = 该 view 的 `containers[0]`）。**无注册期校验**：后端仅补缺省 `label`（空 → `id`）与 `style`（空 → `icon-text`）（2026-11-04 核对，`mgr/manifest.go:256-264`）；`view` 未注册、或 `view`/`command` 皆缺时，前端静默跳过该按钮（`PluginManagerPage.vue:160-170`），**不会导致注册失败** |
 | `ui.rpc` | array | 插件 `plugin/v1/ui.rpc` 可调用的动作名声明（约定，宿主不强制）；当前**不进入 `pluginView`**（前端不消费） |
-| `permissions.ui.containers` | array | 插件允许申请的容器集合（`preview/tab/drawer/dialog/statusbar`）；评审用，不做技术拦截 |
+| `permissions` | object | 实际类型为 `map[string]any`（`mgr/manifest.go:80-86`；`manager.go:840`）。原稿的 `permissions.ui.containers` 数组**不存在**；`permissions` 仅评审/透传，宿主不做容器白名单或技术拦截（2026-11-04 核对） |
 
 **缺省**：`ui.views[].containers` 缺省 = `["preview","tab","drawer"]`；`containers` 含 `preview` 时该视图可进预览区页签（`commands.tabsRoute` 分流）。
 
@@ -98,7 +98,7 @@ src/frontend/packages/plugin-ui/          # 纯前端包，不 import 宿主模�
 ### 3.2 视图注册表（UIREG-1）
 
 - **唯一注册 API**：`view-registry.js` 的 `registerViews(entries, source)`；内置视图（`views.registry.js`，source=`builtin`）与插件视图（source=`plugin:<id>`）共用。**无静态组件映射表**。
-- 插件视图注册：`registerPluginViews(plugin, makeComponent)` 遍历 `plugin.views` → 每个 `view` 产出
+- 插件视图注册：`registerPluginViews(plugin)`（宿主导出实为单参，组件构造在注册表内部完成；2026-11-04 核对，`views.registry.js:93-95`）遍历 `plugin.views` → 每个 `view` 产出
   - 注册表条目 `{key:'plugin:<id>:<view>', component}`（component = 宿主注入的 `PluginPageHost` 适配壳）；
   - 动态定义（`DYNAMIC_DEFINITIONS`）`{key, label, icon, mode:'multi', host:'layout', designable:false, containers, plugin:{id, view, entry}}`。
 - **幂等**：按结构签名（view 集合 / entry / 标题 / 图标 / 版本）比对；签名未变 → **保留既有组件对象**（不重建，避免视图池里的 iframe 被反复重挂）；变化或插件重连 → 先 `unregisterPluginViews(id)` 再注册。
@@ -125,7 +125,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | `action` | `pluginAction(id, action, payload)` → `POST /plugins/<id>/api/<action>`（带 `X-CK-Plugin-Id`） |
 | `open-url` / `close` | `window.open(..., 'noopener')` / `preview-tab-close-this` |
 
-> 插件页脚手架：插件仓提供 `webui/shared/{ck-plugin.js, ck-theme.js}`。**`ckMq` 不再有脚本文件**（原主仓 `src/frontend/public/shared/ck-mq.js` 与 `__ckMqBind` 注入点已删除）——插件页一律 `const mq = window.top.ckMq.new(window)`。**降级裁决（2026-10-30）= A（不兜底）**：插件页被直接打开（非宿主子 frame）时 `new()` 明确抛错，由插件自己决定是否退避；宿主只提供机制，不替客户端做兜底。
+> 插件页脚手架（2026-11-04 核对）：**不存在**「插件仓提供 `webui/shared/{ck-plugin.js, ck-theme.js}`」；五仓均无 `ck-plugin.js`，`ck-theme.js` 实际在主仓 `src/frontend/public/shared/` 并由 `/shared/` 提供（例 `chonkpilot-plugins/codegraph/src/webui/config.html:9`）。插件页与宿主之间的共享桥是宿主侧 `/plugin-ui/_sdk/plugin.js`（`chonkpilot-framework/host/src/gui/main.go:459-478`）。**`ckMq` 不再有脚本文件**（原主仓 `src/frontend/public/shared/ck-mq.js` 与 `__ckMqBind` 注入点已删除）——插件页一律 `const mq = window.top.ckMq.new(window)`。**降级裁决（2026-10-30）= A（不兜底）**：插件页被直接打开（非宿主子 frame）时 `new()` 明确抛错，由插件自己决定是否退避；宿主只提供机制，不替客户端做兜底。
 
 ### 3.4 就绪态与自动重试（`usePluginReadiness`）
 
@@ -149,7 +149,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | 打开 view（`layout/openView.js#openView(viewKey)`） | 按**视图注册表声明**的承载方式分发，不另设「viewKey → 具体 Vue」翻译表：`host:'preview'` → `preview-tab-open{kind:viewKey}`；插件 view 的 `containers` 含 `preview` → `preview-tab-open{kind:'plugin-page', plugin, page}`；`host:'layout'`（布局区）/ `'bar'`（栏内嵌）/ `'dialog'` 不在此打开（由各自容器承载） |
 | 项目配置页（codegraph 配置） | `project-config-open{tab:'codegraph'}` | `ProjectConfig` 内直接复用 `PluginPageHost`（`pluginView('codegraph','config')`），**不新造容器** |
 
-**动作按钮（`ui.actions[]`）**：`PluginManagerPage` 渲染 → 便捷式 `view`+`container` 按容器打开本插件视图；命令式 `command` 原样交布局命令执行（与布局栏按钮同一 `utils/commands.js#runCommand`；G-89 起内部命令直调域动作，仅 `publish-mq` 走 MQ）。
+**动作按钮（`ui.actions[]`）**：`PluginManagerPage` 渲染 → 便捷式 `view`+`container` 按容器打开本插件视图；命令式 `command` 由 `PluginManagerPage.vue:158-210` 包内自建的 `dispatchCommand` 全部经 MQ 派发（`lf-layout-*` / `publish-mq`），**未调用** `utils/commands.js#runCommand`，也没有「G-89 内部命令直调域动作」路径（2026-11-04 核对）。
 
 **栏条目（`ui.statusbar[]`）**：`pluginBarItems(zone)` → 带 `view` 的条目产 `{kind:'view', viewKey:'plugin:<id>:<view>', width/height ← default_size}`（复用布局 `LfBarItem` view 分支 → `PluginPageHost` iframe）；否则按 `command`（`target:plugin` → `plugin-command`；`open-view` → 预览/页签）产按钮。**不写入布局文档**（插件禁用即消失）。
 
@@ -171,9 +171,9 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | 项 | 约定 |
 |---|---|
 | 形态 | 前端全局 getter 仓库：组件/composable 注册 `key → () => value`；**值只在被调用时求值**，不存副本 |
-| 唯一读取方 | **插件 iframe**：`window.top.ckStore.get(key)`（同源）；**插件进程不支持**（需要上下文时由前端随消息载荷携带，后端不做按 workspace/对话的初始化） |
-| API | `register(key, getter)` / `unregister(key)` / `get(key)`；**只提供 get**，不做订阅/变更通知 |
-| 未注册 | 返回空（`null`），不抛错；宿主只记一条 debug 日志 |
+| 唯一读取方 | **插件 iframe**：`window.top.ckStore.get(key)`（同源；返回 **Promise**，2026-11-04 核对 `ckStore.js:9`）；**插件进程不支持**（需要上下文时由前端随消息载荷携带，后端不做按 workspace/对话的初始化） |
+| API | `register(key, getter)` / `unregister(key)` / `get(key)`；**只提供 get，且统一返回 Promise**，不做订阅/变更通知 |
+| 未注册 | Promise 解析为 `null`，不抛错；宿主只记一条 debug 日志 |
 | 权限 | 无白名单（任何插件 iframe 可读任何 key） |
 | key 命名 | 字符串自由命名，**不维护登记表**；重复注册保留先注册者并告警 |
 | 作用域 | 每窗口一份（组件状态本身就是窗口内状态） |
@@ -185,7 +185,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 
 ### 4.1 插件管理面（`plugin-*`；[61 §7.2](../60-reference/61-消息一览.md)）
 
-前端只消费其中 5 个 + 动作面 1 个：
+前端消费以下 6 个事件/请求 + 动作面 1 个（2026-11-04 核对）：
 
 | 消息 | 用途 |
 |---|---|
@@ -194,6 +194,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | `plugin-status`（广播） | `{id,status,detail}` → 就绪态驱动 |
 | `plugin-command`（前端/宿主 → 插件） | 栏按钮 `target:plugin` 转发 |
 | `plugin-event`（宿主 → 前端广播/定向） | `{id, topic, payload[, instance_id?]}` → `PluginPageHost` 转投 iframe 的 `event` 信封 |
+| `plugin-refresh` / `plugin-set-enabled`（前端消费） | 刷新插件列表 / 插件级启用开关（`usePlugins.js:118`、`PluginManagerPage.vue:124`；2026-11-04 核对） |
 
 > **零新增主题**：本文全部能力经上述既有主题 + UDS 能力面实现。
 
@@ -271,5 +272,5 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | 层 | 用例 |
 |---|---|
 | L1（node:test） | `src/frontend/test/pluginConfigSurface.test.js`（manifest `config.fields` 已删 / `ui.views` 含 config / `ui.rpc` 含 load,save,reset）· `pluginBarView.test.js`（栏条目 `view` → `kind:'view'`）· `view-registry` / 插件视图注册单测 |
-| L1（Go） | `src/test/chonkpilot-plugin/unittest/plugins_test.go`（manifest 校验：views/actions/config）· `instance/manager_test.go`（主窗口实例解析） |
-| L2 / L4 | `src/test/chonkpilot-gui/systest/test_plugin_manager.py`（PM1 入口 / 卡片数 / 启用开关 / 动作按钮）· `test_statusbar.py`（SB2/SB6：栏条目内嵌插件 badge）· `test_plugin_ui*.py`（资源 403/404、动作面 403 id mismatch、配置存取）· 各插件配置页套件 |
+| L1（Go） | `src/test/chonkpilot-plugin/unittest/instance/manager_test.go`（主窗口实例解析）· 2026-11-04 核对：**无** `plugins_test.go` |
+| L2 / L4 | `src/test/chonkpilot-gui/systest/test_plugin_manager.py`（PM1 入口 / 卡片数 / 启用开关 / 动作按钮）· `test_statusbar.py`（SB2/SB6：栏条目内嵌插件 badge）· `test_plugin_config_e2e.py`（资源/动作面/配置存取）· 各插件配置页套件（2026-11-04 核对：**无** `test_plugin_ui*.py`） |

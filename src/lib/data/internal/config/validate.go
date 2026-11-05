@@ -421,6 +421,11 @@ func ValidateConfigKV(domain string, entries map[string]string) error {
 			if n, ok := parseIntString(val); !ok || n < 1 {
 				return fmt.Errorf("%s: 必须为正整数", key)
 			}
+		case "ask_timeout_sec":
+			// ask_user 缺省超时：0 = 不超时；>0 = 秒（LLM 工具参数可覆盖）。
+			if n, ok := parseIntString(val); !ok || n < 0 {
+				return fmt.Errorf("%s: 必须为非负整数", key)
+			}
 		}
 	}
 	return nil

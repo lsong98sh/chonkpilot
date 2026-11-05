@@ -94,7 +94,8 @@ test('S1-3 下行链路：ask-user 载荷的 dialog_id 透传到管理项', () =
 })
 
 test('S1-4 上行链路：ask-user-reply 原样回带同一 dialog_id', () => {
-  assert.match(MANAGER, /mq\.emit\(EventNames\.askReply, \{[\s\S]{0,300}dialog_id: item\.dialogId \|\| ''/, '应答须回带 dialog_id')
+  // 应答 helper（sendAskReply）由弹窗与 Ask 中心共用；弹窗管理项仍按 dialogId 回带。
+  assert.match(MANAGER, /dialog_id: item\.dialogId \|\| item\.dialog_id \|\| ''/, '应答须回带 dialog_id')
 })
 
 test('S1-3/S1-4 契约：schema 两主题 dialog_id 必带（generated msgkeys 已含）', () => {

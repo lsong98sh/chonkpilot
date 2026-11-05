@@ -105,6 +105,27 @@ def pair_text():
     return J("(()=>{const c=document.querySelector('.message-item.tool_pair');return c?c.textContent:''})()") or ""
 
 
+def wait_task_plugin(max_wait=180):
+    """等 task 插件台账 running 再起轮（2026-11-04 加固）。
+
+    首跑定位：插件冷启动与 `llm-start` 竞争 —— 工具面尚未含 `task_run` 时，gateway
+    以 `unknown tool "task_run"` 失败（G1 红、G2/G3 因卡片存在而绿，断言割裂）。
+    就绪判据 = `plugin-list` 台账 status=running（插件注册 MCP server 后即上报）。
+    """
+    end = time.time() + max_wait
+    last = "absent"
+    while time.time() < end:
+        pl = c.req("plugin-list", {}) or {}
+        plugins = ((pl.get("data") or {}).get("plugins")
+                   if isinstance(pl.get("data"), dict) else pl.get("plugins")) or []
+        p = next((x for x in plugins if x.get("id") == "task"), None)
+        last = (p or {}).get("status") or "absent"
+        if last == "running":
+            return
+        time.sleep(1)
+    raise TestError("task 插件 %ds 内未就绪（status=%s）→ 工具面缺 task_run" % (max_wait, last))
+
+
 def case_g1_execution_content():
     """G1：真实工具执行 → tool-result 事件载荷含 stdout 哨兵。"""
     _h.install_session_history_spy(c)
@@ -161,6 +182,7 @@ def main():
     c.console(clear=True)
     print("依赖：--test-port GUI + mock LLM(8901)（harness 自起）+ 隔离 work-dir/data-dir/HOME；"
           "驱动 = llm-start/message 面 + 真实 task_run 执行（既有主题）", flush=True)
+    wait_task_plugin()
     ok = total = 0
     for name, fn in [
         ("G1 执行语义：tool-result 载荷含真实 stdout 哨兵", case_g1_execution_content),

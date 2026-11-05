@@ -151,6 +151,12 @@ func TestValidateConfigKV(t *testing.T) {
 	if err := ValidateConfigKV("prj-config", map[string]string{"max_concurrency": "2048"}); err == nil {
 		t.Fatalf("max_concurrency 超上限应拒绝")
 	}
+	if err := ValidateConfigKV("prj-config", map[string]string{"ask_timeout_sec": "-1"}); err == nil {
+		t.Fatalf("ask_timeout_sec 负数应拒绝")
+	}
+	if err := ValidateConfigKV("prj-config", map[string]string{"ask_timeout_sec": "0"}); err != nil {
+		t.Fatalf("ask_timeout_sec=0（不超时）应合法：%v", err)
+	}
 	if err := ValidateConfigKV("prj-config", map[string]string{"project-id": "bad id!"}); err == nil {
 		t.Fatalf("非法 project-id 应拒绝")
 	}

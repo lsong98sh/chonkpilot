@@ -1,8 +1,9 @@
 # CronTab 定时任务插件设计方案（PLUGIN-CRON-1）
 
-> 状态：✅ 已实现（2026-10-31）：代码 = `chonkpilot-plugins/crontab/src`；manifest = `src/initdata/capability/plugins/crontab/plugin.json`；构建 = `build-plugins.ps1`。
-> 关联：[28-plugins](../spec/20-modules/28-plugins.md)（插件体系，权威）· [61-消息一览](../spec/60-reference/61-消息一览.md) · [2C-UI插件](../spec/20-modules/2C-UI插件.md) · [49-待实现项](../spec/40-roadmap/49-待实现项.md) · [41-未决项登记](../spec/40-roadmap/41-未决项登记.md)
-> 代码落点：`chonkpilot-plugins/crontab/{src,doc}`（新）· `src/initdata/capability/plugins/crontab/plugin.json`（新）· `build-plugins.ps1`（增一步）· 前端/主仓/框架**零改动**
+> 状态：✅ 已实现（2026-10-31；**2026-11-04 核对**）：代码 = `chonkpilot-plugins/crontab/src`；`plugin.json`（极简启动信息）+ `manifest.json`（完整 manifest，插件自读并由 `plugin.hello` 上报）= `src/initdata/capability/plugins/crontab/`；构建 = `build-plugins.ps1`。
+> 2026-11-04 核对结论：六工具 / 调度 / 通知 / 零轮询 / L2+L4 均已落地；`plugin.json` 已按 PLUGIN-LOAD-1 拆为极简五字段；任务级沙箱（SANDBOX-WRITE-1）已实现；`running` 标记已落库。本文旧口径（整份 manifest 写 `plugin.json`、沙箱不做、running 仅内存）已按代码修正。
+> 关联：[28-plugins](../spec/20-modules/28-plugins.md)（插件体系，权威）· [61-消息一览](../spec/60-reference/61-消息一览.md) · [2C-UI插件](../spec/20-modules/2C-UI插件.md) · [49-待实现项](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04) · [41-未决项登记](../spec/40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)
+> 代码落点：`chonkpilot-plugins/crontab/{src,doc}`（新）· `src/initdata/capability/plugins/crontab/{plugin.json,manifest.json}`（新）· `build-plugins.ps1`（增一步）· 前端/主仓/框架**零改动**
 
 ---
 
@@ -42,17 +43,23 @@ chonkpilot-plugins/crontab/
 │   ├── schedule.go                # cron 解析 / 下次执行 / 1s ticker / 单任务不重入
 │   ├── action.go                  # action{type,param} 解析与校验（run / notify）、描述派生
 │   ├── run.go                     # run 动作（scriptrun）
+│   ├── sandbox.go                 # 任务级沙箱（plugin/v1/sandbox.resolve + util/sandbox）
+│   ├── session.go                 # 任务 → 会话归属（SANDBOX-WRITE-1 P3/P4）
+│   ├── workdir.go                 # workdir.ensure / 项目打开保证
 │   ├── htmlx.go                   # notify 的 HTML → 纯文本
-│   ├── toast_windows.go           # 系统通知（WinRT Toast，内嵌 toast.ps1）
-│   ├── toast.ps1                  # go:embed 的系统通知脚本
+│   ├── notify.go                  # 通知抽象（可注入 notifier，便于单测）
+│   ├── notify_windows.go          # Windows 系统通知（WinRT Toast，内嵌 toast.ps1；失败兜底 msgbox）
+│   ├── notify_other.go            # 非 Windows 兜底
+│   ├── toast.ps1 / msgbox.ps1     # go:embed 的系统通知 / 兜底脚本
 │   ├── tools/crontab/*.tool.md    # 6 个工具契约（go:embed）
 │   └── webui/{tasks.html,badge.html,config.html}
 └── doc/                           # 设计/使用说明（可选）
 ```
 
-- `plugin.json`：`runtime.autostart = true`、`mcp.mode = http`、`mcp.category = "crontab"`、`mcp.hot_tools = ["crontab_add","crontab_update","crontab_list","crontab_enable","crontab_disable","crontab_delete"]`、`ui.selfServe = true`。
+- `plugin.json`（极简，5 字段）：`id` / `cmd` / `enabled` / `name` / `icon`。
+- `manifest.json`（完整）：`product=true`、`runtime.autostart=true`、`mcp.mode=http`、`mcp.category="crontab"`、`mcp.hot_tools` 六项、`ui.selfServe=true`、`ui.views`（tasks/badge/config）、`ui.menus`（无 `ui.actions`）、`ui.statusbar[].view="badge"`。
 - 数据根 = `CHONKPILOT_PLUGIN_DATA_DIR`（宿主注入 = `<宿主数据根>/plugins/crontab`，**跨重启保留**，见 `mgr.runOnce`）。
-- 拉起：`plugin.ini` 存在时按清单（需加一行）；不存在时回落 `enabled.json + autostart`（零配置即生效）。
+- 拉起：仓库内无 `plugin.ini`；启用态以 `<数据根>/plugins/enabled.json`（设置页开关）为准，`manifest.runtime.autostart` 仅作声明。
 
 ---
 
@@ -76,15 +83,18 @@ chonkpilot-plugins/crontab/
       "created_by": { "instance_id": "...", "session_id": "...", "work_dir": "E:\\proj" },
       "next_run_at": 1761878700,
       "run_count": 12,
+      "running_since": 0,                            // >0 = 本轮执行中（落库，重启据此补 interrupted）
+      "sandbox": null,                               // true/false = 任务级覆盖；null = 继承 plugins.crontab.sandbox
       "last_run": { "at": 1761878400, "ok": true, "exit_code": 0, "ms": 1834, "error": "", "output_tail": "..." }
     }
   ]
 }
 ```
 
-- 运行记录另写 `<PLUGIN_DATA_DIR>/runs.jsonl`（每行一条，1MB 滚动 × 3，页面只读最近 50 条）。
-- 上限：任务 ≤ 200 条；`description` ≤ 80 字符；`output_tail` ≤ 4KB；`notify` 正文 ≤ 200 字。
+- 运行记录另写 `<PLUGIN_DATA_DIR>/runs.jsonl`（每行一条，1MB 滚动 × 3；**任务详情只展示最近 5 条**，2026-11-04 核对；文档旧口径“页面读最近 50 条”未实现）。
+- 上限：任务 ≤ 200 条（缺省；`plugins.crontab.max-tasks` 可配到 2000）；`description` ≤ 80 字符；`output_tail` ≤ 4KB；`notify` 正文 ≤ 200 字。
 - 配置（§7.4）走插件私有 `configStore`，**不落任务文件**。
+- `running` 标记：任务记录里的 `running_since`（unix 秒）**已落 `tasks.json`**；重启据此补 `interrupted`（见 §10）。
 
 ---
 
@@ -194,7 +204,7 @@ tools/crontab/
 | 解析 | `github.com/robfig/cron/v3`，`cron.NewParser(Minute\|Hour\|Dom\|Month\|Dow\|Descriptor)` → **5 段 + @宏**；拒绝 6 段（无秒级） |
 | 时区 | 宿主本地时区（不提供按任务 tz） |
 | 驱动 | 单 goroutine + **1s ticker** 扫描（任务 ≤200，O(n) 足够），不引入 cron 自带调度器 |
-| 不重入 | 每任务 `running` 标记；上一轮未结束 → 本轮**跳过**并记 `skipped:overlap` |
+| 不重入 | 每任务 `running_since` 标记**落库**（`tasks.json`）；上一轮未结束 → 本轮**跳过**并记 `skipped:overlap` |
 | 并发 | 不同任务并发执行；同任务串行 |
 | 超时 | run 按 `default-timeout-sec`（缺省 600s）杀**进程树** |
 | 执行权限 | 与插件进程同级（不提权、不弹 UAC），与 `task_run` 一致 |
@@ -255,7 +265,7 @@ tools/crontab/
 
 ## 7. UI
 
-### 7.1 manifest 声明
+### 7.1 manifest 声明（`manifest.json`；`plugin.json` 仅 id/cmd/enabled/name/icon）
 
 ```jsonc
 "ui": {
@@ -263,44 +273,46 @@ tools/crontab/
   "views": [
     { "id": "tasks", "title": "定时任务", "icon": "clock",
       "entry": "webui/tasks.html", "containers": ["preview","tab","drawer","dialog"],
-      "default_size": { "width": 760, "height": 600 } },
-    { "id": "badge", "title": "定时任务数", "icon": "clock",
+      "default_size": { "width": 860, "height": 620 } },
+    { "id": "badge", "title": "定时任务", "icon": "clock",
       "entry": "webui/badge.html", "containers": ["statusbar"],
       "default_size": { "width": 96, "height": 20 } },
-    { "id": "config", "title": "定时任务设置", "icon": "settings",
+    { "id": "config", "title": "定时任务设置", "icon": "clock",
       "entry": "webui/config.html", "containers": ["preview","tab","drawer","dialog"],
-      "default_size": { "width": 680, "height": 520 } }
+      "default_size": { "width": 760, "height": 620 } }
   ],
+  "menus": [ { "location": "plugin", "label": "定时任务", "icon": "clock", "view": "tasks" } ],
   "statusbar": [ { "id": "crontab", "zone": "right", "view": "badge", "tooltip": "定时任务（点击查看）" } ],
-  "actions": [ { "id": "open-tasks", "label": "定时任务", "icon": "...", "view": "tasks", "container": "drawer" } ],
-  "rpc": ["ping", "status", "badge", "list", "toggle", "delete", "runs", "load", "save", "reset"]
+  "rpc": ["status", "ping", "list", "toggle", "delete", "runs", "badge", "load", "save", "reset"]
 }
 ```
 
+> 2026-11-04 核对：实际 manifest **没有 `ui.actions`**（旧稿的 `open-tasks` 动作不存在），入口经 `ui.menus` + `ui.statusbar[].view` 提供。
+
 ### 7.2 徽标（`badge.html`）
 
-- 96×20 透明 iframe，内容 = 时钟图标 + 数字（`启用任务数`）；有任务运行中 → 数字旁呼吸点。
+- 96×20 透明 iframe，内容 = 圆点 + 「定时 N（启用 M）」；**2026-11-04 核对**：圆点仅在 `N>0` 时变绿（`data-count`），没有“运行中呼吸点”。
 - **事件驱动，不轮询**：页面首次加载取一次 `api/badge`；此后订阅 `plugin-event`（`ckMq`），插件在 add/update/enable/disable/delete、触发开始/结束时推 `{kind:'crontab-changed'}`，页内直接更新数字。
-- 兜底：`visibilitychange` 从隐藏转可见时补取一次（防止事件丢失）。
+- 兜底：`visibilitychange` 从隐藏转可见时补取一次（防止事件丢失）——**2026-11-04 核对：代码未实现**（`badge.html` 只有首次 refresh + `plugin-event` 订阅），列为待补。
 - 点击 → `ckMq.emit('preview-tab-open', {kind:'plugin-page', plugin:'crontab', page:'tasks'})`（默认预览区）。
-- 也可经 `ui.actions`（`container: "drawer"`）直接开在右侧抽屉；`tasks` view 声明了 `drawer`，布局引擎也可把它拖入左/右栏。
+- `tasks` view 声明了 `drawer`/`tab`/`dialog`，布局引擎可把它拖入左/右栏；没有 `ui.actions` 的“直接开在抽屉”按钮。
 
 ### 7.3 任务页（`tasks.html`）
 
-| 区块 | 内容 |
+| 区块 | 内容（2026-11-04 核对） |
 |------|------|
-| 概览 | 共 N / 启用 M / 运行中 K / 下次最近的执行 |
-| 任务表 | 描述 · `cron` 字符串 · 下次执行时间（本地时间 + 相对「约 3 分钟后」）· 类型（执行 / 通知）· 状态（启用/停用/运行中/失败）· 操作（启用 / 停用 / 删除） |
-| 运行记录 | 最近 50 条：时间 · 任务描述 · 结果（成功/失败/跳过）· 耗时 · 输出尾（可展开） |
+| 概览 | 仅「共 N 条 · 启用 M 条」（无“运行中 / 下次最近”） |
+| 任务表 | 描述 · `cron` 字符串 · 下次执行时间 · 最近一次 · 状态（启用/停用/运行中/失败）· 操作（启用 / 停用 / 删除）；行内展开详情（work_dir / 沙箱状态 / 会话 / 最近 5 条运行） |
+| 运行记录 | 仅**任务详情内最近 5 条**（时间 · 结果 · 耗时 · 输出尾/跳过原因）；无独立“最近 50 条”区块 |
 | 空态 | 「还没有定时任务：在对话里让 AI 用 `crontab_add` 创建」 |
 
-- 删除需二次确认（行内确认，不用原生 `confirm`）。
+- 删除使用浏览器原生 `confirm()`（**未做**行内二次确认；2026-11-04 核对）。
 - 停用 = `enabled=false`（保留任务与历史），删除 = 移除并取消正在跑的命令。
 - **事件驱动，不轮询**：页面订阅 `plugin-event` 的 `{kind:'crontab-changed'}` → 重取 `api/list`（由插件推事件，不是定时器）；页面自身操作则本地乐观更新 + 以动作返回值校正。
 
 ### 7.4 配置页（`config.html`）
 
-`plugins.crontab.*`：`default-timeout-sec`(600) · `missed-grace-sec`(300) · `max-tasks`(200) · `allowed-work-dirs`(空=不限) · `create-toast`(true) · `notify-fallback`(`log`|`window`，缺省 `log`) · `sandbox`(false，见 §9)。
+`plugins.crontab.*`（2026-11-04 核对共八项）：`default-timeout-sec`(600) · `missed-grace-sec`(300) · `max-tasks`(200，上限 2000) · `allowed-work-dirs`(空=不限) · `create-toast`(true) · `notify-fallback`(`log`|`window`，缺省 `log`) · `sandbox`(false，见 §9) · `show-in-session-list`(false，定时任务顶层对话是否进用户会话列表)。
 
 ---
 
@@ -309,7 +321,7 @@ tools/crontab/
 | 用途 | 通道 | 说明 |
 |------|------|------|
 | 工具调用 | 插件自建 MCP（`mcp.AddTool` + `plugin.mcp.register`） | 契约随 exe embed |
-| 页面取数/控制 | `POST /plugins/crontab/api/{list,toggle,delete,runs,badge,load,save,reset}` | 动作面原样透传，插件自校验 |
+| 页面取数/控制 | `POST /plugins/crontab/api/{list,toggle,delete,runs,detail,badge,status,load,save,reset}` | 动作面原样透传，插件自校验（2026-11-04 核对；旧稿漏 `detail`/`status`） |
 | 页面资源 | `GET /plugins/crontab/webui/*` → `plugin/v1/ui.asset.get` | `ui.selfServe` |
 | 打开预览/抽屉 | 前端事件 `preview-tab-open` / `lf-layout-open-drawer` | 既有 |
 | 变更广播（核心） | 插件 `plugin.publish` → `plugin-event` `{id:'crontab', payload:{kind:'crontab-changed', count}}` | 既有 topic；工具 handler 写库后**直接调用** `notifyChanged()`，同进程内即时推给 UI；**零轮询** |
@@ -327,7 +339,8 @@ tools/crontab/
 | 来源 | 只有本应用（LLM 工具 / 插件页）能建任务；插件页动作面已校验 `X-CK-Plugin-Id` |
 | 目录约束 | `run` 的 `cwd` 固定 = 创建任务时的 `work_dir`；`allowed-work-dirs` 非空时该目录必须落在白名单内，否则拒绝创建 |
 | 定时炸弹风险 | LLM 可创建**周期性任意命令**且**默认立即生效**（用户已定：不加确认）→ 补偿手段：① 创建成功即弹系统 toast + 徽标数字即时 +1；② 任务页一眼可见、可一键停用/删除；③ `gui.log` 审计 |
-| 沙箱 | 本期**不做**进程级沙箱（低完整性 + Job Object 属宿主 MCP 沙箱能力，插件不可复用）；`sandbox=true` 预留为「cwd 白名单 + runtime 白名单」的收紧档，完整沙箱登记 [41](../spec/40-roadmap/41-未决项登记.md) |
+| 沙箱（2026-11-04 核对，已实现） | **任务级沙箱已落地**（SANDBOX-WRITE-1）：`sandbox.go` 经宿主 `plugin/v1/sandbox.resolve{work_dir}` 取可写白名单，`run.go` 以 `util/sandbox` 施加 Low IL + Job Object（`scriptrun.Options.Sandbox`）；`plugins.crontab.sandbox` 为默认值，任务级 `sandbox`（true/false/"inherit"）可覆盖。仍是**无进程级完整隔离**（插件主体以当前用户运行）。 |
+| 沙箱失败 | `sandbox.resolve` 拿不到策略 / 非 Windows → **fail-open**（不阻断执行），但任务详情 `sandbox` 状态写明 `unavailable` 原因。 |
 | 密钥 | 任务文件不存密钥；若命令里写了密钥会明文落盘（页面提示） |
 
 ---
@@ -336,9 +349,9 @@ tools/crontab/
 
 | # | 问题 | 设计回答 |
 |---|------|----------|
-| 1 | 状态在哪 | 任务定义 / 下次执行 / 最近结果 = `tasks.json`；运行明细 = `runs.jsonl`；`running` 标记 = **内存**（崩溃即丢） |
+| 1 | 状态在哪 | 任务定义 / 下次执行 / 最近结果 = `tasks.json`；运行明细 = `runs.jsonl`；`running` 标记 = **任务记录 `running_since`（落库，非内存）**（2026-11-04 核对；旧稿“内存、崩溃即丢”已作废） |
 | 2 | 受理即持久化 | 工具返回前完成 `tmp + fsync + rename`；UI 启停/删除同样先落盘再回执 |
-| 3 | 非终态收口 | 启动时把所有任务视为「未运行」；上一轮若中断 → 在 `runs.jsonl` 补一条 `interrupted`，`last_run.ok=false` |
+| 3 | 非终态收口 | 启动时扫描 `running_since > 0` 的任务 → 在 `runs.jsonl` 补一条 `interrupted`，`last_run.ok=false`（不是“一律视为未运行”） |
 | 4 | 重启后 | 用 `now` 重算每条 `next_run_at`；**错过补偿**：`next_run_at >= now - graceSec` → 立即补跑一次，否则跳过并记 `skipped:missed`；`graceSec` 默认 300 |
 | 5 | 副作用语义 | 定时触发 = **至多一次**（进程崩溃那次不重放）；`run` 本身不保证幂等（契约 `idempotent:false` 已声明）；同一任务不并发 |
 | 6 | 时钟 | 依赖系统时钟；检测到系统时间回拨 > 5min → 重算全部 `next_run_at` 并记日志（不补跑） |
@@ -361,9 +374,9 @@ tools/crontab/
 
 1. **（前置）`chonkpilot-util` 上收**：`scriptrun` / `winproc` / `lockfile` / `trayconsole`（§14），`task` 侧改薄封装；跑 `go run ./cmd/utilguard` 与 `go run ./cmd/gencatalog -check`
 2. `chonkpilot-plugins/crontab/**`（§2 目录）
-3. `src/initdata/capability/plugins/crontab/plugin.json`
-4. `build-plugins.ps1`：新增 `[10/10] crontab` + 部署清单追加 `crontab`（**唯一构建入口**：`.\build-desktop.ps1`）
-5. `plugin.ini`（若产物中存在）：追加 `capability\plugins\crontab\chonkpilot-plugin-crontab.exe`
+3. `src/initdata/capability/plugins/crontab/{plugin.json,manifest.json}`（极简 + 完整；2026-11-04 核对）
+4. `build-plugins.ps1`：新增 **`[7/11] crontab`**（实际步骤号，2026-11-04 核对）+ 部署清单追加 `crontab`（**唯一构建入口**：`.\build-desktop.ps1`，其 `[4/7] stage plugins` 负责投放 manifest）
+5. ~~`plugin.ini`（若产物中存在）：追加一行~~ —— 仓库已无 `plugin.ini`，启用态走 `<数据根>/plugins/enabled.json`（N/A，2026-11-04 核对）
 6. `docs/spec/20-modules/28-plugins.md` §3 增 `3.6 crontab`
 7. `docs/spec/60-reference/64-配置项一览.md` 增 `plugins.crontab.*`
 8. `docs/spec/40-roadmap/41-未决项登记.md`：登记「插件级进程沙箱」「通知点击回调（AUMID / 协议注册）」

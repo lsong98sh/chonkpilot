@@ -138,6 +138,19 @@ var (
 	fakeGWCallCtx   = map[string][2]string{}
 )
 
+// fakeGWBlockMu/fakeGWBlockCh 是「同步工具阻塞闸门」（engine 去阻塞回归用）：非 nil 时，
+// 带 `_block` 参数的 mcp-tools-call 在**执行侧**等待该通道关闭。测试自行设置 / 清理。
+var (
+	fakeGWBlockMu sync.Mutex
+	fakeGWBlockCh chan struct{}
+)
+
+func setFakeGatewayBlock(ch chan struct{}) {
+	fakeGWBlockMu.Lock()
+	fakeGWBlockCh = ch
+	fakeGWBlockMu.Unlock()
+}
+
 // fakeGateway 模拟 gateway（v2 对称 promise 面，61-消息一览 §5）：mcp-tools-list /
 // mcp-tools-call；`_async` → pending + 延迟 mcp-tasks-report 完成回报（fire-and-forget）。
 // 2026-09-18：`mcp-tasks-*` / `mcp-tools-background` 方法面已移除 → 不再有对应 stub；
@@ -176,6 +189,20 @@ func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 				}
 				return nil
 			}
+		}
+		if block, _ := req.Arguments["_block"].(bool); block {
+			// 同步工具「执行中阻塞」桩：验证 turn 协调器不被同步工具卡住（插话 / 取消仍可达）。
+			fakeGWBlockMu.Lock()
+			ch := fakeGWBlockCh
+			fakeGWBlockMu.Unlock()
+			if ch != nil {
+				<-ch
+			}
+			v.Result = map[string]any{
+				"resultType": "complete",
+				"content":    []any{map[string]any{"type": "text", "text": "blocked done"}},
+			}
+			return nil
 		}
 		if cancel, _ := req.Arguments["_cancel"].(bool); cancel {
 			// 模拟 gateway 对「超时裁决取消」的同步返回：结构化取消标记（task 节点应落 cancelled）

@@ -176,17 +176,19 @@ test('App.vue：按 URL 分派 ChatOnlyView，且对话窗口不触发主窗口�
     'App.vue 必须用 URL 分派纯模块（不注入 __ck.view）')
   assert.match(app, /parseViewRoute\(window\.location\.search,\s*window\.location\.hash\)/,
     '分派来源 = location.search + location.hash')
-  assert.match(app, /<ChatOnlyView\s+v-if="ready && chatOnly"\s+:session-id="route\.sessionId"/,
+  assert.match(app, /<ChatOnlyView\s+v-else-if="ready && chatOnly"\s+:session-id="route\.sessionId"/,
     '命中 #chat → ChatOnlyView 且传入 URL 的 session-id')
+  assert.match(app, /<AskCenterView\s+v-if="ready && askOnly"\s*\/>/,
+    '命中 #ask → AskCenterView（独立待办窗口，2026-11-04）')
   assert.match(app, /:dialog-id="route\.dialogId"/,
     'URL 可选 dialog-id 透传 ChatOnlyView（G-105）')
   assert.match(app, /<MainLayout\s+v-else-if="ready"/, '其余仍走主布局')
-  // init()（读活动会话 + 广播 session-changed）在对话窗口必须跳过
+  // init()（读活动会话 + 广播 session-changed）在对话窗口 / Ask 中心必须跳过
   const init = app.match(/async function init\(\)\s*\{[\s\S]*?\n\}/)
   assert.ok(init, '未找到 init()')
-  assert.match(init[0], /if\s*\(!ready\.value\s*\|\|\s*chatOnly\s*\|\|\s*logOnly\)\s*return/, '对话窗口 / 日志窗口跳过活动会话初始化')
-  // 对话窗口不预取布局
-  assert.match(app, /if\s*\(!chatOnly\)\s*prefetchInitData\(\)/, '对话窗口不预取 init-data（不读几何）')
+  assert.match(init[0], /if\s*\(!ready\.value\s*\|\|\s*chatOnly\s*\|\|\s*askOnly\s*\|\|\s*logOnly\)\s*return/, '对话窗口 / Ask 中心 / 日志窗口跳过活动会话初始化')
+  // 对话窗口 / Ask 中心不预取布局
+  assert.match(app, /if\s*\(!chatOnly && !askOnly\)\s*prefetchInitData\(\)/, '对话窗口 / Ask 中心不预取 init-data（不读几何）')
 })
 
 // ── 5) 接线守卫：ChatOnlyView（仅 chat / 不持久化几何 / 标题）────

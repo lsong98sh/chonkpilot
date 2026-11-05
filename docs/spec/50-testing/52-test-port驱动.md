@@ -1,8 +1,8 @@
 # 52 · test-port驱动（测试模式设计，`--test-port`）
 
-> 状态：✅ **已实施**（端点见 §下方清单；现行实现 `src/lib/gui/testserver.go`）
+> 状态：✅ **已实施**（端点见 §下方清单；现行实现 `chonkpilot-framework/host/src/gui/testserver.go`，宿主接线 `src/lib/gui/host/main.go`；**2026-11-04 核对**）
 > 关联：[50-测试体系](50-测试体系.md)（准则/分层/驱动范式）· [51-FP与测试映射](51-FP与测试映射.md)（脚本资产）· [62-命令行与参数](../60-reference/62-命令行与参数.md)（`--test-port`）
-> **现行端点**：`/ping` `/eval` `/click` `/input` `/text` `/html` `/exists` `/console` `/screenshot` `/publish` `/wait-event`（仅监听 127.0.0.1）；`/call` 已废除。
+> **现行端点**：`/ping` `/eval` `/click` `/input` `/text` `/html` `/exists` `/console` `/screenshot` `/publish` `/wait-event` `/quit`（仅监听 127.0.0.1）；`/call` 已废除。
 >
 > 目的：让外部脚本（python 等）驱动 GUI 做 E2E 验证 —— 发消息、模拟人的输入/点击、读取 DOM 显示内容。
 
@@ -19,12 +19,12 @@
 
 ## 2. 总体设计
 
-- **触发**：`chonkpilot.exe --test-port=2345`（仅 IDE 模式生效；executor 模式（`--prompt` 等）忽略该参数）。**🆕 2026-10-10**：`--test-port` 由 **build tag `debugport`** 门控 —— **仅 debug 构建存在**（`build-desktop.ps1 -Debug`，见 [03 §1.4](../00-overview/03-构建与部署.md)）；**release 构建不注册该参数**（传入即 unknown flag），也**不开任何监听**。
+- **触发**：`chonkpilot.exe --test-port=2345`（仅桌面宿主 debug 构建生效；executor 模式已于 2026-11-02 退役，`--prompt` 参数不存在）。**🆕 2026-10-10**：`--test-port` 由 **build tag `debugport`** 门控 —— **仅 debug 构建存在**（`build-desktop.ps1 -Debug`，见 [03 §1.4](../00-overview/03-构建与部署.md)）；**release 构建不注册该参数**（传入即 unknown flag），也**不开任何监听**。
 - **监听**：`127.0.0.1:2345`，**不绑定 `0.0.0.0`**，杜绝局域网访问
 - **默认关闭**：不传 `--test-port` 则完全不启动，发布包行为不变
-- **生命周期**：与 IDE 同生共死 —— webview 创建成功后启动 `http.Server`，程序退出前 `Shutdown`
+- **生命周期（2026-11-04 核对）**：宿主 `onProjectWired` 时 `AttachTestServer` 起步，仅绑定**进程内第一个项目主窗口**；`ts.Shutdown` 在宿主收尾依赖序中执行（`src/lib/gui/host/main.go`）。对话窗口经 `RegisterChat`/`UnregisterChat` 动态登记，不另起监听。
 - **线程模型**：HTTP handler 在 net/http goroutine 中调用 `EvalWithResult`（其内部 `Dispatch` 到 WebView2 UI 线程执行并阻塞等回调，无死锁，见 `chonkpilot-webview2/webview.go#L684-L691`）；**并发请求用互斥锁串行化**（UI 线程单飞）
-- **页面就绪门控**：首次导航完成前（复用现有 `SetNavigationCompletedCallback`），`/eval` 返回 503 `page not ready`
+- **页面就绪门控**：首次导航完成前（复用现有导航完成回调），`/eval` 等端点返回 **HTTP 200 + `ok:false` / `error:"page not ready"`**；`/screenshot` 返回 **503**。
 - **日志**：走 `a.logger`（测试请求与结果 Debug 级）
 
 ## 3. 指令协议（HTTP + JSON，仅 127.0.0.1）
@@ -33,31 +33,39 @@
 
 ```text
 POST /eval
-{"js": "document.querySelector('.msg-list')?.textContent", "timeout": 5000}
+{"js": "document.querySelector('.msg-list')?.textContent", "timeout": 5000, "window_id": "<可选>"}
 ```
 ```text
-200 → {"ok":true, "result":"<ExecuteScript 返回的 JSON 编码字符串>", "costMs":12}
-500 → {"ok":false, "error":"ExecuteScript failed: HRESULT=8004...", "costMs":12}
+200 → {"ok":true, "result":"<ExecuteScript 返回的 JSON 编码字符串>"}
+200 → {"ok":false, "error":"ExecuteScript failed: HRESULT=8004... | page not ready"}
+400 → {"ok":false, "error":"bad body: ... | js required"}
 ```
 
 - `result` 为 WebView2 `ExecuteScript` 的原始 JSON 字符串（字符串被 JSON 二次编码，解析时先 `json.loads` 一次）
-- `timeout` 可选，默认 5s，上限 30s
+- **无 `costMs` 字段**（2026-11-04 核对：全仓仅文档曾出现，代码未实现）
+- **失败 / 页面未就绪一律 HTTP 200 + `ok:false`**；仅坏请求（body 解析失败、缺 `js`）返回 400。调用方应按 `ok` 判错，不可依赖 5xx。
+- `timeout` 可选，默认 5s，上限 30s；**无 1s 下限**（`<=0` → 5s，`>30000` → 30s，1–4999ms 原样接受）。
 - JS 抛异常 → `ok:false`，`error` 含堆栈文本
 
 ### 3.2 便捷指令（`/eval` 的封装，降低调用方成本）
 
-| 端点 | 请求体 | 行为 | 内部 JS 要点 |
-|---|---|---|---|
-| `POST /click` | `{"selector":"...", "timeout":5000}` | 模拟点击 | `el.click()`；找不到元素抛错 `not found: <sel>` |
-| `POST /input` | `{"selector":"...", "value":"...", "native":false}` | 模拟输入 | `el.value=value` + `dispatchEvent(new Event('input',{bubbles:true}))` + `dispatchEvent(new Event('change',{bubbles:true}))`；`native:true` 时用原生 value setter（`Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el, value)`）以正确触发 Vue 绑定 |
-| `POST /text` | `{"selector":"..."}` | 读取文本 | `el.textContent` 压缩空白后返回 |
-| `POST /html` | `{"selector":"..."}` | 读取 DOM | `el.outerHTML` |
-| `POST /exists` | `{"selector":"..."}` | 断言存在 | `{"ok":true, "result":{"count":n,"visible":bool}}` |
-| `POST /console` | `{"clear":false}` | 读取/清空前端 console 输出 | `{"ok":true, "result":{"entries":[{"t":ms,"level":"log","text":"..."}],"truncated":bool}}`；`clear:true` 时清空后返回 `[]` |
-| `GET /screenshot` | — | 截图 | PNG bytes（`Content-Type: image/png`） |
-| `GET /ping` | — | 探活 | `{"ok":true,"app":"chonkpilot-ide","ready":bool}` |
+| 端点 | 请求体 | 行为 |
+|---|---|---|
+| `POST /click` | `{"selector":"...", "timeout":5000}` | `el.click()`；找不到元素 → `ok:false`，`error` 含 `not found: <sel>` |
+| `POST /input` | `{"selector":"...", "value":"...", "timeout":5000}` | **始终**用原生 value setter（`HTMLTextAreaElement.prototype` / `HTMLInputElement.prototype` 二选一，`Object.getOwnPropertyDescriptor(proto,'value').set.call(el,value)`），再派发 `input`/`change`（`bubbles:true`）。**无 `native` 参数**（2026-11-04 核对） |
+| `POST /text` | `{"selector":"..."}` | `input`/`textarea` 返回 `.value`，其余返回 `.textContent`；再压缩空白 |
+| `POST /html` | `{"selector":"..."}` | `el.outerHTML` |
+| `POST /exists` | `{"selector":"..."}` | `{"ok":true, "result":{"count":n,"visible":bool}}`（`visible` = `getClientRects().length>0`） |
+| `POST /console` | `{"clear":false}` | `{"ok":true, "result":{"entries":[{"t":ms,"level":"log","text":"..."}],"truncated":bool}}`；`truncated = len(entries)>=1000`；`clear:true` 时清空后返回 `[]` |
+| `POST /publish` | `{"type":"...", "payload":"...", "window_id":"<可选>"}` | 本地事件优先，否则桥发布 mq；窗口面消息（`gui.window.*`）由宿主 handler 处理 → `{"ok":bool,"result":...,"errors":[...]}` |
+| `POST /wait-event` | `{"type":"...", "timeout":5000, "window_id":"<可选>"}` | 阻塞等待该 type 事件；成功 `{"ok":true,"result":<event>}`，超时/未就绪 `{"ok":false,"error":"..."}` |
+| `POST /quit` | —（无体） | 优雅退出（与托盘「退出」同一收尾路径），返回 `{"ok":true}`；未接线时 **503** + `quit not wired` |
+| `GET /screenshot` | —（可选查询 `?window_id=`） | PNG bytes（`Content-Type: image/png`）；未就绪 **503**、不支持 **501**、截图失败 **500** |
+| `GET /ping` | — | `{"ok":true,"app":"chonkpilot-gui","ready":bool}` |
 
-统一响应包裹：`ok` / `result` / `error` / `costMs`。
+统一响应包裹：`ok` / `result` / `error`（**无 `costMs`**）；业务失败统一 HTTP 200 + `ok:false`，仅坏请求 400、截图 501/503/500。
+
+**多窗口 `window_id`（2026-11-04 补记）**：`/eval` `/click` `/input` `/text` `/html` `/exists` `/console` `/publish` `/wait-event` 请求体可带 `window_id`（取自 `gui.window.list`）；`/screenshot` 用查询参数 `window_id`。缺省 = 主窗口；未知/已关闭的 `window_id` → 400 `unknown window_id`。
 
 ### 3.3 定位策略
 
@@ -150,27 +158,29 @@ html = r("/html", selector=".msg-list")["result"]
 assert "目录结构" in html
 ```
 
-## 5. 实现要点（代码落点）
+## 5. 实现要点（代码落点，2026-11-04 核对）
 
-1. **`testserver.go`**（main 包，与 `main.go` 同级）：
-   - `type testServer struct { … }`（含 `ready atomic.Bool`、`srv *http.Server`、`mu sync.Mutex`）
-   - 构造：`newTestServer(w interface{}, br *bridge.Bridge) *testServer`（w 需满足 `webview2.ScriptEval` / `webview2.Screenshot`）
-   - 统一 `doEval(js string, timeout time.Duration) (string, error)`（`mu.Lock` + `EvalWithResult`）
-   - handler 路由：`/ping` `/eval` `/click` `/input` `/text` `/html` `/exists` `/console` `/screenshot`
+1. **`chonkpilot-framework/host/src/gui/testserver.go`**（`package gui`，**非 main 包**；`//go:build windows && debugport`）：
+   - `type testServer struct { se webview2.ScriptEval; shot webview2.Screenshot; br Bridge; hwnd uintptr; destroy func(); quit func(); handler *appHandler; mu sync.Mutex; ready atomic.Bool; srv *http.Server; chats map[string]*testWinTarget }`
+   - 构造：`newTestServer(w interface{}, br Bridge) *testServer`（w 需满足 `webview2.ScriptEval`，`Screenshot` 可选）
+   - 统一 `doEval(js string, timeout time.Duration, windowID string) (string, error)`（`mu.Lock` + `EvalWithResult`；按 `window_id` 选主窗口/对话窗口目标）
+   - handler 路由：`/ping` `/eval` `/click` `/input` `/text` `/html` `/exists` `/console` `/screenshot` `/publish` `/wait-event` `/quit`
    - 便捷指令内部拼接 JS 字符串（selector/value 经 `jsString` JSON 编码防注入）
-   - `/console`：`EvalWithResult('JSON.stringify(window.__chonkConsole.entries)')`，`clear:true` 时先 eval 清空再返回
-2. **`main.go`**：解析 `--test-port`（int，默认 0=关闭）；webview 创建后若 >0 则注入 console 捕获脚本（`InjectConsoleCapture`，常量 `consoleCaptureJS` 在 `testserver.go`）+ `newTestServer(w, br)` → `Start(port)`；退出前 `Shutdown`
-3. **就绪门控**：复用现有 `SetNavigationCompletedCallback`，回调里 `ready.Store(true)`
-4. **超时**：请求体 `timeout` 钳制到 `[1s, 30s]`；默认 5s
-5. **并发**：`mu` 全局串行（UI 线程单飞），避免交错执行 JS
+   - `/console`：`JSON.stringify(window.__chonkConsole.entries)`，`clear:true` 时先清空再返回
+   - 多窗口：`RegisterChat(h *windowHost)` / `UnregisterChat(windowID)` / `target(windowID)`
+2. **宿主接线 `src/lib/gui/host/main.go`**：解析 `--test-port`（flag，默认 0=关闭）；`onProjectWired` 时创建 testServer → 注入 console 捕获脚本（`InjectConsoleCapture`，常量 `consoleCaptureJS` 在 `testserver.go`）+ `AttachTestServer`（`chonkpilot-framework/host/src/gui/hostapi.go`）+ `SetQuit`；宿主收尾按依赖序 `Shutdown`。release 构建由 `testserver_off.go` 提供空实现。
+3. **就绪门控**：导航完成回调里 `ready.Store(true)`；对话窗口各自持 `ready atomic.Bool`（`RegisterChat` 挂 `h.onReady`）。
+4. **超时**：请求体 `timeout` 仅做上限钳制——`<=0` → 5s、`>30000` → 30s；**1–4999ms 原样接受（无 1s 下限）**。
+5. **并发**：`mu` 全局串行（UI 线程单飞），避免交错执行 JS。
+6. **当前无 Go 单测**：framework 内无 `testserver*_test.go`；行为由 L4 脚本间接回归（2026-11-04 核对）。
 
 ## 6. 安全边界
 
 - 仅监听 `127.0.0.1`；`--test-port` 未传则不启动任何 listener
-- **Host 白名单 + 来源校验（D-03；2026-10-11 补登）**：所有端点统一校验 `Host`，仅接受 `127.0.0.1` / `localhost` / `app.localhost`（端口不限），其余 403（挡 DNS rebinding / 恶意页面直连回环端口）；**并新增 `Origin` / `Sec-Fetch-Site` 校验** —— `Sec-Fetch-Site: cross-site` 拒、`Origin` 存在且主机不在回环白名单 → 拒（跨源网页），无 `Origin` / 同源回环 `Origin` / 非浏览器（外部驱动脚本通常不带这两头）→ 放行。**防恶意网页 JS `fetch` 直连回环端口驱动 `/eval`**（见 `src/lib/gui/testserver.go` `hostGuard`/`originAllowed`）
+- **Host 白名单 + 来源校验（D-03；2026-10-11 补登）**：所有端点统一校验 `Host`，仅接受 `127.0.0.1` / `localhost` / `app.localhost`（端口不限），其余 403（挡 DNS rebinding / 恶意页面直连回环端口）；**并新增 `Origin` / `Sec-Fetch-Site` 校验** —— `Sec-Fetch-Site: cross-site` 拒、`Origin` 存在且主机不在回环白名单 → 拒（跨源网页），无 `Origin` / 同源回环 `Origin` / 非浏览器（外部驱动脚本通常不带这两头）→ 放行。**防恶意网页 JS `fetch` 直连回环端口驱动 `/eval`**（见 `chonkpilot-framework/host/src/gui/testserver.go` `hostGuard`/`originAllowed`）
 - 无鉴权（本机测试用途，能力等价于已在本机运行的用户进程）
 - `/call/` 已废除；消息驱动通道由 `/publish` / `/wait-event` 提供
-- **端点豁免清单**（测试端口固定的白名单，注册于 `testserver.go` 路由）：`/ping`（探活，免页就绪检查）、`/eval`、`/click`、`/input`、`/text`、`/html`、`/exists`、`/console`、`/screenshot`、`/publish`、`/wait-event`
+- **端点豁免清单**（测试端口固定的白名单，注册于 `testserver.go` 路由）：`/ping`（探活，免页就绪检查）、`/eval`、`/click`、`/input`、`/text`、`/html`、`/exists`、`/console`、`/screenshot`、`/publish`、`/wait-event`、`/quit`
 - `--test-port` 与 `--internal` 无关联（**🆕 2026-10-10 订正**：`--test-port` 现由 build tag `debugport` 门控，**release 构建不注册该参数、不开监听**；debug 构建 `-tags debugport` 才编入，见 [03 §1.4](../00-overview/03-构建与部署.md)）
 
 ## 7. 验证用例（对接《tool-call 任务与通知设计》§九）
@@ -186,7 +196,8 @@ assert "目录结构" in html
 
 ## 8. 实施状态
 
-- [x] `testserver.go`：TestServer 结构 + 路由 + doEval + 便捷指令
-- [x] `main.go`：`--test-port` 解析 + 启动/Shutdown + 就绪门控接线
+- [x] `testserver.go`：TestServer 结构 + 路由 + doEval + 便捷指令 + `/publish`/`/wait-event`/`/quit` + 多窗口 `window_id`
+- [x] `main.go`：`--test-port` 解析 + `AttachTestServer`/`Shutdown` + 就绪门控接线（宿主 `src/lib/gui/host/main.go`；实现 `chonkpilot-framework/host/src/gui/testserver.go`）
 - [x] 构建 `.\build-desktop.ps1` 验证编译通过
 - [x] python 冒烟脚本按 §4 示例联调
+- [ ] Go 单测：`testserver.go` 目前无 framework 内单测（L4 脚本间接覆盖）

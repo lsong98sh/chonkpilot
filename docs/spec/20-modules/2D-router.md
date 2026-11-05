@@ -1,8 +1,8 @@
 # 2D · chonkpilot-agent/router（LLM 出网协议适配）
 
-> 状态：✅ 与代码一致
+> 状态：⚠️ **与代码基本一致**（2026-11-04 核对：部署/依赖与边界断言已校正）
 > 关联：[21-llm-server](21-llm-server.md) · [10-分层与依赖](../10-architecture/10-分层与依赖.md) · [23-工程与部署拓扑](../10-architecture/23-工程与部署拓扑.md) · [40-演进计划 §LR](../40-roadmap/40-演进计划.md)
-> 代码目录：**独立仓 `chonkpilot-agent/router/src/`**（根包 + `internal/canon/` + `internal/adaptor/{openai,anthropic,echo}/`）；2026-10-27 起主仓 `src/lib/router/` 已删除，主仓经 `github.com/lsong98sh/chonkpilot-agent/router` **按版本依赖**（v0.1.0；2026-10-22 起**不使用** `replace`）。
+> 代码目录：**独立仓 `chonkpilot-agent/router/src/`**（根包 + `internal/canon/` + `internal/adaptor/{openai,anthropic,echo}/`）；2026-10-27 起主仓 `src/lib/router/` 已删除。主仓各 module 经 `replace` 指向本地 `chonkpilot-agent/router/src`，版本仍为伪版本 `v0.0.0-00010101000000-000000000000`（**尚未按 v0.1.0 发布依赖**；例 `src/lib/llm/go.mod:74,84`、`src/lib/gui/go.mod:22,82`、`src/desktop/go.mod:54,84`；2026-11-04 核对）。
 > 设计出处（决策过程不在本文重复）：见 [40-演进计划 §LR](../40-roadmap/40-演进计划.md)。
 
 ---
@@ -32,7 +32,7 @@
 | 编译形态 | **纯 lib**（module `github.com/lsong98sh/chonkpilot-agent/router`），无 `main`、无独立 exe |
 | 运行位置 | 进程内（llm-server） |
 | 依赖方向 | `router → internal/adaptor → internal/canon`（**单向无环**）；本包**只 import 标准库 + 自身 `internal/*`**，**不 import 任何其它 chonkpilot-* module** |
-| 装配方 | `src/lib/llm/server`：`router.New(router.Config{})` → `Register` / `Reconcile`（`server.go` / `routercall.go`） |
+| 装配方 | `src/lib/llm/server`：`router.New(router.Config{})` → `Register` / `Reconcile`（`boot.go` / `routercall.go`） |
 
 ---
 
@@ -155,7 +155,7 @@ Call(ctx, req)
 
 - 档位判定（`capability{reasoning,vision}` 双维度各 `0~5`、基准 = 默认 LLM 的 **reasoning**、`±0.5` 含端点、显式 `0` = 不具备）**不在本层**：由 `chonkpilot-llm/server`（`autoCandidates`）按 usr `llms[].capability` 算出候选名列表。
 - **图像感知**（2026-11-04 口径更新）也**不在本层**：默认 LLM `vision=0` 且本次请求含图像时，llm 侧（`chatLLMClient.Step` 首次调用）在**发请求前**就整体换到「`reasoning ±0.5` 且 `vision>0`」的候选 provider（`ChatOptions.ImageFallbacks` 的调用快照），无合格候选则降级仍用默认。router 只看到「首选 provider 已经不是默认 LLM」，切换状态机与候选列表语义不变。
-- 本层只做「哪些还没试过」的状态机；**零新增 MQ 主题、零 payload 变更**（`llm-retry` 仍只有 attempt / wait）。
+- 本层只做「哪些还没试过」的状态机；**零新增 MQ 主题、零新增语义**。`llm-retry` payload 实际含既有 7 键（`instance_id / session / turn / retryable / retry_attempt / retry_count / retry_wait_ms`，`engine_turn.go:510-516`），不是「只有 attempt / wait」（2026-11-04 核对）。
 - `auth` / `protocol` / `invalid` 类失败不切换（换 provider 无意义，属配置/请求问题）。
 
 ---
@@ -207,7 +207,7 @@ Call(ctx, req)
 ## 6. 依赖与边界
 
 - **上游依赖**：仅标准库 + 自身 `internal/{canon,adaptor}`。**零本仓库其它 module 依赖**（同 `dsl` 类）。
-- **下游消费方**：`src/lib/llm/server`（经 `routerconv.go` 折算消息、`routercall.go` 注册/对账/调用、`llm_testconn.go` 探活、`turn.go` 传 `MaxRetries`/`RetryBudget`/`RetryObserver` 并实现 `OnRetry` 发布 `llm-retry`）；`gui` / `server` / `desktop` 经 llm 间接依赖（Go `replace` 不跨 module 传递，各 module 自行 `require` + `replace ../router`）。
+- **下游消费方**：`src/lib/llm/server`（经 `routerconv.go` 折算消息、`routercall.go` 注册/对账/调用、`llm_testconn.go` 探活、`turn.go` 传 `MaxRetries`/`RetryBudget`/`RetryObserver` 并实现 `OnRetry` 发布 `llm-retry`）；`gui` / `server` / `desktop` 经 llm 间接依赖（Go `replace` 不跨 module 传递，各 module 自行 `require` + `replace` 到本地 `chonkpilot-agent/router/src`；2026-11-04 核对）。
 - **接口不引入 Provider 标识符**：本包用 `Spec` 表示 LLM 服务商；gateway `Provider` = 工具提供方（同名异义）。
 
 ---
@@ -217,7 +217,7 @@ Call(ctx, req)
 - **职责只有报文级**：协议编解码 / SSE 流解析 / 连接与双超时 / 错误分类 / **报文级重试**（次数 · 预算 · 退避 · `Emitted==0` 判据）——即「同一份报文能不能原样再发一次」。
 - **可见重试事件归宿主**：router 只经非阻塞 `CallOptions.Observer.OnRetry` 上报（`RetryContext` / `wait`）；宿主适配器 `src/lib/llm/server/chatshadow.go` 的 `chatLLMClient` 把 `StepOptions.OnRetry` 折成引擎事件 `EventLLMRetry` → `chatEventSink` 发既有 `llm-retry`（前端 `session-retry`），**payload 与现状一致**。router 不决定是否让用户可见、不决定续写。
 - **不感知 chat / gateway / MQ**：router 零 turn/session 概念、零工具执行、零 MQ 主题；chat 的 `LLMClient.Step` 端口与 router 的 `Call` 之间的类型互转只在宿主（`routerconv.go` / `chatshadow.go`）。
-- **边界断言**：`chonkpilot-agent/router/src/deps_test.go`（`TestDepsPureLib`）以 `go list -deps` 断言 router 依赖图不含 `chonkpilot-lib/mq` · `msgkeys` · `chonkpilot-agent/gateway/src` · `chonkpilot-llm`；模块内两两无 import 由此固化。
+- **边界断言（⚠️ 2026-11-04 核对）**：`chonkpilot-agent/router/src/deps_test.go`（`TestDepsPureLib`）仍以 `go list -deps` 断言依赖图不含 `chonkpilot-lib/mq` · `chonkpilot-lib/msgkeys` · `chonkpilot-mcp-gateway/gateway` · `chonkpilot-llm`。但该 banned 名单是**旧模块名**，与现行模块布局（`chonkpilot-framework/host/core/mq`、`chonkpilot-agent/gateway` 等）不匹配，断言实际空转，**不能证明**零 gateway/llm 依赖；模块内两两无 import 仍由代码结构保证。
 
 ---
 

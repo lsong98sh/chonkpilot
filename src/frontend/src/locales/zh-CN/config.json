@@ -98,6 +98,7 @@
     "inheritSystem": "继承系统",
     "overriddenByProject": "被项目覆盖",
     "timeoutSec": "服务超时(秒)",
+    "askTimeoutSec": "提问超时(秒，0=不超时)",
     "maxConcurrency": "最大并发",
     "skipDirs": "跳过目录"
   },

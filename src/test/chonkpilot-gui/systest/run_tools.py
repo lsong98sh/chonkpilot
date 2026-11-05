@@ -17,6 +17,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import run_llm
+import ask_center as ac_mod
 from chonk_client import TestError, run_case
 
 c = run_llm.c
@@ -173,48 +174,35 @@ def case_ask_user_multi():
         raise TestError("ask-user 未透传 multi=true")
     if list(ask.get("options") or []) != ["构建", "测试", "部署"]:
         raise TestError(f"ask-user options 异常: {ask.get('options')}")
-    # 弹窗出现：3 个选项 + 1 个推荐 badge
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        if c.exists(".ask-user-content").get("count", 0) > 0:
-            break
-        time.sleep(0.5)
-    r = c.eval("""(() => {
-      const btns = [...document.querySelectorAll('.ask-user-content .option-btn')];
-      const recs = document.querySelectorAll('.ask-user-content .rec-badge').length;
-      return JSON.stringify({ optCount: btns.length, recCount: recs,
-                              labels: btns.map(b => b.innerText.trim()) });
-    })()""")
-    o = r
-    for _ in range(3):
-        if isinstance(o, str):
-            try:
-                o = json.loads(o)
-            except Exception:
-                break
-    if not (isinstance(o, dict) and o.get("optCount") == 3):
-        raise TestError(f"多选弹窗选项异常: {o}")
+    # Ask 中心（2026-11-04）：ask_user 不再弹 dialog → 自动打开独立待办窗口；
+    # 右侧详情渲染 3 个选项 + 推荐 badge，多选后提交回链顿号连接。
+    aid = ask.get("ask_id") or ""
+    if not aid:
+        raise TestError(f"ask-user 载荷缺 ask_id: {ask}")
+    _wid, ac = ac_mod.ask_client(c, 30)
+    if not ac_mod.wait_item(ac, aid):
+        raise TestError(f"Ask 中心左列未出现 ask {aid}")
+    ac_mod.select_item(ac, aid)
+    time.sleep(0.3)
+    labels = ac_mod.option_labels(ac)
+    if labels != ["构建", "测试", "部署"]:
+        raise TestError(f"Ask 中心选项异常: {labels!r}")
+    if ac_mod.recommended_count(ac) != 1:
+        raise TestError("推荐 badge 未渲染（recommended 未透传到 ask-user 事件）")
+    ac.mq_on_capture(["ask-user-reply"])
     # 勾选两项（构建、测试）
-    c.click(".ask-user-content .option-btn:nth-child(1)", 5000)
-    time.sleep(0.5)
-    c.click(".ask-user-content .option-btn:nth-child(2)", 5000)
-    time.sleep(1.0)  # 等 Vue 更新 canSubmit
-    c.click(".ask-user-content .submit-btn", 5000)
+    ac_mod.click_option(ac, "构建")
+    time.sleep(0.4)
+    ac_mod.click_option(ac, "测试")
+    time.sleep(0.6)
+    ac_mod.click_submit(ac)
     # ask-user-reply：answer = 顿号连接的多选
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        ar = c.events_of("ask-user-reply", clear=True)
-        if ar:
-            ans = (ar[0]["payload"] or {}).get("answer", "")
-            if ans == "构建、测试":
-                break
-            raise TestError(f"ask-user-reply answer 异常: {ans!r}")
-        time.sleep(0.5)
-    else:
+    p = ac_mod.wait_reply(ac, aid, max_wait=15)
+    if not p:
         raise TestError("未收到 ask-user-reply（多选提交失败）")
-    # 推荐 badge（契约 §4.3 session-ask.recommended；server.ask 统一归一为数组，I-41）——
-    if not (isinstance(o, dict) and o.get("recCount") == 1):
-        raise TestError(f"推荐 badge 未渲染（recommended 未透传到 ask-user 事件）: {o}")
+    if p.get("answer") != "构建、测试":
+        raise TestError(f"ask-user-reply answer 异常: {p.get('answer')!r}")
+    ac_mod.wait_no_item(ac, aid)
     run_llm.wait_event("llm-complete", max_wait=60)
 
 

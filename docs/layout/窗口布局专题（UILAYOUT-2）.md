@@ -1,6 +1,6 @@
 # 窗口布局专题（UILAYOUT-2）
 
-> 状态：**A–G 全部实施完成**（2026-10-21：前端 698/700，2 条与本专题无关；L4 28/28；release 构建 exit 0）
+> 状态：**功能已实现（A–F）/ 验证资产待更新**（2026-10-21 快照：前端 698/700，2 条与本专题无关；L4 28/28；release 构建 exit 0。**2026-11-04 核对**：L4 脚本仍以已清退的 `lf-*` 主题驱动，「L4 28/28」不可复现；功能代码齐全，需重写/重跑验证后再引用数字）
 > 范围：区域显隐、尺寸分配、布局档案、视图池（切换不重建）、删除 legacy 硬编码布局、死文件清理
 > 相关：`docs/ui-config/01-自由布局容器改造设计方案.md`、`docs/spec/20-modules/20-gui.md §12`、`docs/spec/30-function-points/31-窗口与布局.md`、`docs/spec/60-reference/61-消息一览.md`、`docs/spec/60-reference/64-配置项一览.md`
 
@@ -226,6 +226,8 @@ A/B 数值（1:2），C 弹性，隐藏前 C 占 0.4：
 
 ### 7.2 布局档案
 
+> 〔2026-11-04 核对〕`profiles.js` / `profiles-core.js` 实际位于平台基座 `chonkpilot-framework/host/web/src/layout/`（主仓经 vite alias `@ckfw` 引用）；本文旧表述的 `layout/` 未标基座前缀。
+
 | 动作（`layout/profiles.js` 导出） | 说明 |
 |------|------|
 | `openNewLayoutDialog()` | 打开「新建布局」对话框 |
@@ -328,6 +330,8 @@ A/B 数值（1:2），C 弹性，隐藏前 C 占 0.4：
 - 重复打开单例 view → 出现错误提示，不新增页签；
 - legacy：带 `?layout=legacy` 启动仍为 free 形态，旧分支 DOM 不存在。
 
+> 〔2026-11-04 核对〕当前 `src/test/chonkpilot-gui/systest/test_layout.py` **实际仍发已清退的 `lf-*` 主题**：`lf-area-toggle-visible`（:197、:201）、`lf-layout-profile-switch`（:208、:225）、`lf-tabs-open`（:219）。G-89 后这些主题无订阅方 → L11/L12/L13 不产生预期效果，上述 L4 用例需改走内部命令 `toggle-area-visible` / 直调 `stores/actions.js` 或真实 UI（下拉/眼睛/命令条目），重跑后再登记数字。文档状态因此为「功能已实现 / 验证资产待更新」。
+
 ### 11.3 不做
 
 - 动画不做自动断言（只断最终 DOM）；
@@ -345,9 +349,9 @@ A/B 数值（1:2），C 弹性，隐藏前 C 占 0.4：
 | UILAYOUT-2-D | 显隐 + 尺寸：`visible` / `hideLocked`、有效可见、占比快照、数值/flex 分配 | 单测 + L4 显隐用例 |
 | UILAYOUT-2-E | 视图池：池挂载、槽位注册、Teleport、停车场、抽屉池化、FLIP、设计态骨架 | L4 不重建用例 |
 | UILAYOUT-2-F | UI：布局下拉、新建对话框、编辑器开关/眼睛/右键、恢复初始布局、运行态命令 | L4 档案用例 |
-| UILAYOUT-2-G | 文档同步（20-gui / 31 / 41 / 42 / 61 / 64 / 49）、测试补齐、收尾构建 | 全绿 |
+| UILAYOUT-2-G | 文档同步（20-gui / 31 / 41 / 42 / 61 / 64；49 已于 2026-11-04 清空）、测试补齐、收尾构建 | 全绿 |
 
-> 实施状态（2026-10-21）：A ✅ · B ✅（死文件 + `configMenu.js` 删除，23 处守卫断言迁移）· C ✅ · D ✅ · E ✅ · F ✅ · G ✅（L4 **28/28**、前端 `npm test` **698/700**、`.\build-desktop.ps1` release **exit 0**）。
+> 实施状态（2026-10-21，**2026-11-04 核对**）：A ✅ · B ✅（死文件 + `configMenu.js` 删除，23 处守卫断言迁移）· C ✅ · D ✅ · E ✅ · F ✅ · **G ⚠️ 功能已实现 / 验证资产待更新**（L4 脚本仍发 `lf-*`，「28/28」不可复现；前端 `npm test` 698/700 与 release exit 0 仅作 2026-10-21 快照引用）。31 的 legacy 口径已于 2026-11-04 核对为「已删除」。
 > 2 条失败与本专题无关：`configSurface ⑤`（DSL 退役后的旧形状迁移断言）、`uxBatch2Settings ②`（Go 注释文案）。
 
 ---

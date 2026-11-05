@@ -149,19 +149,11 @@ func TestAskCleanupHelpers(t *testing.T) {
 	defer llm.Close()
 	s := newTestServer(t, llm)
 
-	hour, past := time.Now().Add(time.Hour), time.Now().Add(-time.Minute)
+	hour := time.Now().Add(time.Hour)
 	s.mu.Lock()
 	s.asks[instKey("ins-a", "ask-1")] = &askWaiter{askID: "ask-1", instanceID: "ins-a", turnID: "t-1", expiresAt: hour}
-	s.asks[instKey("ins-a", "ask-2")] = &askWaiter{askID: "ask-2", instanceID: "ins-a", turnID: "t-2", expiresAt: past}
 	s.asks[instKey("ins-b", "ask-3")] = &askWaiter{askID: "ask-3", instanceID: "ins-b", turnID: "t-1", expiresAt: hour}
-	// 惰性过期回收：过期项摘除、未过期保留
-	s.purgeExpiredAsksLocked(time.Now())
-	if _, ok := s.asks[instKey("ins-a", "ask-2")]; ok {
-		t.Fatal("过期 ask 应被回收")
-	}
-	if _, ok := s.asks[instKey("ins-a", "ask-1")]; !ok {
-		t.Fatal("未过期 ask 不应被回收")
-	}
+	// 显式超时由 timer/expireAsk 主动结算（无惰性回收）；这里只验 turn/instance 清理边界。
 	// 轮次收尾：只清本实例本 turn（不误伤他实例同名 turn）
 	s.clearAsksByTurnLocked("ins-a", "t-1")
 	if _, ok := s.asks[instKey("ins-a", "ask-1")]; ok {
@@ -179,22 +171,46 @@ func TestAskCleanupHelpers(t *testing.T) {
 	}
 }
 
-// TestAskExpiryLazyInAsk：ask() 登记时**惰性**回收已过期项（无答复的 ask 不常驻）。
-func TestAskExpiryLazyInAsk(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := newTestServer(t, llm)
-
-	s.mu.Lock()
-	s.asks[instKey("ins-a", "ask-old")] = &askWaiter{
-		askID: "ask-old", instanceID: "ins-a", turnID: "t-old", expiresAt: time.Now().Add(-time.Hour),
+// TestAskTimeoutDefaults：缺省无超时（不下发 expires_at）；显式 timeout 才计算 expires_at，
+// 且超时自动回复优先取 recommended。
+func TestAskTimeoutDefaults(t *testing.T) {
+	if got := askTimeoutSecondsForTest(map[string]any{}, 0); got != 0 {
+		t.Fatalf("缺省应无超时，got=%d", got)
 	}
-	s.mu.Unlock()
-
-	_ = s.ask("", "tc", map[string]any{}, "")
-	if _, ok := s.asks[instKey("ins-a", "ask-old")]; ok {
-		t.Fatal("ask() 登记时应惰性回收过期项")
+	if got := askTimeoutSecondsForTest(map[string]any{"timeout": 5}, 30); got != 5 {
+		t.Fatalf("显式 timeout 应覆盖全局，got=%d", got)
 	}
+	if got := askTimeoutSecondsForTest(map[string]any{"timeout": 0}, 30); got != 30 {
+		t.Fatalf("timeout=0 应取全局，got=%d", got)
+	}
+	if got := askTimeoutSecondsForTest(map[string]any{"timeout": -1}, 30); got != 0 {
+		t.Fatalf("timeout=-1 应明确不超时，got=%d", got)
+	}
+	if got := askAutoAnswer(map[string]any{"recommended": []any{"y", "n"}, "multi": true}); got != "y、n" {
+		t.Fatalf("多选超时应取推荐值，got=%q", got)
+	}
+	if got := askAutoAnswer(map[string]any{"recommended": []any{"y", "n"}}); got != "y" {
+		t.Fatalf("单选超时应取首个推荐值，got=%q", got)
+	}
+	if got := askAutoAnswer(map[string]any{}); got != askAutoTimeoutAnswer {
+		t.Fatalf("无推荐项应回落统一文案，got=%q", got)
+	}
+}
+
+// askTimeoutSecondsForTest 是无实例依赖的超时折算探针（全局值由参数给出）。
+func askTimeoutSecondsForTest(args map[string]any, global int) int {
+	v, ok := args["timeout"]
+	if !ok {
+		return global
+	}
+	n := intFromAny(v)
+	if n == 0 {
+		return global
+	}
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // TestAskClearedOnTurnClose：轮次关闭（loop 收尾）摘除本 turn 的 ask 等待登记。

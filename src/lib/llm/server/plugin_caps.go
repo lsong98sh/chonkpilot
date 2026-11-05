@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/bridge"
@@ -131,8 +133,112 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if tc == nil {
 			return nil, &pluginbridge.Error{Code: "turn_not_found", Msg: "turn 不存在或已结束"}
 		}
-		text, state, found := s.taskResult(tc, in.ID)
-		return map[string]any{"text": text, "state": state, "found": found}, nil
+		text, state, partial, found := s.taskResultDetail(tc, in.ID)
+		return map[string]any{"text": text, "state": state, "found": found, "partial": partial}, nil
+	})
+
+	// agent.delegate：**全能力委派子代理**（task_llm 的原子能力，2026-11-04）。
+	//
+	// 起一个完整子轮次（子会话 + 全工具面 + 同构 turnCtx 状态机，可再委派下一级），
+	// 调用方可等 wait_sec 后取结果（0 = 一直等到收尾；detach=true = 立即返回 running）。
+	// 子轮次使用独立 ctx —— 父轮次正常收尾不取消它；取消经 task_stop/tool_stop 关闭。
+	//
+	// 任务树：父调用节点下挂一个 kind=llm 子节点（SessionID/TurnID = 子轮次），
+	// 子轮次内的工具节点再挂在该节点下（多层工具调用可见、可级联取消）。
+	reg.Register("plugin/v1/agent.delegate", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
+		var in struct {
+			InstanceID string `json:"instance_id"`
+			Turn       string `json:"turn"`
+			Session    string `json:"session"`
+			ToolCallID string `json:"tool_call_id"`
+			Prompt     string `json:"prompt"`
+			Agent      string `json:"agent"`
+			SessionID  string `json:"session_id"`
+			Title      string `json:"title"`
+			Purpose    string `json:"purpose"`
+			WaitSec    float64 `json:"wait_sec"`
+			Detach     bool   `json:"detach"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, err
+		}
+		tc := s.lookupTurnIn(in.InstanceID, in.Turn)
+		if tc == nil {
+			return nil, &pluginbridge.Error{Code: "turn_not_found", Msg: "turn 不存在或已结束"}
+		}
+		prompt := strings.TrimSpace(in.Prompt)
+		if prompt == "" {
+			return nil, &pluginbridge.Error{Code: "args_invalid", Msg: "prompt 必填"}
+		}
+		subSession := strings.TrimSpace(in.SessionID)
+		if subSession == "" {
+			subSession = "sub-" + newID()
+		}
+		h, err := s.startChildTurn(context.Background(), tc.req, subSession, prompt, strings.TrimSpace(in.Agent))
+		if err != nil {
+			return nil, &pluginbridge.Error{Code: "delegate_failed", Msg: err.Error()}
+		}
+		// 父取消 / task-stop 级联：登记「父轮次 → 子轮次」（子轮次 ctx 独立于父收尾）。
+		s.registerDelegated(tc.req.InstanceID, tc.req.Turn, h)
+		// 子轮次任务节点：挂在发起该调用的工具节点之下（找不到则按树归属顶层）。
+		topSession, parentID := s.taskNodeBase(tc)
+		if in.ToolCallID != "" {
+			if n := s.tasks.findByToolCall(in.InstanceID, in.ToolCallID); n != nil {
+				parentID = n.TaskID
+			}
+		}
+		title := strings.TrimSpace(in.Title)
+		if title == "" {
+			title = oneLine(prompt, 60)
+		}
+		node, nerr := s.tasks.start(&TaskNode{
+			Tool: "task_llm", ToolCallID: in.ToolCallID, ParentID: parentID,
+			TopSession: topSession, Kind: TaskKindLLM, SessionID: h.Session, TurnID: h.Turn,
+			InstanceID: tc.req.InstanceID, Name: title, Purpose: strings.TrimSpace(in.Purpose),
+			Simplified: title,
+		})
+		if nerr != nil {
+			h.tc.Close()
+			return nil, &pluginbridge.Error{Code: "delegate_failed", Msg: nerr.Error()}
+		}
+		// 后台收尾：子轮次结束后推进节点终态（被 task_stop 取消时节点已终态，done 幂等）。
+		go func() {
+			defer s.forgetDelegated(tc.req.InstanceID, tc.req.Turn, h.Turn)
+			text, werr := h.wait(context.Background())
+			if werr != nil {
+				s.tasks.done(node.TaskID, TaskStateError, "", werr.Error())
+				return
+			}
+			s.tasks.done(node.TaskID, TaskStateDone, text, "")
+		}()
+
+		running := map[string]any{
+			"ok": true, "session_id": h.Session, "turn_id": h.Turn, "task_id": node.TaskID,
+			"state": "running", "partial": s.partialTurnText(tc.req.InstanceID, h.Turn),
+		}
+		if in.Detach {
+			return running, nil
+		}
+		wait := 0 * time.Second
+		if in.WaitSec > 0 {
+			wait = time.Duration(in.WaitSec * float64(time.Second))
+		}
+		if !delegatedWait(h, wait) {
+			running["partial"] = s.partialTurnText(tc.req.InstanceID, h.Turn)
+			return running, nil
+		}
+		// 收尾竞态：后台 goroutine 可能刚把结果写回节点，等待其可见。
+		text, werr := h.wait(context.Background())
+		if werr != nil {
+			return map[string]any{
+				"ok": false, "session_id": h.Session, "turn_id": h.Turn, "task_id": node.TaskID,
+				"state": "error", "error": werr.Error(),
+			}, nil
+		}
+		return map[string]any{
+			"ok": true, "session_id": h.Session, "turn_id": h.Turn, "task_id": node.TaskID,
+			"state": "done", "text": text,
+		}, nil
 	})
 
 	// tool.stop：tool_stop 的完整语义（终态判定 / 执行池门控 / process_id 拒绝）留在
@@ -342,4 +448,14 @@ func (s *Server) resolveInstanceForWorkDir(instanceID, workDir string) string {
 		return id
 	}
 	return ""
+}
+
+// oneLine 把文本压成单行并按 rune 截断（委派子代理任务节点标题用；不改变原文语义）。
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if max <= 0 || utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	r := []rune(s)
+	return string(r[:max]) + "…"
 }

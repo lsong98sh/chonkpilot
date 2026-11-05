@@ -27,11 +27,22 @@ function parseCards(text) {
 
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/\s+$/, '');
+    if (line.trim() === '') {
+      listKey = null;
+      continue;
+    }
 
     const h = line.match(/^###\s+([A-Z]{3}-\d+)\s*[·:：]\s*(.*)$/);
     if (h) {
       cur = { id: h[1], name: h[2].trim(), fields: {} };
       cards.push(cur);
+      listKey = null;
+      continue;
+    }
+    // 任何非卡片标题（# / ## / ### 非 ID）都结束当前卡片作用域，
+    // 避免“附录”“说明”等章节下的 bullet 被并入上一张卡片。
+    if (/^#{1,6}\s+/.test(line)) {
+      cur = null;
       listKey = null;
       continue;
     }
@@ -60,9 +71,28 @@ function parseCards(text) {
 }
 
 function loadDir(dir) {
+  let files;
+  try {
+    files = fs.readdirSync(dir);
+  } catch (e) {
+    const reason = e.code === 'ENOENT'
+      ? '目录不存在'
+      : e.code === 'ENOTDIR'
+        ? '路径不是目录'
+        : `目录不可读（${e.message}）`;
+    console.error(`错误：${reason}：${dir}`);
+    console.error('用法：node check.mjs <设计文件目录>');
+    process.exit(2);
+  }
+
   const cards = [];
-  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.md'))) {
+  for (const f of files.filter((x) => x.endsWith('.md'))) {
     cards.push(...parseCards(fs.readFileSync(path.join(dir, f), 'utf8')));
+  }
+  if (cards.length === 0) {
+    console.error(`错误：目录中没有可识别的设计卡片：${dir}`);
+    console.error('提示：卡片标题须为「### PREFIX-N · 名称」，且至少存在一张对象/状态/状态迁移/动作卡片。');
+    process.exit(1);
   }
   return cards;
 }
@@ -79,7 +109,7 @@ const of = (cards, p) => cards.filter((c) => c.id.startsWith(p + '-'));
 // ---------- 校验 ----------
 
 function run(cards) {
-  const find = { 重号: [], 缺必填字段: [], 悬空引用: [], 幽灵对象: [], 断头状态: [], 死路状态: [], 不可达状态: [], 无业务理由的边: [] };
+  const find = { 重号: [], 缺必填字段: [], 悬空引用: [], 幽灵对象: [], 断头状态: [], 死路状态: [], 不可达状态: [], 跨对象迁移: [], 无业务理由的边: [] };
 
   const seen = new Map();
   for (const c of cards) {
@@ -123,18 +153,37 @@ function run(cards) {
     if (!m || !ids.has(m[1])) find.幽灵对象.push(`${o.id}（创建来源无效：${s}）`);
   }
 
-  // 状态图
+  // 状态图：按对象隔离建图；迁移两端必须属于同一对象，且与迁移卡「所属对象」一致
   const states = of(cards, 'STA');
   const trans = of(cards, 'TRN');
-  const outEdges = new Map();
-  const inEdges = new Map();
+  const stateById = new Map(states.map((s) => [s.id, s]));
+  const graphs = new Map(); // 对象 ID -> { out: Map<状态ID, 状态ID[]> }
+  const graphOf = (obj) => graphs.get(obj) ?? { out: new Map() };
+
   for (const t of trans) {
     const a = String(t.fields['从状态'] ?? '').trim();
     const b = String(t.fields['到状态'] ?? '').trim();
-    if (!outEdges.has(a)) outEdges.set(a, []);
-    outEdges.get(a).push(b);
-    if (!inEdges.has(b)) inEdges.set(b, []);
-    inEdges.get(b).push(a);
+    const sa = stateById.get(a);
+    const sb = stateById.get(b);
+    if (!sa || !sb) continue; // 状态不存在已由「悬空引用」报告
+
+    const owner = String(t.fields['所属对象'] ?? '').trim();
+    const oa = String(sa.fields['所属对象'] ?? '').trim();
+    const ob = String(sb.fields['所属对象'] ?? '').trim();
+    if (oa !== ob) {
+      find.跨对象迁移.push(`${t.id}（${a} 属于 ${oa || '未填'}，${b} 属于 ${ob || '未填'}，迁移跨对象）`);
+      continue;
+    }
+    if (owner && owner !== oa) {
+      find.跨对象迁移.push(`${t.id} 的「所属对象」= ${owner}，与两端状态所属 ${oa || '未填'} 不一致`);
+      continue;
+    }
+
+    const key = oa || owner;
+    if (!graphs.has(key)) graphs.set(key, { out: new Map() });
+    const out = graphs.get(key).out;
+    if (!out.has(a)) out.set(a, []);
+    out.get(a).push(b);
   }
 
   for (const o of of(cards, 'OBJ')) {
@@ -142,12 +191,13 @@ function run(cards) {
     const inits = mine.filter((s) => isYes(s.fields['是否初始']));
     if (inits.length !== 1) find.断头状态.push(`${o.id} 的初始状态数量 = ${inits.length}（应为 1）`);
 
-    // BFS 可达性
+    // BFS 可达性：只沿本对象的状态迁移走
     if (inits.length === 1) {
+      const out = graphOf(o.id).out;
       const seenS = new Set([inits[0].id]);
       const q = [inits[0].id];
       while (q.length) {
-        for (const nx of outEdges.get(q.shift()) ?? []) {
+        for (const nx of out.get(q.shift()) ?? []) {
           if (!seenS.has(nx) && nx) { seenS.add(nx); q.push(nx); }
         }
       }
@@ -156,7 +206,8 @@ function run(cards) {
   }
 
   for (const s of states) {
-    if (!isYes(s.fields['是否终态']) && (outEdges.get(s.id) ?? []).length === 0) {
+    const owner = String(s.fields['所属对象'] ?? '').trim();
+    if (!isYes(s.fields['是否终态']) && (graphOf(owner).out.get(s.id) ?? []).length === 0) {
       find.死路状态.push(`${s.id}（${s.name}，非终态但没有出边）`);
     }
   }

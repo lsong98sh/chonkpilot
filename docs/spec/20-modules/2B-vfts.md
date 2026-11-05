@@ -1,16 +1,16 @@
 # 2B · vfts（全文检索索引）
 
-> 状态：✅ 与代码一致
+> 状态：⚠️ 部分与代码一致（2026-11-04 核对：引擎 FTS/会话索引/文档转换/编码真实且测试充分；插件编排、工具计数、网关注册、状态键已修正）
 > 关联：[28-plugins §3.4](28-plugins.md) · [29-codegraph](29-codegraph.md)（同构对照） · [2F-ignore](2F-ignore.md) · [38-检索与索引](../30-function-points/38-检索与索引.md)
-> 代码目录：`chonkpilot-plugins/codegraph/src/engines/vfts/`（引擎 exe，含 `server/`；2026-10-24 随插件整体迁出主仓）· 主仓已无 `src/plugins/plugin-vfts/`
+> 代码目录：`chonkpilot-plugins/codegraph/src/engines/vfts/`（引擎源码，含 `server/`；**以库形式编入 `codegraph` 插件进程**，独立 exe 仅构建自检；2026-10-24 随插件整体迁出主仓）· 主仓已无 `src/plugins/plugin-vfts/`
 
 ---
 
 ## 1. 职责与边界
 
-- **一句话**：进程内 **zvec（C-API）FTS 全文索引**的**独立 console mcp-server**（引擎）+ 宿主侧插件（按 workdir 管理引擎子进程、编排增量/全量索引并向 gateway 注册查询工具）。**宿主侧主形态 = `codegraph` exe 插件**（进程外，codegraph + vfts 合一，见 [28 §3.4](28-plugins.md)）；**原 `plugin-vfts` 进程内 Hook 已于 2026-10-27 删除**，无兼容形态。
-- **做**：纯文本（源码 + `.txt`/`.md` 等）与**文档类**（Office/PDF，经外部转换服务抽文本）的全文索引、按文件增量（文件清单驱动）、6 个引擎工具（5 管理 + 1 查询）+ 1 个查询工具注册、进度回写与空闲子进程回收、**jieba 分词（系统级词典）**。
-- **不做**：不做向量语义检索（阶段 2，HNSW 后置）；不启动文档转换服务（由用户手动注册/启动）；不落 `chonkpilot.db`（索引独立目录）；引擎侧不做可见性门控（门控在插件）；**不做项目级/用户级词典覆盖**（词典只有系统级一份）。
+- **一句话**：**zvec（C-API）FTS 全文索引引擎**（可独立 console 运行自检）+ **`codegraph` 进程外 exe 插件**（codegraph + vfts 合一）。**引擎以库形式编入插件进程**（`go.mod` require + `replace`，直接 import），运行期**不 spawn stdio 子进程**；原 `plugin-vfts` 进程内 Hook 已于 2026-10-27 删除，无兼容形态。**（2026-11-04 核对）**
+- **做**：纯文本（源码 + `.txt`/`.md` 等）与**文档类**（Office/PDF，经外部转换服务抽文本）的全文索引、**9 个引擎工具**（5 管理 + 3 会话管理 + 1 查询）与 1 个查询工具注册、**jieba 分词（系统级词典）**、会话内容索引与后台对账。引擎支持按文件增量（`vfts_index {files,remove}`），但**插件当前只做全量重建**。
+- **不做**：不做向量语义检索（阶段 2，HNSW 后置）；不启动文档转换服务（由用户手动注册/启动）；不落 `chonkpilot.db`（索引独立目录）；引擎侧不做可见性门控；**不做项目级/用户级词典覆盖**（词典只有系统级一份）。**插件侧无 `vfts.dict.*` UI 动作面**（词典仅经引擎管理工具/直接调用维护）。
 - **与 codegraph 的定位差异**：vfts = **全文检索**（FTS，可命中自然语言/中文），codegraph = **代码语义索引**（符号/调用图）；两者引擎各自独立落盘、工具面互不重叠。
 
 ---
@@ -19,21 +19,21 @@
 
 | 项 | 引擎（vfts-mcp-server） | 插件（`codegraph` 内的 vfts 实现） |
 |----|--------------------------|---------------------|
-| 形态 | 独立 exe（console，**CGO 允许**——链接 zvec C-API） | **`codegraph` exe 插件内侧（进程外）**；无进程内 Hook 形态 |
-| 运行 | `--http[=<addr>]`（默认 `127.0.0.1:5702`，端点 `/mcp`）· `--stdio` · `-probe <dir>`（自检：建索引打印汇总，可附 `-match`/`-query`/`-topk`/`-stack-gitignore`） | stdio 子进程管理（懒建 client） |
-| 构建 | `build-vfts.ps1`（`CGO_ENABLED=1`） | `build-plugins.ps1` 产出插件（`chonkpilot-plugins/codegraph`）；**无兼容 Hook** |
-| 产物 | `dist/desktop/mcps/vfts/chonkpilot-vfts-mcp-server.exe` + `zvec_c_api.dll`（**同目录**，CGO 运行时必需） | — |
-| 引擎定位 | `Options.Exe` > 环境变量 `VFTS_EXE` > **`<exeDir>/mcps/vfts/chonkpilot-vfts-mcp-server.exe`**（`resolveExe`，**不做多路径猜测**，缺失即 `Start` 失败） | — |
+| 形态 | 独立 exe（console，**CGO 允许**——链接 zvec C-API），用于单独运行/自检 | **`codegraph` exe 插件；vfts 引擎库内联**（`codegraph/src/go.mod:16-17,37-39`）；无进程内 Hook |
+| 运行 | `--http[=<addr>]`（默认 `127.0.0.1:5702`，端点 `/mcp`）· `--stdio` · `-probe <dir>`（自检：建索引打印汇总，可附 `-match`/`-query`/`-topk`/`-stack-gitignore`） | **进程内直调引擎库**（`main.go:23-24`），**无 stdio 子进程 / 无懒建 client** |
+| 构建 | `build-vfts.ps1`（`CGO_ENABLED=1`） | `build-plugins.ps1` 产出 `chonkpilot-plugin-codegraph.exe`；引擎经 `require` + `replace` 编入 |
+| 产物 | `dist/plugins/vfts/chonkpilot-vfts-mcp-server.exe` + 同目录 `zvec_c_api.dll`（独立自检用）；**发行默认不投放 `dist/desktop/mcps/vfts/`** | `dist/plugins/codegraph/chonkpilot-plugin-codegraph.exe` + `zvec_c_api.dll` |
+| 引擎定位 | ~~`Options.Exe` > `VFTS_EXE` > `<exeDir>/mcps/vfts/...`~~ **不存在**（无 `resolveExe` / `VFTS_EXE` / `os/exec`） | — |
 
-> 与主模块 CGO 禁令不冲突：**禁令仅针对 `src/desktop`（`-H windowsgui` 单 exe）**；本组件是独立 console 组件，自由用 CGO（`github.com/zvec-ai/zvec-go`）。
-> **不内嵌引擎**：与 codegraph 同构——引擎外置 exe，插件按需 lazily spawn `--stdio` 子进程。
+> 与主模块 CGO 禁令不冲突：**禁令仅针对 `src/desktop`（`-H windowsgui` 单 exe）**；引擎库编入的 `codegraph` 插件自由用 CGO（`github.com/zvec-ai/zvec-go`）。
+> **引擎库内联（不是「不内嵌」）**：vfts 引擎以 Go module 直接编入 `codegraph` 插件进程（`require` + `replace` + 直接 import），运行期不 spawn 子进程。**（2026-11-04 核对）**
 > **jieba 基础词典 vendor + 内嵌**：`chonkpilot-plugins/codegraph/src/engines/vfts/third_party/jieba/{jieba.dict.utf8,hmm_model.utf8}`（约 5.6MB，来源 cppjieba MIT，经 `github.com/yanyiwu/gojieba@v1.4.0` 取得；LICENSE 见同目录 `LICENSE.cppjieba`）经 `//go:embed` **内嵌进引擎 exe**（`third_party/jieba/dict.go`），**产物不新增词典文件**；运行时首次初始化 zvec 前物化到**系统级**缓存目录。**二进制词典不得用文本工具编辑**。
 
 ---
 
 ## 3. 对外接口
 
-### 3.1 引擎工具（6 = 5 管理 + 1 查询）
+### 3.1 引擎工具（9 = 5 管理 + 3 会话管理 + 1 查询）
 
 | 工具 | hot | 说明 |
 |------|:---:|------|
@@ -42,27 +42,30 @@
 | `vfts_status` | ✗ | 状态：`state`（`""`未初始化 / `indexing` / `ready` / `error`）+ 进度 + `indexedFiles`/`chunkCount`/`tokenizer`/`exts`；文档态 `docsEnabled`/`docsService(running\|absent)`/`docsSkipped`/`docsFailed`/`docsParserVersion`。 |
 | `vfts_dict_get` | ✗ | 查看**系统级** jieba 词典：`dict_dir`（系统词典目录）/ `user_dict_path`（自定义词文件）/ `user_dict`（自定义词全文）/ `word_count`（词条数）/ `base_dicts`（内嵌基础词典文件名）。 |
 | `vfts_dict_set` | ✗ | 编辑**系统级**自定义词（覆写 `user_dict.txt`；每行一词、`#` 注释行忽略）→ `{ok, word_count}`。**词典变更后必须重建索引**才生效。 |
-| `vfts_query` | ✓ | 检索：`match`（自然语言匹配串）/ `query`（布尔表达式，**不支持 `content:` 字段前缀**）至少其一；`topK`（默认 20，文件级去重）；`path` 子串过滤。返回命中文件 + `snippet`/`line`/`score`/`loc`。 |
+| `vfts_session_index` | ✗ | 写入/删除**会话内容索引**：`docs[{session_id,dialog_id?,turn_id?,message_id,role,ts?,text}]` / `remove[...]`；按 `message_id` 先删后插（幂等）→ `{added,removed,total}` |
+| `vfts_session_clear` | ✗ | 清空会话索引：给 `session_id` 只清该会话，缺省清空整个集合（含落盘目录）→ `{ok,removed}` |
+| `vfts_session_status` | ✗ | 会话索引状态：`state`（`""` / `ready` / `error`）、`sessions`、`docs`、`lastIndexedAt` |
+| `vfts_query` | ✓ | 检索：`match`（自然语言匹配串）/ `query`（布尔表达式，**不支持 `content:` 字段前缀**）至少其一；`topK`（默认 20，文件级去重）；`path` 子串过滤；`scope=file\|session`。返回命中文件 + `snippet`/`line`/`score`/`loc`（会话范围返回消息级命中）。 |
 
-- 查询必备 `workdir`；`readyGate` 未就绪 → 结构化应答（`not_initialized`/`pending`(indexing)/`error`，**不算协议错误**）。`vfts_dict_get`/`vfts_dict_set` 为**系统级**（无 `workdir`；由插件 vfts.dict.* 面调用）。
-- ~~**resident indexer 完整性门（2026-10-19）**：`<workdir>/.chonkpilot/vfts/status.json` …~~ **〔2026-10-25 退场，D-71〕**：`status.json` / `readyGate` / `indexer.lock` / `manifest-indexer.json` 随 resident indexer 一并删除；状态面只剩 `vfts.status`（prjusr 派生键，插件回写），清单 = `<workdir>/.chonkpilot/vfts/file_list.json`（插件自持）。
-- ~~**resident indexer（2026-10-19，P4b；同日改单实例多 workdir + 托盘 + 并发口径）**……~~ **〔2026-10-25 退场，D-71〕**：`chonkpilot-vfts-indexer.exe`、`src/lib/llm/vftsindexer`、`queuehooks`、`plugin.index.*` 四帧与宿主 `index_queue` **全部删除**。索引改由 **vfts 插件进程内自管**：订阅 `filesys.changed` → 按 workdir 去抖（2s）→ `ensureWorkspace(wd,false)` 走清单 diff 增量（`vfts_index`）→ 回写 `vfts.status`；未就绪/在途重建时由 `ensureWorkspace` 全量兜底。
-- **查询侧 LOCK 处理（2026-10-19）**：查询 executor 遇 zvec 集合被占用 → 有界重试（200ms×15 ≈ **3s**），超时返回「**正在索引，不可用**（索引库被另一进程占用，已等待约 3 秒，请稍后重试）」；就绪门 `status=error` **保留原始错误文本**，executor / 插件 `callgate` 按 lock/timeout 识别（结构化应答也可重试）。登记 [41 G-67](../40-roadmap/41-未决项登记.md)；跨进程故障注入测试见 codegraph 侧 `execx/lock_test.go`（同口径）。
+- 查询必备 `workdir`（引擎 schema）；`readyGate` 未就绪 → 结构化应答（`not_initialized`/`pending`(indexing)/`error`，**不算协议错误**）。`vfts_dict_get`/`vfts_dict_set` 为**系统级**（无 `workdir`）。**（2026-11-04 核对）插件侧没有 `vfts.dict.*` 动作/订阅/配置页入口**（宿主 `bridge/capabilities.go` 仍有 `plugin/v1/vfts.dict.set → vfts.dict.set` 映射，但无消费者，属死能力）。
+- ~~**resident indexer 完整性门（2026-10-19）**：`<workdir>/.chonkpilot/vfts/status.json` …~~ **〔2026-10-25 退场，D-71〕**：`status.json` / `readyGate` / `indexer.lock` / `manifest-indexer.json` 随 resident indexer 一并删除；状态面曾只剩 `vfts.status`（prjusr 派生键，插件回写），**该键也已于 2026-10-28（PLUGIN-UI-2）退场**，状态经插件动作 `engine-status` / `badge` 现取；清单 = `<workdir>/.chonkpilot/vfts/file_list.json`（插件自持）。**（2026-11-04 核对）**
+- ~~**resident indexer（2026-10-19，P4b；同日改单实例多 workdir + 托盘 + 并发口径）**……~~ **〔2026-10-25 退场，D-71〕**：`chonkpilot-vfts-indexer.exe`、`src/lib/llm/vftsindexer`、`queuehooks`、`plugin.index.*` 四帧与宿主 `index_queue` **全部删除**。索引改由 **vfts 插件进程内自管**：订阅 `filesys.changed` / `session-complete`（2026-10-31 G-84 恢复）→ 按 workdir **5s 去抖 → 全量重建**；**无 `ensureWorkspace` / 清单 diff / 增量同步**，**不回写 `vfts.status`**。**（2026-11-04 核对）**
+- **查询侧 LOCK 处理（历史；2026-11-04 核对已无调用点）**：原查询 executor 的 zvec 占用有界重试（200ms×15 ≈ **3s**）实现仍遗留于 `engines/vfts/execx/execx.go`，但该 executor **已随 PLUGIN-EDGE-1（2026-10-28）退场**，插件进程内直调引擎，**不再有该重试路径**；`readyGate` 的 `error` 仍保留原始错误文本。
 - **引擎侧 `Configure` 的 `enabled` 仅记录/存档**，真正门控在插件（与 codegraph 同口径）。
 
-### 3.2 插件注册到 gateway 的查询工具（1）
+### 3.2 插件对外注册的查询工具（1）
 
 | 工具 | 契约 |
 |------|------|
-| `vfts_query` | 与引擎**同名同描述**，schema **去掉 `workdir`**（由插件按 `context.instance_id` 注入）；`handler_subject=vfts-tool-call`，`hot=true`，`category=vfts`，`owner=vfts`。 |
+| `vfts_query` | 与引擎**同名同描述**，schema **去掉 `workdir`**（由插件从 `_meta.chonkpilot.work_dir` 注入）；经**插件自带 MCP server** `hot=true` 注册，manifest `category=codegraph`、`origin=builtin`；**无 `handler_subject` / `owner`**。**（2026-11-04 核对）** |
 
-管理工具（`vfts_configure`/`vfts_index`/`vfts_status`/`vfts_dict_get`/`vfts_dict_set`）**不注册**给 gateway——插件直接调引擎。
+管理工具（`vfts_configure`/`vfts_index`/`vfts_status`/`vfts_dict_*`/`vfts_session_*`）**以 hot=false 注册进插件自带 MCP server**（不进 `hot_tools` → LLM 不可见）——插件/配置页直接调引擎；**不经 gateway `tools/register`**。**（2026-11-04 核对）**
 
 **查询 executor 已退场（PLUGIN-EDGE-1，2026-10-28）**：`vfts_query` 现由 `codegraph` 插件进程内的引擎直挂执行（引擎库内联，不 spawn stdio 子进程）；`chonkpilot-vfts-query-executor.exe` 与 `src/initdata/capability/tools/vfts/vfts_query.tool.md` 均不再存在/不再构建，插件 `onToolCall` 也不再委托 core。下文「先委托 core / 回落本地引擎」为历史口径（G-68 第二步，已撤）。
 
 ### 3.3 插件订阅/发布的消息面（[61-消息一览](../60-reference/61-消息一览.md)）
 
-- 订阅：`instance-register` / `instance-heartbeat` / `instance-exit` · `data-prj-config-refresh` · 工具回调 `vfts-tool-call` · **管理面 `vfts.dict.get` / `vfts.dict.set` / `vfts.reindex`**（UI ↔ 插件，点分相对主题、同主题 promise 写回 `v.Result`；插件分别直调引擎 `vfts_dict_get`/`vfts_dict_set` 与调度强制重建）。**〔2026-10-31 G-84〕**：`codegraph` 插件另订阅 `filesys.changed` / `session-complete` → 按 workdir 去抖（5s）全量重建启用引擎；`vfts.reindex` 回执 `{ok,started:true}`（后台去抖重建）。
+- 订阅：`instance-register` / `instance-exit` · `data-prj-config-refresh` · `server-ready` · **`filesys.changed` / `session-complete`**（2026-10-31 G-84 恢复：按 workdir 去抖 **5s → 全量重建**）。**`vfts.reindex` / `vfts.session.query` / `vfts.session.reindex` 是 UI `OnRequest` 动作，不是总线订阅**；**无 `instance-heartbeat`、无 `vfts-tool-call`、无 `vfts.dict.get/set` 订阅**。**（2026-11-04 核对）**
 - 发布：`mcp-tools-register` / `mcp-tools-unregister`（gateway 方法面）· `data-prj-config-load`/`save`（读写配置键）。**运行态不回写 prj 键**：`vfts.status` 已随 PLUGIN-UI-2（2026-10-28）整体退场，状态经插件动作 `engine-status` / `badge` 现取。**文件清单不经消息面**（2026-10-25：插件自持 `<workdir>/.chonkpilot/vfts/file_list.json`，D-71；原 `data-filelist-*` 三主题已退场）。
 
 ### 3.4 配置键（prj 库）
@@ -75,7 +78,9 @@
 | `plugins.codegraph.vfts.stack-gitignore` | 是否叠加各级 `.gitignore` / `.git/info/exclude` / 全局 ignore |
 | `plugins.codegraph.vfts.docs` | 是否索引文档类（Office/PDF，需转换服务；默认关） |
 | `plugins.codegraph.vfts.doc-max-mb` | 文档类单文件上限（整数 MB；缺省 50） |
-| `vfts.status` | 引擎状态 JSON 文本（插件回写、UI 只读回显） |
+| `plugins.codegraph.vfts.encoding` | 遗留文本编码（D-73）：`""`/`auto` = 自动识别；可指定 `utf-8`/`utf-16le`/`utf-16be`/`gbk`/`gb18030`/`shift_jis`/`big5`/`euc-kr` |
+| `plugins.codegraph.vfts.sessions` | 会话内容索引开关（`"true"`/`"false"`，缺省关闭；见 §3.5） |
+| ~~`vfts.status`~~ | **已退场**（PLUGIN-UI-2，2026-10-28）：插件不回写、宿主不读；状态经 `engine-status` / `badge` 现取。**（2026-11-04 核对）** |
 
 ### 3.5 会话内容索引（SESSION-FTS，2026-11-01 新增）
 
@@ -125,7 +130,7 @@ Initialize：
   - 排除走 `chonkpilot-util/ignore` 的 `ignore.New(...).WalkDir` / `ignore.WalkDir`（2026-10-31 起内核 + I/O 同包，与 codegraph、vfts 插件清单扫描**同一实现**）；规则来源/优先级/语义见 [29 §4.1](29-codegraph.md)。
 - **FTS 分词器（`tokenizer` = 固定 `jieba`）**：`server/workspace.go` 常量 `tokenizer = "jieba"`；`zvec.NewFTSIndexParams("jieba", ["lowercase"], extra_params)`（`server/store.go` `buildSchema`/`jiebaExtraParams`），`extra_params` = `{"jieba_dict_dir":<系统词典目录>,"user_dict_path":<自定义词文件>,"cut_mode":"search"}`。过滤器 `lowercase`（英文大小写归一；jieba 本身不对 ASCII 归一）。**中文按词切分**（提升中文召回）；实测判红：跨词相邻字串 `文检` **不**命中（`standard` 下会命中）。zvec 另支持 `ngram`/`whitespace` 分词器与 `ascii_folding`/`stemmer` 过滤器，当前**未启用**。
   - **系统级词典（`server/dict.go`，只有系统级一份）**：目录 = `<系统缓存根>/chonkpilot/vfts/jieba`（Windows = `%LocalAppData%\chonkpilot\vfts\jieba`；`os.UserCacheDir()` 不可得 → 系统临时目录）。内容 = **内嵌基础词典**（`jieba.dict.utf8`/`hmm_model.utf8`，首次初始化 zvec 前物化，按大小判等跳过；**只读**） + **自定义词** `user_dict.txt`（每行一词、`#` 注释；由 `vfts_dict_set` 覆写）。引擎初始化时先 `zvec.SetDefaultJiebaDictDir(dir)` 再 `zvec.Initialize`；建集合时再经 `extra_params` 显式下发同一目录。
-  - **分词器/词典变更 → 必须重建索引**（分词结果落在索引里）：① 代码侧 `Meta.tokenizer` 与当前常量不一致（`server/workspace.go` `loadMeta`）→ 复位 `state=""`，插件据此走全量重建并换掉旧集合；② 自定义词变更（`vfts.dict.set`）→ 插件对该 workdir 调度强制重建；③ 配置页「重新索引」按钮（`vfts.reindex`）→ 手动全量重建。
+  - **分词器/词典变更 → 必须重建索引**（分词结果落在索引里）：① 代码侧 `Meta.tokenizer` 与当前常量不一致（`server/workspace.go` `loadMeta`）→ 复位 `state=""`，插件据此走全量重建并换掉旧集合；② 自定义词变更（引擎 `vfts_dict_set`）→ **需手动重建**（插件无 `vfts.dict.*` 动作，不会自动触发）；③ 配置页「重新索引」按钮（`vfts.reindex`，`OnRequest`）→ 手动全量重建。**（2026-11-04 核对）**
   - **语义已有 L1 可判红自动断言**：`server/incremental_test.go` `TestTokenizerSemanticsJieba`（中文词命中 / 非词字串 `文检` 判红不命中 / `keyword` 命中 `Keyword` / `run` 不命中 `running`）+ `TestSystemDictMaterializeAndTools`（基础词典物化 + 系统级词典查看/编辑往返）。
 
 ### 4.2 引擎：按文件增量（`Incremental`）
@@ -151,33 +156,26 @@ Initialize：
 - **并发**：转换阶段走 worker 池（`defaultDocWorkers=6`）；zvec 写入仍串行。
 - **loc 映射**：文档定位（页码/sheet 名/slide 序号）按 UTF-8 字节偏移映射；转换文本按 `doc_text_max_bytes`（默认 2MiB）按字节截断（回退到有效 UTF-8 边界）。
 
-### 4.5 插件：启用编排（`chonkpilot-plugins/codegraph` `ensureWorkspace`）
+### 4.5 插件：索引编排（`codegraph` 插件）
+
+**实际实现（2026-11-04 核对）**：插件**没有** `ensureWorkspace` / `maybeEnsure` / `incrementalSync` / `diffManifest` / `startProgressPoll` / `maybeDocServiceAppeared` / `syncTools` / `sweepIdleClient`。实际路径：
 
 ```text
-（启用态且索引未就绪 → maybeEnsure 后台触发；或索引配置变更 → 去抖强制重建）
-ensureWorkspace(force)：
-  0) readIndexConfig（exts / skip_dirs / stack） + readDocsConfig（docs / doc-max-mb）
-  0b) probeDocsService（索引前强制复探转换服务）
-  1) vfts_configure（enabled/exts/skip_dirs/stack_gitignore + docs 字段**恒下发**；服务不可用 = 空 endpoint/token）
-  2) vfts_status 快检 → ready？
-     - 解析器版本变化 → 清文档缓存 + 强制全量
-  3) ready 且非强制 → incrementalSync（扫描 → 清单 diff → 按文件增量 → 回写清单）
-  4) 否则全量：pushStatusPhase(index) + startProgressPoll（500ms 轮询引擎 meta.json）+ vfts_index → 重建清单
-  末了 mergeSyncStatus 回写 vfts.status（added/updated/removed/skipped + docsPort）
+配置保存（一次多键 Set）或 filesys.changed / session-complete
+  → 400ms（配置）/ 5s（事件）去抖
+  → apply：probeDocsService（下发前强制复探）
+  → vfts_configure（enabled/exts/skip_dirs/stack_gitignore + docs 字段恒下发；服务不可用 = 空 endpoint/token）
+  → vfts_index（不传 files/remove = 全量重建）
+  → 按引擎 indexed 重写 file_list.json
 ```
 
-- **文件清单驱动增量（`manifest.go`）**：清单 = **插件自持本地文件** `<workDir>/.chonkpilot/vfts/file_list.json`（与 `meta.json` / 文档缓存同目录；原子写 temp+rename；2026-10-25 D-71 起不再落 prj 库、不经 `data-filelist-*`）记录每个文件的 `key(sha1(绝对路径)前8字节)`/`size`/`mtime`/`md5`/`doc_ids`/`chunks`/`indexed_at`。清单是**派生缓存**（缺失/损坏 → 空 → 一次全量重建）。diff 判定（纯函数 `diffManifest`）：
-  - ① 新文件（清单无 key）→ 待索引；
-  - ② `size`+`mtime` 未变 → 跳过（不算 md5，省 IO）；
-  - ③ 变化 → 算 md5：与清单一致 → 仅更新 mtime；不一致 → 待索引（先按旧 `doc_ids` 删块）；
-  - ④ 清单有、本次扫描没有 → 待删除（按 `doc_ids` 删块）。
-  - **文档类行 md5 携带解析器版本**（`<md5hex>@<parserVersion>`，复用 md5 口径）：版本变化 → 该行失效重建 + 插件清缓存目录。
-- **去抖（`rebuildDebouncer`，400ms）**：设置页一次保存写 `plugins.codegraph.vfts.exts`+`plugins.codegraph.vfts.skip-dirs`(+`plugins.codegraph.vfts.stack-gitignore`) 多键 = 多次 `data-prj-config-refresh` → 逐键展开后经去抖合并为**一轮**重建；窗口外单键变更仍触发（不漏重建）。
-- **进度推送（零新增主题）**：索引期间 `startProgressPoll` 每 500ms 读引擎落盘 `meta.json` 的 `done/total`，变化即回写 `vfts.status`（`{state:"indexing", phase:"configure"\|"index", progressDone, progressTotal}`）；收口写 `ready`/`error`。UI 只读回显该键。
-- **转换服务「后启动」容错**：`tick` 内 `maybeDocServiceAppeared` —— 存在「启用中且 docs 开启」的 workdir 且探测到服务由不可用→可用（跳变）→ 经去抖调度一次**增量同步（`ensureWorkspace(force=false)`）**（服务缺席时文档类未入清单，服务到位后被 diff 判为 `added` 增量接入；**不做全量重建**，服务抖动跳变时避免反复重建的高成本）。
-- **可见性收敛（`syncTools`，单飞）**：应注册 = 存在某 workdir `refs>0 && enabled=true`。v1 限制：gateway `tools/register` 无 scope → 同名工具全局只注册**一份**（归属排序后第一个 workdir），执行按 `context.instance_id` 路由。
-- **空闲回收（`sweepIdleClient`，15s 扫描）**：无任何活跃实例（`refs==0`）且距 `lastActiveAt` ≥ `childIdleTimeout`（5min）→ 关闭**全局共享**引擎子进程（下次 `sharedClient()` 懒重建）。这与 codegraph 的**每 workdir 独立**子进程不同（vfts 仍为全局共享 client —— 与 28-plugins §3.4 一致）。
-- **实例退出**：显式 `instance-exit` 恒有效；`-tags split` 编入时另由 `sweepInstances` 按 `instance.HeartbeatTimeout`（90s）判超时 → 走既有 `instanceGone`；**唯一形态 desktop（默认构建）为空实现**（见 `sweep_split.go` / `sweep_inprocess.go`）。
+- **无增量编排**：引擎支持 `vfts_index {files,remove}` 与 `Reconcile`，但插件**没有任何增量调用方**（配置/事件一律全量 `vfts_index`）；`config.go` 注释明确「清单 md5 增量 diff 已随内嵌 hook 退场，暂不重做」。
+- **文件清单（`manifest.go`）只写不扫**：`<workDir>/.chonkpilot/vfts/file_list.json`（原子写 temp+rename；2026-10-25 D-71 起不落 prj 库、不经消息面）记录 `key(sha1(绝对路径)前16 hex)`/`path`/`size`/`mtime`/`md5`/`doc_ids`/`chunks`/`indexed_at`；`md5` **留空**，无 `scanFiles` / `diffManifest`（增量应答直接跳过清单更新，`manifest.go:44-45`）。
+- **去抖**：配置变更 **400ms**、工作区事件 **5s**；一次保存是**一个**多键 `data-prj-config-save` 请求（非「多键 = 多次 refresh」），apply 侧做幂等（新旧值相同不重建），**无 dirty 键过滤**。
+- **进度/状态**：**无 500ms 轮询、无 `vfts.status` 回写**；进度经 `engine-status` / `badge` 现取（`state` / `progressDone` / `progressTotal` / `docsPort` 同源）。
+- **转换服务后启动**：无自动「服务出现 → 增量接上」逻辑；每次 apply 前强制复探，服务不可用时文档类整批跳过，后续**重建**时自然纳入。
+- **可见性**：**静态 MCP hot 注册**，无 `refs>0` / `syncTools`；v1 多 workdir 全局一份，执行按 `_meta.chonkpilot.work_dir` / `context.instance_id` 路由到进程内 Workspace。
+- **空闲回收 / 实例退出**：无引擎子进程、无 `sharedClient` / `sweepIdleClient`；实例失效只走显式 `instance-exit`（不订阅 `instance-heartbeat`）。
 
 ---
 
@@ -186,10 +184,10 @@ ensureWorkspace(force)：
 | 数据 | 位置 |
 |------|------|
 | 全文索引集合（zvec：字段 `path`/`line`/`content`(FTS)/`loc`） | `<workDir>/.chonkpilot/vfts/collection/`（zvec C-API 目录） |
-| 工作区元信息（`Meta`：enabled/state/进度/err/lastIndexedAt/skipDirs/stackGitignore/exts/fileCount/chunkCount/tokenizer/**nextPK**/docs） | `<workDir>/.chonkpilot/vfts/meta.json`（跨进程读取，进度推送/就绪门控用；**不含 token**） |
+| 工作区元信息（`Meta`：enabled/state/进度/err/lastIndexedAt/skipDirs/stackGitignore/exts/fileCount/chunkCount/tokenizer/**nextPK**/docs） | `<workDir>/.chonkpilot/vfts/meta.json`（供独立引擎/自检读取；**不含 token**；插件进程内直接取状态，无跨进程轮询） |
 | 文档转换缓存（文本 + locs） | `<workDir>/.chonkpilot/vfts/doc_text/<sha1>.json`（`.chonkpilot` 强制排除） |
 | 文件清单 `file_list.json`（key/size/mtime/md5/doc_ids/chunks/indexed_at） | **插件自持本地文件** `<workDir>/.chonkpilot/vfts/file_list.json`（原子写；2026-10-25 起不再落 prj 库、不经消息面） |
-| 启用开关 / 索引配置 / 状态 | `plugins.codegraph.vfts.enabled`·`plugins.codegraph.vfts.exts`·`plugins.codegraph.vfts.skip-dirs`·`plugins.codegraph.vfts.stack-gitignore`·`plugins.codegraph.vfts.docs`·`plugins.codegraph.vfts.doc-max-mb`·`vfts.status` → **prj 库 config**（团队共享；插件读写） |
+| 启用开关 / 索引配置 | `plugins.codegraph.vfts.enabled`·`.exts`·`.skip-dirs`·`.stack-gitignore`·`.docs`·`.doc-max-mb`·`.encoding`·`.sessions` → **prj 库 config**（团队共享；插件读写）。**`vfts.status` 已退场**（状态经 `engine-status`/`badge` 现取）。**（2026-11-04 核对）** |
 | 转换服务 token | **仅内存**（`Workspace.docsToken`，绝不落盘/落日志） |
 | **系统级 jieba 词典**（基础词典 + 自定义词） | `<系统缓存根>/chonkpilot/vfts/jieba/`（`os.UserCacheDir()` → Windows `%LocalAppData%`；**全机/全工作区共用一份**，非项目/用户级覆盖；基础词典内嵌物化、只读） |
 
@@ -201,7 +199,7 @@ ensureWorkspace(force)：
 ## 6. 依赖
 
 - 引擎：官方 `go-sdk` + **`github.com/zvec-ai/zvec-go` v0.7.0**（C-API，需 `zvec_c_api.dll`）+ `chonkpilot-util/ignore`（内核 + I/O 同包）。**CGO 来自 zvec**（见 §2 注）。
-- 插件：`chonkpilot-plugin-framework`（SDK）· `chonkpilot-util`；实现 = `chonkpilot-plugins/codegraph`，由宿主 `host/mgr` 拉起。**不依赖** mcp-tools / gateway / data（配置键经 persist 消息面读写；清单为本地文件）。
+- 插件：`chonkpilot-plugin-framework`（SDK）· `chonkpilot-util`；实现 = `chonkpilot-plugins/codegraph`，由宿主 `host/mgr` 拉起。**不依赖** mcp-tools / gateway / data（配置键经插件桥 `config.project.*` 读写；清单为本地文件）。**（2026-11-04 核对）**
 - 转换服务：`src/mcps/markitdown`（Python，**外部**，不在编译依赖内；插件只探测其状态文件 + 探活）。
 
 ---
@@ -219,7 +217,7 @@ ensureWorkspace(force)：
 | 文档字段「键存在即覆盖（含空值）」 | 服务不可用 = 空 endpoint/token | 否则引擎残留旧 endpoint → 误判可用 |
 | 全量重建 zvec 集合目录 | 清空 + `CreateAndOpen` | zvec 覆盖语义；幂等 |
 | 增量主键 = 单调递增数字串 | 避免与全量 `1..N` 冲突 | `NextPK` 跨调用单调 |
-| 文件清单（file_list）在插件侧 | 引擎只接收「要索引/删除的文件清单」 | 增量判定（md5/mtime）与去抖编排留插件 |
+| 文件清单（file_list）在插件侧 | 引擎只接收「要索引的文件」应答；插件按 `indexed` 回写清单 | 清单是派生缓存；**当前仅全量回写，md5 留空，无 diff** |
 | 管理工具 hot=false | 不发 LLM | 管理动作由插件调用 |
 | gateway 工具全局一份（v1） | 执行按 `context.instance_id` 路由 | gateway `tools/register` 无 scope |
 
@@ -231,19 +229,19 @@ ensureWorkspace(force)：
 - 非文档单文件 >8MB 跳过；文档类 >`doc_max_bytes` 跳过；二进制（前 8KB 有 NUL 且非 UTF-16 BOM）跳过；非中文遗留编码（Shift-JIS/Big5/EUC-KR）不猜测，按原字节索引。
 - 索引可重建（`Initialize` 幂等）；`Incremental` 按文件增量自愈。
 - 文档服务不可用 → 文档类整批跳过（清单同口径移除）；单文件失败 → 仅文件名。
-- 多 workdir 并存 → 引擎子进程仍全局共享（一对多，按工具参数 `workdir` 路由）；工具面差异注册留待 v2。
+- 多 workdir 并存 → **进程内按 workdir 隔离 Workspace**（无子进程；按工具参数/`_meta.work_dir` 路由）；工具面差异注册留待 v2。**（2026-11-04 核对）**
 
 ---
 
 ## 9. 现状与待办
 
-- ✅ **全文索引（FTS）已落地**：6 工具（5 管理 + 1 查询）+ gateway 注册 1 查询工具。
-- ✅ **按文件增量（清单驱动）已落地**：清单 diff（新/跳过/mtime-only/内容变/删除）+ 主键单调递增；全量重建后重建清单。**清单自持**（`<workDir>/.chonkpilot/vfts/file_list.json`，2026-10-25 D-71）。
-- ✅ **文档类转换接入**：`docs`/`doc-max-mb` 配置 + 服务探测（pid 校验 + 探活，30s TTL）+ 转换缓存（键含 mtime/parser_version）+ 降级 + 后启动自动接上（去抖**增量同步 `force=false`**）。
-- ✅ **进度推送 + 空闲回收已落地**：500ms 轮询引擎 `meta.json` → 回写 `vfts.status`（零新增主题）；`sweepIdleClient` 5min 回收共享子进程。
-- ✅ **叠加 gitignore**：`plugins.codegraph.vfts.skip-dirs`/`plugins.codegraph.vfts.stack-gitignore` 原样下发引擎与插件清单扫描，共用 `chonkpilot-util/ignore`（内核 + I/O 同包）单一实现。
-- ✅ **jieba 分词 + 系统级词典 + 重新索引**：分词器固定 `jieba`（+`lowercase`）；基础词典 vendor 内嵌并物化到系统级目录；系统级自定义词查看/编辑（`vfts.dict.get`/`vfts.dict.set`）；配置页「重新索引」按钮（`vfts.reindex`）；分词器/词典变更 → 强制重建。
-- ✅ **编码识别（2026-10-31）**：文本类文件索引前识别编码并转 UTF-8（UTF-16 LE/BE BOM、UTF-8 BOM、GB18030/GBK「像中文」判据）；GBK 中文与 UTF-16 文本由「切出乱码 / 被当二进制跳过」变为可检索（`server/charenc.go`）。
+- ✅ **全文索引（FTS）已落地**：引擎 **9 工具（5 管理 + 3 会话管理 + 1 查询）**；插件向 LLM 注册 **1** 个查询工具 `vfts_query`（管理工具 hot=false，LLM 不可见）。**（2026-11-04 核对）**
+- ⚠️ **按文件增量（引擎能力）已落地，插件侧未编排**：引擎 `vfts_index {files,remove}` / `Incremental` 可用，但插件**只做全量重建**，清单只写不扫（`md5` 留空），无 `diffManifest` / `incrementalSync`。见 §4.5。**（2026-11-04 核对）**
+- ✅ **文档类转换接入**：`docs`/`doc-max-mb` 配置 + 服务探测（pid 校验 + 探活，30s TTL）+ 转换缓存（键含 mtime/parser_version）+ 降级。**「后启动自动接上增量」未实现**（无 `maybeDocServiceAppeared`）。
+- ⚠️ **进度回写 + 空闲回收未实现**：无 500ms 轮询、不回写 `vfts.status`；无 `sharedClient` / `sweepIdleClient`（进程内引擎）。状态经 `engine-status` / `badge` 现取。**（2026-11-04 核对）**
+- ✅ **叠加 gitignore**：`plugins.codegraph.vfts.skip-dirs`/`.stack-gitignore` 原样下发引擎，共用 `chonkpilot-util/ignore`（内核 + I/O 同包）单一实现。
+- ✅ **jieba 分词 + 系统级词典**：分词器固定 `jieba`（+`lowercase`）；基础词典 vendor 内嵌并物化到系统级目录；引擎管理工具可查看/编辑系统词；配置页「重新索引」经 `vfts.reindex`（`OnRequest`）触发。**插件侧无 `vfts.dict.*` UI 动作面**。**（2026-11-04 核对）**
+- ✅ **编码识别（2026-10-31）**：文本类文件索引前识别编码并转 UTF-8（UTF-16 LE/BE BOM、UTF-8 BOM、GB18030/GBK「像中文」判据）；新增 `plugins.codegraph.vfts.encoding` 可指定遗留编码。
 - ⚠️ **向量语义检索（HNSW）未实现**：阶段 2 后置（见 `server/workspace.go` 包注释）。
 - ⚠️ **多 workdir 差异注册（按 workdir 区分工具名/可见性）留待 v2**：v1 全局仅注册一份（同 codegraph 限制）。
 - ⚠️ **无 L2/L3 专门套件**：仅包内 L1（见 §10）。
@@ -253,7 +251,7 @@ ensureWorkspace(force)：
 ## 10. 关联测试
 
 - **引擎**：`chonkpilot-plugins/codegraph/src/engines/vfts/server/{charenc,docs,incremental}_test.go`（编码策略：UTF-8/BOM/UTF-16LE-BE/GBK 转码与 SJIS-Big5-EUC-KR 不猜测（`TestDecodeIndexText`）+ 真索引检索（`TestIndexLegacyEncodedText`）；通用识别/解码/中文判据的单测在 `chonkpilot-util/encodingx`（`TestDecodeAutoAndAutoName` / `TestCandidatesAndConfidence` / `TestLooksLikeChinese` 等）；文档类独立成组 / 服务不可用整批跳过 / 空 endpoint 清旧值 / 三态开关 / 转换+缓存命中 / 单文件降级 / 缓存键解析器版本失效 / loc 字节偏移映射 / 并发转换全覆盖 / loc 往返；`TestCollectFilesStackGitignore` / `TestIncrementalIndexSmoke` / `TestTokenizerSemanticsJieba` / `TestSystemDictMaterializeAndTools`）。
-- **插件**：`chonkpilot-plugins/codegraph/src/config_test.go`（历史测试清单：查询工具定义/schema/回复/`strval`/`resolveExe`/空闲回收/进度 JSON/`readEngineProgress`/轮询序列/去抖合并/`onPrjConfigRefresh` 多键合并/`sweepIdleClient`/无心跳超时/显式退出注销/`splitRules`/清单扫描 gitignore 语义/`readIndexConfig`；现实现集中于插件仓）。
+- **插件**：`chonkpilot-plugins/codegraph/src/config_test.go`（实测：`TestMigrate*` / `TestBadgeText` / `TestHandleBadge*` / `TestHandleStatus` / `TestHandleClearNoStatusMirror` / `TestHandleSave*` / `TestNormalizeValueAccepts` / `TestHandleLoadDefaults` / `TestOnPrjConfigRefresh*` / `TestOnInstanceRegisterMigratesAndApplies` / `TestConfigPageUsesAPISave`）+ `sessionindex_test.go` / `sessionreconcile_test.go` / `webui_asset_test.go`。**原列举的 `resolveExe` / 空闲回收 / 进度轮询 / `sweepIdleClient` / 清单扫描等测试在插件仓 0 命中，已删除。**（2026-11-04 核对）
 - **运行（CGO，需 `zvec_c_api.dll`）**：
 
 ```powershell

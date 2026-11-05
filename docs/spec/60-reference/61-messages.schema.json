@@ -68,7 +68,10 @@
     "args": { "type": "any", "desc": "工具调用参数" },
     "args_digest": { "type": "string", "desc": "参数摘要" },
     "arguments": { "type": "any", "desc": "实参对象/数组" },
+    "ask": { "type": "object", "desc": "ask 原始载荷（Ask 中心；= session-ask 完整 question/options/…）" },
     "ask_id": { "type": "string", "desc": "ask_user 关联 id" },
+    "ask_window_id": { "type": "string", "desc": "Ask 中心窗口 id（gui.window.list 可选回带；空 = 未开）" },
+    "asks": { "type": "array", "desc": "Ask 中心待办列表（gui.ask.list 结果）" },
     "asset_kind": { "type": "string", "desc": "资产种类" },
     "async": { "type": "string", "desc": "异步模式" },
     "async_threshold": { "type": "number", "desc": "异步阈值（秒）" },
@@ -94,7 +97,7 @@
     "config_saved": { "type": "array", "desc": "已保存配置项" },
     "content": { "type": "any", "desc": "内容（文本/结构化）" },
     "contents": { "type": "object", "desc": "按 key 的消息内容映射" },
-    "context": { "type": "object", "desc": "上下文载荷" },
+    "context": { "type": "any", "desc": "上下文载荷（对象；ask_user 的提问背景说明为字符串）" },
     "continue": { "type": "bool", "desc": "续轮" },
     "convergence": { "type": "string", "desc": "群聊「收敛 / 退出条件」（主 agent 开群聊时写入，每轮注入给全体参与者；SUBCHAT-3 阶段 F，群聊方案 §18.2 / D52）" },
     "count": { "type": "int", "desc": "计数" },
@@ -203,6 +206,7 @@
     "origin": { "type": "string", "desc": "来源" },
     "overwrite": { "type": "any", "desc": "覆盖策略" },
     "owner": { "type": "string", "desc": "归属" },
+    "owner_instance": { "type": "string", "desc": "ask 归属实例 id（发起 turn 的窗口；跨窗口作答归属判定）" },
     "parent": { "type": "string", "desc": "父节点" },
     "parent_id": { "type": "string", "desc": "父会话 id（subchat-list 可选入参；缺省 = 全局未结束子聊天）" },
     "parent_instance": { "type": "string", "desc": "宿主主实例 id（子窗口实例携带；空=顶层实例）" },
@@ -230,6 +234,7 @@
     "questions": { "type": "array", "desc": "提问集合（🗑 旧目标态字段；实现已改扁平 question）" },
     "question": { "type": "string", "desc": "ask_user 提问文本" },
     "queued": { "type": "bool", "desc": "已投递队列（不等待处理完成）" },
+    "received_at": { "type": "int", "desc": "宿主接收时刻（unix ms；Ask 中心待办排序/展示）" },
     "reason": { "type": "string", "desc": "原因" },
     "recursive": { "type": "bool", "desc": "递归监视" },
     "recommended": { "type": "array", "desc": "ask_user 推荐选项值列表（前端高亮）" },
@@ -261,6 +266,7 @@
     "servers": { "type": "any", "desc": "server 集合" },
     "session": { "type": "string", "desc": "会话 id" },
     "session_id": { "type": "string", "desc": "会话 id（数据面）" },
+    "session_title": { "type": "string", "desc": "会话标题（server 随 ask 下发；全局 Ask 中心免跨项目取数）" },
     "seq": { "type": "number", "desc": "事件序号（per-turn 单调；MOD-1 M3 turn_events）" },
     "shadow": { "type": "bool", "desc": "影子节点" },
     "size": { "type": "int", "desc": "字节数" },
@@ -439,11 +445,119 @@
       "notes": "dialog_id 可选（G-105 · 2026-11-03）：带 → 宿主跳过 session→dialog 反查、直接以该 dialog 建/激活窗口（窗口 URL 追加 dialog-id 查询串，前端 chat 窗口据此直连该 dialog）；不带 → 行为完全不变（前端既有反查路径，向后兼容）。服务 crontab 等所属 dialog 不进顶层会话列表的会话。"
     },
     {
+      "topic": "gui.window.open-ask",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "ask": { "type": "object", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "window_id": { "type": "string", "required": false },
+        "activated": { "type": "bool", "required": false }
+      },
+      "notes": "Ask 中心（独立待办窗口；2026-11-05 起**全局**）：打开/激活本进程唯一的 Ask 中心窗口（跨项目，不再按项目多开），并把 ask 载荷并入宿主缓存（已开窗 → 直接推送 ask-center-add）。payload.ask = session-ask 的完整载荷（ask_id/question/options/custom/multi/recommended/context/session/turn/expires_at/dialog_id/owner_instance/session_title）；宿主按 ask_id 去重。窗口 URL = `#ask`。宿主不支持（browser / 无窗口能力）→ 调用方回落既有弹窗。"
+    },
+    {
+      "topic": "gui.ask.list",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "asks": { "type": "array", "required": true }
+      },
+      "notes": "Ask 中心：读取宿主进程级待办缓存（全局，跨项目；启动/重载/自动打开后回填）。server 侧权威快照见 ask-center-subscribe。空态 = 空数组。"
+    },
+    {
+      "topic": "gui.ask.remove",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "ask_id": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true }
+      },
+      "notes": "Ask 中心：作答/取消后从宿主缓存摘除（幂等）；server 在 ask-user-reply 后另行下发 ask-center-remove（权威摘除）。"
+    },
+    {
+      "topic": "ask-center-subscribe",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "ask-center-subscribe",
+      "payload": {
+        "instance_id": { "type": "string", "required": true },
+        "scope": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "asks": { "type": "array", "required": true }
+      },
+      "notes": "Ask 中心订阅登记（后端唯一分发，2026-11-05）：scope 缺省 user（该实例用户全部 workdir）；work_dir 非空 → 只订该目录。订阅即回快照（按 workdir + seq 升序）。同一 user 只保留一个订阅实例（后订阅覆盖，避免多端重复分发）；实例退出自动注销。"
+    },
+    {
+      "topic": "ask-center-unsubscribe",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "ask-center-unsubscribe",
+      "payload": {
+        "instance_id": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true }
+      },
+      "notes": "Ask 中心退订（窗口卸载/关闭；幂等）。"
+    },
+    {
+      "topic": "gui.chat.insert-text",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false },
+        "text": { "type": "string", "required": true }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "window_id": { "type": "string", "required": false },
+        "activated": { "type": "bool", "required": false }
+      },
+      "notes": "Ask 中心「聊一聊」（2026-11-04；2026-11-05 支持跨项目）：把文本注入源会话窗口的输入框（不发送）。work_dir 非空 → 宿主路由到该项目窗口表（全局 Ask 中心跨项目）；已有对话窗口 → 宿主经桥推 chat-insert-text；未开 → 建对话窗口并以 URL `draft` 参数在挂载后注入；会话归属主窗口 → 直接注入主窗口。"
+    },
+    {
+      "topic": "ask-center-add",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": {
+        "ask": { "type": "object", "required": true },
+        "work_dir": { "type": "string", "required": true },
+        "received_at": { "type": "int", "required": true },
+        "seq": { "type": "number", "required": false }
+      },
+      "notes": "宿主/server → Ask 中心窗口：新增/更新一条待办（payload.ask = session-ask 原载荷；work_dir = 项目目录；received_at = 接收时刻 unix ms；seq = 该 workdir 内单调序号，后端唯一分发时携带）。宿主缓存与 server 推送同形，前端按 ask_id 去重。"
+    },
+    {
+      "topic": "ask-center-remove",
+      "face": "gui",
+      "direction": "gui->client",
+      "event": {
+        "ask_id": { "type": "string", "required": true },
+        "reason": { "type": "string", "required": false }
+      },
+      "notes": "宿主/server → Ask 中心窗口：待办已办结/摘除（作答 answered、取消、超时 timeout、轮次收尾 turn_closed、实例退出 instance_exit）。"
+    },
+    {
       "topic": "gui.window.list",
       "face": "gui",
       "direction": "client->gui",
       "payload": {},
-      "result": { "windows": { "type": "array", "required": true } }
+      "result": {
+        "windows": { "type": "array", "required": true },
+        "ask_window_id": { "type": "string", "required": false }
+      }
     },
     {
       "topic": "gui.window.closed",
@@ -451,7 +565,8 @@
       "direction": "gui->client",
       "event": {
         "window_id": { "type": "string", "required": true },
-        "session_id": { "type": "string", "required": true }
+        "session_id": { "type": "string", "required": true },
+        "kind": { "type": "string", "required": false }
       }
     },
     {
@@ -2113,7 +2228,8 @@
         "ask_id": { "type": "string", "required": true },
         "answer": { "type": "string", "required": true },
         "custom": { "type": "string", "required": false },
-        "dialog_id": { "type": "string", "required": true }
+        "dialog_id": { "type": "string", "required": true },
+        "owner_instance": { "type": "string", "required": false }
       },
       "result": {}
     },
@@ -2332,15 +2448,19 @@
         "dialog_id": { "type": "string", "required": true },
         "session": { "type": "string", "required": true },
         "turn": { "type": "string", "required": true },
-        "expires_at": { "type": "any", "required": true },
+        "expires_at": { "type": "any", "required": false },
         "question": { "type": "string", "required": true },
         "options": { "type": "array", "required": false },
         "multi": { "type": "bool", "required": false },
         "recommended": { "type": "array", "required": false },
         "custom": { "type": "bool", "required": false },
+        "context": { "type": "string", "required": false },
+        "owner_instance": { "type": "string", "required": true },
+        "session_title": { "type": "string", "required": false },
         "answer": { "type": "string", "required": false },
         "answered": { "type": "bool", "required": false }
-      }
+      },
+      "notes": "expires_at 缺省 = 无超时（timeout=-1/全局未配置）；owner_instance = 发起 turn 的窗口实例（跨窗口作答归属）；context = 提问背景说明；session_title = server 随题下发（全局 Ask 中心免跨项目取数）。"
     },
     {
       "topic": "session-turn-start",

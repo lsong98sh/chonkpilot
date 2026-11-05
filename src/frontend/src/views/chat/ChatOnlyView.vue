@@ -22,7 +22,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import ChatPanel from './ChatPanel.vue'
 import GroupChatBoard from './GroupChatBoard.vue'
 import AskUserDialog from './AskUserDialog.vue'
@@ -38,6 +38,8 @@ const props = defineProps({
   /** URL 可选携带的 dialog（`?dialog-id=…#chat`，G-105）：宿主直开时透传；首条请求前
       预置 session→dialog 备忘，使本窗全部 sessionReq 直连该 dialog（免反查自举空库）。 */
   dialogId: { type: String, default: '' },
+  /** URL 可选携带的草稿（`?draft=…#chat`，Ask 中心「聊一聊」）：挂载后注入输入框（不发送）。 */
+  draft: { type: String, default: '' },
 })
 
 // ── 窗口标题（24 §6.3 / WIN-020）──
@@ -68,6 +70,8 @@ const sessionKind = ref('')
 /** `kind` 是否已就绪（未就绪不渲染任何分支 → 避免 ChatPanel/展示板**双挂载**闪烁）。 */
 const kindLoaded = ref(false)
 const isGroupChat = computed(() => isGroupChatKind(sessionKind.value))
+// draft 只注入一次（标题刷新会重复触发本函数；不得反复往输入框追加）。
+let draftSent = false
 
 /** 标题变化才推送（幂等，避免重复消息）。 */
 function applyTitle(summary) {
@@ -88,6 +92,12 @@ async function refreshTitle() {
     applyTitle('')
   } finally {
     kindLoaded.value = true
+    // Ask 中心「聊一聊」（2026-11-04）：URL `draft` → ChatPanel/InputBox 已随 kindLoaded 渲染后
+    // 注入输入框（可编辑、不自动发送）。群聊展示板无输入框 → 忽略。
+    if (props.draft && !draftSent && !isGroupChat.value) {
+      draftSent = true
+      nextTick(() => setTimeout(() => mq.emit(EventNames.chatInsertText, { text: props.draft }), 0))
+    }
   }
 }
 

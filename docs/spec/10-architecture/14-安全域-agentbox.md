@@ -1,173 +1,112 @@
 # 14 · 安全域（agentbox）
 
-> ✅ **〔订正（2026-11-03，SANDBOX-WRITE-1：写隔离落地）〕**
-> 1. **`security-*` 收敛为「只写白名单」**：写入只写 `{"dir"}`（旧值 `{dir,writable}` 读取时忽略 `writable`、不报错）；语义 = 列出的目录可写（**递归**），**读不受限**（Low IL 只限写）。
-> 2. **能力下沉**：Low IL + Job 实现从 `chonkpilot-agent/sandbox` 迁到 **`chonkpilot-util/sandbox`**（gateway 与插件共用）；`chonkpilot-util/scriptrun.Options` 新增 `Sandbox{Enabled,Writable,Limits}`。
-> 3. **到插件的通道 = `_meta.chonkpilot.sandbox`**（每次 `tools/call` 下发 `{enabled,writable_dirs}`）——**不是 HTTP header**（插件 MCP 是共享 http 长连接、白名单按项目变化）。
-> 4. **三处强制点**：`file_*` **7 个写工具**（`targets[].path|from|to`；越界 = **整次调用拒绝**、未做任何写入）、`task_run`（`scriptrun` + Low IL/Job，执行前对白名单与 `cwd` 打标）、`web_download`（按**最终落盘路径**）。
-> 5. **内置默认可写项**（宿主合并，不落库）：`work_dir` + `<work_dir>/.chonkpilot/tmp`。`.chonkpilot` 数据根**不排除**在可写项之外——数据读写（含建桶）由能力端点提供，插件不直接开库。
-> 6. **未启用**（无该字段 / `enabled=false`）→ 插件**不校验**（保持旧行为）。
->
-> ⛔ **〔订正（2026-10-21，GATEWAY-2 L7）：`agentbox` 包已删除，本篇正文为历史口径〕** 现行实现 = **gateway 进程级写隔离**：spawn **stdio** 下游（含内置 executor / 第三方 stdio MCP）时以 `src/lib/core/sandbox` 启动子进程 —— **Windows Low Integrity Level 令牌 + Job Object**（进程树 / 内存 / CPU 约束，`KILL_ON_JOB_CLOSE`）。边界：**只限制写**（Low IL 写不了 Medium IL 对象），**读不受限**；**不改任何 DACL**，允许写目录须先 `sandbox.EnsureLowIL(dir)` 打标（`(OI)(CI)L`），**未打标 = fail-closed（只能读）**；**http/sse 下游不做沙箱**。应用层路径校验 / `DenyRead` 黑名单 / `CHONKPILOT_SANDBOX` 注入**全部移除**。配置面仍为 prj `security-*`（`{dir, writable}`）与 usr `tool_sandbox`（单位 = 执行体 exe 基名 / 外部 MCP 名，**仅 stdio**）。遗留：项目 work_dir / temp 默认可写条目 = [41 G-75](../40-roadmap/41-未决项登记.md)（✅ 2026-10-22 已实施：server 侧内存合并默认项 + gateway 按 `SandboxDirs` WritableRoots 打 Low IL 标）。权威口径见 [26 §0](../20-modules/26-mcp-gateway.md) · [18 订正块](18-工具异步超时与取消.md)。
->
-> 状态：🗑️ **历史（agentbox 已删除）；现行 = 进程级 Low IL + Job（见上）**
-> 关联：[00-架构总纲](../00-overview/00-架构总纲.md) §6 · [02-配置层级](../00-overview/02-配置层级.md)（`security-*`）· [27-mcp-tools](../20-modules/27-mcp-tools.md) · [26-mcp-gateway](../20-modules/26-mcp-gateway.md)
-> 定位：安全域 = **agentbox 沙箱**（根限定 `work_dir`），是工具执行与资源读取的统一约束层。
->
-> **定位（已实施，见 §7）**：
-> 1. **agentbox = in-memory MCP（内存 MCP）+ 执行层**——它本身是一个内存 MCP，位于**执行层**。
-> 2. **作用对象 = 仅「扫描到的 runtime」**（scan 出的**执行器工具**）；**其它路径不用管**。
-> 3. **mcp-gateway 的接入点 = spawn（上游 MCP server 进程）时用 agentbox 隔离**；其余不接管。
-> 4. **明确不接管 `filesys` / `data`**——二者以 `workdir` 为管理单位、维持现状（见 [20-实例隔离与后端分离](20-实例隔离与后端分离.md) §4 缺口 6 订正）。
-> 5. **限制依据 = `security-*`**（项目级 `{dir, writable}` 列表，**可读 / 可写目录、递归**）——**该目录集传给 agentbox 执行限制**；**原方案里「命令白名单」等未定项 = 不做**。
-> 6. **可隔离范围 = 仅 stdio 的 MCP server**（**http / sse 不隔离**）。
-> 7. **配置面（规划，未实施）**：**mcp-server 配置页**增「**是否隔离**」开关（**仅 stdio 的项可勾选**）+ **新增页签**「**扫描到的工具**」（**逐个选择是否隔离**）——**配置键与 UI 均未实施**，仅登记方案。
+> 状态：🗄 **历史篇名（`agentbox` 包已删除）**；现行口径 = **进程级 Low IL 写隔离 + 插件侧可写白名单**（2026-11-04 核对）
+> 关联：[00-架构总纲](../00-overview/00-架构总纲.md) §6 · [02-配置层级](../00-overview/02-配置层级.md)（`security-*`）· [16-路径解析规范](16-路径解析规范.md) · [18-工具异步超时与取消](18-工具异步超时与取消.md) · [26-mcp-gateway](../20-modules/26-mcp-gateway.md) · [28-plugins](../20-modules/28-plugins.md) · [23-filesys](../20-modules/23-filesys.md)
+> 定位：本文记录「安全域」的现行实现与历史沿革。**正文不再以 agentbox 为现行实现**；`agentbox` 相关段落统一标 🗄。
 
 ---
 
-## 1. 一句话现状
+## 0. 现行实现（2026-11-04 核对）
 
-**agentbox 已实现**（后端核心 + 配置面 UI，见 §7）。当前"安全域"由下列强制点构成：
+### 0.1 配置：`security-*` = 只写白名单
 
-| 面 | 现状 | 是否有强制拦截 |
-|----|------|:---:|
-| 文件服务 `src/lib/filesys` | `absPath` + `withinWorkDir` 把路径限制在 `work_dir` 内，越界返回 `errForbidden("path outside work dir")` | ✅ |
-| 工具执行层 `src/lib/mcp-tools` | 路径一律全路径，**R-11 形式强校验**（历史：曾由 `agentbox.Check` 强制拦截，`agentbox` 已于 2026-10-21 删除，改由 gateway Low IL 沙箱承担） | ✅（R-11） |
-| 信任目录配置 `security-*` | 存储 + 前端 UI；**消费方 = agentbox**（`securityRules` → executor `SetSecurityDirs` + gateway `applyGatewaySandboxDirs`） | ✅（见 §7.1 #2/#5） |
+- prj `security-*` 的条目值**只写 `{"dir"}`**；旧值 `{dir,writable}` 仍可读，`writable` **读取时忽略、不报错**（`chonkpilot/src/lib/data/internal/config/validate.go` 的 `validateSecurityEntry`；`src/lib/llm/server/execconfig.go` 的 `securityRules` 强制 `Writable=true`）。
+- 语义：列出的目录**可写（递归）**；**读不受限**（Low IL 只限制写）。空目录/不存在目录在保存时校验失败。
+- 前端只提交 `{dir}`（`src/frontend/src/api/config.js`；`views/settings/SecurityConfig.vue`）。
+- 「选择目录」仍经 `gui.select-dir` → `gui.selected-dir` 两段式（`src/frontend/src/api/config.js`、`composables/useDirPicker.js`）。
 
----
+### 0.2 下发通道：`_meta.chonkpilot.sandbox`（不是 HTTP header）
 
-## 2. 现状证据
+- gateway 每次 `tools/call` 向下游插件/内置 server 下发 **`_meta.chonkpilot.sandbox = {enabled, writable_dirs}`**（`chonkpilot-agent/gateway/src/provider.go`；插件侧读取见 `chonkpilot-framework/plugin/src/sdk/plugin.go` 与 `chonkpilot-plugins/file/src/sandbox.go`）。
+- 插件 MCP 是共享 http 长连接，白名单按项目变化，故不能放 HTTP header。
+- 未启用（无该字段 / `enabled=false`）→ 插件**不校验**（保持旧行为）。
+- `ServerEntry.SandboxPolicyJSON` 仍保留在 `chonkpilot-agent/gateway/src/serverslist.go`，但**生产代码无调用者**（当前实际走 `ServerEntry.SandboxDirs` / 实时回调）；`SetSecurityDirs` / `SandboxPolicyFor` / `CHONKPILOT_SANDBOX` 注入均**不存在**。
 
-### 2.1 文件服务（唯一强制点）
+### 0.3 强制点（仅三处）
 
-`src/lib/filesys/filesys.go`：`absPath`（`~359-371`）+ `withinWorkDir`（`~373-380`）——读/写/`remove`/`rename` 均校验路径落在**消息自带 `work_dir`** 内，越界 `errForbidden`（如 `:95/:114/:145`）。**与 `security-*` 白名单无关**。
+| 执行体 | 机制 | 落点 | 越界语义 |
+|---|---|---|---|
+| `file_*` **7 个写工具**（`file_write` / `file_patch` / `file_replace` / `file_copy` / `file_move` / `file_delete` / `file_iconv`） | 调用前路径预检（`targets[].path` / `from` / `to`） | `chonkpilot-plugins/file/src/sandbox.go`；统一入口 `file/src/main.go` | **整次调用拒绝、未做任何写入** |
+| `task_run` | `scriptrun` + **Low IL 令牌 + Job Object**（`KILL_ON_JOB_CLOSE`）；执行前给白名单目录与 `cwd` 打 Low IL 标签 | `chonkpilot-plugins/task/src/sandbox.go`；`chonkpilot-util/scriptrun/exec.go`；`chonkpilot-util/sandbox` | OS 级拒绝写入（脚本运行时自行算出的路径也能拦住） |
+| `web_download` | 按**最终落盘路径**校验 | `chonkpilot-plugins/web/src/download.go` · `web/src/sandbox.go` | 整次调用拒绝 |
 
-### 2.2 工具执行层（无沙箱；R-11 形式约束）
+- `file_*` 只读工具（`read` / `find` / `diff` / `detect`）不校验；`task_run` 的 `file` / `cwd` / `interpreter` 另受 R-11 路径强校验（[16](16-路径解析规范.md) §8）。
+- **未覆盖**：`browser` / `desktop` 插件的截图与落盘句柄**没有**写白名单校验（两仓 `src` 内 `sandbox`/`AllowsPath` 零命中）。
 
-代码注释明示设计意图：
+### 0.4 Low IL 的两种用法（关键区别）
 
-- `internal/fileops/fileops.go:3`：`不做路径白名单校验（沙箱由上层 mcp-server agentbox 承担）`；文件操作参数须绝对或 `~/` 开头（R-11，`pathcheck.go`）
-- `internal/fetch/fetch.go`：`save_as` / `form_files[].path` 受 **R-11** 强校验（须绝对或 `~/` 开头，相对路径在发请求前即失败）；其余无沙箱/白名单（agentbox 管控）
-- `internal/scriptrun/exec.go:14`：`执行层（mcp-tools）无沙箱/无 datadir`；`file`/`workdir`/`interpreter` 均受 R-11 强校验（agentbox 管控越界；命令参数 `args`/`env` 与内置默认命令不受约束）
-- `internal/browser/{handle,run}.go` / `internal/desktop/run.go`：`file`、`chrome_path`（browser）与 DSL 内**所有**文件句柄——落盘（browser：`SHT`/`DOM`/`DBG`/`UPF`、`dom_file`/`console_file`/`fail_shot`；desktop：`SHT`/`WIN … SHT`）、行尾 `=> #"file"` 目标、**核心语句数据源读取/访问器/`IF exist`**——受 **R-11** 强校验
-- `internal/fileops/scriptfs.go`：`filesys_run` 核心语句 `#"path"` 句柄（LOOP/SET 数据源、访问器、`=> 目标`）的校验型文件系统（`ScriptFS`）
+- **`sandbox.Prepare`**：只把 Low IL 令牌挂到 `cmd`，**不建 Job**。gateway spawn **stdio** 下游时只用它（`chonkpilot-agent/gateway/src/provider.go`）。
+- **`sandbox.Start`**：以 Low IL 启动并把进程放进 **Job Object**（进程树 / 内存 / CPU 约束 + `KILL_ON_JOB_CLOSE`）。仅 `scriptrun` 使用 → **`task_run` 才有 Job**。
+- 因此「gateway stdio 下游 = Low IL + Job Object / KILL_ON_JOB_CLOSE」**不成立**：只有 Low IL，没有 Job。
+- http / sse 下游不做沙箱（同上 provider 仅 stdio 分支调用 `Prepare`）。
 
-且执行体入口**根本不注入工作目录**（`internal/cli/cli.go:96-100`：`workDir := ""`，"工作目录概念已移除"）。**注意**：相对路径不注入 workDir 后本会相对进程 cwd（不可控），故对工具参数改由 **R-11 直接拒绝相对路径**（见 [16-路径解析规范](16-路径解析规范.md) §8）——**包括** `workdir` 等目录参数同样受约束；`paths.ResolveDir` 仅服务 GUI 命令行目录参数（`--work-dir`/`--data-dir`）。
+### 0.5 白名单实际内容与空集语义
 
-### 2.3 信任目录 `security-*`（有存储无执行）
+- 宿主合并的**内置默认项**：`work_dir` + `<work_dir>/.chonkpilot/tmp`（不落库）。
+- gateway 的**实时白名单回调**还会追加：prj `security-*` 条目、data 根、prjusr 根、**`os.TempDir()`（系统 temp）**（`src/lib/llm/server/execconfig.go` 的 `gatewaySandboxRules`）。即插件实际可写范围**宽于**「work_dir + tmp」。
+- **空集语义分两套**：
+  - 路径预检（`file` / `web`）复用 `chonkpilot-util/sandbox.Policy`：`Enabled && len(Writable)==0` 时 `AllowsPath` **返回 true（fail-open，放行）**。
+  - 进程隔离（`task_run`）：`Enabled=true` 但无目录可打标 → 子进程对任何路径都不可写（OS 级 fail-closed）。
+  - 「显式开启而 `security-*` 为空 → executor 侧全拒」**只对进程隔离成立**，对路径预检**不成立**。
 
-- 存储：`src/lib/data/persist/persist.go`（`data-prj-security-*` → prj `config` 表 `security-<key>`）。**契约（已通往返）**：**一条目录 = 一个 persist key**（key 由前端生成的不透明 id，与目录内容无关、条目保序），value = **JSON 字符串** `{"dir","writable"}`；save 逐条 upsert + 删除已移除条目（`data-prj-security-delete`），list 返回平铺 map（剥 `security-` 前缀）→ 前端还原为条目数组。
-- UI：`src/frontend/src/views/settings/SecurityConfig.vue`（ProjectConfig「安全」页签），主题 `data-prj-security-{list,save,delete}` + `data-prj-security-refresh`；「选择目录」经 `openDirDialog()`（`gui.select-dir` → `gui.selected-dir` 两段式，🆕 2026-10-09；原 `PickFolder()` 已改调）。
-- **无任何 Go 代码读取该白名单做拦截/过滤**（除 persist 自身存取）。
+### 0.6 保存即生效与配置面
 
-### 2.4 路径解析规范
+- 保存 prj `security-*` 后，llm server 订阅既有主题 `data-prj-security-refresh` → 重跑 `loadExecConfig` + `reconcileUserMCPs`（`src/lib/llm/server/subscribe.go`、`execconfig.go`、`boot.go`）；**零新增 MQ 主题**。
+- 外部 MCP 的沙箱开关变化 → `Gateway.SetSandboxOverrides` 异步作废/重连（`chonkpilot-agent/gateway/src/tooloverride.go`）；仅 stdio 下游。
+- usr `tool_sandbox` 仍按 `{"executors":{...},"mcps":{...}}` 解析，但**内置 executor 行已全部退场**（`src/frontend/src/composables/useToolSandbox.js` 的 `EXECUTOR_UNITS = []`），当前只剩 `mcps` 维度；旧形状读取时迁移。usr `mcps[].sandbox` 仅为写入口兼容，开关来源已收敛到 `tool_sandbox.mcps`。
 
-`src/lib/paths`：`ExpandHome` + `ResolveDir(raw, base)`（`~` 展开 → 绝对原样 `Clean` → 否则 `Clean(Join(base, raw))`）。
-- `ResolveDir` **明确允许 `../` 跳出 base**（见 [16-路径解析规范](16-路径解析规范.md) §7「属有意行为，不做强制钳制」）。使用点：GUI 的**命令行目录参数**（`--work-dir`）、`src/lib/data`（ProjectPath）、mcp-tools 的 `fileops.ValidateFilePath`（仅复用其**绝对路径归一化**，`base` 恒为空、不接受相对兜底；R-11）。**不再有工具直接用 `ResolveDir` 解析用户目录参数**。
+### 0.7 符号链接与审计
 
----
-
-## 3. 目标设计（原设计留档；**实施状态见 §7**）
-
-### 3.1 归属与职责
-
-- **沙箱根 = 请求上下文 `work_dir`**（随消息传入，不依赖进程状态）。
-- **执行层不自持沙箱**：executor 短命进程零状态、不校验路径；**沙箱责任上抛**，由上层（gateway/agentbox）统一承担。
-- 既有设计表述：一处主张「执行层无沙箱，agentbox 归 mcp-gateway」，另一处主张「执行层不校验路径，沙箱责任上抛（未实现）」。
-- ✅ **归属已定（D-01 闭项）**：**agentbox = 内存 MCP + 执行层**；**gateway 在 spawn 上游 MCP server 进程时用 agentbox 隔离**；**仅对「扫描到的 runtime」施加限制**；**不接管 filesys / data**（后者以 `workdir` 为单位）。**上述 `work_dir` 沙箱根口径仍成立，但不再自称「统一约束层」。**
-
-### 3.2 边界表（设计目标）
-
-| 维度 | 目标行为 |
-|------|---------|
-| 文件访问 | 越界（`work_dir` 外）由沙箱拦截；不再做路径字符串白名单（`SanitizePath` 已弃） |
-| 命令执行 | **不做命令白名单**（`task_run` 任意脚本；2026-10-28 起替代 `script_run`） |
-| 上下文注入 | 上下文（work-dir/data-dir）注入系统提示词，约束 LLM 使用全路径 |
-| 名称隔离 | 工具/资源名按 instance 隔离（`scope`：global ∪ 归属 instance） |
-| 写操作确认 | 🔵 规划：只读工具自动执行，**修改性工具**（`write`/`remove`/`rename` 等）需用户确认；当前**未实现**（全仓无 permission 判定消费方） |
-| 下游信任 | 下游 server 标记 `trust: trusted|sandbox`（**预留**） |
-
-> **本表按新定位收敛**：**agentbox 只约束「扫描到的 runtime」（执行器工具）**；**gateway 侧仅在 spawn 上游 MCP server 进程时用 agentbox 隔离**，**其余路径不接管**（**不接管 filesys / data**）。**限制依据 = `security-*` = 可读 / 可写目录（递归）**，**该目录集传给 agentbox 执行限制**；**「命令执行 = 不做命令白名单」维持**（原方案里「命令白名单」等未定项 = **不做**）。**可隔离范围 = 仅 stdio 的 MCP server**（**http / sse 不隔离**）。
-
-### 3.3 访问控制 / 限流 / 审计（规划）
-
-- 认证：按 subject 授权。
-- 按 instance 的工具白/黑名单。
-- `inputSchema` 校验。
-- 限流。
-- 审计落 `DataDir`。
-
-> 上述来自网关侧设计稿（2026-08/09，已整体归档）的「安全域」规划，均为规划态。
+- 写白名单判定用 `sandbox.RealPath`（`filepath.EvalSymlinks`，父目录可解析则拼回文件名），**无 64 次上限 / 无 fail-closed**。
+- 文件服务（filesys）另有逐段 `os.Readlink` 真实路径校验（含 Windows junction；>64 次替换 fail-closed），位于 `chonkpilot/src/lib/workspace/layout/layout.go`，与写白名单判定**不是同一实现**。
+- 拒绝时**不写审计文件**；全仓无 `[agentbox]` 审计行。仅返回错误文案 / 日志。
 
 ---
 
-## 4. 与信任目录的关系
+## 1. 🗄 历史：agentbox 设计（2026-10-21 删除）
 
-`security-*`（项目级，`{dir, writable}` 列表）的目标消费方 = agentbox：
+> 以下为历史留档，不再代表现行实现。
 
-- 白名单内目录 → 允许读（或读写，视 `writable`）。
-- 当前状态：**已接通** —— 消费方 = agentbox（见 §7.1 #2/#3）。
+- 原定位：agentbox = 内存 MCP + 执行层，约束「扫描到的 runtime」；gateway 仅在 spawn 上游 MCP server 进程时用 agentbox 隔离；不接管 filesys / data。
+- 强制范围：仅 stdio 的 MCP server（http / sse 不隔离）。
+- 配置消费链：`securityRules` → `mcp-server Config.SetSecurityDirs` → `SandboxPolicyFor`（按 executor exe 基名）→ 子进程 `CHONKPILOT_SANDBOX`。
+- 执行层落点：`src/lib/mcp-tools` 的 cli / fileops / fetch / browser / desktop / dslfs / dslexec。
+- 审计：拒绝时 stderr 一行 `[agentbox] …`。
+- 上述实现**均已不存在或已改道**：
+  - `src/lib/mcp-tools` 目录在，**文件数 = 0**（[27-mcp-tools](../20-modules/27-mcp-tools.md) 已标 🗄 退场）。
+  - `agentbox` 包、`SetSecurityDirs`、`SandboxPolicyFor`、`CHONKPILOT_SANDBOX`、`DenyRead`、`SanitizePath` 全仓 0 命中。
+  - `[agentbox]` 审计 0 命中。
+  - 软链实现 `src/lib/core/agentbox/agentbox.go` 不存在。
+- 历史设计中的「符号链接两侧逐段解析 + 自环/过深 fail-closed」只保留在 filesys 侧；写白名单侧未采用。
 
-> `security-*` 语义**定稿 = 「可读 / 可写目录」（递归）**，**消费方 = agentbox**（**执行层限制**：把该目录集**传给 agentbox** 即生效）。**G-02（`security-*` 无强制点）的落点 = agentbox**（排期 **P1-5**）。
-> **实施状态**：**已实施**（后端核心 + 执行层强制 + gateway stdio 下发；配置面 UI；见 §7）。**剩余未覆盖面**见 §7.2（`script_run` 脚本体文件读写 / `browser_run`·`desktop_run` 落盘句柄 / 审计落盘 / §3.3 其余规划）。（**符号链接解析**已实现，见 §7.2 #4，**不在**未覆盖面内。）
+## 2. 🗄 历史修订记录（保留时间线）
 
----
+| 日期 | 事项 | 现行影响 |
+|---|---|---|
+| 2026-10-08 | browser/desktop 落盘接线「已修复」 | 新插件形态下**未覆盖**（browser/desktop 无 sandbox 校验），该结论作废 |
+| 2026-10-11 | 符号链接解析「已实现」 | 落点已删；写白名单改为 `EvalSymlinks`，无 fail-closed |
+| 2026-10-12 | 工具沙箱单位改为「被 spawn 的执行体 exe 基名」 | 内置 executor 已全部退场，`EXECUTOR_UNITS=[]`；仅 `mcps` 生效 |
+| 2026-10-21 | agentbox 删除，改 gateway 进程级写隔离 | 成立；但 Job Object 只用于 `scriptrun`，gateway stdio 仅 Low IL |
+| 2026-10-28 | `script_run` → `task_run` | 「task_run 是绕过通道」已作废：C5 已接入 Low IL + Job |
+| 2026-11-03 | 写隔离落地（只写白名单 + `_meta` + file/task/web） | **现行口径，见 §0** |
 
-## 5. 待落地清单
+## 3. 🔵 规划 / 待用户拍板
 
-| # | 事项 | 状态 |
-|---|------|:---:|
-| 1 | agentbox 实现（**内存 MCP + 执行层**；**仅约束「扫描到的 runtime」**，沙箱根 = work_dir，越界拦截） | ✅ **已实施（见 §7.1）** |
-| 2 | 归属确定（D-01） | ✅ **已定**：内存 MCP + 执行层；gateway **spawn 上游 MCP server 时**用 agentbox 隔离 |
-| 3 | 接入 `security-*`（**可读 / 可写目录，递归**）**传给 agentbox** 执行限制 | ✅ **已实施（见 §7.1 #2/#3；G-02 落点）** |
-| 4 | 可隔离范围限**仅 stdio 的 MCP server**（http / sse 不隔离） | ✅ **已实施（见 §7.1 #5）** |
-| 5 | 配置面：**mcp-server 配置页**「是否隔离」开关（仅 stdio）+ **新页签**「扫描到的工具」（逐个是否隔离） | ✅ **已实施**（工具沙箱**管理单位改为「被 spawn 的执行体」**，见 §7.1 #6 / §7.2 #5） |
-| 6 | 按 instance 工具白/黑名单 + inputSchema 校验 + 限流 | 🔵（**未定项，原方案保留**，非本次口径） |
-| 7 | 审计落盘 `DataDir` | 🔵 |
-| 8 | `trust: trusted\|sandbox` 下游标记 | 🔵 预留 |
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 审计落盘 `DataDir` | 🔵 未实现 | 当前只返回错误文案 / 日志 |
+| 按 instance 工具白/黑名单、`inputSchema` 校验、限流 | 🔵 未实现 | 原方案未定项，保留 |
+| 下游 `trust: trusted\|sandbox` 标记 | 🔵 预留 | 无消费方 |
+| browser / desktop 写白名单 | ⚠️ 缺口 | 两插件落盘未校验；是否接入需拍板 |
+| gateway stdio 下游是否补 Job Object | ⚠️ 待拍板 | 当前只有 Low IL；补 Job 会影响第三方 stdio 兼容性 |
+| 空白名单语义统一（fail-open vs fail-closed） | ⚠️ 待拍板 | 路径预检 fail-open、进程隔离 fail-closed，两套口径并存 |
 
-> 第 1 条「沙箱根 = work_dir，越界拦截」的**定位 = 「内存 MCP + 执行层，仅约束扫描到的 runtime」**；**新增**第 4/5 条（仅 stdio 可隔离 + 配置面）；**第 6 条（工具白/黑名单 + inputSchema + 限流）为原方案未定项，不改、保留**。**第 1/3/4/5 条已实施，见 §7**；剩余未覆盖面见 §7.2。
-
----
-
-## 6. 关联文档
+## 4. 关联文档
 
 - [26-mcp-gateway](../20-modules/26-mcp-gateway.md)（网关侧职责与传输）
-- [27-mcp-tools](../20-modules/27-mcp-tools.md)（执行层路径与保留参数）
-- [16-路径解析规范](16-路径解析规范.md) 目录解析规范
+- [27-mcp-tools](../20-modules/27-mcp-tools.md)（🗄 已退场，留档）
+- [28-plugins](../20-modules/28-plugins.md)（file / task / web / browser / desktop 插件）
+- [16-路径解析规范](16-路径解析规范.md)（R-11 路径强校验）
 - [23-filesys](../20-modules/23-filesys.md)（文件服务限 `work_dir`）
+- [18-工具异步超时与取消](18-工具异步超时与取消.md)（沙箱订正块）
 - 相关功能点：[30-FP分级规范](../30-function-points/30-FP分级规范.md) §7「权限与安全」维度
-
----
-
-## 7. 实施状态（后端核心）
-
-> **范围**：后端（策略包 + 执行层强制 + 配置键读取/生效 + gateway stdio 下发）；配置面 UI **已实施**（MCP 对话框「运行信息」页签「沙箱」+ 页签「工具沙箱配置」），且工具沙箱的**管理单位已由 executor 类别（category）改为「被 spawn 的执行体」**（**2026-10-12 重整**：内置 executor 按 **exe 基名**、外部 MCP 按 **mcp 名**）；见 §7.1 #4/#6 与 §7.2 #5。
-
-### 7.1 已实现
-
-| # | 事项 | 落点 | 备注 |
-|---|------|------|------|
-| 1 | **策略包（换算 / 判定 / 编解码）** | `src/lib/core/agentbox`（**新增包**） | `Rule{Dir,Writable}` / `Policy{New,Parse,Marshal,Allowed,Check}` / 进程级 `Set,Current,InitFromEnv,Check`；环境变量 **`CHONKPILOT_SANDBOX`**（JSON `[{dir,writable}]`）；错误 `*DeniedError{Path,Write,Allowed}` + `ErrDenied`（中文可诊断） |
-| 2 | **策略来源 = `security-*`** | `src/lib/llm/server/server.go` `securityRules(instanceID)`（读 `data-prj-security-list`，value = `{"dir","writable"}`）→ `mcp-server Config.SetSecurityDirs` | **递归语义**：允许目录下所有子路径；`writable` 决定可写（可写必然可读） |
-| 3 | **执行层强制（真正拦截）** | `src/lib/mcp-tools`：`internal/cli/cli.go`（启动时 `InitFromEnv`）+ `fileops`（`READ`/`DIFF`/`FIND` 只读查询动作 + `filesys_run` 全动词/`ScriptFS` 句柄）〔2026-10-12：原 `file_read`/`file_find`/`file_diff` 工具已收纳为 `READ`/`DIFF`/`FIND` 动作，实现 `fileops/query_actions.go`〕+ `fetch`（`save_as`/`form_files`）+ **`browser`**（落盘 `SHT`/`DOM`/`DBG`/console + 脚本 `file` 读）+ **`desktop`**（截图落盘 + 脚本 `file` 读）+ **`dslfs`**（四域共享 DSL 句柄，读写双校验）+ **`dslexec`**（`dsl_run` 脚本读盘）〔2026-10-08 补〕 | 越界 → **整体失败**（exit 1 + 明确文案），非仅告警；审计 = 拒绝时 stderr 一行 `[agentbox] …`（宿主捕获落日志） |
-| 4 | **mcp-server 下发** | `Config.SecurityDirs` + `Config.ToolSandbox`（`SetSecurityDirs`/`SetToolSandbox`/`SandboxPolicyFor`）→ `callTool` 按 **被 spawn 的执行体的 exe 基名**（解析后的 runtime `argv[0]` = `filepath.Base`，如 `chonkpilot-core-executor.exe`）查开关 → `executorEnv(cx, policy)` 注入 | 未配置 = 不注入（**默认兼容**）；**〔2026-10-12：由 `td.Category`（core/desktop/browser 类别）改为「被 spawn 的执行体 exe 基名」〕** |
-| 5 | **gateway 上游 spawn 下发（仅 stdio）** | `ServerEntry.SandboxDirs` 快照 + `SandboxPolicyJSON()` → `buildConn` 的 **stdio** 分支注入；**开关来源 = usr `tool_sandbox.mcps[<mcp 名>]`**（`sandboxOnEntry` 按 `entry.SandboxName()` 查）；旧 `ServerEntry.Sandbox`（usr `mcps[].sandbox`）**仅读取时迁移并入 `tool_sandbox.mcps`，不再作开关来源** | http/sse **不施加**；**上游是否遵守取决于其是否实现 agentbox 消费方**——第三方进程**仅透传，不构成强制** |
-| 6 | **配置键** | usr `tool_sandbox`（**新形状 `{"executors":{"<exe名>":bool},"mcps":{"<mcp名>":bool}}`**，管理单位 = 被 spawn 的执行体；**旧形状 `{"core":bool,"desktop":bool,"browser":bool}` 读取时自动迁移** —— `core` → `chonkpilot-core-executor.exe` **且** `chonkpilot-dsl-executor.exe`，desktop/browser 各映射自身 exe；persist 自由键已注册）· usr `mcps[].sandbox`（**🗑 已废弃为开关来源**，读写收敛到 `tool_sandbox.mcps`；旧值读取时迁移）· register `mcp_server.sandbox`/`sandbox_dirs`（可选字段，`sandbox` 亦仅读取时迁移） | 均登记 [64 §3/§4](../60-reference/64-配置项一览.md)；**与既有 `isolate`（连接池隔离）语义独立、互不替代** |
-| 7 | **保存即生效** | llm server 订阅**既有主题** `data-prj-security-refresh` → 重跑 `loadExecConfig` + `reconcileUserMCPs` | 零新增 MQ 主题；executor 侧**下次 spawn** 生效（每次调用重读 Config） |
-| 8 | **验证** | 6 模块 build/vet/test 全绿；L2 新增 4 组（含**经 mcp-server spawn 真实 executor 的端到端**）；L3 基线 23/0/1 + 57/0/2；真实 executor 开/关两态真机 | |
-
-### 7.2 未实现（如实标注，不编造）
-
-| # | 事项 | 说明 |
-|---|------|------|
-| 1 | **`task_run` 脚本体内的文件读写**（2026-10-28 起替代 `script_run`） | 脚本在**任意子进程**内执行，执行器**无法拦截**其文件操作（仅约束 `file` 参数为可读）。**隔离开启时 `task_run` 仍是绕过通道**（登记为未决项） |
-| 2 | ~~**`browser_run` / `desktop_run` 的落盘句柄**~~ | **〔订正（2026-10-08）：已修复〕** 原「`SHT`/`DOM`/`DBG`/`UPF` 等落盘未接线」已不再成立——浏览器域落盘统一收口到 `internal/browser/run.go` 的 `writeFileChecked`（`savePNG`/`stepDOM`/`stepDBG`/`domToFile`/`flushConsole` 全走它），桌面域 `internal/desktop/run.go` 的 `encodePNG`（`saveWindowShot`/`saveScreenShot`）起手 `agentbox.Check(file,true)`；三域引擎句柄实现统一为 **`src/lib/mcp-tools/internal/dslfs`**（读 `Check(...,false)` / 写 `Check(...,true)` 双校验）；`dsl_run` 的脚本读盘已**下移执行器**（`dslexec`，受沙箱）。依据 [42 §2 (255)](../40-roadmap/42-决策记录.md)。 |
-| 3 | **审计落 DataDir** | 14 §5 规划项；当前仅 stderr 一行（由宿主捕获落日志），**不写文件** |
-| 4 | ~~**符号链接解析**~~ | **〔订正（2026-10-11）：已实现〕** agentbox 判定前对**允许目录与目标路径两侧统一**逐段 `os.Readlink` 解析真实路径（**兼容 Windows 目录联接 junction**；`filepath.EvalSymlinks` 在 Windows **不解析 junction** 故未采用），**不存在的路径段原样拼回**（= 解析最近存在祖先 + 拼接剩余分量），落点 = `src/lib/core/agentbox/agentbox.go`（`resolveRealPath`/`resolveLinksOnce`）。**两侧统一**避免了旧实现的不对称。原「**不追软链**（`EvalSymlinks` 未用）」**已不成立**。**链接自环 / 过深（>64 次替换）→ `resolveRealPath` 返回 `("", false)` 并 fail-closed**（允许目录规则被丢弃 / 目标路径被拒，**不回退字面路径**——避免「64+ 段软链链终点指向沙箱外」被 fail-open 放行）。**filesys 侧**另自行逐段解析（`withinWorkDirReal`/`resolveLinksOnce`，含 Windows 目录联接）—— 见 [23-filesys](../20-modules/23-filesys.md) |
-| 5 | ~~**配置面 UI**~~ | **已实现**（**2026-10-12 改「被 spawn 的执行体」**）：MCP 对话框「运行信息」页签「沙箱」（仅 stdio，开关读写收敛到 usr `tool_sandbox.mcps`；`EditMCPDialog` 保留 `mcps[].sandbox` 写入口 = 设计如此（MCP 本为 spawn 单位），由后端读取时迁移承接，[41 `I-179`](../40-roadmap/41-未决项登记.md) 已决）+ 页签「工具沙箱配置」（**内置 executor 四行（按 exe 基名：core/browser/desktop/dsl-executor.exe）+ 外部 MCP 行（按 mcp 名）+ 只读工具清单 + 手动保存**，usr `tool_sandbox`） |
-| 6 | **§3.3 其余规划**（按 instance 工具白/黑名单 / `inputSchema` 校验 / 限流 / `trust` 标记） | 原方案未定项，**不做、保留** |
-| 7 | **外部 MCP 沙箱开关热生效（✅ 已实施 2026-10-12）** | 保存 usr `tool_sandbox.mcps` 后，`Gateway.SetSandboxOverrides` 检测**变化**的外部 MCP（stdio）→ 异步 `Invalidate`（kill + respawn）；`sandboxOn` 为实时回调 → respawn 即按新开关注入 `CHONKPILOT_SANDBOX`（单次重连上限 30s）。仅重连**开关变化**的 MCP，不影响其余。见 [42 §2 (265)](../40-roadmap/42-决策记录.md) / [41 `I-178`](../40-roadmap/41-未决项登记.md) |
-
-> **空允许集语义**：开关显式开启而 `security-*` 为空时——executor 侧 = **全拒**（严格）；gateway 上游 = **不下发**策略 + 记日志（上游非本仓进程，空策略可能被打成全拒）。

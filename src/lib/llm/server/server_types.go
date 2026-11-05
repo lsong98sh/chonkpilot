@@ -131,6 +131,15 @@ type Server struct {
 	// pending。与 tc.frames 的 pending 同步维护（登记 pending 时写入 / 消费回执 / 轮次收尾时摘除）。
 	taskTurnIndex map[string]*turnCtx
 	asks          runner.Registry[*askWaiter] // Key(instance, ask_id) → 等待的 turn + tool-call-id + 任务节点（TURNRUN-1 批次 5 迁入 session/runner）
+	// askCenterSubs 是 Ask 中心订阅登记（后端唯一分发，2026-11-05）：user → Ask 中心窗口实例。
+	// 同一 user 只保留一个订阅实例（后订阅覆盖，避免多端重复分发）。与 s.mu 同锁。
+	askCenterSubs map[string]askCenterSub
+	// askSeq 是每 workdir 的 ask 单调序号（有序队列）；与 s.mu 同锁。
+	askSeq map[string]int64
+	// delegated：发起轮次 → 委派子轮次句柄（键 = instKey(instance, parent_turn)）。
+	// 委派子代理（task_llm）的 ctx 独立于父轮次正常收尾（见 subllm.go）；父轮次取消 /
+	// task-stop 时经本表级联关闭（多层委派递归）。与 s.mu 同锁。
+	delegated map[string][]*childTurn
 	// groupRuns 是**运行中的群聊调度器**登记表（SUBCHAT-3 阶段 F-2）：groupID → 运行句柄。
 	// 用途 = 「关窗即停」（§15.4 N23）：群聊窗口实例 `instance-exit` → 停掉由该实例驱动的调度器
 	// （见 stopGroupRunsForInstance）。独立小锁（不含 IO，避免与 s.mu 锁序纠缠）。
@@ -215,10 +224,22 @@ type askWaiter struct {
 	// AskUser S1-3/S1-4）：下发时解析一次并存于此，回带不一致时留痕（路由权威仍是 ask_id）。
 	// 空串 = 会话 → 对话映射确实取不到（唯一允许的空值场景，见 askWithID）。
 	dialogID string
-	// expiresAt 是等待登记过期时刻（与 payload expires_at 同源，E2-1）：到期未应答 → 惰性回收
-	// （见 purgeExpiredAsksLocked），避免无答复的 ask 常驻内存。
+	// expiresAt 是等待登记过期时刻（与 payload expires_at 同源）：**仅显式超时才有值**；
+	// 零值 = 无超时（一直等）。到期由定时器主动结算（见 expireAsk），不再惰性回收。
 	expiresAt time.Time
+	// ownerInstance 是发起 turn 的窗口实例（session-ask.owner_instance；跨窗口作答归属判定）。
+	ownerInstance string
+	// workDir/user 是 ask 的 workdir+user 作用域（后端唯一分发/订阅匹配用）。
+	workDir string
+	user    string
+	// seq 是该 workdir 内的单调序号（每 wd 有序队列）。
+	seq int64
+	// receivedAt 是 ask 登记时刻（unix ms；Ask 中心快照/推送展示）。
+	receivedAt int64
+	// payload 是 session-ask 原载荷（Ask 中心快照/推送复用，不再重新建模）。
+	payload []byte
+	// autoAnswer 是超时自动回复文本（优先推荐值，否则统一提示）。
+	autoAnswer string
+	// timer 是显式超时定时器（nil = 无超时）；取走/清理时 Stop，避免泄漏。
+	timer *time.Timer
 }
-
-// askTTL 是 ask-user 等待登记的存活时长（与 payload `expires_at` 同源）：30 分钟未应答即过期。
-const askTTL = 30 * time.Minute

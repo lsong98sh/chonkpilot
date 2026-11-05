@@ -28,6 +28,9 @@ func (s *Server) subscribeAll() error {
 		{domainSubject(msgkeys.TopicLlmInboxRevert), s.onInboxRevert},
 		{domainSubject(msgkeys.TopicLlmCancel), s.onLLMCancel},
 		{domainSubject(msgkeys.TopicAskUserReply), s.onAskUserReply},
+		// Ask 中心订阅（后端唯一分发，2026-11-05）：user + 可选 workdir 作用域；订阅即回快照。
+		{domainSubject(msgkeys.TopicAskCenterSubscribe), s.onAskCenterSubscribe},
+		{domainSubject(msgkeys.TopicAskCenterUnsubscribe), s.onAskCenterUnsubscribe},
 		{domainSubject(msgkeys.TopicTaskStop), s.onTaskStop},
 		{domainSubject(msgkeys.TopicTaskBackground), s.onTaskBackground},
 		{domainSubject(msgkeys.TopicTaskVerify), s.onTaskVerify}, // 一致性校验方法面（I-87；只读，层为后端）

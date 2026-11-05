@@ -1,16 +1,16 @@
 # 20 · src/lib/gui（宿主实现）+ src/desktop（唯一宿主壳）
 
 > **唯一宿主 = `src/desktop`（`FormDesktop`）**，embed 落点 = `src/desktop/frontend/dist`。宿主含：**日志窗口**（隐藏、`HideOnClose`、不注册 instance）+ **项目主窗口映射表**（`OpenProject` / `Projects` / `ActivateProject`）+ 托盘（`src/lib/core/tray`）+ `/api/log/tail`（`source` = `host` | `plugin:<id>`）+ `/api/log/sources`（日志源列表：宿主 + 已有 `plugin.log` 的插件）；日志窗口支持**日志源切换 + 行级关键字过滤 + 按项目过滤**（PLUGIN-LOG-1：行内 `wd=<workdir>` 标签，下拉从当前日志文本收集，纯前端过滤；宿主按该标签把插件日志镜像落盘到 `<workDir>/.chonkpilot/users/<OS 用户名>/logs/plugins/<id>.log`，见 [28 §5.1](28-plugins.md)）。
-> 状态：✅ 与代码一致
+> 状态：⚠️ 部分与代码一致（2026-11-04 核对：framework 迁移 / 启动流程 / 已下线功能已订正）
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [11-MQ与消息](../10-architecture/11-MQ与消息.md) · [23-filesys](23-filesys.md)
-> 代码目录：**客户端能力** = `src/lib/gui/`（窗口工厂 / `bridge/` / registry / testserver / 日志 + `internal/` + `models/`）；**单体装配宿主** = `src/lib/gui/host/`（内嵌 server→persist→filesys / 插件 / 桥接线；入口 `host.Main(distFS, Options{Form}, activations)`，依赖方向 `host → gui` **单向**；`activations` = 第二实例激活命令通道，见 [49 §2.22.6](../40-roadmap/49-待实现项.md)）。**壳** = `src/desktop/`（只嵌前端 dist + 传形态 + 单例判定与激活命令收发 + 调 `host.Main`），`frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。
+> 代码目录（2026-11-04 核对，TOPO-1 / 提交 `43bfacc`）：**客户端能力**已迁同级仓 `chonkpilot-framework/host/src/` —— `gui/`（窗口工厂 `window.go` / `registry.go` / `testserver.go` / 日志 `logfile.go`）、`models/`、`themefs/`、`fileserver/`、`assetserver/`；主仓 `src/lib/gui/` 现只剩 `bridge/` · `host/` · `mqpolicy/`（根目录无 `.go` 文件）。**单体装配宿主** = `src/lib/gui/host/`（内嵌 server→persist→filesys / 桥接线；入口 `host.Main(distFS, Options{Form}, activations)`，依赖方向 `host → framework gui` **单向**；`activations` = 第二实例激活命令通道，见 [49 §2.22.6](../40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)）。**壳** = `src/desktop/`（只嵌前端 dist + 传形态 + 单例判定与激活命令收发 + 调 `host.Main`），`frontend/dist/` 为 embed 落点（构建投放，前端源码工程在 `src/frontend/`）。
 
 ---
 
 ## 1. 职责与边界
 
-- **一句话**：Windows GUI 宿主——WebView2 承载内嵌前端，内嵌 server 生态（persist/gateway/mcp-server/插件/filesys），并以 `bridge` 做前端 ↔ 总线的薄桥。
-- **做**：窗口与布局、前端资源服务、`/publish` 上行、总线事件下行、`gui.*` 本地面、本地系统能力（目录选择/资源管理器/控制台/截图/上传）、`--test-port` 测试通道、**多窗口承载**（主窗口 + N 个纯对话窗口，🔵 待实施）。
+- **一句话**：Windows GUI 宿主——WebView2 承载内嵌前端，内嵌 server 生态（persist/gateway/mcp-server/filesys；插件为外部进程，2026-10-27 起主仓无内嵌插件），并以 `bridge` 做前端 ↔ 总线的薄桥。
+- **做**：窗口与布局、前端资源服务、`/publish` 上行、总线事件下行、`gui.*` 本地面、本地系统能力（目录选择/资源管理器/控制台/截图/上传）、`--test-port` 测试通道、**多窗口承载**（主窗口 + N 个纯对话窗口 + **Ask 中心窗口**）。
 - **不做**：不做协议翻译（薄桥）；**不持数据库句柄**（数据全经总线 persist）；不做文件变更监听（归 [filesys](23-filesys.md)）。
 
 ---
@@ -21,11 +21,11 @@
 |----|----|
 | 编译形态 | windowsgui exe（`-H windowsgui`），`//go:build windows` |
 | 前端 | Vue3 + Vite，`//go:embed all:frontend/dist` |
-| 资源服务 | **无 HTTP server**：WebView2 `WebResourceRequested` 拦截虚拟源 `https://app.localhost` |
+| 资源服务 | **应用资源无 HTTP server**：WebView2 `WebResourceRequested` 拦截虚拟源 `https://app.localhost`；另有**可选 loopback 只读资产端口** `assetserver`（`--ui-assets-addr`，仅 `/themes.css`、`/shared/*`，供插件 webui / 第三方页面 include，见 §4） |
 | 构建 | `build-desktop.ps1`（内含 `npm run build`） |
 | 产物 | `dist/desktop/chonkpilot.exe` + 引擎 exe（codegraph/vfts）+ `zvec_c_api.dll` + `capability/` |
 
-**命令行参数**（`main.go`）：`--work-dir` · `--llm-base` · `--llm-model` · `--no-server`（UI 注入测试）· `--ui-assets-addr` · `--test-port`（**仅 `-tags debugport` 构建存在**）。
+**命令行参数**（`src/lib/gui/host/main.go`，2026-11-04 核对）：`--work-dir` · `--bridge-url`（分离形态 bridge 对端；合并单进程形态忽略）· `--nats-url`（**已废弃别名**，等价 `--bridge-url`，仅在未显式给 `--bridge-url` 时生效）· `--llm-base` · `--llm-model` · `--no-server`（UI 注入测试）· `--ui-assets-addr` · `--test-port`（**仅 `-tags debugport` 构建存在**）。
 
 > **单进程单产物**：唯一宿主 = `src/desktop` → `host.Main`（日志窗口隐藏 + 托盘 + 每 `work_dir` 一个项目主窗口）；同项目唯一性由 `work_dir → 主窗口` 映射表保证。
 
@@ -38,13 +38,13 @@
 | 路径 | 用途 |
 |------|------|
 | `POST /publish` | 前端消息上行（`{type, payload}`）→ 结果信封 `{ok, result, errors}`（恒 200） |
-| `GET /show/<path>` | **资源字节流唯一豁免**（`internal/fileserver.FileShowHandler`，iframe 预览） |
+| `GET /show/<path>` | **资源字节流唯一豁免**（framework `host/src/fileserver.FileShowHandler`，iframe 预览；2026-11-04 核对路径） |
 | 其余 | embed dist 静态资源（强制 `Cache-Control: no-cache, no-store, must-revalidate`） |
 
 ### 3.2 桥的两向
 
 - **上行**：`mq.emit` → `fetch /publish` → `handlePublish` →（`gui.window.status` 特判 / `DispatchLocal` 本地优先 / `br.PublishEvent`）。
-- **下行**：桥订阅相对全通配 `>` → `forwardEvent` → `mqTypeMap` 映射为稳定前端 type → `window.mq.emitRemote(envelope)`。
+- **下行**（2026-11-04 核对）：订阅已**不是每桥一份**——framework `runtime/dispatch` 对总线 `>` **单订阅**，经共享 `mqpolicy.Hub`/dispatcher 组装 Event、问 Policy（`workspace.Router`）后逐目标投递；每窗口只以 `dispatch.SinkWindow` 注册 sink（`src/lib/gui/bridge/bridge.go:262-286`、`src/lib/gui/mqpolicy/policy.go`）→ `forwardEvent` → `mqTypeMap` 映射为稳定前端 type → `window.mq.emitRemote(envelope)`。
 
 ### 3.3 消息分派（`PublishEvent`）
 
@@ -56,7 +56,7 @@
 | 含 `.` 的点分主题 | 直通总线（`publishV`） |
 | 单字方法 | `frontMethodSubjects` → 域主题 |
 
-`gui.*` 本地动作：`init-data` · `ui.save` · `recent.list` · **`recent.remove`（删除最近项目记录，仅删记录不删资产）** · **`select-dir` / `selected-dir`（目录选择两段式，🆕 2026-10-09 由 `dir.open-dialog` 拆分）** · `pick-executable` · **`file.save`** · `dir.open` · `console.open` · `vcs.info` · `reveal` · `open-with` · `search` · **`capture` / `captured`（截图两段式：`captured` 只回 `b64`、**不落盘**，🆕 2026-10-09 / 2026-10-10 收敛）** · **`upload`（server 落盘 `<data_dir>/<dir>/<name>`、只回 `{name}`，🆕 2026-10-10）** · `prompt-optimise` · `toolchain.detect`（6 工具链 + Chrome 探测） · `system.builtins`（exe 同目录 `config.json` 的内置 MCP 只读项，不含 `llms` 段）。
+`gui.*` 本地动作：`init-data` · `ui.save` · `recent.list` · **`recent.remove`（删除最近项目记录，仅删记录不删资产）** · **`select-dir` / `selected-dir`（目录选择两段式，🆕 2026-10-09 由 `dir.open-dialog` 拆分）** · `pick-executable` · **`file.save`** · `dir.open` · `console.open` · `vcs.info` · `reveal` · `open-with` · `search` · **`capture` / `captured`（截图两段式：`captured` 只回 `b64`、**不落盘**，🆕 2026-10-09 / 2026-10-10 收敛）** · **`upload`（server 落盘 `<data_dir>/<dir>/<name>`、只回 `{name}`，🆕 2026-10-10）** · `prompt-optimise` · `toolchain.detect`（6 工具链 + Chrome 探测） · `system.builtins`（exe 同目录 `config.json` 的内置 MCP 只读项，不含 `llms` 段） · **`zprompt-summarize`**（正文摘要，结果事件 `zprompt-summarized`；`bridge/summarize.go`） · **`devtools.open`**（宿主注入 `SetDevToolsOpener`；未接线则明确失败）。（2026-11-04 核对补全后两项，见 [61 §1](../60-reference/61-消息一览.md)）
 
 > **目录选择两段式（`gui.select-dir` / `gui.selected-dir` / `gui.show-dialog`，🆕 2026-10-09 / 2026-10-10；[61 §1](../60-reference/61-消息一览.md)）**：请求 `gui.select-dir{widget_id}`（结果事件 `gui.selected-dir{widget_id,status,path?}`）由**调用侧适配**包成 Promise（`src/frontend/src/utils/guiAsync.js::selectDir`，按 `widget_id` 关联；`api/config.js::openDirDialog` 委托）。**处理方**：桥 `guimsg.go` 弹**系统原生目录框**后 `EmitFrontend(gui.selected-dir)`。**前端消费 `gui.show-dialog`**：`src/frontend/src/composables/useGuiShowDialog.js`（`App.vue` setup 全局订阅一次，`mq.on` 非 `watch`）→ 自研 `DialogShell` 承载 `views/common/DirPickerDialog.vue`（数据源 = 事件 `options`，**options 驱动**，按层浏览/返回上级/确认）→ 用户选定/取消/关闭发 `gui.selected-dir`（`utils/guiShowDialog.js` 纯逻辑构造载荷）。`options` 口径 = **该用户允许根**（`allowedDirs()` 根 = `auth.projectRoots`；缺省用户数据根）**及其子目录**（深≤3 / ≤200 / 跳隐藏与重型目录；原非 MQ 路由 `GET /dirs` 已删除）→ 同一用户下多个项目（如 `proj-a/b/c`）皆可选。「以新进程打开目录」= `gui.dir.open`：起新进程打开目标目录。
 
@@ -68,18 +68,21 @@
 
 ## 4. 内部控制流
 
-**启动（`main`）**：
+**启动（2026-11-04 核对：`src/desktop/main.go` → `host.Main`）**：
 
 ```text
-参数解析 → ResolveDir 规范化 → instanceID(uuid)
-  → mq.New(Prefix:"chonk.")
-  → filesys.New(bus).Start()
-  → （!noServer）server.New(bus, ...)：内嵌 persist+gateway+mcp-server + compress/history/codegraph 插件
-  → webview2.NewWithOptions（Frameless、Title=chonkpilot-<工作目录名>、1280x800）
-  → bridge.New(...) + Start()：instance-register + 订阅 ">"
+src/desktop/main.go：
+参数解析 → 数据根解析 → singleinstance.Acquire(UDS)（同数据根单例；已运行 → Send(CmdActivate) 后退出）
+  → activations 通道 → host.Main(distFS, gui.Options{Form:FormDesktop}, activations)
+src/lib/gui/host/main.go（runMain）：
+  gui.SetBridgeFactory → gui.InitLogging → appwire.Build/Start（persist + gateway + mcp-server + filesys 装配；
+  2026-10-27 起主仓无内嵌插件，DefaultPlugins=nil）
+  → 建 WebView2 环境 / 窗口工厂（主窗口 Frameless、Title=chonkpilot-<工作目录名>、1280x800）
+  → bridge.New(...) + Start()：instance-register + 以 window sink 接入共享 dispatcher
+  → （--ui-assets-addr）assetserver 可选启动（loopback 只读静态资产）
   → （--test-port>0）newTestServer + Start
   → 拦截 web 资源、注入 console 捕获
-  → 导航完成回调 → SetReady → restoreWindowFromConfig → Show
+  → 导航完成回调 → SetReady → restoreWindowFromConfig/applyWindowPlacement → Show
   → Navigate(appOrigin+"/") + Run()
 ```
 
@@ -89,8 +92,9 @@
 
 | 文件 | 职责 |
 |------|------|
-| `bridge.go` | 桥核心：instance 注册、订阅透传、`PublishEvent` 分派、`mqTypeMap`、src 防环（1s 窗口）、`EmitFrontend`、`WaitForEvent`（test-port） |
-| `guimsg.go` | `gui.*` 本地面（复用原 `/call` 内部 `callX`，`/call` 已清零）；含 `init-data` **场景向导启动检测**（工程规格 `<workDir>/.chonkpilot/project_spec.md` 缺失 → 应答补 `wizard_required` + 下发 `agent-wizard`） |
+| `bridge.go` | 桥核心：instance 注册、window sink 接入共享 dispatcher（下行）、`PublishEvent` 分派、`mqTypeMap`、`EmitFrontend`、`WaitForEvent`（test-port）；**防环已移出本文件**（见 `src/lib/workspace/router.go` 的 1s 本实例窗口） |
+| `guimsg.go` | `gui.*` 本地面（复用原 `/call` 内部 `callX`，`/call` 已清零）；含 `init-data` **场景向导启动检测**（工程规格 `<workDir>/.chonkpilot/project_spec.md` 缺失 → 应答补 `wizard_required` + 下发 `agent-wizard`）、`zprompt-summarize`、`devtools.open` |
+| `summarize.go` | `gui.zprompt-summarize`：后台生成正文摘要，立即回 `{ok,started}`，结果经 `zprompt-summarized{content,error?}` 推送（2026-11-04 核对补入） |
 | `data.go` | `data-*` 经总线 persist；prj-config 键值面；usr 配置（标量逐 key + 专用表 `llms`） |
 | `local.go` | 初始化数据、布局/窗口/UI/文件树/打开态保存（prjusr）、最近目录（list/remove）、打开目录、VCS、检索 |
 | `builtins.go` | `gui.system.builtins`：读 exe 同目录 `config.json` 的只读内置 MCP 项（`mcpServers` 段） |
@@ -100,7 +104,7 @@
 | `optimize.go` | 提示词 AI 优化：SSE 流式，事件 `optimize-token/done/error` |
 | `compat.go` | 旧协议事件名兼发（旧回归脚本用） |
 
-> **多窗口（🔵 待实施，[24-多窗口模型设计方案](../10-architecture/24-多窗口模型设计方案.md)）**：`Main` 由"单窗口"改为**窗口工厂**（每窗口独占 OS 线程 + `CoInitializeEx(STA)` + 独立 WebView2 `DataPath`）；`appHandler` 由单例改为**每窗口一个**（`role` = `main`/`chat`），使 `/publish`、`/show/`、`gui.window.status`、截图**绑定到调用来源窗口**；新增进程级**窗口注册表**（`windowID → {hwnd, role, sessionID}` + 反向索引 `sessionID → windowID`）承载"**一个 session 只允许一个窗口**"（已开 → 激活；主窗口当前会话 → 拒绝）。每窗口一个 `bridge`（各自 `instance_id` + 各自 `eval`）→ 事件隔离由既有 `acceptEventInstance` 提供，**不改 `eval` 扇出、不引入 `window_id`**。技术路径已 POC 验证（`TECH-POC/webview2-multiwin/`）；**关窗一律用 `Destroy()`**（`Terminate()` 跨线程无效）。
+> **多窗口（✅ 已实现，2026-11-04 核对；[24-多窗口模型设计方案](../10-architecture/24-多窗口模型设计方案.md)）**：`Main` 为**窗口工厂**（每窗口独占 OS 线程 + `CoInitializeEx(STA)` + 独立 WebView2 `DataPath`）；`appHandler` **每窗口一个**（`role` = `main`/`chat`/`ask`），使 `/publish`、`/show/`、`gui.window.status`、截图**绑定到调用来源窗口**；进程级**窗口注册表**（`windowID → {hwnd, role, sessionID}` + 反向索引 `sessionID → windowID`）承载"**一个 session 只允许一个窗口**"（已开 → 激活；主窗口当前会话 → 拒绝）。每窗口一个 `bridge`（各自 `instance_id` + 各自 `eval`）→ 事件隔离由既有 `acceptEventInstance` 提供，**不改 `eval` 扇出、不引入 `window_id`**。对话窗口打开入口 = framework `gui.Env.OpenChatWindow`（`gui/projectops.go`），与 `gui.window.open-chat` 同一实现；**关窗一律用 `Destroy()`**（`Terminate()` 跨线程无效）。
 
 ---
 
@@ -171,7 +175,7 @@
 
 **MCP 配置界面**（`views/config/SettingsMCPPage.vue` 列表 + `views/config/EditMCPDialog.vue` 编辑弹窗；落库 = **四级文件化 MCP** `<级别>/capability/mcps/<名>.json`，见 [64 §6](../60-reference/64-配置项一览.md)）：编辑弹窗含「**按实例隔离**」Switch（`config.mcp.isolate`）——**三态表达**：未拨动 = **未设置**（保存时 `delete localData.isolate`，**不写库**）+ 提示「自动（未设置，按传输方式推断）」（`isolateAuto`，另附 `isolateHint`）；一旦拨动即视为**显式设置**并写 `true`/`false`（未显式设置时开关显示随 transport 变化的推断值，computed 推断、无 `watch`）。列表新增「按实例隔离」列（`isolateLabel`）：**显式设置 → 是/否**；**未设置 → 推断值 + 「（自动）」后缀**（`isolateAutoSuffix`；推断口径与 gateway `ServerEntry.IsolateEnabled()` 一致：stdio → 隔离、http/sse → 共享，transport 留空按连接点推断）。
 
-**编辑弹窗页签**：`EditMCPDialog` 内容顶部改用 `Tabs` 拆「**基本信息**」（名称 / 传输方式 / 服务地址 / 命名空间 / 超时 / 描述 / 请求头）·「**运行信息**」（运行时 | 工作目录 / **按实例隔离** | **沙箱** / 启动参数 / 环境变量）·「**工具**」（【加载工具】+ 逐项勾选）共**三页签**（「**启用**」移到底栏与【保存】同行）；页签**仅显示分组**，`handleSave` 仍一次性提交三页全部字段。字段说明改用 label 右侧 `?` 图标 + `Tooltip`（「传输方式」= `config.mcp.transportHint`，新 `help` 图标）；「**分类**」输入项已摘除（`category` 后端字段保留，供 `servers.list` 分组）。「**沙箱**」（`config.mcp.sandbox`）由列表页列迁入「运行信息」页签（三态 Switch，同 `isolate` 口径），**仅 stdio 可开**：http/sse（及 auto 仅填 url）Switch **禁用** + 原因 tooltip（`config.mcp.sandboxStdioOnly`）**〔2026-10-12：`mcps[].sandbox` 已废弃为开关来源（开关来源收敛到 usr `tool_sandbox.mcps`）；本 Switch 的写入口保留、由后端读取时迁移承接，登记 [41 `I-179`](../40-roadmap/41-未决项登记.md)〕**；`SettingsMCPPage` 该列已摘除（编辑入口唯一 = 弹窗）。「**高频工具**」**不再是字段**：改为独立「**工具**」页签 ——【**加载工具**】按钮按别名列出该 server 工具 + 「全部工具」= 全部 hot + 逐项勾选（数据源 = 既有 `tools-list`，**零新增消息面**）；写库仍为**契约原名**列表（`"*"` = 全部），仍随主对话框「保存」落四级文件化 MCP 条目的 `hot_tools`；原独立弹窗 `SetMCPHotToolsDialog.vue` **已删除**（并入页签）。另：「**请求头**」「**环境变量**」改为 **KV 行编辑**（`components/ui/KeyValueEditor.vue`，可增删行），「**启动参数**」为**行列表**编辑（`args` 是 `[]string`，非 KV）。
+**编辑弹窗页签**：`EditMCPDialog` 内容顶部改用 `Tabs` 拆「**基本信息**」（名称 / 传输方式 / 服务地址 / 命名空间 / 超时 / 描述 / 请求头）·「**运行信息**」（运行时 | 工作目录 / **按实例隔离** | **沙箱** / 启动参数 / 环境变量）·「**工具**」（【加载工具】+ 逐项勾选）共**三页签**（「**启用**」移到底栏与【保存】同行）；页签**仅显示分组**，`handleSave` 仍一次性提交三页全部字段。字段说明改用 label 右侧 `?` 图标 + `Tooltip`（「传输方式」= `config.mcp.transportHint`，新 `help` 图标）；「**分类**」输入项已摘除（`category` 后端字段保留，供 `servers.list` 分组）。「**沙箱**」（`config.mcp.sandbox`）由列表页列迁入「运行信息」页签（三态 Switch，同 `isolate` 口径），**仅 stdio 可开**：http/sse（及 auto 仅填 url）Switch **禁用** + 原因 tooltip（`config.mcp.sandboxStdioOnly`）**〔2026-10-12：`mcps[].sandbox` 已废弃为开关来源（开关来源收敛到 usr `tool_sandbox.mcps`）；本 Switch 的写入口保留、由后端读取时迁移承接，登记 [41 `I-179`](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)〕**；`SettingsMCPPage` 该列已摘除（编辑入口唯一 = 弹窗）。「**高频工具**」**不再是字段**：改为独立「**工具**」页签 ——【**加载工具**】按钮按别名列出该 server 工具 + 「全部工具」= 全部 hot + 逐项勾选（数据源 = 既有 `tools-list`，**零新增消息面**）；写库仍为**契约原名**列表（`"*"` = 全部），仍随主对话框「保存」落四级文件化 MCP 条目的 `hot_tools`；原独立弹窗 `SetMCPHotToolsDialog.vue` **已删除**（并入页签）。另：「**请求头**」「**环境变量**」改为 **KV 行编辑**（`components/ui/KeyValueEditor.vue`，可增删行），「**启动参数**」为**行列表**编辑（`args` 是 `[]string`，非 KV）。
 
 **MCP 配置四级文件化**：MCP 配置**载体改四级文件** `<级别>/capability/mcps/<名称>.json`（app/user/project/prjusr；一个 server 一个文件）——列表页（`SettingsMCPPage`）经**新数据层 mcp 域**（`data-mcp-{list,save,delete}` + 订阅 `data-mcp-refresh`）读写，**不再整表替换 usr KV `mcpServers`**；列表新增「**级别**」列（文案 = `scenario.level.*`）。编辑弹窗「基本信息」页签新增**级别选择**（`config.mcp.level`，四级，选项文案 = `fileTree.kb_level_*`，缺省 `user`），保存按所选级别落对应级文件（改名/移级先删旧文件、不残留）；i18n = `config.mcp.level` / `config.mcp.levelHint`（zh/en）。**旧 usr KV `mcpServers` 已彻底废弃**（代码零兼容、不再回落）——见 [64 §6](../60-reference/64-配置项一览.md) · [02 §7.3](../00-overview/02-配置层级.md)。
 
@@ -194,7 +198,7 @@
 | 无 HTTP server | WebView2 `WebResourceRequested` 虚拟源拦截 | 免端口、免监听、资源不落盘 |
 | 前端资源 no-cache | 强制 `no-cache, no-store, must-revalidate` | WebView2 会持久缓存旧页面 |
 | Frameless 保留 WS_THICKFRAME | 无原生标题栏；`WS_THICKFRAME` **只保留最大化 / 贴靠等原生行为** | frameless 下 WebView2 子窗铺满客户区 → `WM_NCHITTEST` 恒 `HTCLIENT`，**系统层无边缘 resize 命中区**（WIN-1 / G-59） |
-| 窗口 resize（frameless 主窗口） | 前端边缘命中 → `gui.window.resize{hit}` → 宿主 `StartResize(HT*)` 进入系统原生 resize 模态循环 | 系统无命中区，只能由前端补命中：`components/shell/WindowResizeHandles.vue` 渲染 8 条透明命中条（4 边 6px / 4 角 12px，`-webkit-app-region: no-drag`），`mousedown` 发消息；`guiDo` 把方位映射为 `HTLEFT(10)…HTBOTTOMRIGHT(17)` 后调 `webview2.WindowResizer.StartResize`（`src/lib/gui/bridge/guimsg.go` / `window.go`；设计见同级仓 `chonkpilot-webview2` 的 `FORK.md` P4）。**仅 frameless 装配**；对话窗口（原生标题栏/边框）不装配 → 明确失败。**🆕 最大化时禁用（2026-11-04）**：宿主 `StartResize` 包装层对最大化窗口直接忽略（权威守卫）；前端命中发送与 resize 光标同步关闭（`useWindowMaximized` composable，WindowResizeHandles / ChonkTopBar / WindowControls 共用）。 |
+| 窗口 resize（frameless 主窗口） | 前端边缘命中 → `gui.window.resize{hit}` → 宿主 `StartResize(HT*)` 进入系统原生 resize 模态循环 | 系统无命中区，只能由前端补命中：`components/shell/WindowResizeHandles.vue` 渲染 8 条透明命中条（4 边 6px / 4 角 12px，`-webkit-app-region: no-drag`），`mousedown` 发消息；`guiDo` 把方位映射为 `HTLEFT(10)…HTBOTTOMRIGHT(17)` 后调 `webview2.WindowResizer.StartResize`（`src/lib/gui/bridge/guimsg.go` / framework `host/src/gui/window.go`；设计见同级仓 `chonkpilot-webview2` 的 `FORK.md` P4）。**仅 frameless 装配**；对话窗口（原生标题栏/边框）不装配 → 明确失败。**🆕 最大化时禁用（2026-11-04）**：宿主 `StartResize` 包装层对最大化窗口直接忽略（权威守卫）；前端命中发送与 resize 光标同步关闭（`useWindowMaximized` composable，WindowResizeHandles / ChonkTopBar / WindowControls 共用）。 |
 | 窗口移动（frameless 主窗口） | 顶栏非交互区 `mousedown` → 位移 >4px 后发 `gui.window.resize{hit:'caption'}` → 宿主 `WM_NCLBUTTONDOWN(HTCAPTION)` 进入系统移动模态循环 | **WebView2 `app-region` 在本项目自绘 frameless 窗口上实测不触发**（`ICoreWebView2Settings9.IsNonClientRegionSupportEnabled=true` 已生效仍无拖拽区）→ 与 resize 同链路显式进入系统循环（`ChonkTopBar.vue` 阈值判定保留单击/双击；`guimsg.go` 的 `caption → 2(HTCAPTION)`）。CSS 仍保留 `app-region: drag/no-drag` 仅作语义标记。**2026-10-17 修**；**🆕 最大化时禁用（2026-11-04，同上宿主权威守卫 + 前端 `onDragMove` 拦截）** |
 | `--test-port` 仅 127.0.0.1 | 外部脚本驱动端点 | 测试专用，见 [52-test-port驱动](../50-testing/52-test-port驱动.md) |
 
@@ -205,10 +209,11 @@
 - **窗口恢复归一化**：`normalizeWindowRect`（主显示器工作区 clamp、完全屏外居中、保证标题栏 ≥80px 可见）。
 - **窗口几何落盘权威校正（2026-11-04）**：`gui.ui.save{window}` 落盘几何/最大化标记一律以宿主 `GetWindowPlacement` 为准（`windowNormalPlacement` → `windowSaveEntries`）——最大化时 `NormalPosition` = 最大化前**还原边界**（禁把最大化尺寸当默认启动尺寸）；`maximized` 精确（`ShowCmd==SW_SHOWMAXIMIZED`）；最小化按 `maximized=false` 记录（退出改正常）。启动恢复（`applyWindowPlacement`）：`maximized=true → SW_SHOWMAXIMIZED`（重启恢复最大化）、否则恒 `SW_RESTORE`（启动不最小化）。
 - **最大化同步**：`window-maximized-changed` 事件 → 前端切图标；最大化状态由 `useWindowMaximized` composable 统一跟踪（初始查询 + resize 兜底 + 事件同步），消费方 = WindowControls / WindowResizeHandles / ChonkTopBar。
-- **`/show` 路径越界防护**：`fileserver.withinDir`（Windows 大小写不敏感），`DataDirs` 为额外放行根。
-- **防环**：本实例刚发布的主题（1s 窗口）不再回发前端。
-- **多窗口（🔵 待实施）**：窗口 ↔ `instance` **1:1**（窗 = 视口，instance = 运行态+消息归属+数据根绑定）；**`instance` 不做业务隔离**（同 `work_dir` 多 instance 共用同一 prjusr 库 → 会话列表/历史**共享**）。**关闭语义**：关任一窗口仅销毁该窗口 + 发该实例 `instance-exit`；**主窗口关闭 = 退出本进程**（其余窗口一并关闭）。**几何**：主窗口 `window.*`/`layout.*`（prjusr）；**对话窗口不持久化几何**（每次默认位置）。**不变量**：进程内 instance 数 = 窗口数（非「1 进程 1 instance」），见 [20-实例隔离与后端分离](../10-architecture/20-实例隔离与后端分离.md)。
-- **退出**：`instance-exit` → persist 移除绑定 + server 取消 running turn + 释放锁；`beaconSaveLayout`（`sendBeacon`）兜底保存布局。
+- **`/show` 路径越界防护**：framework `host/src/fileserver.withinDir`（Windows 大小写不敏感），`DataDirs` 为额外放行根。
+- **防环（2026-11-04 核对）**：本实例刚发布的主题（1s 窗口）不再回发前端；实现位置已从 `bridge.go` 移到 `src/lib/workspace/router.go`（`mqpolicy` 只做转发）。
+- **多窗口（✅ 已实现）**：窗口 ↔ `instance` **1:1**（窗 = 视口，instance = 运行态+消息归属+数据根绑定）；**`instance` 不做业务隔离**（同 `work_dir` 多 instance 共用同一 prjusr 库 → 会话列表/历史**共享**）。**关闭语义**：关任一窗口仅销毁该窗口 + 发该实例 `instance-exit`；**主窗口关闭 = 退出本进程**（其余窗口一并关闭）。**几何**：主窗口 `window.*`/`layout.*`（prjusr）；**对话窗口不持久化几何**（每次默认位置）。**不变量**：进程内 instance 数 = 窗口数（非「1 进程 1 instance」），见 [20-实例隔离与后端分离](../10-architecture/20-实例隔离与后端分离.md)。
+- **Ask 中心窗口（🆕 2026-11-04；2026-11-05 全局）**：**每进程单例** `#ask`（跨项目；原生标题栏、不绑定会话、**不占对话窗口额度**；窗口 id 用进程级序号）；归属窗口收到 `ask-user` → `gui.window.open-ask{ask}` → 宿主打开/激活（**已是前景窗口则不抢焦点**）并把 ask 并入**进程级待办缓存**（`ask_id` 去重）→ 左列待办 + 右侧作答（`gui.ask.list` / `gui.ask.remove` / `ask-center-add` / `ask-center-remove`）。**后端唯一分发**：Ask 中心经 `ask-center-subscribe`（user 作用域，可选 work_dir）登记订阅；server 按 workdir+seq 有序快照/推送，实例退出自动退订。询问超时由 `ask_user.timeout` / 项目 `ask_timeout_sec` 决定，到点自动回复（推荐值优先）并继续本轮。宿主不支持时归属窗口回落既有 dialog（`AskUserManager` 队列）。
+- **退出**：`instance-exit` → persist 移除绑定 + server 取消 running turn + 回收实例运行态（`busy` / `turns`；**无文件锁**，2026-11-04 核对）；`beaconSaveLayout`（`sendBeacon`）兜底保存布局。
 
 ---
 
@@ -217,10 +222,10 @@
 - ✅ `/call` RPC 已清零（前端无 `window.go.*` 调用点）；`compat.go` 兼容层保留。
 - ✅ `layout/window/opened-files/filetree-*` 已落 **prjusr**（个人运行态；读取 prjusr 优先、回落 prj；[02-配置层级](../00-overview/02-配置层级.md) §5）；`ui`/`opened-file` 死键与 `filetree-data` 快照已摘除。
 - ✅ `recent_dirs` 已落 **usr** config 自由键（跨进程 / 重启持久化，见 §6）；最近项目下拉支持**按条删除记录**（`gui.recent.remove`；**仅删记录，不删项目资产**）。
-- 🗄 `models/config.go` 的 `AgentConfig` 已废弃（project_agents 表 deprecated），**遗留 DB 模型（`ScenarioConfig`/`ScenarioAgent` 等）已随"无历史数据、不写兼容"口径删除**。
+- 🗄 `models/config.go` 的 `AgentConfig` 已废弃（project_agents 表 deprecated），**遗留 DB 模型（`ScenarioConfig`/`ScenarioAgent` 等）已随"无历史数据、不写兼容"口径删除**（2026-11-04 核对：`models/` 已迁 `chonkpilot-framework/host/src/models/`，主仓 `src/lib/gui/` 无该目录）。
 - 🔵 工具栏「设置」改下拉菜单 + 配置页在 preview 打开（待改造）。
 - 🔵 **预留功能（「敬请期待」、非死代码）**：`fork`（会话导航占位按钮，`src/frontend/src/views/sessions/SessionsPane.vue`，点击仅提示 `chat.fork_coming_soon`／「敬请期待」）· `analyzeDialog`（主布局预留引用，`src/frontend/src/views/layout/MainLayout.vue`）。
-- 🔵 **多窗口（主窗口 + 纯对话窗口）设计定稿、待实施**：任务分解见 [24 §7](../10-architecture/24-多窗口模型设计方案.md)（MW-1…MW-13）；含 **Resolve 审计**（多实例下 `View.Resolve` 的「唯一实例回退」失效 → 不带 `instance_id` 的数据入口须逐条排查）；数据层取 **B 方案**（desktop 走 `dataDir == ""`，见 [12 §3/§5.3](../10-architecture/12-数据层.md)）。
+- ✅ **多窗口（主窗口 + 纯对话窗口 + Ask 中心）已实现（2026-11-04 核对）**：任务分解见 [24 §7](../10-architecture/24-多窗口模型设计方案.md)（MW-1…MW-13）；含 **Resolve 审计**（多实例下 `View.Resolve` 的「唯一实例回退」失效 → 不带 `instance_id` 的数据入口须逐条排查）；数据层取 **B 方案**（desktop 走 `dataDir == ""`，见 [12 §3/§5.3](../10-architecture/12-数据层.md)）。
 
 ---
 
@@ -294,11 +299,11 @@
 - 若需排查运行时问题，优先用结构化字段而非拼串。
 
 > **日志落盘：统一到 `<prjusr 数据根>/logs/gui.log`**
-> ① **宿主（gui）**：`src/lib/gui/logfile.go` 的 `dualWriter`（stderr 并存）+ `rotateWriter`（2MiB 滚动、保留 5 份）把 **slog 默认 logger** 同时写 stderr 与 `<prjusr 数据根>/logs/gui.log`；日志目录经 `gui.init-data` 只增字段 `logDir` 下发（[61 §1](../60-reference/61-消息一览.md)）。日志目录 = **`data.PrjUsrDir`（prjusr 数据根）** + `/logs`（`src/lib/gui/main.go` 传入 `attachFileLog`）：固定 **`<workDir>/.chonkpilot/users/<OS 用户名>/logs/gui.log`**（数据根为固定规则，`--data-dir` 已删除）；`gui.init-data.logDir` 指向该处。
+> ① **宿主（gui）**（2026-11-04 核对：实现已迁 framework）：`chonkpilot-framework/host/src/gui/logfile.go` 的 `dualWriter`（stderr 并存）+ `rotateWriter`（2MiB 滚动、保留 5 份）把 **slog 默认 logger** 同时写 stderr 与 `<prjusr 数据根>/logs/gui.log`（`AttachFileLog` / `LogFileSink`）；日志目录经 `gui.init-data` 只增字段 `logDir` 下发（[61 §1](../60-reference/61-消息一览.md)）。日志目录 = **`data.PrjUsrDir`（prjusr 数据根）** + `/logs`（由 `src/lib/gui/host/main.go` 装配，`LogFileSink` 注入 `server.Options.LogWriter`）：固定 **`<workDir>/.chonkpilot/users/<OS 用户名>/logs/gui.log`**（数据根为固定规则，`--data-dir` 已删除）；`gui.init-data.logDir` 指向该处。
 > ② **后端（`src/lib/llm/server` + 内嵌插件）**：本包输出收敛到单一出口 **`logf`**（`src/lib/llm/server/log.go`）—— **`logf` 始终写 stdout（行为不变，`--test-port` 捕获口径不变）**；装配方经 **`server.Options.LogWriter`（`io.Writer`，nil = 仅 stdout）** 注入额外 sink 时**同写 sink**，GUI 注入的即宿主那一个 `<prjusr 数据根>/logs/gui.log` 文件 sink。
 
 > **启动分段计时日志（OP-15）：仅插桩量测，不改启动行为/顺序**。为定位「启动慢」真实原因，在启动路径按段打点。格式统一：**`[startup] <阶段> 耗时 <段>ms（累计 <总>ms）`**（段 = 距上次打点，总 = 距起点 `markStartupBegin`）。
-> - **宿主（gui，`slog`）**（`src/lib/gui/main.go`）：参数与目录解析 → prjusr 数据根解析（含 prj 库打开）→ 文件日志挂载 → MQ 总线初始化 → filesys 文件服务启动 → server 装配（capability 契约扫描 + gateway 构建）→ server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）→ 主窗口创建（bridge/WebView2 环境就绪）→ 启动流程就绪；**主窗口首屏渲染完成**在 `window.go` NavigationCompleted（roleMain）经 `logStartupStageOnce` 只记一次。
+> - **宿主（gui，`slog`）**（framework `host/src/gui/main.go` + 主仓 `src/lib/gui/host/main.go`）：参数与目录解析 → prjusr 数据根解析（含 prj 库打开）→ 文件日志挂载 → MQ 总线初始化 → filesys 文件服务启动 → server 装配（capability 契约扫描 + gateway 构建）→ server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）→ 主窗口创建（bridge/WebView2 环境就绪）→ 启动流程就绪；**主窗口首屏渲染完成**在 framework `gui/window.go` NavigationCompleted（roleMain）经 `logStartupStageOnce` 只记一次。
 > - **内嵌 server（`src/lib/llm/server/server.go`，统一出口 `logf`）**：数据服务(persist)启动 → 任务层启动 → gateway 启动/下游连接 → capability fswatcher 监听 → 实例视图/心跳扫描启动 → 方法面/事件订阅 → 域工具注册 → 域 agent 注册 → 工具定义缓存预热(`gc.ListTools`) → 内嵌插件启动 → server 启动完成。
 > - **装配期（`src/lib/assembly/assemble.go`，经 `logf`）**：capability 契约扫描/注册（含 `AppToolNames` 全树 `WalkDir`）、gateway 构建。
 >
@@ -309,7 +314,7 @@
 
 > 暗色浮层配色修复的防回归约定。**主题载体 = `documentElement` 的 `data-theme` 属性，非 class** —— 页面不存在 `.dark` 之类的 class，故主题相关选择器**必须**写属性选择器（`[data-theme="dark"] …` / `[data-theme="nord"] …`）；写成 `.dark` / `:root.dark` / `xxx.dark` 属**失效选择器**（编译通过但永不命中）。
 
-- **主题集**：`light`（默认，`:root`）/ `dark` / `nord`。**〔订正（2026-10-23；THEME-1）〕主题值已迁出编译资产** —— 唯一来源 = `src/initdata/themes/themes.css`（运行时优先读 `<exeDir>/themes/themes.css`、缺失回落 `go:embed` 副本，见 [themefs](../../../src/lib/gui/internal/themefs/themefs.go)）；`variables.css` **只保留几何 / 字体 / 尺寸 token**，不再有颜色声明。宿主导入一行 `<link rel="stylesheet" href="/themes.css">`（**零 `<style>` 注入**）。**无 `system`**（跟随系统未实现）；**切换唯一写点 = `src/frontend/src/composables/useTheme.js` 的 `applyTheme(id, {persist})`**（用户点选 `persist:true`；收广播 / 启动加载 `persist:false`，不写库以防自激）。首帧由 `index.html` head 的经典脚本 `public/shared/ck-theme.js` 读 `localStorage['chonkpilot-theme']` 立即落地（**禁止** `type=module` / `defer` / `async`）。
+- **主题集**：`light`（默认，`:root`）/ `dark` / `nord`。**〔订正（2026-10-23；THEME-1；2026-11-04 核对路径）〕主题值已迁出编译资产** —— 唯一来源 = `src/initdata/themes/themes.css`（运行时优先读 `<exeDir>/themes/themes.css`、缺失回落 `go:embed` 副本，见 [themefs](../../../../chonkpilot-framework/host/src/themefs/themefs.go)）；`variables.css` **只保留几何 / 字体 / 尺寸 token**，不再有颜色声明。宿主导入一行 `<link rel="stylesheet" href="/themes.css">`（**零 `<style>` 注入**）。**无 `system`**（跟随系统未实现）；**切换唯一写点 = `src/frontend/src/composables/useTheme.js` 的 `applyTheme(id, {persist})`**（用户点选 `persist:true`；收广播 / 启动加载 `persist:false`，不写库以防自激）。首帧由 `index.html` head 的经典脚本 `public/shared/ck-theme.js` 读 `localStorage['chonkpilot-theme']` 立即落地（**禁止** `type=module` / `defer` / `async`）。
 - **浮层（dialog / tooltip / popup / dropdown / 右键菜单）必须用主题 token，禁止硬编码浅色**：不得写死 `#fff` / `#f5f7fa` 之类浅色底色，或只在 `:root` 定义、暗色主题不覆写的自造 token。浮层底色一律引 `var(--panel-bg)` / `var(--bg-secondary)` / `var(--bg-primary)`，文字引 `var(--text-primary)` / `var(--text-secondary)`，描边引 `var(--border)`，hover 引 `var(--bg-hover)`。
 - **浮层/强调/页签 token（`variables.css`，dark/nord 覆写）**：
   - `--tooltip-bg` / `--tooltip-color`：tooltip 底色/文字（light = 半透明黑 + 白字；dark/nord = `var(--bg-surface)` + `var(--text-primary)`），`Tooltip.vue` 的箭头用 `border-*-color: var(--tooltip-bg)` 同步。
@@ -420,11 +425,10 @@
 - 纯成功且非"保存"语义的操作（切场景 / 切模型 / 新建会话等）**不加**提示。
 - **不加**首次使用引导：本工具面向已有 IDE（IDEA / Eclipse 等）使用经验的开发者。
 
-### 12.10 状态栏（`views/statusbar/StatusBar.vue` / 默认 `layout/bar-views/*`）
+### 12.10 状态栏（`layout/ChonkStatusBar.vue` / 默认 `layout/bar-views/*`）
 
 > 用户口径：「statusbar 可否显示 当前索引和 codegraph 的状态？未启用，完成，N/total」。
-> 状态栏自左向右 = 记忆总 token 数（仅记忆库启用时显示）· **索引状态区**（恒显示）· DevTools 图标 · 撑开 · 语言切换（`LangSwitcher`）。
-> **STB-1（2026-10-17）**：记忆提取 / 上下文压缩 / 代码索引（含 AST）**各一个长任务状态 view**，点击 → preview 详情页；长任务**不再用 toast**。
+> **2026-11-04 核对**：状态栏载体 = `src/frontend/src/layout/ChonkStatusBar.vue`（`views/statusbar/StatusBar.vue` 不存在，该目录已空）；自左向右 = 记忆总 token 数（仅记忆库启用时显示）· DevTools 图标 · 撑开 · 语言切换（`LangSwitcher`）。**索引状态区 `index-badge` / 详情页 `status-index` 已下线**（PLUGIN-UI-2 归 codegraph 插件；主仓源码零引用，`test/statusTasks.test.js` 有禁止回归断言）。**STB-1（2026-10-17）**：记忆提取 / 上下文压缩**各一个长任务状态 view**，点击 → preview 详情页；长任务**不再用 toast**。
 
 **长任务状态条目（STB-1，默认 free 形态 = `layout/bar-views/`）**
 
@@ -432,37 +436,24 @@
 |---|---|---|---|---|---|
 | `memory-status`（记忆提取） | 既有通知面 `tool-notify`：`memory-{queued,start,done}` + `plugin-failure{plugin:memory}`；`memory.enabled` 仅用于「未启用」文案 | `记忆 · 未启用`（记忆库关闭）/ `记忆 · 空闲` | `记忆沉淀排队中` / `记忆沉淀中…`（进行中色） | `记忆沉淀完成` / `记忆 · 失败`（错误色，title = 错误原文） | `open-view{status-memory}` → preview「记忆提取详情」 |
 | `compress-status`（上下文压缩） | 同上：`compress-{queued,start,done}` + `plugin-failure{plugin:compress}` | `压缩 · 空闲` | `压缩排队中` / `压缩中…`（进行中色） | `压缩完成` / `压缩 · 失败`（错误色） | `open-view{status-compress}` → preview「上下文压缩详情」 |
-| `index-badge`（代码索引；codegraph + vfts 两枚徽标同一详情页） | prj 既有键 `plugins.codegraph.enabled` / `codegraph.status` / `plugins.codegraph.vfts.enabled` / `vfts.status` | `未启用` / `未初始化` | `索引中 N/total`（`progressTotal>0`） | `完成` / `失败`（错误色） | `open-view{status-index}` → preview「代码索引详情」 |
 
 - **条目恒可见**（「每种任务都有一个状态 view」）：空闲 / 未启用也渲染（中性色 `--fg-disabled`），不因空闲而消失。
 - **失败不静默**：`plugin-failure`（既有 notice）落到条目错误色 + 详情页错误文本；**worker 失败后仍会补发 `*-done` → 前端「失败优先」**（`reduceTask`：error 态忽略后续 done），避免失败被「完成」洗掉。
-- **AST 口径**：引擎 `codegraph.status.phase` 仅 `configure|index`（插件回写），**未单独暴露 AST 阶段** → AST 并入代码索引条目 / 详情页「索引阶段」说明，**不编造独立进度**。
+- **AST 口径**：引擎 `codegraph.status.phase` 仅 `configure|index`（插件回写），**未单独暴露 AST 阶段** → 不编造独立进度；展示归 codegraph 插件状态页（主仓已无索引条目 / 详情页）。
 - **去 toast（STB-1）**：记忆 / 压缩的进度 / 完成 / 失败不再走 `ChatPanel.sendNotify`（`message.info`）；`tool-notify` 长任务取值在 `sessionGuard` **之前**归并进 `useQueueStatus`（状态栏是项目级，跨会话可见），命中即 `return`（仅压缩进度继续驱动会话内联指示条）。其它插件的 `plugin-failure` 提示链路保持不变。
 - **零新增消息面**：仅消费既有 `tool-notify` 取值（`memory-*` / `compress-*` / `plugin-failure`）与既有 prj 键；命令复用 `open-view{viewKey,target}` → `preview-tab-open{kind}`。
 
 **长任务详情页（preview 功能页，`views/status/*`）**
 
 - `status-memory` / `status-compress`：当前状态（含自动隐藏后的「空闲/未启用」）、最近一次任务（状态 / 开始 / 最近更新 / 会话 / 轮次 / 错误）、**真实 notice 状态时间线**（有界 20 条；数据只有 notice → **不伪造队列条目**）。「去设置」→ `project-config-open{tab:'context'}`。
-- `status-index`：codegraph / vfts 两区块 —— 状态、`phase`（配置 / 索引阶段）、进度 `done/total` + 进度条、`indexedFiles` / `indexedSymbols` / `chunkCount`、`lastIndexedAt`（UnixNano → 本地时间）、`loaded`、`err` / `message`。「去设置」→ `project-config-open{tab:'codegraph'}`（Vfts 区块另有 `tab:'vfts'`）。
-- **三页均注册进** `layout/view-definitions.js`（`status-*`，`designable:false`）+ `layout/views.registry.js`（组件映射）+ `CodeView.specialComponents`（功能页页签 / 标题 i18n `statusBar.detail.*`）。
+- **两页均注册进** `layout/view-definitions.js`（`status-*`，`designable:false`）+ `layout/views.registry.js`（组件映射）+ `CodeView.specialComponents`（功能页页签 / 标题 i18n `statusBar.detail.*`）。2026-11-04 核对：`views.registry.js` 仅映射 `status-memory` / `status-compress`；`views/status/` 另有 `TaskDetailLayout.vue`（任务详情，不属 STB-1 的两页）。
 
-**索引状态区（`.sb-section.sb-index`）**：内含 **两枚徽标**（`.sb-idx[data-engine="codegraph"|"vfts"]`，**图标 + 状态文本**），紧凑单行，**恒显示**。图标取自既有图标集（codegraph = `collection`，vfts = `search`）。
-- **数据源**（全部**既有** prj-config 键，**零新增消息面**）：`plugins.codegraph.enabled` + `codegraph.status`；`plugins.codegraph.vfts.enabled` + `vfts.status`。取数 = `getAllConfig()`（`data-prj-config-list`）；刷新 = 既有广播 `onDataRefresh('prj-config', reload)`；显示值用 `computed` 派生（**禁 watch/watchEffect**）。
-- **状态映射**（纯函数 `src/frontend/src/utils/indexStatus.js`）：
+**已下线：索引状态区 / `status-index` 详情页（2026-11-04 核对）**
 
-  | 条件 | 文案 | 字色 token |
-  |---|---|---|
-  | 开关非 `"true"` 或无键 | 未启用 | `--fg-disabled` |
-  | 开关为 `"true"` 且 `state ∈ {"" , not_initialized}` 且无进度/阶段 | 未初始化 | `--fg-disabled` |
-  | `state == "indexing"`（或状态未落定但已见 `progressTotal > 0` / `phase`） | 索引中；`progressTotal > 0` 时附 `N/total`（如 `索引中 320/1024`） | `--fg-secondary` |
-  | `state == "ready"` | 完成 | `--text-primary` |
-  | `state == "error"` | 失败 | `--fg-important` |
+- 代码与主仓测试明确该功能已归 codegraph 插件（PLUGIN-UI-2）：`CodeView.vue:291` 注释「`status-index` 不再存在」；`test/statusTasks.test.js` 断言主仓源码零引用 `status-index` / `index-badge` / `codegraph.status` / `vfts.status`；无 `IndexBadgeView.vue`、无 `test/statusbarIndexStatus.test.js`。
+- 原 `.sb-section.sb-index` 两枚徽标、映射函数 `utils/indexStatus.js`、点击 `open-view{status-index}` 与 L4 `test_statusbar.py::SB6-SB8` **均随功能移除**；索引进度改由插件自带 status 页/徽标承载（见 [61 §1.1](../60-reference/61-消息一览.md)）。
 
-  > 「索引中」取 `--fg-secondary`（进行中的中性次要色）：状态栏的 `--accent` 留给可交互/选中语义（如记忆总量 hover），避免「进行中」与「可点击」混淆。
-- **悬停**：徽标**原生 `title`**（**不再用 `Tooltip` 组件**）——codegraph = 「点击查看索引详情：codegraph」、vfts = 「点击查看索引详情：Vfts 全文索引」（i18n 键 `statusBar.idx_open_codegraph` / `idx_open_vfts`，zh/en 齐备；STB-1 改文案指向详情页）。原 Tooltip 多行明细**已整体移除**。
-- **点击**（STB-1 口径变更）：每枚徽标 → 统一命令 `open-view{viewKey:'status-index', target:'auto'}`（`layout/statusDetail.js`）→ 既有 `preview-tab-open{kind:'status-index'}` → preview 打开「代码索引详情」；**不再直接跳项目配置**。配置仍可从详情页「去设置」到达：`projectConfigOpen{tab:'codegraph'}` / `{tab:'vfts'}` → `MainLayout.handleOpenProjectConfig` 透传 → `ProjectConfig` 激活对应页签（缺省/非法 tab → 默认页签 `security`）。**零新增 MQ 主题**。
-- **异常兜底**：状态 JSON 解析失败/缺键 → 视为「未启用 / 未初始化」，静默（不抛错、不 `console.error`）。
-- **关联测试**：前端守卫 `test/statusbarIndexStatus.test.js`（映射全状态 + 4 键 + 既有广播 + 徽标 = 图标+文本/无 Tooltip + 原生 title + **点击走 open-view 详情** + 零新增主题 + i18n 齐备）· `test/statusTasks.test.js`（长任务条目状态映射 / 点击 open-view / 详情页注册与「去设置」/ 去 toast / 详情字段）· `test/layoutAdapter.test.js`（注册表新增 `memory-status` / `compress-status` / `status-*`）；L4 `test_statusbar.py::SB6/SB7/SB8`（真机：索引中 N-total / 完成 / 失败 → 点击开**索引详情**（错误 + 进度 + 去设置 → CodeGraph/Vfts 页签）；记忆/压缩条目（未启用/空闲基线 → 进行中 → 点击开详情 → 失败错误文本 → 失败优先于 done → 完成）；截图存 `E:\TEMP\ck-l4-visual\stb\`）。
+**保留的关联测试**：`test/statusTasks.test.js`（长任务条目状态映射 / 点击 open-view / 详情页注册与「去设置」/ 去 toast / 详情字段）· `test/statusbarMemoryEntry.test.js`（记忆总量入口）· `test/layoutAdapter.test.js`（注册表 `memory-status` / `compress-status` / `status-*`，并注明 `index-badge` / `status-index` 已归插件）；L4 `test_statusbar.py` 覆盖记忆/压缩条目（未启用/空闲基线 → 进行中 → 点击开详情 → 失败错误文本 → 失败优先于 done → 完成；截图存 `E:\TEMP\ck-l4-visual\stb\`）。
 
 ### 12.11 文件树：被索引排除条目灰显（**2026-10-25 功能下线**）
 
@@ -496,7 +487,7 @@
 - **智能体子 tab**：`*.agent.md` 编辑走 `PrimitivePanel`（token=agent → **复用** `views/scenario/AgentEditor.vue`，`showCopy=false`；保存 `data-knowledge-save`）。**「启用工具过滤」开关**：开关态为**前端本地、不持久化**（后端判据 = `tools` 非空即白名单）—— 载入按 `tools` 反推回填（单源 `utils/agentToolFilter.filterToolsLoadPatch`，与场景编辑同口径）、`update:agent` 回写；**无 tools 的智能体勾选后须保持开并展开候选**（`PrimitivePanel` 不再由 `tools.length>0` 派生）。
 - **场景编辑页的子 agent = 可编辑引用**：`views/scenario/ScenarioEditDialog.vue` 对子 agent（唯一形态 = ref）**复用** `AgentEditor` 并可编辑；选中时经 `data-knowledge-read` 读被引 `agents/*.agent.md` 正文，点【保存】经 `data-knowledge-save` 写回该文件（v2 契约：`# 基本信息`+`# 摘要`+`# 委托`+`# 正文`），**`scenario.json.agents` 里的 ref 不变**；ref 前缀 → 绝对路径解析单源 `utils/agentRef.js`。四级 capability 根均可写 → 不复制到项目级（见 [37 SCEN-003](../30-function-points/37-场景.md)）。
 - **消息面**：**主题零新增** —— 子 tab 复用 `filetree-mode-select`（payload 增**可选** `ext`）；级别复用 `kb-level-select{kind}`（语义改「扩展页统一持有」）。二者均为**前端内部**事件（未登记 [61 §6.1](../60-reference/61-消息一览.md)）。
-- **树形维护能力（🆕 2026-10-15）**：**单类型**子 tab 树根 = **该类型目录本身**（如 `<capRoot>/resources`，**不再多显示一层**类型目录；根节点 `title` = **真实绝对路径**）。**目录/文件右键**增【在资源管理器显示】（`gui.reveal`）；**文件**增【打开】（系统默认程序）/【打开方式】（对话框）。**知识子 tab 目录右键**增【导入】（多选文件，`data-knowledge-import`）；**知识子 tab 新建**先**选类型**（「知识（md 契约）」/「其他（任意类型文件）」）。「其他类型文件」（后端 `type='file'`，如 `config.json`）**单击仅选中、双击用系统默认程序打开**（应用内不预览——见 [41 D-60](file:///e:/BizWorks/chonkpilot/docs/spec/40-roadmap/41-未决项登记.md)）。**删除文件/目录后**经 `filesys.changed` **本地广播**（`mq.emitRemote`，**仅本地分发、不发后端**）通知预览区关闭对应页签（文件自身 / 目录下全部）；各类型新建入口加「名称即文件名、创建后不可改」提示。**原语编辑面板**（`PrimitivePanel`）顶部对**当前编辑的契约 md** 同样提供 **在资源管理器中显示 / 打开 / 打开方式** 三入口（复用 `gui.reveal` / `gui.open-with`）。见 [42 §2.30](file:///e:/BizWorks/chonkpilot/docs/spec/40-roadmap/42-决策记录.md)。
+- **树形维护能力（🆕 2026-10-15）**：**单类型**子 tab 树根 = **该类型目录本身**（如 `<capRoot>/resources`，**不再多显示一层**类型目录；根节点 `title` = **真实绝对路径**）。**目录/文件右键**增【在资源管理器显示】（`gui.reveal`）；**文件**增【打开】（系统默认程序）/【打开方式】（对话框）。**知识子 tab 目录右键**增【导入】（多选文件，`data-knowledge-import`）；**知识子 tab 新建**先**选类型**（「知识（md 契约）」/「其他（任意类型文件）」）。「其他类型文件」（后端 `type='file'`，如 `config.json`）**单击仅选中、双击用系统默认程序打开**（应用内不预览——见 [41 D-60](file:///e:/BizWorks/chonkpilot/docs/spec/40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)）。**删除文件/目录后**经 `filesys.changed` **本地广播**（`mq.emitRemote`，**仅本地分发、不发后端**）通知预览区关闭对应页签（文件自身 / 目录下全部）；各类型新建入口加「名称即文件名、创建后不可改」提示。**原语编辑面板**（`PrimitivePanel`）顶部对**当前编辑的契约 md** 同样提供 **在资源管理器中显示 / 打开 / 打开方式** 三入口（复用 `gui.reveal` / `gui.open-with`）。见 [42 §2.30](file:///e:/BizWorks/chonkpilot/docs/spec/40-roadmap/42-决策记录.md)。
 - **原语「基本信息」按类型表单（🆕 2026-10-15）**：`PrimitivePanel` 的「基本信息」页签由**通用 KV 网格**改为**按类型字段表单**（用户口径：meta「有些值不能乱填」）——字段 = 该类型契约 meta 键，控件按值类型映射：枚举 → `Select`（候选受契约约束 + 「（未设置）」空项）、布尔 → `Switch`、数字 → `Input type=number`、文本/路径 → `Input`；字段定义与值转换 = 纯模块 `utils/metaForm.js`（`META_FIELDS` / `metaFieldsOf` / `isSchemaKey` / `fieldValueOf` / `fieldToMetaOf`）。**`name` 只读**（= 文件名，首行固定）；**skill / prompt 无专属键**（提示文案）；**agent 不渲染本表单**（整体走 `AgentEditor`）。表单未覆盖的键（用户自建）保留在下方**「自定义键」KV 区**（可增删改、原样回写）→ load → form → save **往返保真**；`form.metaRows` 仍是**唯一真源**（字段读 `metaMap()`、写 `setMeta()`）。**锁定键语义订正**：锁定键（`name` + 类型默认键）**值可清空、键不可删**（值空 → 非锁定键删行、锁定键留行清值）。**契约/消息面零变更**（仍走 `data-knowledge-save`，落盘由服务端 `contractmd.Build` 序列化）。见 [39 KB-003](../30-function-points/39-知识库与原语.md) · [42 §2.30](file:///e:/BizWorks/chonkpilot/docs/spec/40-roadmap/42-决策记录.md)。
 - **智能体编辑页签（🆕 2026-10-15）**：`AgentEditor` 的「参考」拆 **技能 / 资源** 两个页签（**表格式**：新增 + 弹窗**多选**，按 **MCP 分类分组**可勾选）；提示词页签加 **「AI 编写」**（输入简单角色 → 走 `gui.prompt-optimise` 流式撰写）；**skill 关联工具默认勾选且不可删**（`filterTools` 未启用时 = 全部工具可用）。场景编辑页的**主 agent** 同样提供 skills/resources 选择（`agents[]` 扩字段，见 [25 §3.1](25-mcp-server.md)）。
 - **关联测试**：前端守卫 `src/frontend/test/extensionsPane.test.js`（4 段位置/5 子 tab 顺序与 kinds/级别 popup/四级可写/复用/零裸主题/agent token/i18n）+ `test/scenarioAgentsRef.test.js`（智能体编辑器复用）+ `test/sessionNavCopy.test.js`（导航顺序）+ `test/primitiveMetaForm.test.js`（基本信息按类型表单：字段清单对齐契约 / 控件类型 / 值转换往返 / 自定义键与 name 只读落点守卫 / zh-en 文案全量对齐）。L4 `run_explore_kb.py` / `run_config_ui.py` / `run_ui_regressions.py` 按新 UI（「扩展」页 + 基本信息表单）同步（**需新构建后实跑**）。
@@ -528,15 +519,13 @@
 - **关联测试**：`src/frontend/test/uxBatch2Settings.test.js` · `uxBatch2Closure.test.js`（保存按钮存在 / 按 dirty 禁用 / 不再失焦即存 / 反馈标注）· `subsystemLLMDefaults.test.js`（默认模型页签显式保存 / dirty 禁用 / loading 防重 / 无 watch）。
 - `SettingsLLMPage.vue` 为**列表 + 表单混合**：**「一览」页签 = 一栏**（provider 清单，增改走 `EditLLMDialog`）→ **不加【保存】**；**「默认模型」页签 = 表单**（主对话 + 各子系统下拉）→ **加【保存】**（页签右上角，同参数 / 路径页）。
 
-### 12.17 Vfts 索引页「系统级词典」+【重新索引】按钮（`views/settings/VftsConfig.vue` + `composables/useVftsDict.js`）
+### 12.17 Vfts 索引页 / 系统级词典（🗄 页面已删除，2026-11-04 核对）
 
-> 分词器固定 `jieba`（[2B-vfts §4.1](2B-vfts.md)）；词典**只有系统级一份**（全机共用、无项目/用户级覆盖）。本节固化该页两个新增入口的交互口径。
+> 分词器仍固定 `jieba`（[2B-vfts §4.1](2B-vfts.md)）；消息面 `vfts.dict.get` / `vfts.dict.set` / `vfts.reindex` 仍存在。但**前端配置页 `views/settings/VftsConfig.vue` 已删除**（UIREG-1 并入 codegraph 插件；`src/frontend/test/vftsDictReindex.test.js` 文件头明示「配置页已并入 codegraph 插件（前端页面删除）」）。`composables/useVftsDict.js` 仍在但**无任何 `.vue` 消费方**；`views/settings/ProjectConfig.vue` 的旧 `vfts` 页签映射到 `codegraph`。
 
-- **工具栏【重新索引】**（`projectConfig.index_reindex`）：`mq.emit('vfts.reindex')` → 插件后台全量重建，**立即回执** `{ok, started}` 后给一次 `savedText` 反馈；重建期间按钮 `:disabled="reindexing"`。**明确提示「分词器 / 词典变更必须重新索引」**（词典区块 hint，`projectConfig.dict_hint`）；重建时全工作区重扫，进度经既有 `vfts.status`（`indexing` + `progressDone/progressTotal`）回显（本页状态行，**零新增消息面**）。
-- **「系统级词典」区块**（`projectConfig.dict_section`）：进页 `loadDict()` → `vfts.dict.get` 回填 `dict_dir` / `base_dicts`（内嵌基础词典，只读）/ `user_dict` / `word_count`；`Textarea` 编辑自定义词（每行一词）→【保存自定义词】`vfts.dict.set`（**后端同时自动调度强制重建**），成功后一次 `savedText` 反馈。编辑 / 读取失败走 `saveFailedText`。
-- **实现约束**：状态逻辑封装在 `useVftsDict` composable；**禁 `watch`/`watchEffect`**；`:style` 数字带 `'px'`（本页无数字样式）；i18n（zh/en）齐备。
-- **消息面**：`vfts.dict.get` / `vfts.dict.set` / `vfts.reindex`（§1.1 点分相对主题；[61 §1.1](../60-reference/61-消息一览.md)）。
-- **关联测试**：前端守卫 `src/frontend/test/vftsDictReindex.test.js`（composable 用三主题常量 / 页面区块与按钮 / msgkeys 生成物 / i18n 齐备 / 无 watch）。
+- **现行入口**：配置 → 插件维护 → codegraph 插件页（词典 / 重新索引），非主仓内置页。
+- **保留契约（供插件页使用）**：`vfts.dict.get` 回填 `dict_dir` / `base_dicts`（内嵌基础词典，只读）/ `user_dict` / `word_count`；`vfts.dict.set` 保存自定义词并自动调度强制重建；`vfts.reindex` 立即回执 `{ok,started}`，进度经既有 `vfts.status`（`indexing` + `progressDone/progressTotal`）回显。均**零新增消息面**。
+- **关联测试**：`src/frontend/test/vftsDictReindex.test.js` 现仅守卫 composable 三主题、msgkeys 生成物与 i18n，**不再有页面级断言**。
 
 ### 12.18 子聊天（单聊）前端：状态条 · 会话列表子节点 · 启动提醒（SUBCHAT-2 阶段 C）
 
@@ -603,12 +592,12 @@
 
 **运行形态（默认 free）**
 
-- `views/layout/MainLayout.vue` **双分支**：`freeMode`（**默认 `true`**；`?layout=legacy` 回退）→ `<ChonkLayout>` 渲染 `layout.free` 文档树（顶栏 / 状态栏为条目化 `ChonkTopBar` / `ChonkStatusBar`）；**旧硬编码分支保留、不删除**。
+- `views/layout/MainLayout.vue` **单分支 free（2026-11-04 核对）**：`freeMode`（**默认 `true`**）→ `<ChonkLayout>` 渲染 `layout.free` 文档树（顶栏 / 状态栏为条目化 `ChonkTopBar` / `ChonkStatusBar`）；**旧硬编码分支与 `?layout=legacy` 回退已于 UILAYOUT-2-A 删除**（`MainLayout.vue:7` 注释；同节下方「旧 7 字段迁移已删除」一致）。
 - **18 类条目 + 默认文档**（`persist.js#defaultLayoutDoc`）：`topToolbar` / `statusbar` / `toolbars` / `drawers`；栏条目 `kind` = `button` / `menu` / `view`；**窗口控件（最小化/最大化/关闭）** 与品牌 / 拖拽区 = 容器外壳**固定件，不进配置**（§4.2）。
 - **view 承载 = 注册表声明（2026-10-30 定稿）**：一个 view 的承载方式由它自己的定义声明（`host: 'layout' | 'bar' | 'dialog' | 'preview'`，插件 view 另有 `containers`），打开逻辑 `openView(viewKey)` **按声明分发**。**禁止**再维护「viewKey → 目标页 / 具体 Vue」的白名单翻译层（原 `layout/commands.js` 的 `PREVIEW_TAB_TARGETS` 及 4 类语法糖归一**已删除**）。长任务详情（`status-memory` / `status-compress`）声明 `host:'preview'`，点击状态条目 → `preview-tab-open{kind}`（跨模块，走 MQ 合法）。
-- **MQ 边界（2026-10-30 定稿；2026-10-31 G-89 全量落地）**：**MQ 只用于跨模块 / 跨进程边界**（如状态栏条目 → 预览区页签、前端 → 后端、插件 ↔ 宿主）。**同一前端进程内的组件协作不走 MQ**——用 props / 回调 / store 动作（容器内部页签切换、编辑器草稿、弹层开关等）。**G-89 完成态（2026-10-31）**：机制层 91 个 `lf-*` 主题**全部清退**（批次 1 = 运行期命令 / 页签操作 20 个；批次 2 = 设计态编辑 / 纯 UI 行为 71 个）→ 统一由 `layout-free/stores/actions.js` 直调 config / edit / runtime store；`layout-free/events/event-names.js` 与 `stores/mqCommands.js` **已删除**（[41 G-89](../40-roadmap/41-未决项登记.md)）。
+- **MQ 边界（2026-10-30 定稿；2026-10-31 G-89 全量落地）**：**MQ 只用于跨模块 / 跨进程边界**（如状态栏条目 → 预览区页签、前端 → 后端、插件 ↔ 宿主）。**同一前端进程内的组件协作不走 MQ**——用 props / 回调 / store 动作（容器内部页签切换、编辑器草稿、弹层开关等）。**G-89 完成态（2026-10-31）**：机制层 91 个 `lf-*` 主题**全部清退**（批次 1 = 运行期命令 / 页签操作 20 个；批次 2 = 设计态编辑 / 纯 UI 行为 71 个）→ 统一由 `layout-free/stores/actions.js` 直调 config / edit / runtime store；`layout-free/events/event-names.js` 与 `stores/mqCommands.js` **已删除**（[41 G-89](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)）。
 - **布局文档内的命令模型（机制层）**：栏 / 菜单条目可声明 `command`（`open-tabs` / `open-drawer` / `toggle-drawer` / `close-tabs-active` / `toggle-area-visible` / `publish-mq`），由 `layout-free/utils/commands.js#runCommand` 执行——**内部命令直调域动作**（G-89），仅 `publish-mq` 仍发布**既有宿主主题**；机制层不认识宿主主题（**不校验主题存在性**，适配层保证「只用既有主题」）。这是**写在布局文档里的声明式数据**，不属于「viewKey → 具体 Vue」翻译表。
-- **栏视图（裁决 2）**：状态栏 / 顶栏的实时 / 条件 / 动态项做成 `kind:'view'` 的 **栏视图条目**（`layout/bar-views/`：`SearchBoxView`·`RecentDirsView`·`ChromeWarnView`·`LogoutView`·`MemoryTokenView`·`QueueStatusView`（legacy 兼容）·`IndexBadgeView`·`MemoryStatusView`·`CompressStatusView`·`LangSwitcherView` + `WindowControls` + **`LayoutProfilesView`（布局档案下拉）**；新建对话框内容 = `LayoutNewDialog`）；**不新增 `valueExpr`/`badgeKey`/`when` 协议**（条件显示由组件自持 `v-if`）。**长任务详情页**（`status-memory` / `status-compress`，STB-1）声明 `host:'preview'`，由状态栏条目的 `openView` 在 preview 功能页打开；索引进度已归插件（PLUGIN-UI-2，`status-index` / `index-badge` 不存在）。
+- **栏视图（裁决 2）**：状态栏 / 顶栏的实时 / 条件 / 动态项做成 `kind:'view'` 的 **栏视图条目**（`layout/bar-views/` 实测 11 个组件：`SearchBoxView`·`RecentDirsView`·`ChromeWarnView`·`CkStoreView`·`MemoryTokenView`·`QueueStatusView`（legacy 兼容）·`MemoryStatusView`·`CompressStatusView`·`LangSwitcherView`·`LayoutProfilesView`（布局档案下拉）·`LayoutNewDialog`，另有容器固定件 `WindowControls`；**`LogoutView` / `IndexBadgeView` 不存在，已删除**，2026-11-04 核对）；**不新增 `valueExpr`/`badgeKey`/`when` 协议**（条件显示由组件自持 `v-if`）。**长任务详情页**（`status-memory` / `status-compress`，STB-1）声明 `host:'preview'`，由状态栏条目的 `openView` 在 preview 功能页打开；索引进度已归插件（PLUGIN-UI-2，`status-index` / `index-badge` 不存在）。
 - **区块保活**：机制层「**全量渲染 + `v-show`**」——显隐 / 切页签**不卸载**组件（会话 / 页签 / 流式状态留在组件内）；仅配置**删除节点**才卸载。
 - **区域显隐（WIN-025，2026-10-21 / UILAYOUT-2）**：节点 `visible`（缺省可见）+ `hideLocked`（不允许直接隐藏，祖先连带不受限）；叶子与容器同权，容器隐藏时子节点 `visible` 原样保留；隐藏用子区 `v-show` 保活，**不参与**尺寸分配与分割条渲染；`LfLayoutSplit` 的 `measure/commit` 只对可见子区计算，并在**隐藏瞬间**把当前占比写回 `sizes[i]`（显示时按快照先占份额）；`validate()` 要求至少一个「有效可见」叶子（自身与所有祖先可见），单例占用继续计入隐藏区域。编辑器入口 = 区域 / 容器设置开关 + 树眼睛 + 右键；运行态入口 = **内部命令 `toggle-area-visible`**（`{ nodeId, viewKey? }`，直调 `stores/actions.js#toggleAreaVisible` 写 live 并落盘；默认不预置按钮，G-89 起不再借 `publish-mq` 发内部主题）。
 - **视图池（WIN-027，2026-10-21）**：运行时单例 view 由 `LfViewPool` **各挂载一次**；`LfViewHost` 运行态只渲染槽位并注册 DOM 目标，池用 `<Teleport :to>` 搬 DOM；切换布局 = 槽位变化（实例不销毁），新布局中不存在的 view 落池内「停车场」隐藏保活。切换时做 FLIP 位移 + 淡入（≈200ms，尊重 `prefers-reduced-motion`）。**设计态**：`LfViewHost` **一律渲染骨架**（图标 + 名称），不挂真实组件 —— 消除单例双开。
@@ -703,14 +692,14 @@ CreateSession` → 委托 `ProjectOps` 端口；`Route / Mark` → MQ 分发策�
    PM 的 `Resolve` / `InstanceIDs` / 开闭判定全部读它。
 4. **路由单源**：`mqpolicy` 已收归 `workspace.Router` —— `gui/mqpolicy.WorkDirPolicy` 只做
    `dispatch.Sink ↔ workspace.Sink` 转换（`SetRouter(app.Workspace.Router())`），规则不再有两份。
-5. **窗口 / 会话动作已全部接线（2026-11-03，[41 G-100](../40-roadmap/41-未决项登记.md) ✅）**：
+5. **窗口 / 会话动作已全部接线（2026-11-03，[41 G-100](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决) ✅）**：
    - 框架导出薄动作 `gui.Env.{HideProject,CloseProject,OpenChatWindow,ProjectBridge}`
      （与托盘 / `gui.window.open-chat` **同一实现**，零行为变更）；
    - `CreateWindow`：`main` → `OpenProject(hidden=!visible)`；`chat` → `OpenChatWindow`（需 `params[session_id]`）；
    - `CreateDialog / CreateSession` → 项目桥的**既有** `data-session-ensure-session`（根会话自举回带 `dialog_id`），零新增消息面；
    - `gui/host/projectops.go` 依赖抽为 `projectWindowOps` 接口（仅为可测，生产仍传 `*gui.Env`）；
      全部未接线分支已消失，`workspace.ErrOpsNotWired` 只在「装配未注入端口」时出现。
-6. **归属存储单源（[41 G-101](../40-roadmap/41-未决项登记.md) ✅）**：框架定义 `gui.OwnerStore`
+6. **归属存储单源（[41 G-101](../40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决) ✅）**：框架定义 `gui.OwnerStore`
    （`OwnerOf/SetOwner/ClearOwnerIf/ForgetInstance`），主仓 `workspace.Manager` 实现并经
    `Env.SetOwnerStore(app.Workspace)` 注入；注入后框架**不再自持副本**（`gui/owner.go` 的 map 仅作
    测试 / 无 PM 形态的回落）。依赖方向仍为「框架不 import 主仓」，只是把存储反转给 PM。

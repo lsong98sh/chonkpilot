@@ -89,6 +89,7 @@ func (s *Server) exitInstance(instanceID string) {
 	if instanceID == "" {
 		return
 	}
+	var removedAsks []*askWaiter
 	s.mu.Lock()
 	// 只清该 instance 名下的运行态（2026-09-19 缺口 5：按 instance 分桶 → 不误伤其他 instance）。
 	// 锁内仅做 map 摘除与收集（无 IO），Close（含 session 锁释放 = 文件解锁 IO）留到锁外执行。
@@ -104,8 +105,17 @@ func (s *Server) exitInstance(instanceID string) {
 	}
 	// 实例退出 → 摘除该实例的**全部** ask 等待登记（E2-1：其轮次可能已被移出 s.turns，
 	// 按 instance 归属整体清，不依赖 turn 存活）。
-	s.clearAsksByInstanceLocked(instanceID)
+	removedAsks = s.clearAsksByInstanceLocked(instanceID)
+	// 本实例若是 Ask 中心订阅者 → 注销订阅（后端唯一分发不再向已关闭窗口推送）。
+	for user, sub := range s.askCenterSubs {
+		if sub.instanceID == instanceID {
+			delete(s.askCenterSubs, user)
+		}
+	}
 	s.mu.Unlock()
+	for _, w := range removedAsks {
+		s.notifyAskCenterRemove(w, "instance_exit")
+	}
 	for _, sess := range closing {
 		sess.Close() // 锁外释放 session 锁（文件 IO）；turnCtx.Close 幂等
 	}

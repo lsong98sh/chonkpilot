@@ -5,7 +5,7 @@
 - 任务树渲染：tasks.* 事件驱动节点出现 / llm 节点耗时 / task 节点 stop
   （任务区默认收起 → 启动后先经既有 tasks-toggle 展开，再断言 `.session-tree-node`）
 - 终止会话：busy 态 Cancel 按钮 → llm-cancel 发布
-- ask_user：ask-user 事件 → 弹窗 → 选项+提交 → ask-user-reply 发布
+- ask_user：ask-user 事件 → 独立 Ask 中心（左列待办 + 右侧详情）→ 选项+提交 → ask-user-reply 发布
 
 发布观测：monkey-patch window.fetch 捕获 /publish 请求（window.__pubSpy）。
 """
@@ -17,6 +17,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
+from chonk_client import ChonkClient  # noqa: E402
+import ask_center as ac_mod  # noqa: E402
 
 from harness import ensure_locale, ensure_llm_configured, free_port, snapshot_config, restore_config, ensure_task_panel_open  # noqa: E402  动态端口 + 语言确定性 + LLM 前置 + 套件级配置快照-还原 + 任务面板展开
 from harness import install_session_history_spy, wait_session_history  # noqa: E402  切会话→发送竞态（历史回填覆盖）
@@ -219,35 +221,34 @@ def main():
                 and cancels[0].get('session') == 'sess-term',
                 f"btn={cancelBtn} cancels={repr(cancels)[:140]}")
 
-        # ── ask_user 分支 ──
+        # ── ask_user 分支（2026-11-04：独立 Ask 中心窗口，不再弹 dialog）──
         J(gui, CLEAR_SPY)
         emit_remote(gui, 'ask-user', {
             'ask_id': 'ask-1', 'question': '是否继续执行?', 'options': ['继续', '取消'],
             'session': 'sess-term', 'turn': 'turn-1',
         })
-        askVisible = wait_upto(gui, "document.querySelectorAll('.ask-user-content').length",
-                               lambda v: int(v or 0) >= 1)
-        qText = wait_upto(gui, "(()=>{const q=document.querySelector('.ask-user-content .question-content');return q?q.textContent.trim():''})()",
-                          lambda v: v == '是否继续执行?')
-        c.check("T13 ask-user 事件 → 弹窗+问题", int(askVisible) >= 1 and qText == '是否继续执行?', f"n={askVisible} q={repr(qText)}")
+        main_c = ChonkClient(base=gui.base, timeout=60)
+        _wid, ac = ac_mod.ask_client(main_c, 30)
+        itemOk = ac_mod.wait_item(ac, 'ask-1', 15)
+        ac_mod.select_item(ac, 'ask-1')
+        time.sleep(0.3)
+        qText = ac_mod.question_text(ac)
+        c.check("T13 ask-user 事件 → Ask 中心待办 + 问题",
+                itemOk and qText == '是否继续执行?', f"item={itemOk} q={repr(qText)}")
 
-        opts = wait_upto(gui, "document.querySelectorAll('.ask-user-content .option-btn').length",
-                         lambda v: int(v or 0) >= 2)
-        c.check("T14a 选项按钮数量", int(opts) >= 2, f"n={opts}")
-        J(gui, "(()=>{const b=document.querySelector('.ask-user-content .option-btn');if(b)b.click();return 'ok'})()")
-        sel = wait_upto(gui, "document.querySelectorAll('.ask-user-content .option-btn.selected').length",
-                        lambda v: int(v or 0) >= 1)
-        c.check("T14b 点击选项 → 选中态", int(sel) >= 1, f"n={sel}")
-        J(gui, "(()=>{const b=document.querySelector('.ask-user-content .submit-btn');if(b)b.click();return 'ok'})()")
-        replies = payloads(wait_upto(gui, GET_SPY,
-                                     lambda v: len(payloads(v or [], 'ask-user-reply')) >= 1) or [], 'ask-user-reply')
-        dialogGone = wait_upto(gui, "document.querySelectorAll('.ask-user-content').length",
-                               lambda v: int(v or 0) == 0) == 0
-        c.check("T15 提交 → ask-user-reply 发布 + 弹窗关闭",
-                len(replies) == 1
-                and replies[0].get('ask_id') == 'ask-1'
-                and bool(replies[0].get('answer'))
-                and dialogGone, repr(replies)[:140])
+        labels = ac_mod.option_labels(ac)
+        c.check("T14a 右侧选项按钮数量", len(labels) >= 2, f"labels={labels!r}")
+        ac_mod.click_option(ac, labels[0] if labels else '继续')
+        time.sleep(0.3)
+        sel = ac.eval("document.querySelectorAll('.ask-detail .option-btn.selected').length")
+        c.check("T14b 点击选项 → 选中态", int(sel or 0) >= 1, f"n={sel}")
+        ac.mq_on_capture(["ask-user-reply"])
+        ac_mod.click_submit(ac)
+        reply = ac_mod.wait_reply(ac, 'ask-1', max_wait=15)
+        gone = ac_mod.wait_no_item(ac, 'ask-1', 8)
+        c.check("T15 提交 → ask-user-reply 发布 + 待办移出",
+                bool(reply) and reply.get('ask_id') == 'ask-1'
+                and bool(reply.get('answer')) and gone, repr(reply)[:140])
 
         errs = [e.get('text') for e in (gui.console() or {}).get('entries', [])
                 if e.get('level') == 'error'

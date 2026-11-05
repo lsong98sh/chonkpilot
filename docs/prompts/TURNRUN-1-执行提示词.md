@@ -1,14 +1,23 @@
-# TURNRUN-1 执行提示词（新会话首条消息）
+# TURNRUN-1 执行提示词（历史归档；**不可直接执行**）
 
-> 用法：把本文件全文粘到新会话作为第一条消息。仓库根 = `e:\BizWorks\chonkpilot`；同级仓 = `e:\BizWorks\chonkpilot-agent\chat`、`e:\BizWorks\chonkpilot-agent\session`、`e:\BizWorks\chonkpilot-agent\router`、`e:\BizWorks\chonkpilot-agent\gateway`。
+> ⛔ **历史执行提示词，不可直接执行（2026-11-04 核对）**：`TURNRUN-1` 的**批次 1–6 已全部完成**（`docs/spec/20-modules/2H-轮次运行器与职责边界.md:3` 状态「批次 1–6 已落（2026-10-28）」）。本文件仅作**历史执行稿 / 交接记录**保留；照做会重复改造并与现行代码冲突。现行事实以 `2H` / `49 TURNRUN-1` / 代码为准。
+>
+> **已失效的关键指令**：
+> - **批次 1 的 `CreateMutexW` 单例**已于 **2026-10-29** 被 **UDS 独占 listen 单例**（`singleinstance.Acquire`）取代（`2H:279,288` 明确）；`src/lib/gui/singleton_windows.go` **从未存在于当前树**，实际入口是 `src/desktop/main.go`。
+> - **「61 零变更 / `git diff` 为空」验收**在当前工作树不可用：61、schema、msgkeys 等已有与本任务无关的未提交改动。
+> - **代码坐标已漂移**：`engine_turn.go:82-109` 已不是 `chat.New`（`chat.New` 在 `boot.go:46`）；批次 3 的 `TurnParams` 实现**不含 `Deps`**（身份与端口分离）。
+>
+> 用法（仅作历史参考）：把本文件全文粘到新会话作为第一条消息。仓库根 = `e:\BizWorks\chonkpilot`；同级仓 = `e:\BizWorks\chonkpilot-agent\chat`、`e:\BizWorks\chonkpilot-agent\session`、`e:\BizWorks\chonkpilot-agent\router`、`e:\BizWorks\chonkpilot-agent\gateway`、`e:\BizWorks\chonkpilot-agent\types`。
 > 本提示词只覆盖**代码改造**；文档已在上一轮收敛完毕，不要重做。
 
 ---
 
-## 0. 任务
+## 0. 任务（**已完成，仅归档**）
 
 执行 `TURNRUN-1` 的**批次 1–6**：把 `llm/server` 里的轮次调度与输入策略下沉到 `chonkpilot-agent/session`，chat 改为无状态单例，补进程单例，新建共享数据类型仓。
 **消息面（[61-消息一览](../../docs/spec/60-reference/61-消息一览.md)）零变更**——topic / payload / 字段一个都不许增删改。
+
+> **执行状态（2026-11-04）**：批次 1–6 全部 ✅（`2H` 批次表 1–6 全绿）；唯一的机制替换 = 批次 1 的 `CreateMutexW` → UDS 单例 `singleinstance.Acquire`。下文「改动 / 验收」为历史任务书，**不要据此重新实施**。
 
 ## 1. 开工前必读（唯一口径）
 
@@ -26,7 +35,7 @@
 2. **chat 保持每轮一个实例**，但实例必须**无跨轮状态**；`Deps` 中的 `InstanceID / SessionID` 外提到 `RunTurn` 入参。
 3. **插入的边界**：能不能插入 / 插不进降级 `next_turn` / 帧深上限 → **决策归 session**；帧执行（嵌套跑帧）→ **留 chat**。
 4. **工具列表与知识库/索引列表 = 活读 + 读写锁，不拉快照**；仅配置与 LLM spec 在本轮开始时快照。
-5. **单例只做 `CreateMutexW`**（`Local\chonkpilot-desktop`），入口第一件事；不做 UDS 单例、不做 window class 单例；随后**删除 session 文件锁**。
+5. ~~**单例只做 `CreateMutexW`**（`Local\chonkpilot-desktop`），入口第一件事；不做 UDS 单例、不做 window class 单例；随后**删除 session 文件锁**。~~ **〔2026-11-04 核对：已反转〕现行 = UDS 独占 listen 单例（`singleinstance.Acquire`），`CreateMutexW` 已于 2026-10-29 废止；session 文件锁已删除。**
 6. **数据层保持短读短开**，不改常开。
 7. **唯一形态 = desktop**：不要引入 gui / browser / flash / CLI 任何概念或分支。
 8. **共享契约仓** `chonkpilot-agent/types` 第一批只放 6 个纯数据类型：`Message / ToolCall / ToolSpec / ToolResult / CallContext / Usage`；不放 router 的 `Part/Message`，不放 chat 的 `Event / InboxItem / TurnState`。
@@ -40,14 +49,16 @@
 
 ## 4. 分批任务
 
-### 批次 1 · 进程单例 + 删 session 文件锁
+### 批次 1 · 进程单例 + 删 session 文件锁（✅ 已完成；机制已被 UDS 单例取代）
+
+> **2026-11-04 核对**：`src/lib/gui/singleton_windows.go` / `singleton_other.go` **不存在**，`CreateMutexW` 方案已废弃；现行入口 `src/desktop/main.go` 经 `singleinstance.Acquire`（UDS 独占 listen）实现单实例。`sessionlock_{windows,other}.go` / `_test.go` 已删除（`handler_session.go:203` 注释确认）。以下为历史任务书。
 
 **改动**
-- 新增 `src/lib/gui/singleton_windows.go`：`AcquireSingleInstance() (bool, error)`，`CreateMutex(nil,false,\`Local\chonkpilot-desktop\`)`；`GetLastError()==ERROR_ALREADY_EXISTS` → `false`；句柄保持到进程结束（不提前 Close）。
-- 新增 `src/lib/gui/singleton_other.go`（`//go:build !windows`，恒返回 `true`）。
-- `src/lib/gui/host/main.go`：**函数第一段**调用；返回 false → 直接退出（不建窗、不打开数据根）。
-- 删除 `src/lib/llm/server/sessionlock_windows.go`、`sessionlock_other.go`、`sessionlock_test.go`。
-- 删除 `src/lib/llm/server/handler_session.go` 中 session 文件锁的获取/释放调用点（约 196–205 行），保留**内存 `busy`** 语义不变。
+- ~~新增 `src/lib/gui/singleton_windows.go`：`AcquireSingleInstance() (bool, error)`，`CreateMutex(nil,false,\`Local\chonkpilot-desktop\`)`；`GetLastError()==ERROR_ALREADY_EXISTS` → `false`；句柄保持到进程结束（不提前 Close）。~~
+- ~~新增 `src/lib/gui/singleton_other.go`（`//go:build !windows`，恒返回 `true`）。~~
+- ~~`src/lib/gui/host/main.go`：**函数第一段**调用；返回 false → 直接退出（不建窗、不打开数据根）。~~
+- ✅ 删除 `src/lib/llm/server/sessionlock_windows.go`、`sessionlock_other.go`、`sessionlock_test.go`。
+- ✅ 删除 `src/lib/llm/server/handler_session.go` 中 session 文件锁的获取/释放调用点（约 196–205 行），保留**内存 `busy`** 语义不变。
 
 **验收**
 - 双开实测：第二实例退出，首实例不受影响。
@@ -55,7 +66,7 @@
 
 ---
 
-### 批次 2 · 新建 `chonkpilot-agent/types`
+### 批次 2 · 新建 `chonkpilot-agent/types`（✅ 已完成，2026-10-27）
 
 **改动**
 - 新仓 `e:\BizWorks\chonkpilot-agent\types`，module 名与现有仓风格一致；只依赖 stdlib。
@@ -70,7 +81,7 @@
 
 ---
 
-### 批次 3 · chat 身份外提（不改单例）
+### 批次 3 · chat 身份外提（不改单例）（✅ 已完成，2026-10-27）
 
 **改动（`chonkpilot-agent/chat`）**
 - `Deps` 去掉 `InstanceID / SessionID`；新增 `TurnParams{ InstanceID, SessionID, TurnID string; Deps }`。
@@ -81,11 +92,11 @@
 - `go test -race ./...`（同 Engine 并发不同 session 不同 turn）。
 - 宿主侧适配：`llm/server` 调用点传本轮 `instance/session/turn`。
 
-> **实施记录（2026-10-27）**：`Deps` 已删身份字段；新增独立 `TurnParams{InstanceID,SessionID,TurnID}` + `Runtime.RunTurnParams`（**未**把 `Deps` 内嵌进 `TurnParams` —— 端口/配置仍是实例级依赖，每轮只传身份，避免无谓复制）。过渡期保留 `NewForTurn` + 旧 `RunTurn(ctx, turnID)`（批次 6 删）；宿主 `engine_turn.go` 已切 `RunTurnParams`；`go test ./... -race` 全绿。落地口径见 [2H §3.4](../spec/20-modules/2H-轮次运行器与职责边界.md) 与 [49 §2.12](../spec/40-roadmap/49-待实现项.md)。
+> **实施记录（2026-10-27）**：`Deps` 已删身份字段；新增独立 `TurnParams{InstanceID,SessionID,TurnID}` + `Runtime.RunTurnParams`（**未**把 `Deps` 内嵌进 `TurnParams` —— 端口/配置仍是实例级依赖，每轮只传身份，避免无谓复制）。过渡期保留 `NewForTurn` + 旧 `RunTurn(ctx, turnID)`（批次 6 删）；宿主 `engine_turn.go` 已切 `RunTurnParams`；`go test ./... -race` 全绿。落地口径见 [2H §3.4](../spec/20-modules/2H-轮次运行器与职责边界.md) 与 [49 §2.12](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)。
 
 ---
 
-### 批次 4 · `session/inbox` 策略下沉
+### 批次 4 · `session/inbox` 策略下沉（✅ 已完成，2026-10-27）
 
 **改动**
 - 新包 `chonkpilot-agent/session/src/inbox`（纯函数 + 状态快照入参）：`Insertable(frameOpen bool, depth int) bool`、`Classify(input) (insert | next_turn)`、`Degrade(item)`、`Promote(item)`、`MaxDepth`。
@@ -97,7 +108,7 @@
 
 ---
 
-### 批次 5 · `session/runner` 下沉（核心）
+### 批次 5 · `session/runner` 下沉（核心）（✅ 已完成，2026-10-27）
 
 **改动**
 - 新包 `chonkpilot-agent/session/src/runner`：
@@ -115,7 +126,7 @@
 
 ---
 
-### 批次 6 · chat `Engine` 单例化
+### 批次 6 · chat `Engine` 单例化（✅ 已完成，2026-10-27）
 
 **改动**
 - `chonkpilot-agent/chat`：`Engine` 只保留 `logger / clock`；`RunTurn` 内部创建 `turn`；`New()` 不再需要 per-turn 参数。
@@ -129,7 +140,7 @@
 
 ## 5. 全局硬约束
 
-1. **61 零变更**：不得增删改任何 topic / payload / 字段；需要变更先停下问用户。
+1. **61 零变更**：不得增删改任何 topic / payload / 字段；需要变更先停下问用户。**〔2026-11-04 核对：该验收已失效——当前工作树 61 / schema / msgkeys 已有与本任务无关的未提交改动，`git diff` 不会为空〕**
 2. **测试必须 MQ 驱动 + MQ 断言**（见 `docs/spec/50-testing/50-测试体系.md` §1）。
 3. **构建只走脚本**：`.\build-desktop.ps1`；不得裸跑 `go build` / `npm run build`；前端产物落 `src/desktop/frontend/dist`。
 4. **文件编辑只用 Write / SearchReplace / Edit**；不得用 PowerShell 重定向 / `-replace` 改文件。
@@ -145,7 +156,9 @@
 3. 验证：执行的命令 + 结果（通过数 / 失败项原文）。
 4. 未决项：做不到 / 需拍板的事项，写入 `49` 或 `41`，不要口头略过。
 
-## 7. 关键代码坐标（起点）
+## 7. 关键代码坐标（起点；**2026-11-04 核对：行号已漂移，不可作为执行起点**）
+
+> 仅作历史定位参考。`engine_turn.go:82-109` 现为 lifecycle / `RunTurnParamsWith`；`chat.New(chat.Deps{...})` 已不在 `engine_turn.go`（在 `boot.go:46`）。其余文件仍存在，但行号需重新 Grep。
 
 | 位置 | 内容 |
 |---|---|
@@ -183,8 +196,8 @@ python e:\BizWorks\chonkpilot\src\test\chonkpilot-gui\systest\run_all.py
 
 > 失败处置：先止血（阻塞性错误立即停），再收敛（单点失败记录后跑完），修完按「失败用例 → 受影响组 → 全量」三层重跑。
 
-## 9. 完成定义
+## 9. 完成定义（**已达成，2026-11-04 核对**）
 
-- 批次 1–6 全部落地，61 零变更，L4 全绿。
-- `2H` 与 `49 TURNRUN-1` 状态更新为已完成；未落实的（M3 群聊/子聊天下沉、`llm/server` 改名 `glue`）留在 `49` / `41`。
-- 最终构建由 `.\build-desktop.ps1` 后台发起，不等待。
+- 批次 1–6 全部落地（✅），L4 已由后续批次覆盖；61 在 TURNRUN-1 范围内零变更。
+- `2H` 与 `49 TURNRUN-1` 状态已更新为已完成；未落实的（M3 群聊/子聊天下沉、`llm/server` 改名 `glue`）留在 `49` / `41`。
+- 本文件自此转为**历史归档**，不再作为执行输入。

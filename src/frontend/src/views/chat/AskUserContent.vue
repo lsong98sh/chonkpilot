@@ -9,6 +9,7 @@
     </div>
 
     <div class="question-content">{{ question }}</div>
+    <div v-if="context" class="context-content">{{ context }}</div>
 
     <div v-if="options.length > 0" class="options-list">
       <Button
@@ -67,9 +68,12 @@ const props = defineProps({
   custom: { type: Boolean, default: false },
   multi: { type: Boolean, default: false }, // 多选（multi=true 勾选多个选项）
   recommended: { type: Array, default: () => [] }, // 推荐选项 label 列表
+  context: { type: String, default: '' }, // 提问背景说明（ask_user.context）
   subSessionId: { type: String, default: '' },
   sessionId: { type: String, default: '' },
   deadline: { type: Number, default: 0 },
+  // noTimeout = 明确无超时（ask_user 缺省 / timeout=-1）：不进入 busy 态，一直等用户。
+  noTimeout: { type: Boolean, default: false },
   // 「聊一聊」出口（AskUser S1-1，docs/ask-user/AskUser专题设计方案.md §4.3/§4.4）：
   // **仅主窗口**渲染（对话窗口不提供）；判定在 askUserManager（会话切换只在主窗口成立），
   // 本组件只按 props 渲染，保持纯展示。
@@ -108,7 +112,9 @@ onMounted(() => {
   unsubs.push(mq.on(EventNames.askUserChat, ({ uid: u }) => {
     if (u === props.uid) emit('chat')
   }))
-  // 超时基准：无任何鼠标键盘操作开始计时（前端计时，与工具超时无关）
+  // 超时基准：无任何鼠标键盘操作开始计时（前端计时，与工具超时无关）。
+  // noTimeout（缺省 / timeout=-1）→ 不进入 busy；显式 deadline 才计时。
+  if (props.noTimeout) return
   const deadlineMs = props.deadline > 0 ? props.deadline : Date.now() + FALLBACK_TIMEOUT_MS
   const delay = deadlineMs - Date.now()
   if (delay <= 0) {
@@ -209,6 +215,16 @@ function submitAnswer() {
   line-height: 1.6;
   color: var(--text-primary);
   margin-bottom: 20px;
+  white-space: pre-wrap;
+}
+
+.context-content {
+  margin: -10px 0 18px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--border);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary, #606266);
   white-space: pre-wrap;
 }
 

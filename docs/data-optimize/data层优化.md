@@ -1,13 +1,13 @@
 # data 层优化清单（审计 + 待办）
 
-> 日期：2026-10-25 ｜ 状态：🟡 **部分已实施**（见 §0 进度）｜ 登记：[49 §2 `DATA-OPT-1`](../spec/40-roadmap/49-待实现项.md)
-> 范围：`src/lib/data` 全模块（生产代码 97 文件 / 19,623 行；测试 46 文件 / 6,108 行）
+> 日期：2026-10-25（2026-11-04 核对）｜ 状态：🟡 **部分已实施**（见 §0 进度）｜ 登记：原 `49 §2 DATA-OPT-1`（[49-待实现项](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04) 已于 2026-11-04 全表清空；实施记录以 [12-数据层](../spec/10-architecture/12-数据层.md) / [22-data-persist](../spec/20-modules/22-data-persist.md) 与代码为准，历史见 git）
+> 范围：`src/lib/data` 全模块（2026-11-04 实测：生产代码 98 文件 / 19,720 行；测试 47 文件 / 7,116 行。原快照为 97 文件 / 19,623 行、46 文件 / 6,108 行）
 > 方法：四分区**只读**审计（persist 信封层 / session+kernel / config+capfs 等领域 / 内核与门面），每条均以 `文件:行号` 取证；无法证实的标「待确认」，已列入「明确不做」的不再重复。
-> 契约准则：[61-消息一览](../spec/60-reference/61-消息一览.md) —— 本清单除 D-5 外**不改任何主题或 payload 字段**。
+> 契约准则：[61-消息一览](../spec/60-reference/61-消息一览.md) —— 本清单原计划除 D-5 外**不改任何主题或 payload 字段**；D-5 已于 2026-10-29 完成（61 已登记 delete 的 `ids` 口径）。
 
 ---
 
-## 0. 实施进度（2026-10-25）
+## 0. 实施进度（2026-10-25，2026-11-04 核对）
 
 | 批次 | 状态 | 说明 |
 |---|---|---|
@@ -16,17 +16,18 @@
 | P0-3 前端白名单 | ✅ | `configIO.js` 补 3 个 `llm.*` 键 |
 | P0-4 `CompactArgs` | ✅ | 流式 token 解码，按 JSON 原始键序取前 3 |
 | P0-5 inbox 顶层字段 | ✅ | `commit` 的 `session_id/brief/tool_call_status` 增加顶层回落 |
-| P0-6 畸形载荷 req_id | ✅ | 新增 `Service.failDecode`，12 处 handler 接入 |
+| P0-6 畸形载荷 req_id | ✅ | 新增 `Service.failDecode`，13 处 handler 接入（2026-11-04 核对） |
 | D-4 移除 `llm.analysis/decision` | ✅ | Go 键表 + 单测 + 前端页面/测试 + 64 文档 |
-| P1 死代码 | ✅ | 净 −533 行生产（+ −134 测试） |
-| P2 出参 DTO | ✅ | 25 处回执全部改具名 struct（新增 9 个通用 DTO） |
-| D-2 旧布局退场 | ✅ | 2026-10-28 实施：删 `session.db.shard` 开关 / `ShardOn` / 旧布局分支 / `persist/shard.go` 搬运 / `sessionstore/migrate.go`；`dialog_id` 恒必填（根会话自举除外）。详见 [49 §2.5](../spec/40-roadmap/49-待实现项.md) |
-| P3 结构收敛 | ✅ | 2026-10-28 实施 S-1～S-7（实测净 ≈ -200 行：`src/lib/data` -162 + `src/lib/llm/server` -38；未为凑行数硬删）。落地要点与逐项行数见 [49 §2.5](../spec/40-roadmap/49-待实现项.md)。**未做**：S-4 的 `more` 置真 / 游标 Seek（语义修复，非结构收敛） |
-| P4 性能 | ✅ | 2026-10-28 实施 F-1～F-7，量化见 [49 §2.5](../spec/40-roadmap/49-待实现项.md) |
-| D-6 MCP map↔DTO | 🟡 | **结构合并已做**（删 `llm/server` 的同名 `mcpEntry` 与两次 JSON 往返；`data/internal/mcp` 的 `mcpFromMap`/`mcpToMap` 为唯一转换）。**「文件未知字段保留」语义部分未做**（需改 61 §3.1 / 64 口径，待用户确认） |
-| D-5 `prj-config` 批量 delete 广播 | ⬜ | **未做 —— 属消息面变更，待用户按 61 §变更口径确认** |
+| P1 死代码 | 🟡 | 主体已清理（净 −533 行生产 / −134 行测试）。**残留**：`token.go:33-35 LocateFullTurnCount` 仍为纯转发（主仓无调用方，而 `36-配置.md` 仍称 compress 使用 `data.LocateFullTurnCount`）；整体接近完成，不计阻断（2026-11-04 核对） |
+| P2 出参 DTO | 🟡 | wire 层已有 36 个 `*Payload/*Result`；但 persist 仍有两处行内 map：`persist/inbox.go:57-60` list 行、`persist/knowledge.go:121` import errors 行；文档承诺的 `parsePayload[T]` / `failOn` / `mergeData[T]` 泛型助手在 `persist/` 中不存在（仍为直接 `json.Unmarshal` + `failID`）（2026-11-04 核对） |
+| D-2 旧布局退场 | ✅ | 2026-10-28 实施：删 `session.db.shard` 开关 / `ShardOn` / 旧布局分支 / `persist/shard.go` 搬运 / `sessionstore/migrate.go`；`dialog_id` 恒必填（根会话自举除外）。原「量化见 49 §2.5」已不可追溯（49 于 2026-11-04 清空），改以 [12-数据层](../spec/10-architecture/12-数据层.md) 与代码为准 |
+| P3 结构收敛 | 🟡 | 2026-10-28 实施 S-1～S-7（部分）：S-1 `resolveBinding` / S-2 `forEachDialogDB` 复用 / S-3 `delRow`+`scanBucket` / S-5 `capfs` 校验收敛 / S-7 `wire/domains.go` 复用门面类型均已落地。**未做**：S-4 的 `more` 置真 / 游标 Seek（`query.go:162,196` + `filterAfter`）；**S-6 `classifyUserConfigKey` 不存在**（`userconfig.go` 仍多份 `switch kind`，`kernel/conf.go` 薄封装已做）（2026-11-04 核对） |
+| P4 性能 | 🟡 | F-1（`component/ask.go:37-56` ForEach）/ F-3 / F-4 / F-5 已落地。**F-2 未做**：`indexes.go` 无 `inbox_by_session`，`chonkpilot-agent/session/src/component/inbox.go:80-99` 仍全表 `ForEach` 找幂等键/统计 pending；**F-6 未做**：`component/tasktree.go:194-210` 关闭节点仍先全表扫描建 `children`，无「无子节点即跳过」快路径。F-7 随旧布局退场自然消失（N/A）（2026-11-04 核对） |
+| D-6 MCP map↔DTO | ✅ | 结构合并 ✅（`llm/server/gateway_servers.go:49` 注释）。**「未知字段保留」语义已实现**：`persist/mcp.go:25-48 mcpUnknownFields` → `facade/mcp.go:62-65 Extra` → `internal/mcp/mcp.go:112-126`；`61-消息一览.md:278,290` 已于 2026-10-29 登记。原「部分未做」已过期（2026-11-04 核对） |
+| D-5 `prj-config` 批量 delete 广播 | ✅ | `internal/config/config_facade.go:226-270 ConfigKVDelete` 多键只广播 1 条 `RefreshScopedKeys(..., "delete")`（载荷带 `ids`，`id` = 首键）；`61-消息一览.md:263,288` 已于 2026-10-29 登记。原「未做」已过期（2026-11-04 核对） |
 
 > 〔2026-10-28 订正（DATA-OPT-1 ②）〕旧布局已整体退场：本文 §1 D-2、§2 P0-1、§4 F-1 / F-7 中提到的 `shard` / `ShardOn` 分支代码**均已删除**，相关条目仅作历史审计记录。
+> 〔2026-11-04 核对〕§0 状态按代码双向回标：**D-5 / D-6 已完成**（原标未做 / 部分未做）；**P1 / P2 / P3 / P4 仍有残留**（原标 ✅，现标 🟡，逐项见上表）。49 已于 2026-11-04 清空，原「详见 49 §2.5」的量化记录不再可追溯。
 
 ---
 
@@ -38,8 +39,8 @@
 | D-2 | **旧布局整体退场** | 删 `internal/sessionstore/migrate.go`（`sessions/<hex>/` → `dialogs/` 搬运）、`persist/shard.go` 启动搬运、`session.db.shard` 开关及 13 处旧布局分支，只保留一树一库 `dialogs/dialog-<hex>.db`。`sessionstore` 只留 `ListDialogs`/`GetDialog`/`PutDialog`/`Delete`。P0-1 的 `SessionActiveGet` 缺陷随之消失。 |
 | D-3 | `refresh` 的 `list` **不做优化** | 保持每次写后全量 list（`prj-config` 扫表 / `scenario`、`mcp` 磁盘遍历）。 |
 | D-4 | **去掉 `llm.analysis` / `llm.decision`** | 后端零消费方的预留键：删 `userConfigKeyKinds` 两行 + 前端 `SettingsLLMPage.vue` 两行 standby + 导入白名单相关同步（`docs/spec/60-reference/64-配置项一览.md` 标删除）。 |
-| D-5 | `prj-config` **批量 delete 对齐单条广播** | 写侧已收敛为 1 条（带 `ids`）；delete 批量改为同样 1 条。**属消息面变更**（[61 §3.1](../spec/60-reference/61-消息一览.md) 需补 delete 的 `ids` 口径），实施前按 61 §变更口径走确认。 |
-| D-6 | MCP map↔DTO 改**手写合并** | 去掉每 server 两次 JSON 往返；语义变化 = 文件里的未知字段**保留**（当前被丢弃），需在 [61 §3.1 `data-mcp`](../spec/60-reference/61-消息一览.md) 与 64 注明。 |
+| D-5 | `prj-config` **批量 delete 对齐单条广播** | 写侧已收敛为 1 条（带 `ids`）；delete 批量改为同样 1 条。**属消息面变更**（[61 §3.1](../spec/60-reference/61-消息一览.md) 需补 delete 的 `ids` 口径），实施前按 61 §变更口径走确认。**〔2026-11-04 核对：已于 2026-10-29 实施，61 已登记〕** |
+| D-6 | MCP map↔DTO 改**手写合并** | 去掉每 server 两次 JSON 往返；语义变化 = 文件里的未知字段**保留**（当前被丢弃），需在 [61 §3.1 `data-mcp`](../spec/60-reference/61-消息一览.md) 与 64 注明。**〔2026-11-04 核对：已于 2026-10-29 实施，未知字段保留已落码〕** |
 
 ---
 
@@ -146,6 +147,6 @@
 | C | P2 出参 DTO + P0-5 | 同上（`eqWire` 等价链保持） |
 | D | P3 结构收敛（S-1～S-7） | 同上，逐项小步提交 |
 | E | P4 性能（F-1～F-7） | 同上 + 必要索引变更同步 `12-数据层` |
-| F | D-5（61 契约变更）· D-6（MCP 合并） | 按 61 §变更口径确认后实施 |
+| F | D-5（61 契约变更）· D-6（MCP 合并） | **均已完成（2026-10-29；61 已登记，2026-11-04 核对）** |
 
-**收尾**：`.\build-desktop.ps1`；文档同步 [12-数据层](../spec/10-architecture/12-数据层.md) · [22-data-persist](../spec/20-modules/22-data-persist.md) · [64-配置项一览](../spec/60-reference/64-配置项一览.md) · [49 §2 `DATA-OPT-1`](../spec/40-roadmap/49-待实现项.md)。
+**收尾**：`.\build-desktop.ps1`；文档同步 [12-数据层](../spec/10-architecture/12-数据层.md) · [22-data-persist](../spec/20-modules/22-data-persist.md) · [64-配置项一览](../spec/60-reference/64-配置项一览.md)。原 `49 §2 DATA-OPT-1` 登记已随 49 清空（2026-11-04），历史见 git。

@@ -23,6 +23,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from chonk_client import ChonkClient, TestError, run_case  # noqa: E402
+import ask_center as ac_mod  # noqa: E402
 import harness as _h  # noqa: E402  按需加载 + 结束即回收（51-FP与测试映射 §测试资源规范）
 
 # 独立工作目录（含文件 → 对话窗 filesys 能力断言用）+ 独立 HOME（usr/prjusr 库均隔离）。
@@ -1081,11 +1082,11 @@ def case_t30():
 # ══════════════════════════════════════════════════════════════════
 
 def case_t31():
-    """MW-T31 AskUser「聊一聊」**仅主窗口**（AskUser S1-1 · 设计 §4.3 / §4.4 ①）。
+    """MW-T31 ask_user → **独立 Ask 中心窗口**（2026-11-04；替代原「仅主窗可聊一聊」）。
 
-    驱动 = 既有前端本地事件 `ask-user`（61 §4.3 `session-ask` 的桥映射 type），在各窗口内
-    `mq.emit` 注入；断言 = 同一张卡片在**主窗**有「聊一聊」按钮、在**对话窗**没有
-    （对话窗会话由 URL 固定绑定，不能切会话 → `canChat=false`）。
+    驱动 = 既有前端本地事件 `ask-user`（61 §4.3 `session-ask` 的桥映射 type），在**各窗口内**
+    `mq.emit` 注入；断言 = 无论来源是主窗还是对话窗，都自动进入本项目**唯一**的 Ask 中心窗口
+    （左列待办 + 右侧详情 + 聊一聊），两个来源窗口自身不再弹 dialog、也不再重复建窗。
     """
     close_all_chats()
     s = sid("t31")
@@ -1093,34 +1094,36 @@ def case_t31():
     w = open_and_wait(s)
     ask = {"ask_id": "mw-t31-ask", "question": "MW-T31 提问", "options": ["A", "B"],
            "session": s, "dialog_id": dlg}
-    # ① 对话窗口：卡片出现，但**无**「聊一聊」（其余出口保留）
+    # ① 对话窗口注入 → 自动打开 Ask 中心，待办入左列；对话窗口自身无 dialog。
     cl(w).mq_emit("ask-user", ask)
-    ok = poll(lambda: eval_obj(w, "JSON.stringify({n: document.querySelectorAll('.ask-user-content').length})"),
-              lambda v: isinstance(v, dict) and v.get("n", 0) > 0, timeout=15.0)
-    if not ok:
-        raise TestError("对话窗口未弹出 ask 卡片")
-    m = eval_obj(w, "JSON.stringify({"
-                    "chat: document.querySelectorAll('.ask-user-content .chat-btn').length,"
-                    "skip: document.querySelectorAll('.ask-user-content .skip-btn').length,"
-                    "cancel: document.querySelectorAll('.ask-user-content .cancel-btn').length"
-                    "})")
-    if m.get("chat") != 0:
-        raise TestError("对话窗口不应渲染「聊一聊」: %r" % (m,))
-    if m.get("skip") != 1 or m.get("cancel") != 1:
-        raise TestError("对话窗口应保留「跳过 / 取消」出口: %r" % (m,))
-    # ② 主窗口：同一张卡片（重新注入）有「聊一聊」
+    wid, ac = ac_mod.ask_client(_m, 30)
+    if not ac_mod.wait_item(ac, "mw-t31-ask", 15):
+        raise TestError("Ask 中心未收到对话窗口的提问")
+    if int(eval_obj(w, "document.querySelectorAll('.ask-user-content').length") or 0) != 0:
+        raise TestError("对话窗口不应再弹 ask dialog（应由 Ask 中心承载）")
+    ac_mod.select_item(ac, "mw-t31-ask")
+    time.sleep(0.3)
+    if ac_mod.question_text(ac) != "MW-T31 提问":
+        raise TestError("Ask 中心右侧问题异常: %r" % (ac_mod.question_text(ac),))
+    chat_btns = int(ac.eval("document.querySelectorAll('.ask-detail .chat-btn').length") or 0)
+    if chat_btns != 1:
+        raise TestError("Ask 中心应渲染「聊一聊」: n=%d" % chat_btns)
+    # ② 主窗口再注入一条 → 复用同一中心窗口（单例），两题同列。
     _m.mq_emit("ask-user", dict(ask, ask_id="mw-t31-ask-main"))
-    ok = poll(lambda: eval_obj("", "JSON.stringify({n: document.querySelectorAll('.ask-user-content').length})"),
-              lambda v: isinstance(v, dict) and v.get("n", 0) > 0, timeout=15.0)
-    if not ok:
-        raise TestError("主窗口未弹出 ask 卡片")
-    mm = eval_obj("", "JSON.stringify({chat: document.querySelectorAll('.ask-user-content .chat-btn').length})")
-    if mm.get("chat") != 1:
-        raise TestError("主窗口应渲染「聊一聊」: %r" % (mm,))
-    # 收尾：关掉主窗卡片（取消）与对话窗（不提交，避免触发后端无登记 ask 的错误）
-    _m.eval("(() => { const b = [...document.querySelectorAll('.ask-user-content .cancel-btn')].pop();"
-            " if (b) b.dispatchEvent(new MouseEvent('click', { bubbles: true })); return 'ok'; })()", 5000)
-    time.sleep(0.8)
+    if not ac_mod.wait_item(ac, "mw-t31-ask-main", 15):
+        raise TestError("Ask 中心未收到主窗口的提问")
+    if ac_mod.ask_window_id(_m, 5) != wid:
+        raise TestError("Ask 中心应单例（不应因来源不同重复建窗）")
+    if int(eval_obj("", "document.querySelectorAll('.ask-user-content').length") or 0) != 0:
+        raise TestError("主窗口不应再弹 ask dialog（应由 Ask 中心承载）")
+    # 收尾：取消两题（发 ask-user-reply + 移出列表），避免污染后续用例。
+    ac.mq_on_capture(["ask-user-reply"])
+    for aid in ("mw-t31-ask", "mw-t31-ask-main"):
+        ac_mod.select_item(ac, aid)
+        time.sleep(0.2)
+        ac_mod.click_cancel(ac)
+        ac_mod.wait_reply(ac, aid, 8)
+        ac_mod.wait_no_item(ac, aid, 8)
     close_all_chats()
 
 
@@ -1275,7 +1278,7 @@ CASES = [
     ("MW-T28「新建对话窗口」入口仅主窗口", case_t28),
     ("MW-T29 会话标题变更跨窗口广播（对话窗标题跟随）", case_t29),
     ("MW-T30 插件实例事件定向投递（只到该 instance 所在窗口）", case_t30),
-    ("MW-T31 AskUser「聊一聊」仅主窗口（对话窗只保留选项）", case_t31),
+    ("MW-T31 ask_user → 独立 Ask 中心窗口（主窗/对话窗同列 + 单例）", case_t31),
     ("MW-T03 主窗关闭 = 终止项目窗口、进程常驻托盘（必须最后跑）", case_t03),
 ]
 

@@ -11,6 +11,14 @@ export const MsgTopics = {
   guiUiSave: 'gui.ui.save',
   guiWindowStatus: 'gui.window.status',
   guiWindowOpenChat: 'gui.window.open-chat',
+  guiWindowOpenAsk: 'gui.window.open-ask',
+  guiAskList: 'gui.ask.list',
+  guiAskRemove: 'gui.ask.remove',
+  askCenterSubscribe: 'ask-center-subscribe',
+  askCenterUnsubscribe: 'ask-center-unsubscribe',
+  guiChatInsertText: 'gui.chat.insert-text',
+  askCenterAdd: 'ask-center-add',
+  askCenterRemove: 'ask-center-remove',
   guiWindowList: 'gui.window.list',
   guiWindowClosed: 'gui.window.closed',
   guiWindowSetTitle: 'gui.window.set-title',
@@ -248,7 +256,10 @@ export const FieldKeys = {
   args: 'args',
   args_digest: 'args_digest',
   arguments: 'arguments',
+  ask: 'ask',
   ask_id: 'ask_id',
+  ask_window_id: 'ask_window_id',
+  asks: 'asks',
   asset_kind: 'asset_kind',
   async: 'async',
   async_threshold: 'async_threshold',
@@ -379,6 +390,7 @@ export const FieldKeys = {
   origin: 'origin',
   overwrite: 'overwrite',
   owner: 'owner',
+  owner_instance: 'owner_instance',
   parent: 'parent',
   parent_id: 'parent_id',
   parent_instance: 'parent_instance',
@@ -403,6 +415,7 @@ export const FieldKeys = {
   question: 'question',
   queued: 'queued',
   reason: 'reason',
+  received_at: 'received_at',
   recommended: 'recommended',
   recursive: 'recursive',
   refreshed: 'refreshed',
@@ -433,6 +446,7 @@ export const FieldKeys = {
   servers: 'servers',
   session: 'session',
   session_id: 'session_id',
+  session_title: 'session_title',
   shadow: 'shadow',
   snapshot: 'snapshot',
   source: 'source',
@@ -503,7 +517,10 @@ export const FieldDict = {
   args: 'args',
   args_digest: 'args_digest',
   arguments: 'arguments',
+  ask: 'ask',
   ask_id: 'ask_id',
+  ask_window_id: 'ask_window_id',
+  asks: 'asks',
   asset_kind: 'asset_kind',
   async: 'async',
   async_threshold: 'async_threshold',
@@ -654,6 +671,7 @@ export const FieldDict = {
   origin: 'origin',
   overwrite: 'overwrite',
   owner: 'owner',
+  owner_instance: 'owner_instance',
   parent: 'parent',
   parent_id: 'parent_id',
   parent_instance: 'parent_instance',
@@ -683,6 +701,7 @@ export const FieldDict = {
   questions: 'questions',
   queued: 'queued',
   reason: 'reason',
+  received_at: 'received_at',
   recommended: 'recommended',
   recursive: 'recursive',
   refreshed: 'refreshed',
@@ -713,6 +732,7 @@ export const FieldDict = {
   servers: 'servers',
   session: 'session',
   session_id: 'session_id',
+  session_title: 'session_title',
   shadow: 'shadow',
   size: 'size',
   snapshot: 'snapshot',
@@ -818,13 +838,75 @@ export const GuiWindowOpenChatKeys = {
   window_id: 'window_id',
 }
 
+/** gui.window.open-ask 字段键（payload/result/event 合并去重）。 */
+export const GuiWindowOpenAskKeys = {
+  activated: 'activated',
+  ask: 'ask',
+  ok: 'ok',
+  window_id: 'window_id',
+}
+
+/** gui.ask.list 字段键（payload/result/event 合并去重）。 */
+export const GuiAskListKeys = {
+  asks: 'asks',
+  ok: 'ok',
+}
+
+/** gui.ask.remove 字段键（payload/result/event 合并去重）。 */
+export const GuiAskRemoveKeys = {
+  ask_id: 'ask_id',
+  ok: 'ok',
+}
+
+/** ask-center-subscribe 字段键（payload/result/event 合并去重）。 */
+export const AskCenterSubscribeKeys = {
+  asks: 'asks',
+  instance_id: 'instance_id',
+  ok: 'ok',
+  scope: 'scope',
+  work_dir: 'work_dir',
+}
+
+/** ask-center-unsubscribe 字段键（payload/result/event 合并去重）。 */
+export const AskCenterUnsubscribeKeys = {
+  instance_id: 'instance_id',
+  ok: 'ok',
+}
+
+/** gui.chat.insert-text 字段键（payload/result/event 合并去重）。 */
+export const GuiChatInsertTextKeys = {
+  activated: 'activated',
+  dialog_id: 'dialog_id',
+  ok: 'ok',
+  session_id: 'session_id',
+  text: 'text',
+  window_id: 'window_id',
+  work_dir: 'work_dir',
+}
+
+/** ask-center-add 字段键（payload/result/event 合并去重）。 */
+export const AskCenterAddKeys = {
+  ask: 'ask',
+  received_at: 'received_at',
+  seq: 'seq',
+  work_dir: 'work_dir',
+}
+
+/** ask-center-remove 字段键（payload/result/event 合并去重）。 */
+export const AskCenterRemoveKeys = {
+  ask_id: 'ask_id',
+  reason: 'reason',
+}
+
 /** gui.window.list 字段键（payload/result/event 合并去重）。 */
 export const GuiWindowListKeys = {
+  ask_window_id: 'ask_window_id',
   windows: 'windows',
 }
 
 /** gui.window.closed 字段键（payload/result/event 合并去重）。 */
 export const GuiWindowClosedKeys = {
+  kind: 'kind',
   session_id: 'session_id',
   window_id: 'window_id',
 }
@@ -1961,6 +2043,7 @@ export const AskUserReplyKeys = {
   ask_id: 'ask_id',
   custom: 'custom',
   dialog_id: 'dialog_id',
+  owner_instance: 'owner_instance',
 }
 
 /** tool-retry 字段键（payload/result/event 合并去重）。 */
@@ -2121,15 +2204,18 @@ export const SessionAskKeys = {
   answer: 'answer',
   answered: 'answered',
   ask_id: 'ask_id',
+  context: 'context',
   custom: 'custom',
   dialog_id: 'dialog_id',
   expires_at: 'expires_at',
   instance_id: 'instance_id',
   multi: 'multi',
   options: 'options',
+  owner_instance: 'owner_instance',
   question: 'question',
   recommended: 'recommended',
   session: 'session',
+  session_title: 'session_title',
   turn: 'turn',
 }
 

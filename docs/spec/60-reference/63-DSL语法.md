@@ -1,8 +1,14 @@
 # 63 · DSL语法（ChonkPilot DSL 核心规范）
 
-> ⛔ **本篇整体作废（2026-10-21，GATEWAY-2 L1「DSL 退役」）** —— `src/lib/dsl`、`build-dsl-executor.ps1`、`chonkpilot-dsl-executor.exe`、`dsl_run` 以及 `filesys_run` / `desktop_run` / `browser_run` 三个容器工具**已全部从仓库删除**；`plugin/v1/dsl.*` 一并移除。**本文件仅作历史存档**（保留供追溯语法演进），**不得**再作为实现依据。现行工具面见 [27-mcp-tools](../20-modules/27-mcp-tools.md) · [3A-工具与编排](../30-function-points/3A-工具与编排.md)；文件域能力 = 11 个 `file_*` 工具，脚本 / 网络 = `task_run`（task 插件，2026-10-28 起；原 `script_run`）/ `web_fetch`。
+> # ⛔ 已被取代 · 请勿使用
+>
+> **本文描述的 DSL 语言、`dsl_run` / `filesys_run` / `desktop_run` / `browser_run`、`chonkpilot-dsl-executor.exe`、`plugin/v1/dsl.*` 均已从仓库删除，不是现行规范，也没有“待实现”的部分。** 实现、排障、写文档时**不得**以本文为依据。
+>
+> ⛔ **本篇整体作废（2026-10-21，GATEWAY-2 L1「DSL 退役」）** —— `src/lib/dsl`（历史文档亦写作 `src/lib/core/dsl`；两者现均不存在）、`build-dsl-executor.ps1`、`chonkpilot-dsl-executor.exe`、`dsl_run` 以及 `filesys_run` / `desktop_run` / `browser_run` 三个容器工具**已全部从仓库删除**；`plugin/v1/dsl.*` 一并移除。**本文件仅作历史存档**（保留供追溯语法演进），**不得**再作为实现依据。现行工具面见 [27-mcp-tools](../20-modules/27-mcp-tools.md) · [3A-工具与编排](../30-function-points/3A-工具与编排.md)；文件域能力 = 11 个 `file_*` 工具，脚本 / 网络 = `task_run`（task 插件，2026-10-28 起；原 `script_run`）/ `web_fetch`。
 >
 > 状态：🗑️ **已作废（历史存档）**
+> 现行替代（2026-11-04 核对）：文件域 = 11 个 `file_*`（file 插件）· 脚本执行 / LLM 委派 = `task_run` / `task_llm`（task 插件）· 网络 = `web_*`（web 插件）· **统一编排工具 = 无**（DSL / executor 已整体退役）。
+> 外部引用待清理（**本文件不改动它们**，由各自负责方处理）：[README §113/§152](../README.md) 仍称本文为“唯一规范”并列出四个已删工具；[72 §4/§9](../70-conventions/72-工具开发规范.md) 仍把本文列入必读/索引；[16 §8](../10-architecture/16-路径解析规范.md) 仍引用已删除的 `dsl.reservedVars` 实现；[21 §4.7](../20-modules/21-llm-server.md) 仍交叉引用本文的 `{{env.X}}`。
 > 关联：[24-lib](../20-modules/24-lib.md)（`dsl` 包）· [72-工具开发规范](../70-conventions/72-工具开发规范.md) · [27-mcp-tools](../20-modules/27-mcp-tools.md) · [3A-工具与编排](../30-function-points/3A-工具与编排.md)
 > 版本：v2026-09-10（历史）
 > 适用范围：llm_run（批处理编排/委派）、filesys_run（文件操作）、desktop_run（桌面交互）、browser_run（浏览器自动化）
