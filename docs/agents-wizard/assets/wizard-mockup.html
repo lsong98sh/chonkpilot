@@ -181,7 +181,7 @@
       <div class="col main">
         <!-- Step1 项目信息 -->
         <div data-panel="1" class="active">
-          <div class="banner"><span>提示：<b>新建</b>请填写下列信息；<b>已有项目</b>将由扫描自动预填，可修改。填写后，后续选项会由 <b>LLM 依据这些信息自动推荐</b>。</span></div>
+          <div class="banner"><span>提示：<b>新建</b>请填写下列信息；<b>已有项目</b>将由扫描自动预填，可修改。填写后，后续选项会依据<b>项目扫描与默认值预填</b>，可自行调整。</span></div>
 
           <fieldset>
             <legend>项目信息<span class="legend-note">先描述意图，不必逐项选技术</span></legend>
@@ -205,7 +205,7 @@
 
         <!-- Step2 模式 -->
         <div data-panel="2">
-          <div class="banner"><span>以下模式由 LLM 依据「项目信息」<b>预选</b>，可直接调整。</span></div>
+          <div class="banner"><span>以下模式由工作目录的<b>扫描结果预选</b>，可直接调整。</span></div>
           <fieldset>
             <legend>顶层模式</legend>
             <div class="group" data-group style="margin-top:0">
@@ -227,14 +227,14 @@
             </div>
           </fieldset>
           <div class="quick">
-            <button type="button" title="采用全部默认（LLM 推荐 + 各步默认）直接生成并关闭向导">默认</button>
+            <button type="button" title="采用默认值（项目扫描 + 各步默认）直接生成并关闭向导">默认</button>
             <span class="hint">一键：用<b>全部默认</b>直接生成（场景 + 记忆 + project_spec.md）并关闭向导（跳过 Step3–5）。</span>
           </div>
         </div>
 
         <!-- Step3 技术栈与架构 -->
         <div data-panel="3">
-          <div class="banner"><span id="s3Banner">Step3 随模式变化。当前模式「新构建」：选择脚手架（技术栈与架构），已由 LLM 预填推荐。</span></div>
+          <div class="banner"><span id="s3Banner">Step3 随模式变化。当前模式「新构建」：选择脚手架（技术栈与架构），已依据项目扫描与默认值预填。</span></div>
 
           <section class="s3" data-s3="A">
           <fieldset>
@@ -504,7 +504,7 @@
 
           <!-- Step3 变体：其他（自定义模式 → 直接进场景编辑） -->
           <section class="s3" data-s3="other" hidden>
-            <div class="placeholder">自定义模式：跳过模板，<b>直接进入场景编辑</b>（复用既有编辑器）手动配置场景与 agent；保存后补写 project_spec.md（mode=custom）。</div>
+            <div class="placeholder">自定义模式：跳过模板，<b>直接进入场景编辑</b>（复用既有编辑器）手动配置场景与 agent。</div>
             <div><button type="button" class="primary">进入场景编辑</button></div>
           </section>
         </div>
@@ -730,7 +730,7 @@
 
   // Step3 随模式切换：A 新建（脚手架）/ B 迭代（上下文）/ C 重构（约束）/ 其他
   var s3Banners = {
-    A:'Step3 随模式变化。当前模式「新构建」：选择脚手架（技术栈与架构），已由 LLM 预填推荐。',
+    A:'Step3 随模式变化。当前模式「新构建」：选择脚手架（技术栈与架构），已依据项目扫描与默认值预填。',
     B:'Step3 随模式变化。当前模式「迭代」：采集既有代码库上下文（技术栈来自扫描，无需重选）。',
     C:'Step3 随模式变化。当前模式「重构」：定义约束（行为保持策略 / 验证方式 / 特殊角色）。',
     other:'Step3 随模式变化。当前模式「其他」：跳过模板，直接进入场景编辑（复用既有编辑器）。'

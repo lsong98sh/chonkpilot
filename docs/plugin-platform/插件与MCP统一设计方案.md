@@ -296,7 +296,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 
 ### 4.3 校验规则（设计目标；**实际仅校验 ID**）
 
-> **2026-11-04 核对**：PLUGIN-LOAD-1 D13 之后，宿主只校验 `plugin.json/meta.id == 目录名` 与 `manifest.id == 插件 id`（且 `manifest.id` **为空也接受**）；下列 1–9 条**未实现**（`normalizeManifest` 只补默认值，不拒绝）。保留为后续收紧目标。
+> **2026-11-05 核对**：PLUGIN-LOAD-1 D13 之后，宿主只校验 `plugin.json/meta.id == 目录名` 与 `manifest.id == 插件 id`；**`manifest.id` 为空或不等均报错**（2026-11-05 收紧，`registerManifest`）。下列 1–9 条其余项**未实现**（`normalizeManifest` 只补默认值，不拒绝）。保留为后续收紧目标。
 
 1. `id` 匹配 `^[a-z][a-z0-9-]{1,31}$`，且等于目录名。
 2. ~~`runtime.mode=managed` → `exe` 必填、存在、解析后仍在该插件目录内（拒绝绝对路径与 `..` 越界）~~ —— `mode` 已删除；exe 路径越界校验未实现。
@@ -713,7 +713,7 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 | `config.set` | 父窗口 → `plugin-config-set`（server 直写） | 只接受 manifest `config.fields[].key`；成功后广播 `plugin-config-changed` |
 | `config.reset` | 父窗口 → 既有 `data-*` 删除覆盖（server 校验） | 回落默认值 |
 | `data.read` / `data.write` | 父窗口 → `plugin-call{id,method:"data.read|write"}` → server §6.1 | 仍需过 `permissions.data` |
-| `rpc` | 父窗口 → `plugin-call` → server → 插件 `plugin.ui.rpc` | **2026-11-04 核对：无 `ui.rpc` 白名单校验**，任何 `OnRequest` 方法均可被调；`ui.rpc` 仅为声明/约定 |
+| `rpc` | 父窗口 → `plugin-call` → server → 插件 `plugin.ui.rpc` | **2026-11-05 已收紧：方法名必须在 manifest `ui.rpc` 声明**，否则宿主拒绝（`mgr/api.go` `rpcDeclared`；回归 `mgr/rpc_whitelist_test.go`）。 |
 | `open-url` | 前端 `window.open`（WebView2 交系统浏览器） | 首次域名由用户确认，之后记入允许集 |
 | `close` | 父窗口 | 关闭当前页签/抽屉/对话框 |
 | `log` | 父窗口 → 插件日志文件 | 只写插件日志，限 4KB/条 |
@@ -1057,11 +1057,11 @@ src/initdata/capability/plugins/websearch/
 ### 16.3 与本文旧口径的偏差（按代码为准）
 
 1. 插件根 = `<root>/plugins/<id>/`（非 `capability/plugins`）；`plugin.json` 极简 + `manifest.json` 完整（PLUGIN-LOAD-1 D12）。
-2. `runtime.mode` / `channel.*` 已删（D14）；但 **12 份 `manifest.json` 仍保留死字段**（browser/codegraph/crontab/demo-python/desktop/file/history/mcp/memory/remote/task/web）。
+2. `runtime.mode` / `channel.*` 已删（D14）；12 份 `manifest.json` 的死字段已于 2026-11-05 清除。
 3. `mcp.namespace` 缺省 `-`（非 `self_`）。
-4. 宿主只校验 `id`（且 `manifest.id` 为空也接受），§4.3 其余规则未实现。
+4. 宿主只校验 `id`：`plugin.json/meta.id` 须等于目录名，`manifest.id` 为空或不等均报错（2026-11-05 收紧），§4.3 其余规则未实现。
 5. 权限仅 `permissions.data` 有校验，且空数组放行；`hooks/llm/session/network` 无消费点。
-6. iframe 为**同源**（`allow-same-origin`）；`ui.rpc` 无白名单；`config.get` 无 `dirty`。
+6. iframe 为**同源**（`allow-same-origin`）；`config.get` 无 `dirty`；`ui.rpc` 白名单已于 2026-11-05 生效（未声明方法拒绝）。
 7. 静态资源路由 `/plugins/<id>/…`（非 `/plugin-ui/<id>/…`）。
 8. `plugin.register` 无 `capabilities.granted`；无 `mcp_conflict` / `ui_rpc_denied`；插件日志**不滚动**。
 9. `plugin.index.*` 队列已退场（D-71）；`compress` 已内建，非插件。

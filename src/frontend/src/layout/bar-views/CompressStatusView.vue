@@ -69,7 +69,8 @@ onUnmounted(() => {
   font-size: 12px;
 }
 .sb-task.is-disabled {
-  color: var(--fg-disabled);
+  /* 同 MemoryStatusView：只读状态文案用 text-muted（三主题 ≥4.5:1）。 */
+  color: var(--text-muted);
 }
 .sb-task.is-progress {
   color: var(--fg-secondary);

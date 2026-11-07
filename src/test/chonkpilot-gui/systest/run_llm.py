@@ -385,12 +385,12 @@ def case_queue():
             "sessionId": sid, "text": f"queued msg {i}", "llm": "mock",
             "thinkFlag": "", "effortLevel": "", "scenarioId": 0,
         })
-    # 队列指示器（InputBox .queue-badge）
+    # 队列指示器（INBOX 摘要条 2026-11-01 起替代旧 `.queue-badge`）：计数在 `.inbox-bar-count`
     deadline = time.time() + 10
     badge = ""
     while time.time() < deadline:
         try:
-            badge = c.text(".queue-badge", 3000)
+            badge = c.text(".inbox-bar-count", 3000)
         except Exception:
             badge = ""
         if "3" in badge:

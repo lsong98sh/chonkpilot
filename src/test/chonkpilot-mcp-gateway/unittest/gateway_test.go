@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -381,8 +382,85 @@ func TestContractNeverOverridableByCallAlways(t *testing.T) {
 	}
 }
 
-// TestNeverTimeoutAwaitsDecision 统一异步模型：never 到超时点 → 发 mcp-tools-timeout
-// （options=[wait,cancel]，**不自动失败/不自动转后台**）→ tools/wait 撤销超时继续等并交付结果。
+// subTimeoutEvent 订阅超时裁决事件（mcp-tools-timeout）。
+func subTimeoutEvent(t *testing.T, bus mq.Bus) chan map[string]any {
+	t.Helper()
+	ch := make(chan map[string]any, 4)
+	sub, err := bus.On(msgkeys.TopicMcpToolsTimeout, 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if err := json.Unmarshal(v.Payload, &m); err == nil {
+			ch <- m
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("subscribe mcp-tools-timeout: %v", err)
+	}
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	return ch
+}
+
+// callAsync 在 goroutine 内发出 tools/call 并返回结果通道（避免阻塞主协程的裁决动作）。
+func callAsync(t *testing.T, bus mq.Bus, payload map[string]any) chan map[string]any {
+	t.Helper()
+	outCh := make(chan map[string]any, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		v := bus.Emit(ctx, subj("tools/call"), payload).Wait()
+		res, _ := v.Result.(map[string]any)
+		outCh <- res
+	}()
+	return outCh
+}
+
+// awaitAwaiting 等待 tools/call 返回 awaiting 载荷并按新契约（2026-11-06）校验形状：
+// **超时点立即返回占位**（不等用户裁决），字段 = status/task_id/reason/timeout_s/options，
+// 文本 = 任务等待用户裁决，不置 isError；真实结果此后只经 mcp-tasks-report 交付一次。
+func awaitAwaiting(t *testing.T, outCh chan map[string]any) (string, map[string]any) {
+	t.Helper()
+	var res map[string]any
+	select {
+	case res = <-outCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("manual/never 到超时点后 tools/call 未立即返回 awaiting（仍在阻塞等裁决）")
+	}
+	sc, ok := res["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("awaiting 返回缺 structuredContent: %v", res)
+	}
+	if sc["status"] != "awaiting" {
+		t.Fatalf("structuredContent.status = %v, want awaiting（res=%v）", sc["status"], res)
+	}
+	if sc["reason"] != "timeout" {
+		t.Fatalf("awaiting reason = %v, want timeout (sc=%v)", sc["reason"], sc)
+	}
+	if ts, _ := sc["timeout_s"].(float64); ts != 0.1 {
+		t.Fatalf("awaiting timeout_s = %v, want 0.1 (sc=%v)", sc["timeout_s"], sc)
+	}
+	if opts, _ := sc["options"].([]any); len(opts) != 2 || opts[0] != "wait" || opts[1] != "cancel" {
+		t.Fatalf("never awaiting options = %v, want [wait,cancel]", sc["options"])
+	}
+	taskID, _ := sc["task_id"].(string)
+	if taskID == "" {
+		t.Fatalf("awaiting 返回缺 task_id: %v", res)
+	}
+	if res["isError"] == true {
+		t.Fatalf("awaiting 不是失败，不应置 isError: %v", res)
+	}
+	if got := textOf(t, res); got != "任务等待用户裁决" {
+		t.Fatalf("awaiting 文本 = %q, want 任务等待用户裁决 (res=%v)", got, res)
+	}
+	return taskID, sc
+}
+
+// TestNeverTimeoutAwaitsDecision 统一异步模型（**2026-11-06 起「裁决不再阻塞」**）：
+// never 到超时点 → 发 mcp-tools-timeout{options:[wait,cancel]} 且 tools/call **立即返回
+// awaiting 占位**（不是最终结果、不置 isError）；tools/wait = 撤销 awaiting（不产生第二次
+// 交付、不重新计时）；真实结果最终经 mcp-tasks-report **恰一次**交付。
+//
+// 旧契约（wait 唤醒原阻塞调用、由 tools/call 交付最终结果）已被规格 18 §4「裁决不再阻塞」
+// 与 agent 仓 async_await_test.go（TestAwaitingWaitRevokesThenReport）取代。
 func TestNeverTimeoutAwaitsDecision(t *testing.T) {
 	release := make(chan struct{})
 	bus, _ := startTestGW(t, []mockSpec{{
@@ -396,64 +474,132 @@ func TestNeverTimeoutAwaitsDecision(t *testing.T) {
 			}
 		},
 	}})
-	evCh := make(chan map[string]any, 1)
-	sub, err := bus.On(msgkeys.TopicMcpToolsTimeout, 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var m map[string]any
-		if err := json.Unmarshal(v.Payload, &m); err == nil {
-			evCh <- m
-		}
-		return nil
+	evCh := subTimeoutEvent(t, bus)
+	reportCh := subReport(t, bus)
+
+	outCh := callAsync(t, bus, map[string]any{
+		"name": "tool_slow", "tool_call_id": "call-never",
+		"arguments": map[string]any{"async": "never", "timeout": 0.1},
 	})
-	if err != nil {
-		t.Fatalf("subscribe mcp-tools-timeout: %v", err)
-	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	outCh := make(chan map[string]any, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		v := bus.Emit(ctx, subj("tools/call"), map[string]any{
-			"name": "tool_slow", "tool_call_id": "call-never",
-			"arguments": map[string]any{"async": "never", "timeout": 0.1},
-		}).Wait()
-		res, _ := v.Result.(map[string]any)
-		outCh <- res
-	}()
-
-	var ev map[string]any
+	// ① 超时点：调用**立即**交付 awaiting 占位，事件同步给出 wait/cancel 选项。
+	taskID, _ := awaitAwaiting(t, outCh)
 	select {
-	case ev = <-evCh:
+	case ev := <-evCh:
+		if ev["reason"] != "timeout" {
+			t.Fatalf("event reason = %v, want timeout (ev=%v)", ev["reason"], ev)
+		}
+		if ev["task_id"] != taskID {
+			t.Fatalf("event task_id = %v, want %s（与 awaiting 一致）", ev["task_id"], taskID)
+		}
+		if opts, _ := ev["options"].([]any); len(opts) != 2 || opts[0] != "wait" || opts[1] != "cancel" {
+			t.Fatalf("never options = %v, want [wait,cancel]", ev["options"])
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("never 超时应发 mcp-tools-timeout")
 	}
-	if ev["reason"] != "timeout" {
-		t.Fatalf("event reason = %v, want timeout (ev=%v)", ev["reason"], ev)
-	}
-	opts, _ := ev["options"].([]any)
-	if len(opts) != 2 || opts[0] != "wait" || opts[1] != "cancel" {
-		t.Fatalf("never options = %v, want [wait,cancel]", ev["options"])
-	}
-	taskID, _ := ev["task_id"].(string)
-	if taskID == "" {
-		t.Fatalf("event 缺 task_id: %v", ev)
-	}
-	// wait：撤销超时继续等
+
+	// ② wait：确认继续等待 → 撤销 awaiting；不产生第二次返回（占位已交付）。
 	w := callMethod(t, bus, "tools/wait", map[string]any{"task_id": taskID})
-	if w["waiting"] != true {
-		t.Fatalf("tools/wait 回执 = %v", w)
+	if w["waiting"] != true || w["task_id"] != taskID {
+		t.Fatalf("tools/wait 回执 = %v, want {waiting:true, task_id:%s}", w, taskID)
 	}
-	close(release)
 	select {
 	case res := <-outCh:
-		if got := textOf(t, res); got != "slow-ok" {
-			t.Fatalf("wait 后应继续等并交付结果, got %q (res=%v)", got, res)
-		}
-		if res["isError"] == true {
-			t.Fatalf("wait 后不应失败: %v", res)
-		}
+		t.Fatalf("wait 后不应再交付占位/结果（占位已在超时点交付）: %v", res)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// ③ 超时已撤销：再次 wait → 拒绝（已非待裁决态）。
+	if err := callMethodErr(t, bus, "tools/wait", map[string]any{"task_id": taskID}); err == nil {
+		t.Fatal("wait 后 awaiting 应已撤销，第二次 tools/wait 应被拒绝")
+	}
+	// ④ 撤销后不重新计时：继续等待超过原超时点也不再发裁决（不重复询问）。
+	select {
+	case ev := <-evCh:
+		t.Fatalf("wait 撤销后不应再次发 mcp-tools-timeout: %v", ev)
+	case <-time.After(400 * time.Millisecond):
+	}
+
+	// ⑤ 最终结果按规格经 mcp-tasks-report 恰一次到达（全文 + 归属字段）。
+	close(release)
+	r := awaitReport(t, reportCh, taskID)
+	if r["state"] != "done" {
+		t.Fatalf("report state = %v, want done (report=%v)", r["state"], r)
+	}
+	if r["result_summary"] != "slow-ok" {
+		t.Fatalf("result_summary = %v, want slow-ok（结果全文）", r["result_summary"])
+	}
+	if r["tool"] != "tool_slow" {
+		t.Fatalf("report tool = %v, want tool_slow", r["tool"])
+	}
+	if r["tool_call_id"] != "call-never" {
+		t.Fatalf("report tool_call_id = %v, want call-never", r["tool_call_id"])
+	}
+	select {
+	case dup := <-reportCh:
+		t.Fatalf("终态只应回报一次，却收到重复: %v", dup)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestNeverTimeoutCancelDeliversImmediately 负例（选 cancel）：awaiting 后取消 → CancelExec
+// 立即成功回执，执行终态 cancelled 经 mcp-tasks-report **立即**交付（不为等待执行体响应而
+// 阻塞——工具 handler 仍在等外部释放）；不产生 done 回报、也不再有第二次占位交付。
+func TestNeverTimeoutCancelDeliversImmediately(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	closeRelease := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(closeRelease) // LIFO：先于 gateway Stop 释放 handler，避免 goroutine 泄漏到 Stop
+
+	bus, gw := startTestGW(t, []mockSpec{{
+		name: "tool_slow_cancel", desc: "slow cancel",
+		handle: func(ctx context.Context) (*mcp.CallToolResult, error) {
+			select {
+			case <-release:
+				return mockResult("slow-cancel-ok"), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}})
+	evCh := subTimeoutEvent(t, bus)
+	reportCh := subReport(t, bus)
+
+	outCh := callAsync(t, bus, map[string]any{
+		"name": "tool_slow_cancel", "tool_call_id": "call-cancel",
+		"arguments": map[string]any{"async": "never", "timeout": 0.1},
+	})
+	taskID, _ := awaitAwaiting(t, outCh)
+	select {
+	case <-evCh:
 	case <-time.After(5 * time.Second):
-		t.Fatalf("wait 后调用未返回")
+		t.Fatalf("never 超时应发 mcp-tools-timeout")
+	}
+
+	// 选 cancel：立即回执（不等待执行体退出）。
+	start := time.Now()
+	ok, err := gw.CancelExec("", taskID)
+	if err != nil || !ok {
+		t.Fatalf("CancelExec: ok=%v err=%v", ok, err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("CancelExec 耗时 %v（应即时返回）", d)
+	}
+	// 终态立即经 report 交付（执行体未响应也不拖住回报）。
+	r := awaitReport(t, reportCh, taskID)
+	if r["state"] != "cancelled" {
+		t.Fatalf("report state = %v, want cancelled (report=%v)", r["state"], r)
+	}
+	select {
+	case dup := <-reportCh:
+		t.Fatalf("取消终态只应回报一次，却收到重复: %v", dup)
+	case <-time.After(300 * time.Millisecond):
+	}
+	select {
+	case res := <-outCh:
+		t.Fatalf("cancel 不应再向原调用交付第二次结果: %v", res)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

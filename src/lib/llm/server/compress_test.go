@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	chat "github.com/lsong98sh/chonkpilot-agent/chat"
 	"github.com/lsong98sh/chonkpilot-agent/session"
@@ -143,9 +145,10 @@ func TestCompressCommitSingleFlightAndCAS(t *testing.T) {
 	}
 }
 
-// TestMaybeStartCompressTriggersMemoryFlush：阈值判定通过 → 起压缩前用**既有** memory.flush
-// 触发一次记忆沉淀（payload instance_id/session/dialog_id；2026-10-31 用户定案：提取跟随压缩）；
-// 未达阈值 → 不投递。
+// TestMaybeStartCompressTriggersMemoryFlush：阈值判定通过 → 暂存压缩任务（不立即启动）；
+// 终态快照写完后 `startPendingCompress` 启动压缩，并用**既有** memory.flush 触发一次记忆沉淀
+// （payload instance_id/session/dialog_id；2026-10-31 用户定案：提取跟随压缩）；
+// 未达阈值 → 不暂存、不投递。
 func TestMaybeStartCompressTriggersMemoryFlush(t *testing.T) {
 	llm := slowLLMServer()
 	defer llm.Close()
@@ -178,6 +181,16 @@ func TestMaybeStartCompressTriggersMemoryFlush(t *testing.T) {
 		briefBudget:   1,
 	}
 	tc.maybeStartCompress(tc.buildAssembly())
+	if !tc.compressWanted {
+		t.Fatal("达阈值应在组装时暂存压缩任务")
+	}
+	// 组装期不再直接启动（避免与终态写快照竞争）→ 尚无 memory.flush。
+	select {
+	case m := <-got:
+		t.Fatalf("压缩尚未启动，不应提前投递 memory.flush: %+v", m)
+	case <-time.After(200 * time.Millisecond):
+	}
+	s.startPendingCompress(tc, nil)
 	select {
 	case m := <-got:
 		if m["instance_id"] != "ins-test" || m["session"] != "s-flush" {
@@ -191,7 +204,7 @@ func TestMaybeStartCompressTriggersMemoryFlush(t *testing.T) {
 	}
 	waitCompressIdle(t, s, "ins-test", "s-flush")
 
-	// 未达阈值（预算极大）→ 不投递（memory.flush 与压缩同一门控）。
+	// 未达阈值（预算极大）→ 不暂存、不投递（memory.flush 与压缩同一门控）。
 	tcNo := &turnCtx{
 		server:         s,
 		req:            StartReq{InstanceID: "ins-test", Session: "s-flush", Turn: "t3"},
@@ -201,6 +214,7 @@ func TestMaybeStartCompressTriggersMemoryFlush(t *testing.T) {
 		keepFullTokens: 1 << 30,
 	}
 	tcNo.maybeStartCompress(tcNo.buildAssembly())
+	s.startPendingCompress(tcNo, nil)
 	select {
 	case m := <-got:
 		t.Fatalf("未达阈值不应投递 memory.flush: %+v", m)
@@ -316,6 +330,89 @@ func TestEngineStepOverflowNoFallback(t *testing.T) {
 	}
 	if fake.calls != 1 {
 		t.Fatalf("非超窗错误不应重试，got calls=%d", fake.calls)
+	}
+}
+
+// TestCompressCommitsOnTriggeringTurnSnapshot（2026-11-07 回归）：两轮真实 turn（mock 即时应答），
+// 压缩在**终态快照写完后**启动，锚点 = 触发轮 → 快照必含摘要（不再被本轮终态覆盖 / CAS 丢弃），
+// 且会话原轮次消息仍在（压缩只变换快照，不删会话消息）。
+func TestCompressCommitsOnTriggeringTurnSnapshot(t *testing.T) {
+	var total, summaries atomic.Int64
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		total.Add(1)
+		var body struct {
+			Messages []ChatMsg `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		text := lastText(body.Messages)
+		if strings.Contains(text, "对话历史摘要器") {
+			summaries.Add(1)
+		}
+		llmSSE(w, []string{sseChunk(map[string]any{"content": "mock-reply: " + text}, "")})
+	}))
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+	prj, release, err := data.Prj("ins-test")
+	if err != nil {
+		t.Fatalf("data.Prj: %v", err)
+	}
+	for k, v := range map[string]string{
+		"keep_full_max_turns": "1", "keep_full_max_tokens": "1", "compress_token_threshold": "1",
+	} {
+		if err := data.SetConfig(prj, k, v); err != nil {
+			t.Fatalf("SetConfig(%s): %v", k, err)
+		}
+	}
+	release()
+
+	completeTurnOne(t, s, "s-term", "t1", "hello one")
+	completeTurnOne(t, s, "s-term", "t2", "hello two")
+
+	deadline := time.Now().Add(5 * time.Second)
+	var content, turn string
+	for time.Now().Before(deadline) {
+		snap := snapshotOf(t, s, "s-term")
+		if snap != nil {
+			turn = str(snap["snapshot_turn"])
+			if hist, _ := snap["history"].([]any); len(hist) > 0 {
+				if m0, _ := hist[0].(map[string]any); str(m0["role"]) == "system" &&
+					strings.HasPrefix(str(m0["content"]), compressedSummaryPrefix) {
+					content = str(m0["content"])
+					break
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if content == "" {
+		t.Fatalf("压缩快照未回填（终态后启动仍未命中）：turn=%q", turn)
+	}
+	if turn != "t2" {
+		t.Fatalf("snapshot_turn = %q, want t2（锚点 = 触发轮）", turn)
+	}
+	// 压缩回填必须保留**刚落库的本轮消息**（终态后启动 → 本轮已入快照，不能只写历史摘要）。
+	snapNow := snapshotOf(t, s, "s-term")
+	if !strings.Contains(stringOf(snapNow["history"]), "hello two") {
+		t.Fatalf("压缩快照丢失本轮消息：%s", stringOf(snapNow["history"]))
+	}
+	if !strings.Contains(content, "对话历史摘要器") {
+		t.Fatalf("摘要正文应来自摘要请求：%q", content)
+	}
+	// 每轮只发一次主请求 + 本轮压缩只发一次摘要请求（A/B-4 的 nreq = 轮数+1 口径）。
+	if got, want := total.Load(), int64(3); got != want {
+		t.Fatalf("LLM 请求数 = %d, want %d（2 轮 + 1 摘要）", got, want)
+	}
+	if got := summaries.Load(); got != 1 {
+		t.Fatalf("摘要请求数 = %d, want 1（终态后启动不得重复起压缩）", got)
+	}
+	// 原轮次消息未丢（会话消息表不因压缩删除）。
+	st := s.newSessionStore("ins-test")
+	joined := stringOf(st.LoadMessages("t1")) + stringOf(st.LoadMessages("t2"))
+	for _, want := range []string{"hello one", "hello two"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("压缩后会话轮次丢失 %q：%s", want, joined)
+		}
 	}
 }
 

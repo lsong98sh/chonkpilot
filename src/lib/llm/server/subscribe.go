@@ -28,6 +28,8 @@ func (s *Server) subscribeAll() error {
 		{domainSubject(msgkeys.TopicLlmInboxRevert), s.onInboxRevert},
 		{domainSubject(msgkeys.TopicLlmCancel), s.onLLMCancel},
 		{domainSubject(msgkeys.TopicAskUserReply), s.onAskUserReply},
+		// 「聊一聊」后点「完成」：解除提问 + 更新 tool-result，不向 LLM 投递（AskUser S4）。
+		{domainSubject(msgkeys.TopicAskResolve), s.onAskResolve},
 		// Ask 中心订阅（后端唯一分发，2026-11-05）：user + 可选 workdir 作用域；订阅即回快照。
 		{domainSubject(msgkeys.TopicAskCenterSubscribe), s.onAskCenterSubscribe},
 		{domainSubject(msgkeys.TopicAskCenterUnsubscribe), s.onAskCenterUnsubscribe},

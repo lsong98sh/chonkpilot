@@ -58,6 +58,7 @@
               <MarkdownRender
                 v-else-if="tab.renderType === 'markdown' && !tab.showSource"
                 :content="tab.content"
+                :is-dark="isDarkTheme"
                 class="markdown-preview"
               />
               <pre v-else-if="tab.renderType === 'markdown' && tab.showSource" class="source-code"><code>{{ tab.content }}</code></pre>
@@ -182,6 +183,7 @@ import { readFile, getFileTree, getFileTreeChildren, getFileUrl, loadInitData, s
 import TabBar from '@ckfw/components/tabs/TabBar.vue'
 import PrimitivePanel from '../knowledge/PrimitivePanel.vue'
 import { isPrimitiveFile } from '../../utils/primitive'
+import { createLatestWriteQueue } from '../../utils/serialWrite'
 import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { GuiInitDataKeys } from '../../events/msgkeys'
@@ -189,6 +191,13 @@ import { useSelectionStore } from '../../stores/selection'
 import { pickAndOpenDir } from '../../layout/workdirActions'
 import PluginPageGate from '../../../packages/plugin-ui/src/PluginPageGate.vue'
 import { usePlugins } from '../../../packages/plugin-ui/src/usePlugins.js'
+import { useTheme } from '../../composables/useTheme'
+import { schemeOf } from '../../utils/themeResolve'
+
+// 预览区渲染器（markstream / file-viewer）自带 light/dark 两套外观：
+// 主题切换必须同步下传，否则暗色主题里 Markdown 代码块 / 代码预览仍是白底。
+const { theme: currentTheme } = useTheme()
+const isDarkTheme = computed(() => schemeOf(currentTheme.value) === 'dark')
 
 const baseViewerOptions = { preset: [litePreset, officePreset], theme: 'light' }
 const { pluginView } = usePlugins()
@@ -201,7 +210,11 @@ const codeViewerOptions = {
   toolbar: { zoom: false, search: false, download: false, print: false, exportHtml: false, theme: false },
 }
 function fileViewerOptions(tab) {
-  return tab.renderType === 'code' ? codeViewerOptions : baseViewerOptions
+  // theme 覆盖（不原地改共享常量）：渲染器随宿主主题切换 light/dark。
+  const theme = isDarkTheme.value ? 'dark' : 'light'
+  return tab.renderType === 'code'
+    ? { ...codeViewerOptions, theme }
+    : { ...baseViewerOptions, theme }
 }
 
 const props = defineProps({
@@ -593,6 +606,14 @@ function closeTabsByPath(changedKey) {
 }
 
 let persistTimer = null
+// opened-files 落库的**串行 + 合并最新**队列（见 utils/serialWrite.js）：
+//
+// 必要性（2026-11-07 实跑定位）：启动恢复逐文件重放 fileOpen（a.txt → b.txt）时，两次
+// `flushOpenedFiles` 在同一轮事件循环内各发一条 `gui.ui.save`；persist 侧并发处理、**落库顺序
+// 不保证**。实测链头收敛为 `['a.txt']`（先写的 [a] 后落地，覆盖了后写的 [a,b]）→ 重启后
+// `prj opened-files` 退化，再下次启动只剩一个页签。串行化保证「最后一次写」= 最新全量列表
+// （last-write-wins），与 I-81「打开即全量写」互补；同轮多次调用合并为一次最新全量写。
+const enqueueOpenedFiles = createLatestWriteQueue(saveOpenedFiles)
 // flushOpenedFiles 立即把当前页签列表整体落库（取消待执行去抖，保证"最后一次写"是完整列表）。
 function flushOpenedFiles() {
   clearTimeout(persistTimer)
@@ -600,7 +621,7 @@ function flushOpenedFiles() {
   const paths = tabs.value
     .filter(t => t.kind === 'file' && !t.path.startsWith('db://'))
     .map(t => t.path)
-  saveOpenedFiles(paths).catch(() => {})
+  enqueueOpenedFiles(paths)
 }
 // persistOpenedFiles 高频变更（关/切页签）走 300ms 去抖，最终仍是全量写。
 function persistOpenedFiles() {
@@ -1012,7 +1033,9 @@ onUnmounted(() => {
   padding: 1px 6px;
   border-radius: 3px;
   background: var(--bg-surface);
-  color: var(--text-muted);
+  /* 10px 标签在 --bg-surface 上：text-muted 在 light/nord 只有 3.5~3.7:1，改用
+     text-secondary（light 5.4:1 / nord 5.6:1 / dark 5.3:1）。 */
+  color: var(--text-secondary);
   text-transform: uppercase;
   flex-shrink: 0;
 }

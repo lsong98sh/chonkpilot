@@ -13,12 +13,27 @@ import (
 // → 发 llm-complete（压缩为内部方法面，不再有独立 MQ 事件；2026-10-31）。
 // retryable 为**可选**字段（S21）：非 nil → 随 llm-complete 携带真实可重试分类；nil → 不带该字段。
 func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text string, retryable *bool) {
+	// 终态屏障（2026-11-06）：**先等全部子 agent 终态，再判定自身终态**。
+	// 放在 BeginFinish 之前 —— 子代理未收尾时不得占用「唯一终态权」，取消路径仍可先落 interrupted。
+	s.awaitDelegatedChildren(tc)
+	// 取消竞态：自然完成路径等待子代理期间，用户可能已发起取消（llm-cancel / task-stop）。
+	// 取消优先：不抢终态权，交给取消路径落 interrupted（否则父轮会误发 complete）。
+	if tc.cancelRequested.Load() && status != "interrupted" {
+		return
+	}
 	// 原子终态（E2-2）：正常完成路径与 onLLMCancel（取消）可能并发到达同一轮次——唯一终态权由
 	// 生命周期闸门授予（`session/runner.Lifecycle.BeginFinish`，TURNRUN-1 批次 5）：
 	// 终态（落库 CompleteTurnTokens + 快照 + llm-complete 广播）**仅发生一次**；
 	// 其后到达者（如取消命中已终态轮次）静默跳过，不二次写库、不二次广播（覆盖已 complete 的 turn 行）。
 	if !tc.life.BeginFinish() {
 		return
+	}
+	// 真实终态（子轮次递归时父侧读取；Done 关闭后可见）。
+	tc.turnStatus = status
+	tc.turnFinish = finishReason
+	// 通知轮结束 → 摘除会话的通知轮占位（后续再到达的完成回报可按普通 idle 规则处理）。
+	if tc.isNotifyTurn {
+		s.clearNotifyTurn(tc.req.InstanceID, tc.req.Session, tc.req.Turn)
 	}
 	// 终态结果记录（递归子轮次父侧在 <-tc.Done() 后读取；先于 Close 写入可见）
 	tc.result = text
@@ -29,7 +44,7 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		}
 		tc.turnErr = errors.New(msg)
 	}
-	st := newSessionStore(s.bus, tc.req.InstanceID)
+	st := s.newSessionStore(tc.req.InstanceID)
 	// 本轮全部消息（最后一段；快照拼接与预存 token 共用一份，避免重复读库）。
 	cur := st.LoadMessages(tc.req.Turn)
 	// P3：轮次结束时计算并**预存**本轮完整态/简化态 token 数（判定/拼接后续直接累加，免重复估算）。
@@ -49,6 +64,11 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 	}
 	if err := st.SetSnapshot(tc.req.Session, msgs, tc.req.Turn); err != nil {
 		logf("[chonkpilot-server] SetSnapshot 失败（session=%s turn=%s）: %v\n", tc.req.Session, tc.req.Turn, err)
+	} else {
+		// 压缩内建（2026-11-07 修正）：终态快照落库**之后**再起本轮暂存的压缩（锚点 = 本轮）。
+		// 启动点从组装期后移到此，避免摘要回填与本次终态写快照竞争（覆盖 / CAS 丢弃）；
+		// cur 追加进保留段，压缩快照仍包含刚落库的本轮消息。
+		s.startPendingCompress(tc, cur)
 	}
 	ev := map[string]any{
 		"instance_id": tc.req.InstanceID, "session": tc.req.Session, "turn": tc.req.Turn,
@@ -103,11 +123,19 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		}(tc.req.InstanceID, tc.req.Session)
 	}
 	if followUp.DiscardNextRun {
+		tc.discardNextRun.Store(true)
 		go func(inst, sess, turn string) {
 			<-tc.Done()
 			s.discardNextRunForTurn(inst, sess, turn)
 		}(tc.req.InstanceID, tc.req.Session, tc.req.Turn)
 	}
+	// §5.3 轮末冲刷：本轮运行期间挂账的完成通知，在本轮真正结束后按完成顺序落库 + 广播。
+	// 此时会话即将 idle，但**不**自动发起通知轮（item 3 的自动续轮只针对“到达时已 idle”的完成回报，
+	// 避免与用户紧接着发出的新轮竞争；通知仍进入会话历史）。
+	go func(inst, sess string) {
+		<-tc.Done()
+		s.flushNoticeQueue(inst, sess, false)
+	}(tc.req.InstanceID, tc.req.Session)
 }
 
 // complete 正常/取消终态（无错误码；不带 retryable——正常完成/取消无重试语义）。

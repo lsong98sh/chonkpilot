@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
-	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestManualInflightCascadeCancelReachesExec：manual 在飞（未 setGwTask）→ 级联取消命中执行侧。

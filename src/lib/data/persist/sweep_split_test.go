@@ -18,9 +18,8 @@ import (
 // TestStaleSweepReleasesBinding（分离形态）：实例心跳超 staleTimeout（且无 instance-exit）→
 // 释放数据根绑定（实例视图移除 + data.Unregister，使 data.PrjUsr 报未登记）；重复扫描幂等。
 func TestStaleSweepReleasesBinding(t *testing.T) {
-	// 数据目录先于服务创建：清理顺序 LIFO → data.Reset（关连接）先于 TempDir RemoveAll 执行。
-	wd, dd := t.TempDir(), t.TempDir()
-	s := newSweepTestService(t)
+	// workDir/dataDir 由 helper 创建：清理顺序 LIFO → Stop → data.Reset（关连接）→ TempDir RemoveAll。
+	s, wd, dd := newSweepTestService(t)
 	s.onInstanceRegister(instanceRegister, instancePayload("i-stale", wd, dd))
 
 	// 生产路径：一次数据请求触发 data.Register（登记绑定到数据层）。
@@ -56,7 +55,7 @@ func TestStaleSweepReleasesBinding(t *testing.T) {
 // —— 主题与 payload 与显式退出一致（`{instance_id}`，61-消息一览 §4.1 ③）→ 订阅方（如 filesys
 // 的 instance → work_dir 绑定）据此解绑；重复扫描不重复广播；同一 id 重复到达不报错（幂等）。
 func TestSweepPublishesInstanceExit(t *testing.T) {
-	s := newSweepTestService(t)
+	s, wd, dd := newSweepTestService(t)
 
 	exits := make(chan []byte, 8)
 	if _, err := s.Bus.On(instanceExit, 0, func(_ context.Context, _ string, v *mq.Value) error {
@@ -66,7 +65,6 @@ func TestSweepPublishesInstanceExit(t *testing.T) {
 		t.Fatalf("订阅 %s: %v", instanceExit, err)
 	}
 
-	wd, dd := t.TempDir(), t.TempDir()
 	s.onInstanceRegister(instanceRegister, instancePayload("i-exit-pub", wd, dd))
 	backdate(t, s, "i-exit-pub", 2*staleTimeout) // 心跳停摆 → 超时
 	if n := s.sweepStale(); n != 1 {
@@ -105,8 +103,7 @@ func TestSweepPublishesInstanceExit(t *testing.T) {
 // TestHeartbeatFreshNotSwept（分离形态）：心跳刷新 LastBeat 的实例不判超时——同一轮扫描中
 // 陈旧实例被清理、新鲜实例保留。
 func TestHeartbeatFreshNotSwept(t *testing.T) {
-	s := newSweepTestService(t)
-	wd, dd := t.TempDir(), t.TempDir()
+	s, wd, dd := newSweepTestService(t)
 	s.onInstanceRegister(instanceRegister, instancePayload("i-stale", wd, dd))
 	s.onInstanceRegister(instanceRegister, instancePayload("i-fresh", wd, dd))
 
@@ -134,7 +131,7 @@ func TestStaleSweepTickerWired(t *testing.T) {
 	// 恢复写与其读之间有序，避免 -race 误报。
 	t.Cleanup(func() { sweepInterval = old })
 
-	s := newSweepTestService(t)
+	s, wd, dd := newSweepTestService(t)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -143,7 +140,7 @@ func TestStaleSweepTickerWired(t *testing.T) {
 		t.Fatal("分离形态 Start 应起心跳超时扫描 goroutine")
 	}
 
-	s.onInstanceRegister(instanceRegister, instancePayload("i-tick", t.TempDir(), t.TempDir()))
+	s.onInstanceRegister(instanceRegister, instancePayload("i-tick", wd, dd))
 	backdate(t, s, "i-tick", 2*staleTimeout)
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -161,8 +158,7 @@ func TestStaleSweepTickerWired(t *testing.T) {
 // TestStaleSweepIdempotentConcurrent（分离形态）：并发扫描 + 并发心跳/注册不重复清理、不 panic
 // （`-race` 下验证无数据竞争）；新鲜实例在并发交错中始终保留。
 func TestStaleSweepIdempotentConcurrent(t *testing.T) {
-	s := newSweepTestService(t)
-	wd, dd := t.TempDir(), t.TempDir()
+	s, wd, dd := newSweepTestService(t)
 	staleIDs := []string{"i-s0", "i-s1", "i-s2", "i-s3"}
 	for _, id := range staleIDs {
 		s.onInstanceRegister(instanceRegister, instancePayload(id, wd, dd))
@@ -198,5 +194,42 @@ func TestStaleSweepIdempotentConcurrent(t *testing.T) {
 	}
 	if _, ok := s.lookupInstance("i-fresh"); !ok {
 		t.Fatal("并发心跳/注册的新鲜实例不应被清理")
+	}
+}
+
+// TestSweepServiceShutdownReleasesState（分离形态）：Service.Stop 是既有 shutdown API ——
+// 停扫描 goroutine、退订、状态复位且可重入；随后 data.Reset（helper 清理中的关库步）释放
+// prjusr 常开连接 → 再次解析须报「未登记」（= 文件句柄已释放，TempDir 才能 RemoveAll）。
+// 本用例固化「先关库、再删目录」的清理契约（Windows 下 SQLite 文件被占用会让 TempDir 清理失败）。
+func TestSweepServiceShutdownReleasesState(t *testing.T) {
+	s, wd, dd := newSweepTestService(t)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if s.sweepStop == nil {
+		t.Fatal("分离形态 Start 应起心跳超时扫描 goroutine")
+	}
+	// 用 View.Register（不经 onInstanceRegister 的异步 dialogs 对账）打开 prjusr 常开连接。
+	s.View.Register("i-close", wd, dd)
+	if _, err := s.prjUsrDB("i-close"); err != nil {
+		t.Fatalf("prjUsrDB: %v", err)
+	}
+	if _, err := data.PrjUsr("i-close"); err != nil {
+		t.Fatalf("前置：prjusr 连接应已登记: %v", err)
+	}
+
+	s.Stop()
+	if s.started {
+		t.Fatal("Stop 后 started 应为 false")
+	}
+	if s.sweepStop != nil {
+		t.Fatal("Stop 后扫描句柄应已释放（sweepStop == nil）")
+	}
+	s.Stop() // 关闭 API 可重入：重复调用无副作用/不 panic
+
+	// = helper 清理顺序中的「关库」步：释放全部缓存连接。
+	data.Reset()
+	if _, err := data.PrjUsr("i-close"); err == nil {
+		t.Fatal("关库后绑定句柄应已释放（再次解析须报未登记）")
 	}
 }

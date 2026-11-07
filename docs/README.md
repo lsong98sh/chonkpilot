@@ -7,6 +7,7 @@
 >   - 业务与交互：`agent-chat/` · `ask-user/` · `layout/` · `ui-config/`
 >   - 插件与工具面：`bridge-plugin/` · `plugin-platform/` · `tool-plane/` · `sandbox/`
 >   - LLM 与生成：`llm-bridge/` · `llm-modular/` · `llm-retry/` · `next-run/` · `prompts/`
+>   - 执行与并发：`async-task/`（统一异步执行与消息循环，2026-11-06 第一批已实施；验收/白名单见专题稿 §11.2/§11.4）
 >   - 数据 / 配置 / 向导：`data-optimize/` · `doc-ai-form/` · `input-validation/` · `agents-wizard/`
 >   - 根级方法稿：`业务系统设计-思路与方法.md` · `提示词内容纲要.md` · `模式选项详细.md`
 >   - 工具：`tools/design-check/`（文档检查脚本，非规格）

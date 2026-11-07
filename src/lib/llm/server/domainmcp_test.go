@@ -89,7 +89,7 @@ func TestEmbeddedGatewayDomainToolsHot(t *testing.T) {
 			want[strings.TrimPrefix(d.Name, "self_")] = true
 		}
 	}
-	for _, n := range []string{"ask_user", "tool_result", "tool_stop"} {
+	for _, n := range []string{"ask_user", "tool_result"} {
 		if !want[n] {
 			t.Fatalf("域工具 %s 未在 tools/list 中（hot got %v）", n, want)
 		}
@@ -137,7 +137,6 @@ func TestEmbeddedGatewaySystemToolsMeta(t *testing.T) {
 		t.Logf("%s: _meta = %v", name, d.Meta)
 	}
 	zero := float64(0)
-	check("tool_stop", "never", "server", zero)
 	check("tool_result", "never", "server", zero)
 	check("ask_user", "never", "server", zero)
 }

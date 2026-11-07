@@ -239,22 +239,41 @@ func TestEngineTurnAsyncTool(t *testing.T) {
 	}
 }
 
-// TestEngineTurnAsk：ask 轮（ask_user → ask-user 广播 → ask-user-reply → 续轮）。
+// waitAskPlaceholder 等 ask_user 的占位 tool-result 落库（ask-user 事件先于占位结果落库，
+// 前端/测试均需以 DB 为准做有界等待）。
+func waitAskPlaceholder(t *testing.T, turn string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rows := toolRowsOf(t, turn)
+		if len(rows) == 1 && strings.Contains(persist.Sval(rows[0]["content"]), askAsyncHandoffResult) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("ask 占位 tool-result 未落库：%v", toolRowsOf(t, turn))
+}
+
+// TestEngineTurnAsk：ask 轮（AskUser S4：ask_user 立即返回占位结果，本轮不阻塞；
+// 答复在轮后作为用户消息投递；任务节点在答复到达时 done；tool-result 就地更新为答案）。
 func TestEngineTurnAsk(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
 
+	const session, turn = "s-et-ask", "t-et-ask"
 	drive := func(session, turn string, log *eventLog) {
 		engineTextTurn(s, session, turn, "ask please")
 		ask := engineWaitEvent(t, log, "ask-user", func(ev map[string]any) bool {
 			return str(ev["ask_id"]) != ""
 		})
+		// 未答复前：DB tool 行是「等待回复」占位（快速转异步）。
+		waitAskPlaceholder(t, turn)
 		s.bus.Emit(context.Background(), "session-ask-reply", jb(map[string]any{
 			"ask_id": ask["ask_id"], "answer": "y",
 		}))
 	}
-	rec := runEngineTurnCase(t, s, "s-et-ask", "t-et-ask", drive)
+	rec := runEngineTurnCase(t, s, session, turn, drive)
 
 	if len(rec.toolRows) != 1 || rec.toolRows[0] != "tc-ask|completed" {
 		t.Fatalf("ask 应恰一行且终态 completed：%v", rec.toolRows)
@@ -262,8 +281,110 @@ func TestEngineTurnAsk(t *testing.T) {
 	if len(rec.tasks) != 2 || rec.tasks[0] != "done|ask_user|done" || rec.tasks[1] != "started|ask_user|ask_user" {
 		t.Fatalf("ask 任务树事件不符：%v", rec.tasks)
 	}
-	if !strings.Contains(strings.Join(rec.msgs, "\n"), `content="y"`) {
-		t.Fatalf("ask 回答应回填续轮：%v", rec.msgs)
+	// 直接回答后：同一行就地更新为答案（历史/重载可见），ask_id 保留。
+	rows := toolRowsOf(t, turn)
+	if len(rows) != 1 {
+		t.Fatalf("ask 应恰一行 tool 记录：%d", len(rows))
+	}
+	content := persist.Sval(rows[0]["content"])
+	if !strings.Contains(content, `"content":"y"`) || strings.Contains(content, askAsyncHandoffResult) {
+		t.Fatalf("直接回答应把 tool-result 更新为答案：%s", content)
+	}
+	if persist.Sval(rows[0]["ask_id"]) == "" {
+		t.Fatalf("tool 行应保留 ask_id：%v", rows[0])
+	}
+	// 答复：批次投递为后续用户消息（可能插入当前轮或开启新一轮）。
+	delivered := waitAskAnswerDelivered(t, s, session, turn, "答：y")
+	if !strings.Contains(delivered, "确认继续？") {
+		t.Fatalf("答复应携带原问题：%q", delivered)
+	}
+	// 答复驱动的新轮异步起轮：等其收口，避免测试清理与在飞写库竞态。
+	waitTurnIdle(t, s, session)
+}
+
+// waitAskAnswerDelivered 等 ask 答复作为后续用户消息落库（跳过原轮），返回消息正文。
+func waitAskAnswerDelivered(t *testing.T, s *Server, session, skipTurn, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	last := ""
+	for time.Now().Before(deadline) {
+		st := newSessionStore(s.bus, "ins-test")
+		tid := st.LatestTurnID(session)
+		if tid != "" && tid != skipTurn {
+			for _, m := range st.LoadMessages(tid) {
+				if strings.Contains(m.Content, want) {
+					return m.Content
+				}
+			}
+		}
+		cur := fmt.Sprintf("%s|%d", tid, len(st.LoadMessages(tid)))
+		if cur != last {
+			last = cur
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("用户答复未作为后续用户消息投递（want %q）", want)
+	return ""
+}
+
+// TestEngineTurnAskResolve：「聊一聊」后点「完成」——原 ask_user 的 tool-result 就地更新为
+// 「参考后续的聊天记录」，任务节点 done，ask 摘除；**不向 LLM 投递任何消息**（不新起轮）。
+func TestEngineTurnAskResolve(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	const session, turn = "s-et-resolve", "t-et-resolve"
+	drive := func(session, turn string, log *eventLog) {
+		engineTextTurn(s, session, turn, "ask please")
+		ask := engineWaitEvent(t, log, "ask-user", func(ev map[string]any) bool {
+			return str(ev["ask_id"]) != ""
+		})
+		// 完成前：tool 行是「等待回复」占位。
+		waitAskPlaceholder(t, turn)
+		f := s.bus.Emit(context.Background(), "ask-resolve", jb(map[string]any{
+			"ask_id": ask["ask_id"],
+		}))
+		v := f.Wait()
+		if v.Err() != nil {
+			t.Fatalf("ask-resolve error: %v", v.Err())
+		}
+		if res, _ := v.Result.(map[string]any); res == nil || res["ok"] != true {
+			t.Fatalf("ask-resolve 应答不符：%v", v.Result)
+		}
+	}
+	rec := runEngineTurnCase(t, s, session, turn, drive)
+
+	// tool 行：同一行、completed、result 更新为「参考后续的聊天记录」、ask_id 保留。
+	rows := toolRowsOf(t, turn)
+	if len(rows) != 1 {
+		t.Fatalf("ask 应恰一行 tool 记录：%d", len(rows))
+	}
+	content := persist.Sval(rows[0]["content"])
+	if !strings.Contains(content, askChatResolvedResult) || strings.Contains(content, askAsyncHandoffResult) {
+		t.Fatalf("完成后 tool-result 应更新为 %q：%s", askChatResolvedResult, content)
+	}
+	if persist.Sval(rows[0]["ask_id"]) == "" {
+		t.Fatalf("tool 行应保留 ask_id：%v", rows[0])
+	}
+	if len(rec.tasks) != 2 || rec.tasks[0] != "done|ask_user|done" || rec.tasks[1] != "started|ask_user|ask_user" {
+		t.Fatalf("ask 任务树事件不符：%v", rec.tasks)
+	}
+	// 不向 LLM 投递：原轮消息里没有 user 角色的「参考后续的聊天记录」，且没有新轮。
+	for _, m := range newSessionStore(s.bus, "ins-test").LoadMessages(turn) {
+		if m.Role == "user" && strings.Contains(m.Content, askChatResolvedResult) {
+			t.Fatalf("完成不应作为用户消息投递：%+v", m)
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+	if got := newSessionStore(s.bus, "ins-test").LatestTurnID(session); got != turn {
+		t.Fatalf("完成不应起新轮：latest=%s want=%s", got, turn)
+	}
+	s.mu.Lock()
+	nAsks, nBatches := len(s.asks), len(s.askBatches)
+	s.mu.Unlock()
+	if nAsks != 0 || nBatches != 0 {
+		t.Fatalf("完成后应摘除 ask 与批次：asks=%d batches=%d", nAsks, nBatches)
 	}
 }
 

@@ -19,6 +19,7 @@
  */
 import { ref, computed } from 'vue'
 import mq, { currentInstanceId } from '@ckfw/utils/mq.js'
+import { MsgTopics } from '../events/msgkeys.js'
 
 const DEBOUNCE_MS = 250
 const MAX_REVEAL_PAGES = 5
@@ -93,7 +94,7 @@ export function useSessionSearch({ sessionId, reveal } = {}) {
     olderHint.value = false
     let nextIndex = -1
     try {
-      const env = await mq.emit('plugin-call', {
+      const env = await mq.emit(MsgTopics.pluginCall, {
         id: 'codegraph',
         method: 'rpc',
         params: {

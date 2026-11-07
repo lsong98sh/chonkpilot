@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
+	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // TestTaskLayerSingleWriter：层为唯一权威（tasktree 行 + workdir + Verify + 逻辑删除）。
@@ -813,52 +813,6 @@ func TestTaskStopByIdAndToolCall(t *testing.T) {
 	s.execSink = testExecSink
 	if err == nil || !strings.Contains(err.Error(), "执行池不可用") {
 		t.Fatalf("sink 未注入应回明确错误, got %v", err)
-	}
-}
-
-// TestRunToolStopExplicitTexts：tool_stop 域工具（LLM 侧）错误语义 —— 执行池未注入 / 已终态
-// 均回明确文案（不静默）；真实停止经层 → sink 下发（链路由 TestTaskStopByIdAndToolCall 锁定）。
-func TestRunToolStopExplicitTexts(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := newTestServer(t, llm)
-	startTurn(t, s, "s-ts", "t-ts")
-	te := watchTasks(t, s.bus)
-	resetExecControl()
-
-	node, err := s.tasks.start(&TaskNode{
-		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-ts", TurnID: "t-ts",
-		InstanceID: "ins-test", TopSession: "s-ts", Name: "x", ToolCallID: "tc-ts",
-	})
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	s.tasks.setGwTask(node.TaskID, "tk-ts-gw")
-
-	// 执行池未注入 + 层持 exec → 明确文案（不静默）
-	s.execSink = nil
-	if got, _ := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "执行池不可用") {
-		t.Fatalf("sink 未注入应回明确文案, got %q", got)
-	}
-	s.execSink = testExecSink
-
-	// 正常停止 → 层 → sink 取消 + 级联停止文案
-	if got, _ := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "已级联停止") {
-		t.Fatalf("停止文案错: %q", got)
-	}
-	if got := execCancelledRefs(); len(got) != 1 || got[0] != "tk-ts-gw" {
-		t.Fatalf("sink.CancelExec=%v want [tk-ts-gw]", got)
-	}
-	te.wait(t, "cancelled", func() bool {
-		te.mu.Lock()
-		defer te.mu.Unlock()
-		d := te.done[node.TaskID]
-		return d != nil && d["state"] == TaskStateCancelled
-	})
-
-	// 已终态 → 明确文案（不重复取消）
-	if got, _ := s.runToolStop(nil, nil, map[string]any{"task_id": node.TaskID}); !strings.Contains(got, "已结束") {
-		t.Fatalf("已终态文案错: %q", got)
 	}
 }
 

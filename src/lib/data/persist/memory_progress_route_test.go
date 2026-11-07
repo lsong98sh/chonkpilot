@@ -51,8 +51,7 @@ func memExtractCall(t *testing.T, s *Service, subject string, body map[string]an
 
 // TestMemoryExtractTableCRUD：save/load/delete 往返落 prjusr 桶 memory_extract，且不写 config 键。
 func TestMemoryExtractTableCRUD(t *testing.T) {
-	wd := t.TempDir()
-	s := newSweepTestService(t)
+	s, wd, _ := newSweepTestService(t)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -128,8 +127,7 @@ func TestMemoryExtractTableCRUD(t *testing.T) {
 // TestMemoryExtractListPrefixIsolationAndOrder：整会话 load/delete 走主键前缀 Seek 后，
 // 仍满足（1）前缀碰撞会话隔离（"s-1" 不吞 "s-10"）；（2）类别名升序；（3）空会话空列表。
 func TestMemoryExtractListPrefixIsolationAndOrder(t *testing.T) {
-	wd := t.TempDir()
-	s := newSweepTestService(t)
+	s, wd, _ := newSweepTestService(t)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

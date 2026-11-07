@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/lsong98sh/chonkpilot-agent/chat"
@@ -39,12 +40,6 @@ var engineTurnCalls atomic.Int64
 // enginePendingPlaceholder 是「等待异步回执期间」该 tool_call 在上下文里的占位 tool 消息
 // （与数据层 `LoadMessages` 对 running 行的投影文案逐字一致；见 data/internal/kernel/viewdata.go）。
 const enginePendingPlaceholder = "（工具执行中，结果稍后返回）"
-
-// insertFlushInterval 是「插话意向重试」的轮询间隔（2026-11-01 批量插话）：相位（在飞工具）
-// 轮换没有事件通知，用低频 ticker 在可插入窗口把该会话全部 pending insert 意向一次投递。
-// 取值权衡：100ms 对用户「插话」点击的体感接近即时，且仅在有运行轮时每 tick 读一次内存索引
-// （无数据面请求）。
-const insertFlushInterval = 100 * time.Millisecond
 
 // engineToolResultItem 构造一条异步工具回执输入（ask 回答 / 异步工具结果同形）。
 func engineToolResultItem(callID, content string, isErr bool) chat.InboxItem {
@@ -140,7 +135,7 @@ func (tc *turnCtx) engineSynthesizeDanglingToolResults() {
 	if !tc.isRecovery {
 		return
 	}
-	msgs := newSessionStore(tc.server.bus, tc.req.InstanceID).LoadMessages(tc.req.Turn)
+	msgs := tc.server.newSessionStore(tc.req.InstanceID).LoadMessages(tc.req.Turn)
 	have := make(map[string]bool, len(msgs))
 	for _, m := range msgs {
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -197,11 +192,12 @@ func (tc *turnCtx) engineRuntimeConfig() chat.RuntimeConfig {
 		// 看门狗在引擎模式下不再单独起（等待循环本身即兜底：超时合成 failed 占位续轮）。
 		PendingWait:        pendingWait,
 		PendingPlaceholder: enginePendingPlaceholder,
-		PollInterval:       50 * time.Millisecond,
-		AutoContinue:       cont.Enabled,
-		AutoContinueDelay:  cont.EngineDelay(),
-		AutoContinueText:   cont.Text,
-		AutoContinueMax:    cont.Max,
+		// 轮内等待由 InboxWaiter.Wait 事件驱动（无间隔轮询）；PollInterval 仅为兼容字段。
+		PollInterval:      0,
+		AutoContinue:      cont.Enabled,
+		AutoContinueDelay: cont.EngineDelay(),
+		AutoContinueText:  cont.Text,
+		AutoContinueMax:   cont.Max,
 	}
 }
 
@@ -228,21 +224,18 @@ func (tc *turnCtx) engineFirstInput() (ChatMsg, bool) {
 
 // enginePump 把生产的输入通道转成引擎 Inbox 项（loop 不再直接消费它们）。
 //
+// 插话意向的投递由**相位事件**驱动（工具派发 / 回执清空 → `flushInsertIntents`），
+// 本循环不再持有任何定时器。
+//
 // 不另起 pending 看门狗：引擎的 `PendingWait` 等待循环对未回填调用合成 failed 占位续轮
 // （阈值同源 = `pending_task_timeout_sec`）。
 func (tc *turnCtx) enginePump(stop <-chan struct{}) {
-	// 插话意向重试（2026-11-01 批量插话）：相位轮换（工具派发 / 工具返回）没有事件通知，
-	// 用低频 ticker 在可插入窗口把该会话全部 pending insert 意向一次性投递。
-	tick := time.NewTicker(insertFlushInterval)
-	defer tick.Stop()
 	for {
 		select {
 		case <-stop:
 			return
 		case <-tc.Done():
 			return
-		case <-tick.C:
-			tc.server.flushInsertIntents(tc)
 		case m := <-tc.in:
 			tc.engineRouteInput(m)
 		case item := <-tc.inboxCh:
@@ -262,6 +255,8 @@ func (tc *turnCtx) engineRouteInput(msg ChatMsg) {
 	if msg.Role == "tool" {
 		tc.clearInflight(msg.ToolCallID)
 		tc.engineInbox.Push(engineToolResultItem(msg.ToolCallID, msg.Content, false))
+		// 结果回填可能让本帧仍处于「有其他在飞工具」的可插入相位 → 立即投递待插意向。
+		tc.server.flushInsertIntents(tc)
 		return
 	}
 	if msg.Role == "user" && (msg.Kind == "" || msg.Kind == "text") && strings.TrimSpace(msg.Content) != "" {
@@ -273,8 +268,8 @@ func (tc *turnCtx) engineRouteInput(msg ChatMsg) {
 }
 
 // engineRouteInsert 消费一条 inbox 项（判据同 inbox 消费语义）：空内容 → discarded；
-// 已撤回 / 已取消意向 → 不消费；**相位不可插入 → 保持 pending（不降级）**，由轮内 ticker
-// 在相位到达时重新批量投递（2026-11-01 插话意向语义）；否则投递给引擎建插入帧。
+// 已撤回 / 已取消意向 → 不消费；**相位不可插入 → 保持 pending（不降级）**，由下一次
+// 相位事件（工具派发 / 回执清空）重新批量投递（2026-11-01 插话意向语义）；否则投递给引擎建插入帧。
 func (tc *turnCtx) engineRouteInsert(item facade.InboxItem) {
 	if strings.TrimSpace(item.Content) == "" {
 		_ = tc.server.inboxUpdate(tc.req.InstanceID, item.ID, sessioninbox.StatusDiscarded, "", "")
@@ -319,7 +314,6 @@ func (tc *turnCtx) engineFinish(res chat.TurnResult, err error, text string) {
 			msg = tc.server.subsessionHint(tc, err.Error(), d.Retryable)
 		}
 		tc.server.llmErrorRetryable(tc, d.Code, msg, d.Retryable)
-		tc.Close()
 		return
 	case sessionrunner.TerminalIncomplete:
 		// 引擎在 AutoContinue 关闭时不发 `session_interrupted`（其设计为续写专用事件）；
@@ -328,11 +322,9 @@ func (tc *turnCtx) engineFinish(res chat.TurnResult, err error, text string) {
 			tc.publishInterrupted("LLM_INCOMPLETE", "", true, 0)
 		}
 		tc.server.complete(tc, d.Status, d.Finish, text)
-		tc.Close()
 		return
 	}
 	tc.server.complete(tc, d.Status, d.Finish, text)
-	tc.Close()
 }
 
 // ─── 端口实现 ─────────────────────────────────────────────────────────
@@ -456,28 +448,45 @@ func (*engineTurnStore) AppendEvent(context.Context, chat.TurnEvent) error { ret
 // 中间崩溃会重复消费同一条输入。
 func (s *engineTurnStore) CommitInbox(_ context.Context, inboxID string, msg chat.Message) error {
 	tc := s.tc
-	dm := ChatMessageToData(msg)
-	raw, err := json.Marshal(dm)
-	if err != nil {
-		return err
+	// 本地有界单事务（§2.4 白名单）：经 data 门面直调，避免会话循环内 Emit().Wait()
+	// 同步等待总线应答。门面实现与 data-inbox-commit 消息面同源（内嵌 persist）。
+	dlg := tc.server.dialogOf(tc.req.InstanceID, tc.req.Session)
+	req := facade.InboxCommitRequest{
+		InstanceID: tc.req.InstanceID,
+		DialogID:   dlg,
+		InboxID:    inboxID,
+		TurnID:     tc.req.Turn,
+		SessionID:  tc.req.Session,
+		Message:    data.MessageToFacade(ChatMessageToData(msg)),
 	}
-	var mm map[string]any
-	if err := json.Unmarshal(raw, &mm); err != nil {
-		return err
-	}
-	body := map[string]any{
-		"inbox_id":   inboxID,
-		"turn_id":    tc.req.Turn,
-		"session_id": tc.req.Session,
-		"msg":        mm,
-	}
-	if dlg := tc.server.dialogOf(tc.req.InstanceID, tc.req.Session); dlg != "" {
-		body["dialog_id"] = dlg
-	}
-	if _, err := dataRequest(tc.server.bus, msgkeys.TopicDataInboxCommit, map[string]any{
-		"instance_id": tc.req.InstanceID, "data": body,
-	}); err != nil {
-		return err
+	if tc.server.cfg != nil {
+		if _, err := tc.server.cfg.InboxCommit(req); err != nil {
+			return err
+		}
+	} else {
+		// 无门面（极少数仅构造 Server 的测试）→ 回退既有消息面，行为不变。
+		raw, err := json.Marshal(ChatMessageToData(msg))
+		if err != nil {
+			return err
+		}
+		var mm map[string]any
+		if err := json.Unmarshal(raw, &mm); err != nil {
+			return err
+		}
+		body := map[string]any{
+			"inbox_id":   inboxID,
+			"turn_id":    tc.req.Turn,
+			"session_id": tc.req.Session,
+			"msg":        mm,
+		}
+		if dlg != "" {
+			body["dialog_id"] = dlg
+		}
+		if _, err := dataRequest(tc.server.bus, msgkeys.TopicDataInboxCommit, map[string]any{
+			"instance_id": tc.req.InstanceID, "data": body,
+		}); err != nil {
+			return err
+		}
 	}
 	if inboxID != "" {
 		tc.server.inboxSetStatus(inboxID, "consumed")

@@ -42,6 +42,7 @@
   "cannot_delete_main": "主 Agent 不能删除",
   "copy_agent": "复制",
   "optimize_prompt": "优化提示词",
+  "recover_optimize": "恢复优化",
   "optimize_title": "场景智能体系统提示词（{name}）",
   "optimize_use_case": "场景智能体系统提示词：定义该 agent 在场景中的角色、能力与行为约束，运行时与全局层/场景层提示词拼接",
   "insert_variable": "插入变量",

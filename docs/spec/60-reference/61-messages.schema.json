@@ -1,6 +1,6 @@
 {
   "name": "chonkpilot-message-contract",
-  "version": "2026-10-22",
+  "version": "2026-11-05",
   "source": "docs/spec/60-reference/61-消息一览.md",
   "authority": "61-消息一览.md（消息面唯一准则）",
   "description": "机器可读消息面契约（B0 契约面试点）。逐主题从 61 抽取：payload = 请求/发送字段；result = publish promise 收集的应答字段；event = 下行事件载荷字段。字段名按 61 原样收录（含 §0.5 命名例外：MCP 协议 camelCase、useCase 等），不擅自改名。",
@@ -38,7 +38,8 @@
       "llm-": {"kind": "event", "direction": "server->client", "scope": "instance-optional", "visibility": "observe"},
       "memory.": {"kind": "command", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
       "vfts.": {"kind": "command", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
-      "prompt-": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "call"}
+      "prompt-": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
+      "plugin-": {"kind": "command", "direction": "client->server", "scope": "instance-optional", "visibility": "call"}
     },
     "topics": {
       "session-start": {"kind": "command", "direction": "client->server", "scope": "instance-required", "visibility": "filter", "mutable": "payload", "mutable_fields": ["llm", "scenario_id", "think", "effort"], "immutable_fields": ["session", "turn", "instance_id"]},
@@ -52,7 +53,15 @@
       "session-receive": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
       "session-complete": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
       "tool-notify": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
-      "task-updated": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"}
+      "task-updated": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
+      "plugin-list": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
+      "plugin-refresh": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
+      "plugin-config-get": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
+      "plugin-registered": {"kind": "event", "direction": "server->client", "scope": "instance-optional", "visibility": "observe"},
+      "plugin-unregistered": {"kind": "event", "direction": "server->client", "scope": "instance-optional", "visibility": "observe"},
+      "plugin-status": {"kind": "event", "direction": "server->client", "scope": "instance-optional", "visibility": "observe"},
+      "plugin-config-changed": {"kind": "event", "direction": "server->client", "scope": "instance-optional", "visibility": "observe"},
+      "plugin-event": {"kind": "event", "direction": "server->client", "scope": "instance-optional", "visibility": "observe"}
     }
   },
   "fieldDictionary": {
@@ -119,7 +128,7 @@
     "doc_ids": { "type": "array", "desc": "文档 id 集合" },
     "done_at": { "type": "string", "desc": "完成时间" },
     "effort": { "type": "any", "desc": "推理强度" },
-    "enabled": { "type": "int", "desc": "启用数" },
+    "enabled": { "type": "bool", "desc": "启用开关（插件等）" },
     "entries": { "type": "any", "desc": "批量条目集合（键值对，如 data-prj-config save）" },
     "error": { "type": "any", "desc": "错误（对象/字符串）" },
     "errors": { "type": "array", "desc": "错误集合" },
@@ -219,7 +228,14 @@
     "pending_only": { "type": "bool", "desc": "只回非终态（data-ask-pending 启动扫描）" },
     "paths": { "type": "array", "desc": "路径集合" },
     "payload": { "type": "any", "desc": "内层载荷" },
-    "plugin": { "type": "string", "desc": "插件名" },
+    "plugin": { "type": "any", "desc": "插件名（tool-notify）或插件视图对象（plugin-registered）" },
+    "plugins": { "type": "array", "desc": "插件快照列表（plugin-list / plugin-refresh 结果的 pluginView 数组）" },
+    "params": { "type": "object", "desc": "插件调用参数（plugin-command / plugin-call）" },
+    "method": { "type": "string", "desc": "插件方法名（plugin-call）" },
+    "result": { "type": "any", "desc": "插件方法返回结果（plugin-command / plugin-call）" },
+    "detail": { "type": "string", "desc": "状态详情（plugin-status）" },
+    "topic": { "type": "string", "desc": "插件内 UI 事件主题（plugin-event）" },
+    "values": { "type": "object", "desc": "配置值表（换行：plugin-config-get / plugin-config-set；secret 已掩码）" },
     "pre_hook_subject": { "type": "string", "desc": "前置钩子主题" },
     "prefix": { "type": "string", "desc": "前缀" },
     "probe": { "type": "object", "desc": "环境探测结果" },
@@ -346,19 +362,11 @@
       "§3 data-<domain>-* 数据面（§3.1/§3.2/§3.2a/§3.2b/§3.2c/§3.3/§3.4/§3.6；B1 补录；§3.2c = 群聊两表 SUBCHAT-3 阶段 E，2026-10-16）",
       "§4 服务端方法面与事件（§4.1 实例 / §4.2 方法 / §4.3 事件 / §4.4 llm-simple / §4.5 映射 / §4.6 认证）",
       "§5 gateway 方法面（§5.1/§5.1.1/§5.2/§5.3/§5.4/§5.4a）",
-      "§6.1 前端本地 UI 事件"
+      "§6.1 前端本地 UI 事件",
+      "§7.2 插件管理面 plugin-*（12 条；2026-11-05 由 coverage.planned 并入 included）"
     ],
     "deferred": [],
-    "planned": [
-      {
-        "family": "plugin-*",
-        "topics": ["plugin-list", "plugin-registered", "plugin-unregistered", "plugin-status", "plugin-set-enabled", "plugin-command", "plugin-config-get", "plugin-config-set", "plugin-config-changed", "plugin-call", "plugin-event"],
-        "source": "docs/plugin-platform/插件与MCP统一设计方案.md §10.2 · docs/spec/40-roadmap/49-待实现项.md PLUGIN-1",
-        "refs": ["docs/spec/20-modules/28-plugins.md"],
-        "status": "已实现（PLUGIN-1，2026-10-23）",
-        "note": "插件平台宿主↔前端消息族（server = pluginmgr）。当前以字符串主题落地、**尚未并入 included**（不生成 msgkeys 常量、不纳入对账硬约束）；并入 included 属 61 契约变更，须用户确认后执行。原预留族 `ui-plugin-*`（2C §4.2，含 ui-plugin-list/register/status/call 等 19 条）由本族取代，详见设计稿 v2 附录。"
-      }
-    ]
+    "planned": []
   },
   "docGaps": [],
   "directionVocabulary": [
@@ -371,7 +379,9 @@
     "frontend-local",
     "client->data",
     "data->client",
-    "data->server"
+    "data->server",
+    "client->plugin",
+    "plugin->client"
   ],
   "topics": [
     {
@@ -547,7 +557,7 @@
         "ask_id": { "type": "string", "required": true },
         "reason": { "type": "string", "required": false }
       },
-      "notes": "宿主/server → Ask 中心窗口：待办已办结/摘除（作答 answered、取消、超时 timeout、轮次收尾 turn_closed、实例退出 instance_exit）。"
+      "notes": "宿主/server → Ask 中心窗口：待办已办结/摘除（作答 answered、取消、超时 timeout、轮次收尾 turn_closed、实例退出 instance_exit、聊一聊后点完成 resolved）。"
     },
     {
       "topic": "gui.window.list",
@@ -1635,6 +1645,7 @@
       "direction": "client->data",
       "payload": {
         "instance_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true },
         "session": { "type": "string", "required": true },
         "turn_id": { "type": "string", "required": false },
         "type": { "type": "string", "required": true },
@@ -1657,6 +1668,7 @@
       "direction": "client->data",
       "payload": {
         "instance_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true },
         "session": { "type": "string", "required": true },
         "status": { "type": "string", "required": false }
       },
@@ -1671,6 +1683,7 @@
       "direction": "client->data",
       "payload": {
         "instance_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true },
         "id": { "type": "string", "required": true },
         "status": { "type": "string", "required": false },
         "type": { "type": "string", "required": false },
@@ -1685,6 +1698,7 @@
       "direction": "client->data",
       "payload": {
         "instance_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true },
         "inbox_id": { "type": "string", "required": true },
         "turn_id": { "type": "string", "required": true },
         "session_id": { "type": "string", "required": false },
@@ -1813,7 +1827,10 @@
       "topic": "data-snapshot-get",
       "face": "data",
       "direction": "client->data",
-      "payload": { "session_id": { "type": "string", "required": true } },
+      "payload": {
+        "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true }
+      },
       "result": { "snapshot": { "type": "any", "required": true } }
     },
     {
@@ -1822,6 +1839,7 @@
       "direction": "client->data",
       "payload": {
         "session_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true },
         "snapshot": { "type": "object", "required": true }
       },
       "result": { "ok": { "type": "bool", "required": true } }
@@ -1948,6 +1966,7 @@
       "direction": "client->data",
       "payload": {
         "top_session": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true },
         "mode": { "type": "string", "required": false },
         "include_closed": { "type": "bool", "required": false }
       },
@@ -1960,15 +1979,20 @@
       "payload": {
         "session_id": { "type": "string", "required": true },
         "top_session": { "type": "string", "required": false },
+        "dialog_id": { "type": "string", "required": false },
         "include_closed": { "type": "bool", "required": false }
       },
-      "result": { "list": { "type": "array", "required": true } }
+      "result": { "list": { "type": "array", "required": true } },
+      "notes": "dialog_id 缺省 = 全实例快照（任务层启动恢复）→ 跨对话库聚合（61 §0.6 例外）"
     },
     {
       "topic": "data-tasktree-delete",
       "face": "data",
       "direction": "client->data",
-      "payload": { "node_id": { "type": "string", "required": true } },
+      "payload": {
+        "node_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true }
+      },
       "result": { "ok": { "type": "bool", "required": true } }
     },
     {
@@ -1977,6 +2001,7 @@
       "direction": "client->data",
       "payload": {
         "task_id": { "type": "string", "required": true },
+        "dialog_id": { "type": "string", "required": true },
         "top_session": { "type": "string", "required": true },
         "session_id": { "type": "string", "required": true },
         "kind": { "type": "string", "required": true },
@@ -2232,6 +2257,20 @@
         "owner_instance": { "type": "string", "required": false }
       },
       "result": {}
+    },
+    {
+      "topic": "ask-resolve",
+      "face": "server",
+      "direction": "client->server",
+      "busTopic": "ask-resolve",
+      "payload": {
+        "ask_id": { "type": "string", "required": true },
+        "reason": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true }
+      },
+      "notes": "Ask 中心「聊一聊」后点「完成」解除提问（AskUser S4，2026-11-06）：只就地更新原 ask_user tool-result（result=「参考后续的聊天记录」）+ 任务节点 done + ask-center-remove{reason:resolved}；**不向 LLM 投递消息**（用户已在会话里讨论）。同会话同批其他真实答复若已齐 → 按原口径一次性投递。幂等。"
     },
     {
       "topic": "tool-retry",
@@ -2961,36 +3000,127 @@
       "result": {}
     },
     {
-      "topic": "codegraph-tool-call",
-      "face": "gateway",
-      "direction": "gateway->registrant",
-      "notes": "§5.4 远程回调：codegraph 插件注册 8 个查询工具时声明 handler_subject（去掉 workdir，由 context.instance_id 路由）。B3 检索/引擎面补录（2026-10-05）。",
+      "topic": "plugin-list",
+      "face": "plugin",
+      "direction": "client->plugin",
+      "payload": {},
+      "result": { "plugins": { "type": "array", "required": true } },
+      "notes": "前端 → 宿主（publish promise）：读插件台账缓存快照；结果元素 = pluginView（见 61 §7.2）。2026-11-05 由 coverage.planned 并入契约。"
+    },
+    {
+      "topic": "plugin-refresh",
+      "face": "plugin",
+      "direction": "client->plugin",
+      "payload": {},
+      "result": { "plugins": { "type": "array", "required": true } },
+      "notes": "重扫插件根 + 差量收敛（新增登记并拉起 / 消失发 plugin-unregistered 并停进程），返回与 plugin-list 同结构快照；PLUGIN-LOAD-1（2026-11-02）。"
+    },
+    {
+      "topic": "plugin-set-enabled",
+      "face": "plugin",
+      "direction": "client->plugin",
       "payload": {
-        "tool": { "type": "string", "required": true },
-        "args": { "type": "any", "required": true },
-        "context": { "type": "object", "required": false }
+        "id": { "type": "string", "required": true },
+        "enabled": { "type": "bool", "required": true }
       },
       "result": {
-        "resultType": { "type": "string", "required": false },
-        "content": { "type": "array", "required": false },
-        "isError": { "type": "bool", "required": false }
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true },
+        "enabled": { "type": "bool", "required": true }
       }
     },
     {
-      "topic": "vfts-tool-call",
-      "face": "gateway",
-      "direction": "gateway->registrant",
-      "notes": "§5.4 远程回调：vfts 插件注册 1 个查询工具 vfts_query 时声明 handler_subject（去掉 workdir，由 context.instance_id 路由）。B3 检索/引擎面补录（2026-10-05）。",
+      "topic": "plugin-config-get",
+      "face": "plugin",
+      "direction": "client->plugin",
+      "payload": { "id": { "type": "string", "required": true } },
+      "result": {
+        "fields": { "type": "object", "required": true },
+        "values": { "type": "object", "required": true }
+      }
+    },
+    {
+      "topic": "plugin-config-set",
+      "face": "plugin",
+      "direction": "client->plugin",
       "payload": {
-        "tool": { "type": "string", "required": true },
-        "args": { "type": "any", "required": true },
-        "context": { "type": "object", "required": false }
+        "id": { "type": "string", "required": true },
+        "values": { "type": "object", "required": true }
       },
       "result": {
-        "resultType": { "type": "string", "required": false },
-        "content": { "type": "array", "required": false },
-        "isError": { "type": "bool", "required": false }
+        "ok": { "type": "bool", "required": true },
+        "id": { "type": "string", "required": true }
       }
+    },
+    {
+      "topic": "plugin-command",
+      "face": "plugin",
+      "direction": "client->plugin",
+      "payload": {
+        "id": { "type": "string", "required": true },
+        "name": { "type": "string", "required": true },
+        "params": { "type": "object", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "result": { "type": "any", "required": true }
+      }
+    },
+    {
+      "topic": "plugin-call",
+      "face": "plugin",
+      "direction": "client->plugin",
+      "payload": {
+        "id": { "type": "string", "required": true },
+        "method": { "type": "string", "required": true },
+        "params": { "type": "object", "required": false }
+      },
+      "result": {},
+      "notes": "通用插件 RPC：结果 = 插件返回值（v.Result 直出，无统一 ok 包装；键由插件方法契约定义，不纳入顶层对账）。前端会话内查找经此转发 vfts.session.query。"
+    },
+    {
+      "topic": "plugin-registered",
+      "face": "plugin",
+      "direction": "plugin->client",
+      "event": { "plugin": { "type": "object", "required": true } },
+      "notes": "宿主 → 前端广播：插件登记/更新（payload.plugin = pluginView）"
+    },
+    {
+      "topic": "plugin-unregistered",
+      "face": "plugin",
+      "direction": "plugin->client",
+      "event": { "id": { "type": "string", "required": true } }
+    },
+    {
+      "topic": "plugin-status",
+      "face": "plugin",
+      "direction": "plugin->client",
+      "event": {
+        "id": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "detail": { "type": "string", "required": true }
+      }
+    },
+    {
+      "topic": "plugin-config-changed",
+      "face": "plugin",
+      "direction": "plugin->client",
+      "event": {
+        "id": { "type": "string", "required": true },
+        "keys": { "type": "array", "required": true }
+      }
+    },
+    {
+      "topic": "plugin-event",
+      "face": "plugin",
+      "direction": "plugin->client",
+      "event": {
+        "id": { "type": "string", "required": true },
+        "topic": { "type": "string", "required": true },
+        "payload": { "type": "any", "required": true },
+        "instance_id": { "type": "string", "required": false }
+      },
+      "notes": "插件 UI 事件广播/定向：instance_id 非空 → 提升到顶层供桥精确过滤（PLUGIN-INSTANCE-1，2026-10-27）；原名 plugin-ui-event，2026-11-04 改名。"
     },
     {
       "topic": "vfts.dict.get",

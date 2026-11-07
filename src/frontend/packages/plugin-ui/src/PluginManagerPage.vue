@@ -33,7 +33,6 @@
 
         <div class="pm-status">
           <span class="pm-status-text">{{ statusText(p) }}</span>
-          <span v-if="p.detail" class="pm-status-detail" :title="p.detail">{{ p.detail }}</span>
         </div>
 
         <div class="pm-actions">
@@ -81,6 +80,7 @@
 
 <script setup>
 import { reactive } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { pluginHost } from './host.js'
 import { pluginUIComponents } from './components.js'
 import { usePlugins } from './usePlugins.js'
@@ -94,19 +94,24 @@ const { Button, Switch, Icon } = pluginUIComponents()
 
 const { state, refresh } = usePlugins()
 const pending = reactive({})
+const { t } = useI18n()
 
-const STATUS_TEXT = {
-  running: '运行中',
-  starting: '启动中',
-  registering: '注册中',
-  degraded: '降级',
-  error: '失败',
-  stopped: '已停止',
-  disabled: '已禁用',
+// D11：状态文案与插件页（PluginPageHost）共用同一 i18n 词表，只渲染状态文字、不显示 detail 行。
+const STATUS_KEY = {
+  discovered: 'statusStarting',
+  registering: 'statusStarting',
+  starting: 'statusStarting',
+  running: 'statusRunning',
+  degraded: 'statusError',
+  error: 'statusError',
+  stopping: 'statusStopped',
+  stopped: 'statusStopped',
+  disabled: 'statusDisabled',
 }
 
 function statusText(p) {
-  return STATUS_TEXT[p.status] || p.status || '—'
+  const key = STATUS_KEY[p.status]
+  return key ? t('layoutFree.plugin.' + key) : (p.status || '—')
 }
 
 function isSvg(icon) {
@@ -136,10 +141,10 @@ function openView(p, viewId, container) {
   const where = container || (Array.isArray(view?.containers) ? view.containers[0] : '') || 'preview'
   switch (where) {
     case 'tab':
-      mq.emit('lf-layout-open-tabs', { targetLeafId: null, viewKey, instanceKey: null })
+      layoutActions().openTabs({ targetLeafId: null, viewKey, instanceKey: null })
       return
     case 'drawer':
-      mq.emit('lf-layout-open-drawer', {
+      layoutActions().openDrawer({
         drawerId: `plugin_${p.id}_${viewId}`,
         viewKey,
         instanceKey: null,
@@ -148,7 +153,7 @@ function openView(p, viewId, container) {
       })
       return
     case 'dialog':
-      mq.emit('lf-layout-open-dialog', { viewKey, instanceKey: null, title })
+      layoutActions().openDialog({ viewKey, instanceKey: null, title })
       return
     default:
       mq.emit('preview-tab-open', { kind: 'plugin-page', plugin: p.id, page: viewId, title })
@@ -171,38 +176,45 @@ function runAction(p, a) {
 }
 
 /**
- * 命令 → MQ（与布局栏按钮同一套命令对象语义，见 layout-free/utils/commands.js `commandToMq`）：
- * open-dialog / open-tabs / open-drawer / toggle-drawer / close-tabs-active / publish-mq。
- * 这里就地转换（不依赖布局 store），插件维护页在任意容器里都能执行动作。
+ * 命令 → 布局域动作（与布局栏按钮同一套命令对象语义，见 layout-free/utils/commands.js `runCommand`）。
+ * G-89（2026-10-31）：机制层内部命令不再经 `lf-*` MQ 主题 → 插件维护页直调宿主注入的
+ * `layout` 端口（open-tabs / open-drawer / open-dialog / toggle-drawer / close-tabs-active）。
+ * `publish-mq` 仍走宿主既有主题（跨模块边界）。
  */
+function layoutActions() {
+  const port = pluginHost().layout
+  if (!port) throw new Error('plugin-ui: 宿主未注入 layout 端口')
+  return port
+}
+
 function dispatchCommand(cmd) {
   switch (cmd.type) {
     case 'open-dialog':
-      mq.emit('lf-layout-open-dialog', {
+      layoutActions().openDialog({
         viewKey: cmd.viewKey,
         instanceKey: cmd.instanceKey ?? null,
         title: cmd.title || '',
       })
       return
     case 'open-tabs':
-      mq.emit('lf-layout-open-tabs', {
+      layoutActions().openTabs({
         targetLeafId: cmd.targetLeafId ?? null,
         viewKey: cmd.viewKey,
         instanceKey: cmd.instanceKey ?? null,
       })
       return
     case 'open-drawer':
-      mq.emit('lf-layout-open-drawer', {
+      layoutActions().openDrawer({
         drawerId: cmd.drawerId,
         viewKey: cmd.viewKey ?? null,
         instanceKey: cmd.instanceKey ?? null,
       })
       return
     case 'toggle-drawer':
-      mq.emit('lf-layout-toggle-drawer', { drawerId: cmd.drawerId })
+      layoutActions().toggleDrawer(cmd.drawerId)
       return
     case 'close-tabs-active':
-      mq.emit('lf-layout-close-tabs-active', { targetLeafId: cmd.targetLeafId ?? null })
+      layoutActions().closeActiveTabs({ targetLeafId: cmd.targetLeafId ?? null })
       return
     case 'publish-mq':
       if (cmd.topic) mq.emit(cmd.topic, cmd.payload ?? {})
@@ -351,12 +363,6 @@ function dispatchCommand(cmd) {
   min-width: 0;
   font-size: 11px;
   color: var(--text-muted);
-}
-.pm-status-detail {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .pm-actions {

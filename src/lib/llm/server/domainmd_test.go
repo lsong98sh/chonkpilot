@@ -2,16 +2,16 @@ package server
 
 import "testing"
 
-// 域工具契约 embed 加载：6 个齐全（ask_user / tool_stop / tool_result +
+// 域工具契约 embed 加载：5 个齐全（ask_user / tool_result +
 // 单聊 subchat_open / subchat_finish，SUBCHAT-2 阶段 B-2 + next_run，NEXTRUN-1）
-// + parameters 为合法 JSON schema。
+// + parameters 为合法 JSON schema。tool_stop 已于 2026-11-04 删除（task_stop 为唯一停止入口）。
 func TestLoadDomainTools(t *testing.T) {
 	defs, err := loadDomainTools()
 	if err != nil {
 		t.Fatalf("loadDomainTools: %v", err)
 	}
 	want := map[string]bool{
-		"ask_user": false, "tool_stop": false, "tool_result": false,
+		"ask_user": false, "tool_result": false,
 		"subchat_open": false, "subchat_finish": false, "next_run": false,
 	}
 	for _, d := range defs {
@@ -44,12 +44,12 @@ func TestLoadDomainToolsMeta(t *testing.T) {
 		t.Fatalf("loadDomainTools: %v", err)
 	}
 	wantAsync := map[string]string{
-		"ask_user": "never", "tool_result": "never", "tool_stop": "never",
+		"ask_user": "never", "tool_result": "never",
 		"subchat_open": "never", "subchat_finish": "never", "next_run": "never",
 	}
 	// 契约显式声明 timeout=0（= 无上限）者。
 	wantTimeoutSet := map[string]bool{
-		"ask_user": true, "tool_result": true, "tool_stop": true,
+		"ask_user": true, "tool_result": true,
 		"subchat_open": true, "subchat_finish": true, "next_run": true,
 	}
 	got := map[string]ToolDef{}

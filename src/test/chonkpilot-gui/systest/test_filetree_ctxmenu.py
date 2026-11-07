@@ -12,7 +12,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive import GUIClient, Checker  # noqa: E402
 
-from harness import free_port, snapshot_config, restore_config  # noqa: E402  动态端口；套件级配置快照-还原
+from harness import ensure_locale, free_port, snapshot_config, restore_config  # noqa: E402  动态端口；套件级配置快照-还原
 
 PORT = free_port()
 # GUI 工作目录 = drive.DEFAULT_WORK（systest/ws）。原口径 `..\..\chonkpilot-test\ws` 解析为
@@ -58,9 +58,9 @@ def main():
     try:
         gui.start()
         snap = snapshot_config(gui)
-        # 固定 en-US locale（WebView2 localStorage 共享，避免受先前测试切换影响）
-        J(gui, "localStorage.setItem('chonkpilot-locale','en-US'); location.reload(); 'ok'")
-        time.sleep(3)
+        # 固定 en-US locale（菜单文案按英文断言）：DB + localStorage 双写并校验生效
+        # （只置 localStorage 会被 data-user-config-changed 广播携带的 usr ui.locale 覆盖回旧值）。
+        ensure_locale(gui, "en-US")
         for _ in range(25):
             if J(gui, "document.querySelectorAll('.tree-row').length") > 0:
                 break

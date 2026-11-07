@@ -1,5 +1,5 @@
 // Package toolmeta 是 meta（mcp_find / mcp_load / mcp_invoke）与 domain（ask_user /
-// next_run / tool_stop / tool_result / subchat_open / subchat_finish）控制面工具的
+// next_run / tool_result / subchat_open / subchat_finish）控制面工具的
 // **进程内**实现（GATEWAY-2 / L3）。
 //
 // 2026-10-19 这些工具曾是「一工具一 exe」（src/lib/llm/cmd/*-exec + servertools/exec），
@@ -32,7 +32,7 @@ type Group string
 const (
 	// GroupMeta 是 meta 组（mcp_find / mcp_load / mcp_invoke）。
 	GroupMeta Group = "meta"
-	// GroupDomain 是 domain 组（ask_user / tool_result / tool_stop / next_run / subchat_*）。
+	// GroupDomain 是 domain 组（ask_user / tool_result / next_run / subchat_*）。
 	GroupDomain Group = "domain"
 )
 
@@ -68,7 +68,15 @@ type call struct {
 }
 
 // Run 执行一个 meta / domain 控制面工具。
-func Run(ctx context.Context, group Group, tool string, args map[string]any, cx Context, bridge Bridge) *Result {
+//
+// 故障域补偿（25 §0②）：本包是导出 API，handler 内的 panic 一律转 isError 结果、
+// 绝不冒泡 —— 调用方 dispatchBuiltin 虽另有 recover 兜底，库内也不得把 panic 交给上层。
+func Run(ctx context.Context, group Group, tool string, args map[string]any, cx Context, bridge Bridge) (res *Result) {
+	defer func() {
+		if r := recover(); r != nil {
+			res = &Result{Text: fmt.Sprintf("tool %s panic: %v", tool, r), IsError: true}
+		}
+	}()
 	switch group {
 	case GroupMeta:
 		text, isErr := runMeta(ctx, tool, args, cx, bridge)
@@ -83,7 +91,7 @@ func Run(ctx context.Context, group Group, tool string, args map[string]any, cx 
 // runMeta 执行一个 gateway 元工具，返回（文本, isError）。
 func runMeta(ctx context.Context, tool string, args map[string]any, cx Context, bridge Bridge) (string, bool) {
 	in := call{tool: tool, args: args, cx: cx}
-	cli, err := dial(ctx, bridge)
+	cli, err := dialConn(ctx, bridge)
 	if err != nil {
 		return "错误: " + err.Error(), true
 	}
@@ -103,11 +111,11 @@ func runMeta(ctx context.Context, tool string, args map[string]any, cx Context, 
 func runDomain(ctx context.Context, tool string, args map[string]any, cx Context, bridge Bridge) (string, bool) {
 	in := call{tool: tool, args: args, cx: cx}
 	switch tool {
-	case "tool_stop", "tool_result", "ask_user", "next_run", "subchat_open", "subchat_finish":
+	case "tool_result", "ask_user", "next_run", "subchat_open", "subchat_finish":
 	default:
 		return "错误: 未知 server 工具 " + tool, true
 	}
-	cli, err := dial(ctx, bridge)
+	cli, err := dialConn(ctx, bridge)
 	if err != nil {
 		return "错误: " + err.Error(), true
 	}
@@ -139,21 +147,6 @@ func runDomain(ctx context.Context, tool string, args map[string]any, cx Context
 			return "错误: " + err.Error(), true
 		}
 		return "已向用户提问，等待回答", false
-
-	case "tool_stop":
-		out, err := callPlugin(ctx, cli, "plugin/v1/tool.stop", map[string]any{
-			"instance_id": in.cx.InstanceID,
-			"turn":        in.cx.Turn,
-			"args":        in.args,
-		})
-		if err != nil {
-			finishNode(ctx, cli, taskID, true, err.Error())
-			return "错误: " + err.Error(), true
-		}
-		text := strArg(out, "text")
-		finishNode(ctx, cli, taskID, false, text)
-		// 进程内口径：task 型工具的失败记在任务节点上，工具结果本身仍为 complete。
-		return text, false
 
 	case "tool_result":
 		return toolResult(ctx, cli, in.cx, in.args, taskID), false
@@ -551,6 +544,40 @@ func metaLLMPick(ctx context.Context, cli transport.Conn, inst, purpose, typ str
 
 // ── 域工具辅助 ──────────────────────────────────────────────
 
+// taskResultPollInitial / taskResultPollMax 是 `tool_result` 轮询跨进程任务状态的退避区间
+// （异步改造 §10.1 白名单：插件桥**无任务终态事件面**，只能 RPC 探测；本函数在工具 handler
+// 的独立执行 goroutine 内，允许后台等待，但不再固定 500ms、也不用 `time.After`）。
+// 退避 500ms → 1s → 2s → 2s…；每次等待受剩余 timeout 截断。
+var (
+	taskResultPollInitial = 500 * time.Millisecond
+	taskResultPollMax     = 2 * time.Second
+)
+
+// nextTaskResultPoll 计算下一轮轮询间隔（指数退避，封顶 max）。
+func nextTaskResultPoll(d time.Duration) time.Duration {
+	if d <= 0 {
+		return taskResultPollInitial
+	}
+	d *= 2
+	if d > taskResultPollMax {
+		d = taskResultPollMax
+	}
+	return d
+}
+
+// stopTimer 停止计时器并丢弃已入队的触发（避免 Stop 竞态下的伪唤醒）。
+func stopTimer(t *time.Timer) {
+	if t == nil {
+		return
+	}
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+}
+
 // toolResult 对齐进程内 runToolResult：id 支持 server 任务节点 / gateway 异步任务 /
 // 子会话 turn id；timeout 秒内轮询至终态（0 = 立即查询一次），超时返回「任务尚未结束」。
 func toolResult(ctx context.Context, cli transport.Conn, cx Context, args map[string]any, taskID string) string {
@@ -567,6 +594,7 @@ func toolResult(ctx context.Context, cli transport.Conn, cx Context, args map[st
 		timeout = 0
 	}
 	deadline := time.Now().Add(time.Duration(timeout * float64(time.Second)))
+	poll := taskResultPollInitial
 	for {
 		if ctx.Err() != nil {
 			msg := fmt.Sprintf("已取消: 任务 %s 查询中止（gateway 执行侧取消；被查询任务本身未受影响，可重新调用 tool_result）", id)
@@ -594,10 +622,41 @@ func toolResult(ctx context.Context, cli transport.Conn, cx Context, args map[st
 				finishNode(ctx, cli, taskID, false, msg)
 				return msg
 			}
+			remain := time.Until(deadline)
+			// 事件驱动等待（2026-11-06，统一异步 §10.1 P2）：宿主侧 `plugin/v1/task.wait` 订阅既有
+			// 任务终态事件（task-done / mcp-tasks-report / session-complete），到点或终态即返；
+			// 不再由本进程轮询探测。旧宿主无该方法 → 回落指数退避（行为兼容）。
+			waitOut, werr := callPlugin(ctx, cli, "plugin/v1/task.wait", map[string]any{
+				"instance_id": cx.InstanceID, "turn": cx.Turn, "id": id,
+				"timeout": remain.Seconds(),
+			})
+			if werr == nil {
+				text = strArg(waitOut, "text")
+				state = strArg(waitOut, "state")
+				found, _ = waitOut["found"].(bool)
+				if !found {
+					msg := "错误: 未找到任务 " + id
+					finishNode(ctx, cli, taskID, true, msg)
+					return msg
+				}
+				if state != "running" {
+					finishNode(ctx, cli, taskID, false, text)
+					return text
+				}
+				continue // 仍 running（其他事件唤醒 / 等待到点）→ 顶层复核 deadline
+			}
+			// 回落：指数退避等待；剩余超时更短时按剩余截断（到点由下一轮 deadline 判定收口）。
+			wait := poll
+			if remain > 0 && wait > remain {
+				wait = remain
+			}
+			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
-			case <-time.After(500 * time.Millisecond):
+				stopTimer(timer)
+			case <-timer.C:
 			}
+			poll = nextTaskResultPoll(poll)
 			continue
 		}
 		finishNode(ctx, cli, taskID, false, text)
@@ -623,6 +682,10 @@ func finishNode(ctx context.Context, cli transport.Conn, taskID string, isErr bo
 }
 
 // ── 通用小工具 ───────────────────────────────────────────
+
+// dialConn 是 dial 的注入点：生产路径恒为 dial；测试以 fake transport.Conn 驱动进程内
+// meta/domain 工具面（纯夹具，不改变任何业务语义）。
+var dialConn = dial
 
 // dial 按显式桥地址连接插件桥（不读进程环境：进程内调用无 executor 子进程环境）。
 func dial(ctx context.Context, bridge Bridge) (transport.Conn, error) {

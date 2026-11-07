@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lsong98sh/chonkpilot-agent/chat"
 	"github.com/chonkpilot/chonkpilot-data"
+	"github.com/lsong98sh/chonkpilot-agent/chat"
 	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 

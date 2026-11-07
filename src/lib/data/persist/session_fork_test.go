@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -50,8 +51,7 @@ func call(t *testing.T, s *Service, subject string, payload map[string]any) map[
 }
 
 func TestSessionForkMQ(t *testing.T) {
-	wd := t.TempDir()
-	s := newSweepTestService(t)
+	s, wd, _ := newSweepTestService(t)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -91,9 +91,12 @@ func TestSessionForkMQ(t *testing.T) {
 		t.Fatalf("派生库文件缺失: %v", err)
 	}
 
-	// 缺 dialog_id → 明确失败。
+	// 缺 dialog_id → 明确失败（ErrDialogRequired；不得退化成任意错误）。
 	bad := call(t, s, "data-session-fork", map[string]any{"instance_id": inst})
 	if ok, _ := bad["ok"].(bool); ok {
 		t.Fatalf("缺 dialog_id 应失败: %+v", bad)
+	}
+	if msg, _ := bad["error"].(string); !strings.Contains(msg, "dialog_id") {
+		t.Fatalf("缺 dialog_id 应报明确错误（含 dialog_id），got %q", msg)
 	}
 }

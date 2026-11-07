@@ -180,7 +180,8 @@ func (s *Server) takeAskLocked(instanceID, askID string) (*askWaiter, bool) {
 	return nil, false
 }
 
-// clearAsksByTurnLocked 摘除某轮次的全部 ask 等待登记（轮次收尾；**须持 s.mu**）。
+// clearAsksByTurnLocked 摘除某轮次的全部 ask 等待登记（取消 / 轮次废案；**须持 s.mu**）。
+// **正常轮次结束不再调用**（AskUser S4：非阻塞 ask 允许本轮先收尾，提问登记继续存活）。
 // instanceID 非空 → 只清该实例；空 → 全桶（turn id 全局唯一，旧语义等价）。
 // 返回被摘除的登记（调用方解锁后发 ask-center-remove）。
 func (s *Server) clearAsksByTurnLocked(instanceID, turnID string) []*askWaiter {
@@ -196,6 +197,7 @@ func (s *Server) clearAsksByTurnLocked(instanceID, turnID string) []*askWaiter {
 			continue
 		}
 		delete(s.asks, k)
+		s.forgetAskLocked(w)
 		stopAskTimerLocked(w)
 		removed = append(removed, w)
 	}
@@ -214,9 +216,27 @@ func (s *Server) clearAsksByInstanceLocked(instanceID string) []*askWaiter {
 	for k, w := range s.asks {
 		if w.instanceID == instanceID || w.deliverInstance == instanceID {
 			delete(s.asks, k)
+			s.forgetAskLocked(w)
 			stopAskTimerLocked(w)
 			removed = append(removed, w)
 		}
 	}
 	return removed
+}
+
+// forgetAskLocked 从会话批次中摘除一条 ask（取消 / 实例退出语义：已收集的答复一并丢弃，
+// 不触发投递）。批次无未答项即删除；**须持 s.mu**。
+func (s *Server) forgetAskLocked(w *askWaiter) {
+	if w == nil || w.batchKey == "" {
+		return
+	}
+	b := s.askBatches[w.batchKey]
+	if b == nil {
+		return
+	}
+	delete(b.open, w.askID)
+	delete(b.answered, w.askID)
+	if len(b.open) == 0 {
+		delete(s.askBatches, b.key)
+	}
 }

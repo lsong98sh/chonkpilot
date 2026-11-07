@@ -26,7 +26,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
 
-// gatewayToolName 按后缀定位 gateway 工具面中的**暴露名**（如 tool_stop → tool_stop；P0a 起无前缀）。
+// gatewayToolName 按后缀定位 gateway 工具面中的**暴露名**（如 tool_result → tool_result；P0a 起无前缀）。
 func gatewayToolName(t *testing.T, s *Server, suffix string) string {
 	t.Helper()
 	for _, d := range s.gc.Tools() {
@@ -103,7 +103,7 @@ func TestToolWhitelistHardReject(t *testing.T) {
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		// 白名单两种写法都认（P0a 2026-10-29：暴露名 = 原名；历史 `self_<原名>` 存量配置兼容）：
 		// sub-deny 用历史写法（本工具不在白名单 → 拒绝），sub-allow 亦用历史写法（放行 = 兼容生效）。
-		agSubAgent("sub-deny", "子", map[string]any{"tools": []string{"self_tool_stop"}}),
+		agSubAgent("sub-deny", "子", map[string]any{"tools": []string{"self_next_run"}}),
 		agSubAgent("sub-allow", "子", map[string]any{"tools": []string{"self_tool_result"}}),
 		agSubAgent("sub-free", "子", map[string]any{"tools": []string{}}), // `[]` = 不限制
 	})
@@ -195,8 +195,8 @@ func TestToolWhitelistIncludesNonHotTool(t *testing.T) {
 	if containsStr(got2, nonHot) {
 		t.Fatalf("空白名单应只下 hot 集：非 hot 工具不应出现（tools=%v）", got2)
 	}
-	if !containsStr(got2, gatewayToolName(t, s, "tool_stop")) {
-		t.Fatalf("空白名单应含 hot 工具（tool_stop）：tools=%v", got2)
+	if !containsStr(got2, gatewayToolName(t, s, "ask_user")) {
+		t.Fatalf("空白名单应含 hot 工具（ask_user）：tools=%v", got2)
 	}
 }
 
@@ -238,7 +238,7 @@ func TestToolWhitelistLevelMatrix(t *testing.T) {
 	}
 	writeHotToolContract(t, prjUsrRoot, "lv_prjusr")
 	s.registerCapabilityNodes("ins-test", testWorkDir) // 一次性重扫接入 user/project/prjusr
-	waitCapabilityQuiescent(t, s)                     // 避开热重扫重建 dir 节点的间隙
+	waitCapabilityQuiescent(t, s)                      // 避开热重扫重建 dir 节点的间隙
 
 	userTool := "ins-test-user_lv_user"
 	prjTool := "ins-test-project_lv_prj"

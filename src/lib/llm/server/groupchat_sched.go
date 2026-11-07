@@ -41,9 +41,9 @@ import (
 	"sync"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/lsong98sh/chonkpilot-agent/session/component"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
-	"github.com/lsong98sh/chonkpilot-agent/session/component"
 )
 
 // 群聊机读约定常量（取值唯一来源 = 组件 `component.Group*`；保留包内别名，调用点不变）。
@@ -84,8 +84,8 @@ type groupSched struct {
 	driverMu sync.Mutex
 	driver   string
 
-	parts   []groupParticipant // 按 seq 升序（D3）
-	board   string             // 群聊展示板 turn id（承载所有上屏消息）
+	parts []groupParticipant // 按 seq 升序（D3）
+	board string             // 群聊展示板 turn id（承载所有上屏消息）
 }
 
 // startGroupChat 启动群聊调度器（新开群聊）：
@@ -292,7 +292,7 @@ func (s *Server) buildGroupSched(instanceID, groupID string) (*groupSched, error
 
 // loadOpening 取群聊展示板的首条消息文本（= 主 agent 布置任务，D18；取不到 → 空串）。
 func (sc *groupSched) loadOpening() string {
-	store := newSessionStore(sc.s.bus, sc.instanceID)
+	store := sc.s.newSessionStore(sc.instanceID)
 	turn := store.LatestTurnID(sc.groupID)
 	if turn == "" {
 		return ""
@@ -308,7 +308,7 @@ func (sc *groupSched) loadOpening() string {
 // ensureBoardTurn 取（或建）群聊展示板 turn：群聊所有上屏消息挂在这一条 turn 下
 // （群聊本体不跑 LLM，故该 turn 只承载消息行，无轮次终态）。
 func (sc *groupSched) ensureBoardTurn() string {
-	store := newSessionStore(sc.s.bus, sc.instanceID)
+	store := sc.s.newSessionStore(sc.instanceID)
 	if turn := store.LatestTurnID(sc.groupID); turn != "" {
 		return turn
 	}
@@ -537,7 +537,7 @@ func (sc *groupSched) appendBoard(agent, text string, mentions []string) {
 	if len(mentions) > 0 {
 		msg["mentions"] = mentions
 	}
-	if _, err := newSessionStore(sc.s.bus, sc.instanceID).AppendMsgMap(sc.board, msg, ""); err != nil {
+	if _, err := sc.s.newSessionStore(sc.instanceID).AppendMsgMap(sc.board, msg, ""); err != nil {
 		logf("[chonkpilot-server] groupAppendBoard(%s): %v\n", sc.groupID, err)
 	}
 }
@@ -545,7 +545,7 @@ func (sc *groupSched) appendBoard(agent, text string, mentions []string) {
 // appendBoardNotice 追加一条系统提示到群聊展示板（如「因达上限终止」）。
 func (sc *groupSched) appendBoardNotice(text string) {
 	msg := map[string]any{"role": "system", "content": text}
-	if _, err := newSessionStore(sc.s.bus, sc.instanceID).AppendMsgMap(sc.board, msg, ""); err != nil {
+	if _, err := sc.s.newSessionStore(sc.instanceID).AppendMsgMap(sc.board, msg, ""); err != nil {
 		logf("[chonkpilot-server] groupAppendBoardNotice(%s): %v\n", sc.groupID, err)
 	}
 }
@@ -759,7 +759,7 @@ func (s *Server) runGroupChatOpen(tc *turnCtx, mainAgent, scenarioID, llmRef, pr
 	}
 
 	// ③ 建展示板 turn + 写首条消息（= 主 agent 布置任务，D18；`role=user` 靠左，D47）。
-	store := newSessionStore(s.bus, instanceID)
+	store := s.newSessionStore(instanceID)
 	boardTurn := newID()
 	if err := store.EnsureTurn(boardTurn, groupID); err != nil {
 		return subchatToolErr("建群聊展示板轮次失败: " + err.Error()), true

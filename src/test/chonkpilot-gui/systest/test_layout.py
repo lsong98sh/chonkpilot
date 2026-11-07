@@ -188,42 +188,67 @@ def main():
                 isinstance(d.get("rw"), (int, float)) and abs(d.get("rw") - 1) < 0.6,
                 f"拖拽中 handle 宽={d.get('rw')}")
 
-        # L11 区域显隐（UILAYOUT-2 / WIN-025）：用户可配置命令 → lf-area-toggle-visible
+        # L11 区域显隐（UILAYOUT-2 / WIN-025）
+        # G-89（2026-10-31）：内部命令不再经 `lf-*` MQ 主题（`lf-area-toggle-visible` 已删除），
+        # 运行态显隐 = 域动作 `toggleAreaVisible`（执行体 = config.toggleLiveLeafByView / setLiveLeafVisible）。
+        # 回归用例经诊断入口 `window.__ckLayout.engine.state` 直调同一 store 动作（与用户配置命令同源），
+        # 断言 v-show 保活 + 分割条消失 + 恢复。
         def explorer_display():
             return J(gui, "(()=>{const el=document.querySelector('.filetree-panel');"
                           "const c=el&&el.closest('.split-child');"
                           "return c?getComputedStyle(c).display:''})()")
 
-        gui.eval("window.mq.emit('lf-area-toggle-visible',{viewKey:'explorer'}); 'ok'")
+        handles0 = J(gui, "document.querySelectorAll('.split-handle').length")
+        J(gui, "window.__ckLayout.engine.state.config.toggleLiveLeafByView('explorer'); 'ok'")
         time.sleep(0.6)
-        c.check("L11 隐藏文件树（v-show 保活）", explorer_display() == "none",
-                f"display={explorer_display()!r}")
-        gui.eval("window.mq.emit('lf-area-toggle-visible',{viewKey:'explorer'}); 'ok'")
+        hidden_display = explorer_display()
+        hidden_mounted = J(gui, "!!document.querySelector('.filetree-panel')")
+        handles1 = J(gui, "document.querySelectorAll('.split-handle').length")
+        c.check("L11 隐藏文件树（v-show 保活；分割条随之消失）",
+                hidden_display == "none" and hidden_mounted is True and handles1 == handles0 - 1,
+                f"display={hidden_display!r} mounted={hidden_mounted} handles={handles0}->{handles1}")
+        J(gui, "window.__ckLayout.engine.state.config.toggleLiveLeafByView('explorer'); 'ok'")
         time.sleep(0.6)
-        c.check("L11b 恢复显示文件树", explorer_display() not in ("none", ""),
-                f"display={explorer_display()!r}")
+        shown_display = explorer_display()
+        handles2 = J(gui, "document.querySelectorAll('.split-handle').length")
+        c.check("L11b 恢复显示文件树（同一实例、占比/分割条恢复）",
+                shown_display not in ("none", "") and handles2 == handles0,
+                f"display={shown_display!r} handles={handles1}->{handles2}")
 
-        # L12 布局档案（UILAYOUT-2 / WIN-026）：切到「简洁」= 只剩 chat；单例 view 不重建
+        # L12 布局档案（UILAYOUT-2 / WIN-026）：切到「简洁」= 可见区域集合仅 {chat}
+        # G-89：`lf-layout-profile-switch` 已删除 → 直调档案域动作 `profiles.apply`（= 切换入口执行体）。
         m0 = JD(gui, "JSON.stringify((window.__ckViewPool&&window.__ckViewPool.mounts)||{})") or {}
-        gui.eval("window.mq.emit('lf-layout-profile-switch',{id:'seed:simple'}); 'ok'")
+        prof_ids = JD(gui, "JSON.stringify((window.__ckLayout.profiles.list||[]).map(p=>p.id))") or []
+        c.check("L12a 种子档案「简洁」已装载", "seed:simple" in prof_ids, f"profiles={prof_ids}")
+        J(gui, "window.__ckLayout.profiles.apply('seed:simple'); 'ok'")
         time.sleep(0.9)
-        leaves = J(gui, "document.querySelectorAll('.layout-leaf').length")
-        c.check("L12 切换到「简洁」：只剩一个布局区域", leaves == 1, f"leaves={leaves}")
+        simple = JD(gui, """(()=>{return JSON.stringify({
+  leaves:document.querySelectorAll('.layout-leaf').length,
+  chat:document.querySelectorAll('.layout-leaf .chat-panel').length,
+  explorer:document.querySelectorAll('.layout-leaf .filetree-panel').length,
+  preview:document.querySelectorAll('.layout-leaf .code-view').length,
+  task:document.querySelectorAll('.layout-leaf .session-chat').length,
+  tasktree:document.querySelectorAll('.layout-leaf .session-tree').length})})()""") or {}
+        c.check("L12 切换到「简洁」：可见区域集合 = {chat}（单叶 + 仅 chat）",
+                simple.get("leaves") == 1 and simple.get("chat") == 1
+                and simple.get("explorer") == 0 and simple.get("preview") == 0
+                and simple.get("task") == 0 and simple.get("tasktree") == 0,
+                repr(simple))
         m1 = JD(gui, "JSON.stringify((window.__ckViewPool&&window.__ckViewPool.mounts)||{})") or {}
         c.check("L12b 切换布局不重建单例 view（explorer 挂载次数不变）",
                 int(m1.get("explorer", 0)) == int(m0.get("explorer", 0)),
                 f"explorer {m0.get('explorer', 0)} -> {m1.get('explorer', 0)}")
 
-        # L13 重复打开单例 view → 拒绝（落点数量不变）
+        # L13 重复打开单例 view → 拒绝（落点数量不变）；在「开发」档（explorer 已落位）下验证
+        J(gui, "window.__ckLayout.profiles.apply('seed:dev'); 'ok'")
+        time.sleep(0.9)
         t0 = JD(gui, "JSON.stringify((window.__ckViewPool&&window.__ckViewPool.targets)||[])") or []
-        gui.eval("window.mq.emit('lf-tabs-open',{viewKey:'explorer'}); 'ok'")
+        dup = J(gui, "window.__ckLayout.actions.openTabs({viewKey:'explorer'})")
         time.sleep(0.5)
         t1 = JD(gui, "JSON.stringify((window.__ckViewPool&&window.__ckViewPool.targets)||[])") or []
-        c.check("L13 重复打开单例 view 被拒绝（落点数不变）", len(t1) == len(t0),
-                f"targets {len(t0)} -> {len(t1)}")
-
-        gui.eval("window.mq.emit('lf-layout-profile-switch',{id:'seed:dev'}); 'ok'")
-        time.sleep(0.9)
+        c.check("L13 重复打开单例 view 被拒绝（返回 false；落点数不变）",
+                dup is False and len(t1) == len(t0),
+                f"ret={dup!r} targets {len(t0)} -> {len(t1)}")
 
         # L9a 保存布局（**free** 口径）：改 `split_body` 占比 → 落 `layout.free` → 重启回灌
         doc = JD(gui, "JSON.stringify((window.__ckLayout&&window.__ckLayout.engine)?window.__ckLayout.engine.state.config.live:null)")
@@ -270,18 +295,60 @@ def main():
             time.sleep(0.3)
         c.check("L9 重启恢复布局（layout.free 回灌）", 200 <= cw2 <= 460, f"chatWidth={cw2}px")
 
-        # L10a 保存屏幕外窗口状态（与 L9 解耦）
+        # L10c 窗口状态落盘 = **宿主权威**（WIN-010-S04，2026-11-04）
+        # `gui.ui.save{window}` 的几何与 maximized 以宿主 `GetWindowPlacement` 为准：
+        # 最大化时落 `NormalPosition`（= 最大化前的还原边界），`maximized=ShowCmd==SW_SHOWMAXIMIZED`。
+        # 因此前端上报的任意值（本用例故意给 1000x700 @99999）**不得**落库；落库值须等于
+        # 保存前的真实普通窗口矩形（物理 px）。
+        GEOM_JS = ("(()=>{const d=window.devicePixelRatio||1;return JSON.stringify({"
+                   "x:Math.round(window.screenX*d),y:Math.round(window.screenY*d),"
+                   "w:Math.round(window.outerWidth*d),h:Math.round(window.outerHeight*d)})})()")
+
+        def max_title():
+            return J(g2, "document.querySelector('.win-maximize')?.getAttribute('title')||''")
+
+        def wait_max_state(restore, timeout=10.0):
+            deadline = time.time() + timeout
+            t = max_title()
+            while time.time() < deadline:
+                t = max_title()
+                if (restore and t in ('Restore', '还原')) or \
+                   ((not restore) and t in ('Maximize', '最大化')):
+                    return True, t
+                time.sleep(0.2)
+            return False, t
+
+        if max_title() in ('Restore', '还原'):  # 前置归一：确保非最大化
+            g2.eval("document.querySelector('.win-maximize')?.click(); 'ok'")
+            wait_max_state(False)
+        geom0 = JD(g2, GEOM_JS) or {}
+        g2.eval("document.querySelector('.win-maximize')?.click(); 'ok'")
+        ok_max, title_max = wait_max_state(True)
+
         try:
             g2.req("gui.ui.save", {"window": {"width": 1000, "height": 700, "x": 99999, "y": 99999, "maximized": False}})
-            c.check("L10a 保存屏幕外窗口状态（gui.ui.save window）", True, "ok")
+            c.check("L10a 保存窗口状态（gui.ui.save window；宿主权威校正）", True, "ok")
         except Exception as e:
-            c.check("L10a 保存屏幕外窗口状态（gui.ui.save window）", False, str(e))
+            c.check("L10a 保存窗口状态（gui.ui.save window；宿主权威校正）", False, str(e))
 
         pl2 = (g2.req("data-prj-config-list", {}) or {}).get("list") or {}
-        c.check("L10c 窗口状态落库回读（window.width/x/y/maximized）",
-                pl2.get("window.width") == "1000" and pl2.get("window.x") == "99999"
-                and pl2.get("window.y") == "99999" and pl2.get("window.maximized") == "false",
-                repr({k: v for k, v in pl2.items() if k.startswith("window.")}))
+        stored = {k: v for k, v in pl2.items() if k.startswith("window.")}
+
+        def near(key, val, tol=8):
+            try:
+                return key in stored and abs(int(stored[key]) - int(val)) <= tol
+            except (TypeError, ValueError):
+                return False
+
+        c.check("L10c 最大化时落盘 = NormalPosition（最大化前还原边界）+ maximized=true",
+                ok_max and stored.get("window.maximized") == "true"
+                and near("window.x", geom0.get("x")) and near("window.y", geom0.get("y"))
+                and near("window.width", geom0.get("w")) and near("window.height", geom0.get("h"))
+                and stored.get("window.width") != "1000" and stored.get("window.x") != "99999",
+                f"title={title_max!r} normal={geom0} stored={stored!r}")
+        # 还原为普通窗口（避免最大化状态影响后续启动断言）
+        g2.eval("document.querySelector('.win-maximize')?.click(); 'ok'")
+        wait_max_state(False)
     finally:
         g2.stop()
 

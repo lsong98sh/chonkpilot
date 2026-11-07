@@ -34,8 +34,39 @@ PORT = _h.free_port()  # 动态端口：不与他套件/机器上的固定端口
 BASE = os.path.join(tempfile.gettempdir(), "ck-restore-tabs")
 WORK_DIR = os.path.join(BASE, "ws")
 DATA_DIR = os.path.join(BASE, "data")
+# 边界用例（恢复时缺失文件跳过）独立一套 work-dir / 数据根：不与主流程共享状态，
+# 保证「已落库 [a,b] → 删 b → 重启只恢复 a」的前置真实成立。
+BASE_SKIP = os.path.join(tempfile.gettempdir(), "ck-restore-tabs-skip")
+WORK_SKIP = os.path.join(BASE_SKIP, "ws")
+DATA_SKIP = os.path.join(BASE_SKIP, "data")
 
 TAB_NAME = ".tb-bar.tb-bottom .tb-tab .tb-name"
+
+# 记录前端实际发出的 `gui.ui.save{opened_files}` 请求（frontend fetch 层）。
+#
+# 为什么需要：I-81 的产品语义是「打开文件即发**全量**写（不依赖 300ms 去抖）」，
+# 这是**请求发出时刻**的性质。若只用「落库后 100ms 内回读」判定，会同时受 persist
+# 往返/负载影响（满负载批跑实测：请求本身没延迟，但 DB 回读窗口内读不到 → 假红）。
+# 页内时钟取样把「发出延迟」与「落库延迟」解耦；落库收敛另用宽松有界等待复核。
+SAVE_SPY_JS = r"""(() => {
+  if (!window.__ckSaveSpy) {
+    window.__ckSaveSpy = [];
+    const orig = window.fetch.bind(window);
+    window.fetch = (...a) => {
+      try {
+        const b = a[1] && a[1].body ? JSON.parse(a[1].body) : null;
+        if (b && b.type === 'gui.ui.save') {
+          let p = b.payload;
+          try { p = typeof p === 'string' ? JSON.parse(p) : p; } catch (e) {}
+          window.__ckSaveSpy.push({ t: Date.now(), files: (p && p.opened_files) || null });
+        }
+      } catch (e) {}
+      return orig(...a);
+    };
+  }
+  window.__ckSaveSpy = [];
+  return 'ok';
+})()"""
 
 
 def _loads_deep(v):
@@ -49,18 +80,18 @@ def _loads_deep(v):
     return v
 
 
-def prepare_ws():
-    shutil.rmtree(BASE, ignore_errors=True)
-    os.makedirs(WORK_DIR, exist_ok=True)
-    os.makedirs(DATA_DIR, exist_ok=True)
+def prepare_ws(base=BASE, work_dir=WORK_DIR, data_dir=DATA_DIR):
+    shutil.rmtree(base, ignore_errors=True)
+    os.makedirs(work_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
     for name in ("a.txt", "b.txt"):
-        with open(os.path.join(WORK_DIR, name), "w", encoding="utf-8") as f:
+        with open(os.path.join(work_dir, name), "w", encoding="utf-8") as f:
             f.write("hello from %s\n" % name)
 
 
-def start_gui():
+def start_gui(work_dir=WORK_DIR, data_dir=DATA_DIR):
     # 按需自起 + 登记回收（finally / 进程退出 / 信号三条路径都会清）
-    return _h.start_gui(port=PORT, work_dir=WORK_DIR, data_dir=DATA_DIR, ready_timeout=40)
+    return _h.start_gui(port=PORT, work_dir=work_dir, data_dir=data_dir, ready_timeout=40)
 
 
 def stop_gui(h):
@@ -118,14 +149,13 @@ def wait_prj_opened(c, names, max_wait=8):
     return last
 
 
-def fast_read_after_open(c, names, window=0.1):
-    """I-81 专项：打开 A → 打开 B 后**不等去抖窗口**（≤100ms）回读 prj `opened-files`。
+def fast_read_after_open(c, names, window=2.0):
+    """落库收敛采样：打开文件后逐次回读 prj `opened-files`，直到同时含 names 或超时。
 
-    断言目标 = 该键在窗口内**已同时包含 A 与 B**（= 打开即「立即全量写」）。
-    反例（旧实现，I-81 原文）：`openFileInto` 同时发 ① legacy 单元素写
-    `saveOpenedFile(path)` → `{opened_files:[path]}` 即时落库；② 去抖 300ms 的全量写
-    → 本窗口内每次读到的都只有**最后打开的那一个**（`[B]`）→ 断言必失败。
     返回 (是否命中, 逐次采样 [[t_ms, 读值], ...])，采样值即原始证据。
+    「打开即全量写」的**即时性**改由 `wait_save_issued`（页内 `gui.ui.save` 请求 spy，
+    与 persist 往返解耦）判定；本函数只负责「最终落库收敛」这一异步面（宽松有界，非断言
+    放宽：旧实现即使去抖 300ms 最终也会写出全量，但它会在即时性判据上被抓住）。
     """
     t0 = time.time()
     samples = []
@@ -139,19 +169,94 @@ def fast_read_after_open(c, names, window=0.1):
         time.sleep(0.02)
 
 
+def tabs_now(c):
+    """当前 preview 底部页签名列表（DOM 顺序 = 页签打开顺序）。"""
+    return _loads_deep(c.eval("""(() => {
+      const els = [...document.querySelectorAll('%s')];
+      return JSON.stringify(els.map(e => e.textContent.trim()));
+    })()""" % TAB_NAME)) or []
+
+
 def wait_tabs(c, names, max_wait=15):
     """等待 preview 底部页签栏出现 names 中的全部文件名；返回当前页签名列表。"""
     tabs = []
     deadline = time.time() + max_wait
     while time.time() < deadline:
-        tabs = _loads_deep(c.eval("""(() => {
-          const els = [...document.querySelectorAll('%s')];
-          return JSON.stringify(els.map(e => e.textContent.trim()));
-        })()""" % TAB_NAME)) or []
+        tabs = tabs_now(c)
         if all(any(n in t for t in tabs) for n in names):
             return tabs
         time.sleep(0.5)
     return tabs
+
+
+def open_file_until(c, work_dir, name, max_wait=20):
+    """发 `file-open` 直到该文件页签出现（**逐文件**幂等重发）。
+
+    必要性（2026-11-07 实跑定位）：`/ping ready`/`.panel-inner` 只代表宿主与主聊天面板就绪，
+    预览区 CodeView 是独立懒加载 chunk，负载下可晚数秒挂载；**挂载前发出的 `file-open` 没有
+    订阅者，被 mq 直接丢弃**（无任何落库/页签副作用）。实测两个后果：
+      · I-81 采样连续 `[]`（两事件都丢）；
+      · 边界用例只开出后一个 → 落库 `['b.txt']`（前一个 a 丢）。
+    逐文件重发既修复丢弃，又**保持打开顺序**（a 确认出现后才发 b）。
+    """
+    path = os.path.join(work_dir, name).replace("\\", "/")
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        if any(name in t for t in tabs_now(c)):
+            return
+        c.mq_emit("file-open", {"path": path})
+        time.sleep(0.15)
+    raise TestError("CodeView 未就绪：%ss 内 file-open(%s) 未产生页签（订阅缺失/视图未挂载）"
+                    % (max_wait, name))
+
+
+def install_save_spy(c):
+    """安装/清空 `gui.ui.save` 请求 spy（返回 'ok'）。"""
+    c.eval(SAVE_SPY_JS)
+
+
+def save_spy(c):
+    """读取 spy 记录：list[{t(页面 Date.now), files}]。"""
+    return _loads_deep(c.eval("JSON.stringify(window.__ckSaveSpy||[])")) or []
+
+
+def wait_save_issued(c, names, max_wait=1.0):
+    """有界等待 spy 中出现一条 `opened_files` **同时含** names 的请求；返回该记录或 None。
+
+    轮询窗口放宽到 1s 只是容忍**测试通道 eval**在重载下变慢；即时性判据用的是页内时钟
+    （`__ckEmitAt` → spy.t），与轮询耗时无关，故不会放宽 ≤100ms 的断言。
+    """
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        for r in save_spy(c):
+            files = [str(x) for x in (r.get("files") or [])]
+            if all(any(n in f for f in files) for n in names):
+                return r
+        time.sleep(0.01)
+    return None
+
+
+def wait_prj_opened_stable(c, expected, max_wait=10, hold=1.0):
+    """等待 prj `opened-files` **稳定等于** expected（连续 hold 秒一致才返回）。
+
+    为什么要「稳定」而非「一旦命中即返回」：启动恢复期多个全量写并发落库时，
+    瞬态可能先出现正确的 [a,b]，随后被更早发出、更晚落地的 [a] 覆盖。
+    只读一次会把瞬态当收敛态（P6 断言失效），故要求期望值**持续**保持。
+    """
+    expected = list(expected)
+    deadline = time.time() + max_wait
+    since = None
+    last = []
+    while time.time() < deadline:
+        last = prj_opened_files(c)
+        if last == expected:
+            since = since or time.time()
+            if time.time() - since >= hold:
+                return last
+        else:
+            since = None
+        time.sleep(0.25)
+    return last
 
 
 def main():
@@ -159,26 +264,55 @@ def main():
     proc = start_gui()
     try:
         c = wait_port(PORT)
-        # 打开两个文件（file-open → CodeView tab + SaveOpenedFiles 持久化）
-        for name in ("a.txt", "b.txt"):
-            c.mq_emit("file-open", {"path": os.path.join(WORK_DIR, name).replace("\\", "/")})
-        # I-81 专项（2026-09-17）：连开两文件后**不等待去抖窗口**（≤100ms）即回读 prj `opened-files`，
-        # 断言窗口内**已同时**含 a.txt 与 b.txt（= 打开即全量写）。旧实现（单元素写 + 300ms 去抖全量写）
-        # 在此窗口内只会读到 [b.txt] → 本断言必失败，故它正是 I-81 的回归判据。
-        ok81, samples = fast_read_after_open(c, ("a.txt", "b.txt"), window=0.1)
-        print("I-81 立即全量写回读采样(t_ms, prj opened-files): %s" % json.dumps(samples, ensure_ascii=False))
+        install_save_spy(c)
+        # 逐文件确认打开（CodeView 懒挂载期间发出的 file-open 会被丢弃；见 open_file_until）。
+        # 先开 a 并等其首写落库，把「首写队列/往返」从 I-81 的被测窗口排除。
+        open_file_until(c, WORK_DIR, "a.txt")
+        of_a = wait_prj_opened_stable(c, ["a.txt"], max_wait=10, hold=0.5)
+        if of_a != ["a.txt"]:
+            raise TestError("I-81 前置：单独打开 a.txt 后落库应为 ['a.txt']，实际=%r" % of_a)
+
+        # I-81 专项（2026-09-17；2026-11-07 加固）：打开 b 后**立即**发出含 a+b 的**全量**写。
+        # 判据分两层（均按期望值，不对实现反推）：
+        #   ① 即时性（≤100ms）：页内时钟测 `gui.ui.save{opened_files}` **请求发出**延迟——
+        #      旧实现（legacy 单元素写 `[b]` 即时 + 300ms 去抖全量写）此窗口内只会发出 `[b]`
+        #      或干脆没有全量请求 → 必失败；
+        #   ② 收敛性：该全量写最终落库为 [a.txt, b.txt]（异步面，有界等待）。
+        b_path = os.path.join(WORK_DIR, "b.txt").replace("\\", "/")
+        hit = None
+        lat_ms = None
+        for attempt in (1, 2):  # 仅容忍极端重载下的事件丢失（重发不改变判据）
+            install_save_spy(c)
+            c.eval("window.__ckEmitAt=Date.now(); 'ok'")
+            c.mq_emit("file-open", {"path": b_path})
+            hit = wait_save_issued(c, ("a.txt", "b.txt"))
+            emit_at = int(_loads_deep(c.eval("window.__ckEmitAt")) or 0)
+            if hit and emit_at:
+                lat_ms = int(hit["t"]) - emit_at
+                break
+            time.sleep(0.3)
+        if not hit:
+            raise TestError("I-81 回归：打开 b.txt 后未发出含 a.txt+b.txt 的 gui.ui.save 全量写"
+                            "（旧去抖/单元素写；spy=%r）" % (save_spy(c),))
+        print("I-81 全量写请求发出延迟：%dms · files=%r" % (lat_ms, hit.get("files")))
+        if lat_ms > 100:
+            raise TestError("I-81 回归：全量写请求发出延迟 %dms > 100ms（疑似退回 300ms 去抖）" % lat_ms)
+        ok81, samples = fast_read_after_open(c, ("a.txt", "b.txt"), window=2.0)
+        print("I-81 落库收敛采样(t_ms, prj opened-files): %s" % json.dumps(samples, ensure_ascii=False))
         if not ok81:
-            raise TestError("I-81 回归：打开 a.txt/b.txt 后 ≤100ms 内 prj opened-files 未同时含两者（采样 %s）" % samples)
-        print("I-81 断言通过：%.1fms 内已同时落库 a.txt/b.txt（旧单元素写会退化为 [b.txt]）" % samples[-1][0])
-        time.sleep(2.5)
+            raise TestError("I-81 回归：打开 a.txt/b.txt 后 prj opened-files 未收敛为两者（采样 %s）" % samples)
+        print("I-81 断言通过：请求 %dms 内发出全量写，落库收敛为 a.txt+b.txt" % lat_ms)
+        time.sleep(1.0)
         tabs1 = wait_tabs(c, ["a.txt", "b.txt"])
-        if not (any("a.txt" in t for t in tabs1) and any("b.txt" in t for t in tabs1)):
-            raise TestError(f"打开后 tab 未出现: {tabs1}")
+        # 期望值（不从实现反推）：打开顺序 a.txt → b.txt ⇒ 页签名与顺序 = ['a.txt', 'b.txt']。
+        if tabs1 != ["a.txt", "b.txt"]:
+            raise TestError(f"打开后 tab 名/顺序不符（期望 ['a.txt','b.txt']）：{tabs1}")
         print(f"打开文件 tab: {tabs1}")
-        # A 落库回读（P6 补齐）：opened-files 键确实写入 prj 库（tab 名只是 DOM 现象）
-        of1 = wait_prj_opened(c, ["a.txt", "b.txt"])
-        if not all(any(n in p for p in of1) for n in ("a.txt", "b.txt")):
-            raise TestError(f"prj opened-files 未落库 a.txt/b.txt: {of1}")
+        # A 落库回读（P6 补齐）：opened-files 键确实写入 prj 库（tab 名只是 DOM 现象）。
+        # 期望值 = 打开顺序 + 全量列表（workdir 相对逻辑路径），逐项逐序比对。
+        of1 = wait_prj_opened_stable(c, ["a.txt", "b.txt"])
+        if of1 != ["a.txt", "b.txt"]:
+            raise TestError(f"prj opened-files 未按 [a.txt,b.txt] 落库：{of1}")
         print(f"prj opened-files 落库回读: {of1}")
     finally:
         stop_gui(proc)
@@ -188,21 +322,68 @@ def main():
     try:
         c2 = wait_port(PORT)
         tabs2 = wait_tabs(c2, ["a.txt", "b.txt"])
-        if not (any("a.txt" in t for t in tabs2) and any("b.txt" in t for t in tabs2)):
-            raise TestError(f"重启后 tab 未恢复: {tabs2}")
+        # 期望值：恢复的页签名与**顺序** == 重启前落库的打开顺序 ['a.txt', 'b.txt']。
+        if tabs2 != ["a.txt", "b.txt"]:
+            raise TestError(f"重启后 tab 名/顺序不符（期望 ['a.txt','b.txt']）：{tabs2}")
         print(f"重启后恢复 tab: {tabs2}")
-        # A 落库回读（重启后）：同一数据根下 opened-files 最终仍含两文件（tab 恢复的持久化依据）。
-        # 瞬态留证：启动恢复期 legacy 单元素写（saveOpenedFile）可能与去抖全量写交错 → first 可能只 1 项。
+        # A 落库回读（重启后）：同一数据根下 opened-files **稳定**为全量两文件（tab 恢复的持久化依据）。
+        # 首读留证：启动恢复期逐文件全量写并发时，「先写 [a]」可能后落地覆盖 [a,b]（本次实跑缺陷），
+        # 故这里要求期望值持续 hold 秒，而不是瞬态命中即放行。
         first2 = prj_opened_files(c2)
-        of2 = wait_prj_opened(c2, ["a.txt", "b.txt"])
-        if not all(any(n in p for p in of2) for n in ("a.txt", "b.txt")):
-            raise TestError(f"重启后 prj opened-files 丢失 a.txt/b.txt: first={first2} final={of2}")
+        of2 = wait_prj_opened_stable(c2, ["a.txt", "b.txt"])
+        if of2 != ["a.txt", "b.txt"]:
+            raise TestError(f"重启后 prj opened-files 丢失/乱序（期望 ['a.txt','b.txt']）：first={first2} final={of2}")
         print(f"重启后 prj opened-files 回读: first={first2} final={of2}")
-        print("\nL88 重启恢复：通过")
-        return 0
     finally:
         stop_gui(proc2)
         shutil.rmtree(BASE, ignore_errors=True)
+
+    # 边界：恢复时缺失文件跳过（独立前置：先正常落库 [a,b]，再删 b 重启）。
+    missing_file_skip_case()
+    print("\nL88 重启恢复：通过")
+    return 0
+
+
+def missing_file_skip_case():
+    """边界：已落库的页签中某个文件在重启前被删除 → 恢复时**跳过该文件**且落库收敛为现存项。
+
+    期望值（产品口径 `callLoadInitData`：`os.Stat` 不存在的路径不恢复）：
+      · 页签只恢复 a.txt（不得因持久化里仍有 b.txt 而出现空/错误页签）；
+      · prj `opened-files` 最终 = ['a.txt']（恢复时全量写把已删项收敛掉，不留死路径）。
+    """
+    prepare_ws(BASE_SKIP, WORK_SKIP, DATA_SKIP)
+    h1 = start_gui(WORK_SKIP, DATA_SKIP)
+    try:
+        c = wait_port(PORT)
+        # 逐文件确认打开（懒挂载期间的 file-open 会丢；实测丢前一个 → 落库退化 ['b.txt']）
+        open_file_until(c, WORK_SKIP, "a.txt")
+        open_file_until(c, WORK_SKIP, "b.txt")
+        of = wait_prj_opened_stable(c, ["a.txt", "b.txt"])
+        if of != ["a.txt", "b.txt"]:
+            raise TestError(f"边界前置：落库应为 ['a.txt','b.txt']，实际={of}")
+    finally:
+        stop_gui(h1)
+
+    b_path = os.path.join(WORK_SKIP, "b.txt")
+    if not os.path.exists(b_path):
+        raise TestError("边界前置：b.txt 应存在")
+    os.remove(b_path)
+
+    h2 = start_gui(WORK_SKIP, DATA_SKIP)
+    try:
+        c2 = wait_port(PORT)
+        tabs = wait_tabs(c2, ["a.txt"])
+        time.sleep(1.5)  # 覆盖可能的迟发恢复（若实现错误地恢复了 b，此窗口内必然出现）
+        tabs = tabs_now(c2)
+        if tabs != ["a.txt"]:
+            raise TestError(f"缺失文件应跳过（期望仅 ['a.txt']）：{tabs}")
+        of2 = wait_prj_opened_stable(c2, ["a.txt"])
+        if of2 != ["a.txt"]:
+            raise TestError(f"缺失文件应从 opened-files 收敛掉（期望 ['a.txt']）：{of2}")
+        print(f"边界（缺失文件跳过）：删除 b.txt 后重启 → tab={tabs} · opened-files={of2}")
+    finally:
+        stop_gui(h2)
+        shutil.rmtree(BASE_SKIP, ignore_errors=True)
 
 
 if __name__ == "__main__":

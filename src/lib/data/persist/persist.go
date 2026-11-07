@@ -101,7 +101,7 @@ var dataReqSubjects = []string{
 	// 知识库域（§3.3）
 	msgkeys.TopicDataKnowledgeRoot, msgkeys.TopicDataKnowledgeList, msgkeys.TopicDataKnowledgeRead, msgkeys.TopicDataKnowledgeSave,
 	msgkeys.TopicDataKnowledgeCreate, msgkeys.TopicDataKnowledgeDelete, msgkeys.TopicDataKnowledgeRename, msgkeys.TopicDataKnowledgeMkdir,
-	msgkeys.TopicDataKnowledgeRmdir, msgkeys.TopicDataKnowledgeRenameDir,
+	msgkeys.TopicDataKnowledgeRmdir, msgkeys.TopicDataKnowledgeRenameDir, msgkeys.TopicDataKnowledgeImport,
 	// 记忆库域（42 §2 (27)）：类别清单 + 全文读写（save/delete 后广播 data-memory-refresh）
 	msgkeys.TopicDataMemoryList, msgkeys.TopicDataMemoryRead, msgkeys.TopicDataMemorySave, msgkeys.TopicDataMemoryDelete,
 	// 记忆提取进度专用表（OP-05/06，2026-10-06）：(会话, 类别) → 最后已成功提取的 turn（prjusr 表 memory_extract）：
@@ -146,6 +146,14 @@ type Service struct {
 	// reconciled 记录已完成 `dialogs/` 目录对账的 prjusr 路径（每路径一次，失败会移除以便下次重试；
 	// 见 reconcile.go）。
 	reconciled sync.Map
+	// reconcileWG 跟踪在飞的 `dialogs/` 对账 goroutine（onInstanceRegister 异步触发）。
+	// Stop 等待其结束：关闭数据层 / 删临时目录前不得再有对账重新打开 prjusr 连接
+	// （否则 Windows 下文件被占用，TempDir RemoveAll 失败）。
+	reconcileWG sync.WaitGroup
+	// reconcileMu 守护 stopping 与 reconcileWG.Add 的先后关系：Stop 置位后不再接受新对账，
+	// 避免 Add 与 Wait 并发（WaitGroup 用法约束）。
+	reconcileMu sync.Mutex
+	stopping    bool
 	// sweepStop 心跳超时扫描停止函数（分离形态非空；默认构建 startStaleSweep 返回 nil，
 	// 见 sweep_split.go / sweep_inprocess.go——desktop 不判超时）。
 	sweepStop func()
@@ -197,6 +205,10 @@ func (s *Service) Start() error {
 	if s.started {
 		return nil
 	}
+	// 允许 Stop 后重新 Start：恢复接收异步对账（见 Stop 的 draining 逻辑）。
+	s.reconcileMu.Lock()
+	s.stopping = false
+	s.reconcileMu.Unlock()
 	// data-* 请求面：相对主题 data-<domain>-<op> 逐条精确订阅（A2 正名；refresh 广播不订阅）
 	for _, subj := range dataReqSubjects {
 		sh, err := s.on(subj, s.route)
@@ -236,7 +248,8 @@ func (s *Service) on(subject string, h func(subject string, payload []byte)) (mq
 	})
 }
 
-// Stop 退订全部（并停心跳超时扫描）。
+// Stop 退订全部、停心跳超时扫描，并等待在飞的 `dialogs/` 对账结束（关闭语义完整：返回后
+// 本服务不再有 goroutine 触及数据层连接，调用方方可安全关闭库 / 删除数据目录）。
 func (s *Service) Stop() {
 	s.mu.Lock()
 	stopSweep := s.sweepStop
@@ -244,6 +257,13 @@ func (s *Service) Stop() {
 	s.unsubscribeAll()
 	s.started = false
 	s.mu.Unlock()
+
+	// 先置 draining（不再接受新对账 → Add 不会与 Wait 并发），再等在飞对账结束。
+	s.reconcileMu.Lock()
+	s.stopping = true
+	s.reconcileMu.Unlock()
+	s.reconcileWG.Wait()
+
 	if stopSweep != nil {
 		// 分离形态：停扫描并等其退出。不在锁内调用——扫描侧 sweepStale 需取 s.mu。
 		stopSweep()
@@ -277,7 +297,18 @@ func (s *Service) onInstanceRegister(_ string, payload []byte) {
 	s.View.Register(req.InstanceID, req.WorkDir, req.DataDir)
 	// SESSION-COMP-1 §8：`dialogs/` 目录对账（补齐半完成态的目录行 / 清失效行）。
 	// 异步执行：可能涉及多库，不阻塞 instance-register 的应答。
-	go s.reconcileDialogs(req.InstanceID)
+	// 由 reconcileWG 跟踪，Stop 会等待结束（draining 后不再启动新对账）。
+	s.reconcileMu.Lock()
+	if s.stopping {
+		s.reconcileMu.Unlock()
+		return
+	}
+	s.reconcileWG.Add(1)
+	s.reconcileMu.Unlock()
+	go func(instanceID string) {
+		defer s.reconcileWG.Done()
+		s.reconcileDialogs(instanceID)
+	}(req.InstanceID)
 }
 
 // 实例标识符上限（与 config 包 MaxNameChars 同源）与路径上限（MaxPathChars 同源）。

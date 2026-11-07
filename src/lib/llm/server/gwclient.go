@@ -10,9 +10,9 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/lsong98sh/chonkpilot-agent/gateway"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
-	"github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // ToolDef 是 LLM 工具定义（对齐 21-llm-server FetchTools 映射）。
@@ -104,7 +104,9 @@ func (g *gwClient) call(ctx context.Context, subject string, c mcpgateway.Contex
 }
 
 // Call 工具调用：发 mcp-tools-call。
-// 返回 (result, taskID, err)：taskID 非空 = 转异步（structuredContent.status=="pending"，调用方登记挂起）。
+// 返回 (result, taskID, err)：taskID 非空 = 已转异步（structuredContent.status 为
+// "pending"（转后台）或 "awaiting"（manual/never 到超时点立即返回待裁决），调用方登记挂起）。
+// **result 原样保留**（上层可读 status/options/timeout_s），不得把 awaiting 当同步终态结果。
 // instance 为空 = 异常（R-11 二次升级：调用上下文必带 instance，为空即顶层错误、不下发）。
 func (g *gwClient) Call(ctx context.Context, name string, args map[string]any, c mcpgateway.Context) (map[string]any, string, error) {
 	if strings.TrimSpace(c.InstanceID) == "" {
@@ -119,7 +121,8 @@ func (g *gwClient) Call(ctx context.Context, name string, args map[string]any, c
 		return nil, "", err
 	}
 	if sc, ok := res["structuredContent"].(map[string]any); ok {
-		if st, _ := sc["status"].(string); st == "pending" {
+		switch st, _ := sc["status"].(string); st {
+		case "pending", "awaiting":
 			tid, _ := sc["task_id"].(string)
 			return res, tid, nil
 		}

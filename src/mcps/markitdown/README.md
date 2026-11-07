@@ -21,7 +21,7 @@ cd src\mcps\markitdown
 冻结产物运行（随产品投放，见 §5）：
 
 ```powershell
-.\dist\desktop\mcps\markitdown\markitdown-mcp.exe
+.\dist\mcps\markitdown\markitdown-mcp.exe
 ```
 
 | 参数 | 默认 | 说明 |
@@ -50,7 +50,7 @@ cd src\mcps\markitdown
   "token": "3f2c…（32 位十六进制，每次启动随机）",
   "version": "0.1.0",
   "started_at": "2026-09-29T10:00:00+08:00",
-  "exe_dir": "…\\dist\\desktop\\mcps\\markitdown"
+  "exe_dir": "…\\dist\\mcps\\markitdown"
 }
 ```
 
@@ -184,9 +184,9 @@ print(json.load(urllib.request.urlopen(req)))
 
 - **独立脚本**（PyInstaller 冻结），**不接入** `build-desktop.ps1` 的必经路径（冻结慢）。
 - **冻结模式**：**默认 `--onedir`**（目录模式 `exe` + `_internal/`，冷启动快）——脚本会把
-  PyInstaller 产出的子目录**平铺**到 `dist\desktop\mcps\markitdown\`（`markitdown-mcp.exe` 落在该目录
+  PyInstaller 产出的子目录**平铺**到 `dist\mcps\markitdown\`（`markitdown-mcp.exe` 落在该目录
   **根下**，状态文件 = 与 exe 同目录，保持投放布局一致）；`-Onefile` 走单文件模式（分发方便，但冷启动慢）。
-- 产物：`dist\desktop\mcps\markitdown\` 下的 `markitdown-mcp.exe`（onedir 另含 `_internal\`）
+- 产物：`dist\mcps\markitdown\` 下的 `markitdown-mcp.exe`（onedir 另含 `_internal\`）
   + `README.md` + `THIRD-PARTY-NOTICES.txt`。**投放时 exe 与 `_internal\` 须一并保留相对布局**。
 - 前置：已创建 `.venv` 并 `pip install -r requirements.txt`。
 - **实测（2026-09-29，Python 3.14，本机，onedir 默认产物）**：目录总计 **≈168.2 MB**（1112 个文件；

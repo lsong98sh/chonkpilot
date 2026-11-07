@@ -29,8 +29,9 @@
         B: 阈值极大 → 快照**无** `[已压缩早前对话]` 且 mock 请求数 == 轮数（未发生摘要调用）；
            阈值极小 → 快照**出现** `[已压缩早前对话]`（压缩已回写快照）+ mock 收到**摘要请求**
            （n_requests = 轮数+1，`/lastbody` 的末条 user == 摘要提示词）。
-           SESSION-1（2026-10-23）：压缩内建 = 组装后按 `Usage.History > keep_full_max_tokens +
-           compress_token_threshold` 异步触发（原「每轮终态都触发」已废止）。
+           SESSION-1（2026-10-23）：压缩内建 = 组装时按 `Usage.History > keep_full_max_tokens +
+           compress_token_threshold` 判定阈值，**本轮终态快照写完后**异步启动（2026-11-07 修正：
+           启动点后移到终态，避免摘要回填被本轮终态写快照覆盖 / CAS 丢弃）。
            扩展（MEMORY-COMPRESS-1）：**提取跟随压缩**——compress 触发 + memory.enabled=true 下
            压缩发生 → 记忆提取写回（文件变化 + `data-memory-refresh` + I-78 一致性）。
   A/B-5 `capability/system/summary.md`（data-prompt-{save,load,delete}，key=summary_prompt）
@@ -366,6 +367,14 @@ def main():
         r = c.req("data-session-context", {"data": {"session_id": sid, "include_snapshot": "true"}})
         return (r.get("messages") or []) if isinstance(r, dict) else []
 
+    def live_msgs(sid):
+        """会话原始消息（**不**走快照替换；include_snapshot 缺省 false → 全量历史）。
+
+        压缩只变换快照、不删会话消息：用于断言「原会话轮次未丢」。
+        """
+        r = c.req("data-session-context", {"data": {"session_id": sid}})
+        return (r.get("messages") or []) if isinstance(r, dict) else []
+
     def compress_mark(sid):
         for x in snapshot_msgs(sid):
             if isinstance(x, dict) and x.get("role") == "system" \
@@ -373,21 +382,32 @@ def main():
                 return str(x.get("content"))
         return ""
 
-    def wait_compress(sid, max_wait=25):
+    def wait_compress(sid, max_wait=60):
+        """轮询会话快照是否已出现压缩标记（真实可观测条件：data-session-context 的 system 快照）。
+
+        压缩是**后台异步**（`compress.go:compressWorker`，单次摘要 5min 上限 + 2 次退避重试），
+        批跑负载下「mock 已收到摘要请求」与「快照回写可见」可能相隔数十秒 → 固定 20/25s 窗口
+        会误红（2026-11-07 全量 88 套 A/B-5 定位）。改为 60s 有界轮询 + 200ms 间隔；超时返回空串
+        由调用方带现场快照报错（断言不放宽）。
+        """
         deadline = time.time() + max_wait
         while time.time() < deadline:
             mk = compress_mark(sid)
             if mk:
                 return mk
-            time.sleep(0.6)
+            time.sleep(0.2)
         return ""
 
-    def compress_and_capture(sid, first_q, second_q, marker, wait_first=20, wait_second=25):
+    def compress_and_capture(sid, first_q, second_q, marker, wait_first=30, wait_second=60):
         """跑轮次直到「压缩摘要请求」出现，返回 (压缩快照标记, 摘要请求末条 user, 实际轮数)。
 
         压缩在**每轮终态**按阈值异步触发（`keep_full_max_tokens` + `compress_token_threshold`
         压到 1 时通常第 1 轮即触发），且快照回写滞后于请求 → **以 mock 侧为准**：
         摘要请求 = 最近一次请求的末条 user 含 `marker`（摘要提示词），不再假设它是「最后一次请求」。
+
+        时序要点（批跑负载）：摘要请求出现后必须继续等**同一轮压缩**的回填（`wait_compress` 60s）；
+        期间**不得**再驱动新一轮——新一轮会推进 `snapshot_turn`，使在飞压缩的 CAS 回填被按设计丢弃
+        （`compress.go:logCompressCommit`「CAS 丢弃」），测试反而永远看不到快照。
         """
         def wait_summary(max_wait):
             end = time.time() + max_wait
@@ -395,17 +415,16 @@ def main():
                 t = last_request_text()
                 if marker in t:
                     return t
-                time.sleep(0.6)
+                time.sleep(0.2)
             return ""
 
         run_turn(first_q, sid=sid, idx=1)
         t = wait_summary(wait_first)
         if t:
-            # 快照回写滞后于摘要请求（负载高时可 >10s）→ 2026-11-04 由 10s 放宽到 20s
-            return wait_compress(sid, max_wait=20), t, 1
+            return wait_compress(sid, max_wait=wait_second), t, 1
         run_turn(second_q, sid=sid, idx=2)
         t = wait_summary(wait_second)
-        return wait_compress(sid, max_wait=20), t, 2
+        return wait_compress(sid, max_wait=wait_second), t, 2
 
     # ── 前端 DOM 助手（仅 UI-6 用例）────────────────────────────
 
@@ -768,12 +787,22 @@ return {cat:((tn?tn.textContent:(td?td.textContent:''))||'').trim(),
                                                    DEFAULT_SUMMARY)
             extra = 0
             if not mk:
-                # 补轮再观测（2026-11-04 批跑定位：异步压缩管线偶发滞后超出等待窗，属观测窗口
-                # 问题非断言放宽——阈值=1 → 每轮终态必触发压缩；同 case_category_gate 补轮先例）
+                if tail:
+                    # 摘要请求已发出 → 压缩正在回填途中。此时**禁止**补轮：新一轮会推进
+                    # snapshot_turn，按设计使在飞压缩 CAS 丢弃（compress.go:logCompressCommit），
+                    # 测试将永远观测不到快照（2026-11-07 全量 88 套 A/B-5 误红根因）。
+                    raise TestError("摘要请求已发生但 60s 内未见压缩快照（不补轮，避免推进 snapshot_turn）："
+                                    "diag=%s" % json.dumps({
+                                        "turns": turns, "nreq": nreq(),
+                                        "tail_head": tail[:100],
+                                        "mark": compress_mark(sid_yes)[:120],
+                                        "snapshot": str(snapshot_msgs(sid_yes)[:2])[:240],
+                                    }, ensure_ascii=False)[:600])
+                # 从未观测到摘要请求 → 本轮可能未触发压缩（观测窗口内无压缩在飞）→ 补一轮
                 arm(("turn-start", "llm-complete", "llm-error"))
                 run_turn("压缩阈值-极小-补轮", sid=sid_yes, idx=turns + 1)
                 extra = 1
-                mk = wait_compress(sid_yes, max_wait=25)
+                mk = wait_compress(sid_yes)
                 if not tail:
                     tail = last_request_text()
             n_yes = nreq()
@@ -790,8 +819,25 @@ return {cat:((tn?tn.textContent:(td?td.textContent:''))||'').trim(),
                                 % (n_yes, turns + 1 + extra, turns, " + 补轮" if extra else ""))
             if DEFAULT_SUMMARY not in tail:
                 raise TestError("摘要请求（system/末条 user）未含摘要提示词：%r" % tail[:200])
+            # 快照摘要必须携带**摘要内容**（mock 回显摘要要求 → 正文含默认提示词），不是空壳标记。
+            if DEFAULT_SUMMARY not in mk:
+                raise TestError("压缩快照摘要正文未来自摘要请求：%r" % mk[:200])
+            # 原会话轮次未丢：压缩只变换快照，会话消息表仍保留两轮（include_snapshot=false 回读）。
+            live_texts = [str(m.get("content") or "") for m in live_msgs(sid_yes) if isinstance(m, dict)]
+            for q in ("压缩阈值-极小-第1轮", "压缩阈值-极小-第2轮"):
+                if not any(q in text for text in live_texts):
+                    raise TestError("压缩后原会话轮次丢失（%s）：diag=%s"
+                                    % (q, json.dumps({"n": len(live_texts),
+                                                       "head": [t[:40] for t in live_texts[:6]]},
+                                                      ensure_ascii=False)[:400]))
+            # 触发轮消息必须仍在**压缩快照**内（终态后启动压缩时本轮已落快照，不能被摘要覆盖掉）。
+            snap_texts = [str(m.get("content") or "") for m in snapshot_msgs(sid_yes)
+                          if isinstance(m, dict)]
+            if not any("压缩阈值-极小-第2轮" in text for text in snap_texts):
+                raise TestError("压缩快照丢失触发轮消息（本轮应保留在保留段）：%r"
+                                % [t[:40] for t in snap_texts[:6]])
             _evi("compress-B-triggered", requests=n_yes, turns=turns, snapshot_mark=mk[:200],
-                 summary_request_text=tail[:120])
+                 summary_request_text=tail[:120], live_turns=len(live_texts))
             # ── 扩展（MEMORY-COMPRESS-1，2026-10-31）：提取**跟随压缩** ──────────────
             # 默认 trigger=compress 下轮末不提取（A/B-2 B2 已证）；此处证明「压缩时提取」：
             # 开启记忆（min-turn-tokens=1；压缩路径经既有 memory.flush force=true，
@@ -814,7 +860,7 @@ return {cat:((tn?tn.textContent:(td?td.textContent:''))||'').trim(),
             mk_m = wait_compress(sid_m, max_wait=8)
             if not mk_m:
                 run_turn("压缩时沉淀-第2轮", sid=sid_m, idx=2)
-                mk_m = wait_compress(sid_m, max_wait=25)
+                mk_m = wait_compress(sid_m)   # 后台压缩回填：60s 有界轮询（勿在途中补轮 → CAS 丢弃）
             if not mk_m:
                 raise TestError("跟随压缩段未触发压缩（无法验证提取跟随压缩）")
             cats_m = list(MEM_SENT.keys())
@@ -863,10 +909,19 @@ return {cat:((tn?tn.textContent:(td?td.textContent:''))||'').trim(),
                 sid1 = new_session()
                 mk1, tail1, turns1 = compress_and_capture(sid1, "总结提示词哨兵-第1轮", "总结提示词哨兵-第2轮", SENT)
                 if not mk1:
-                    # 补轮再观测（同 A/B-4 B 段：异步压缩管线偶发滞后；阈值=1 → 每轮必触发）
+                    if tail1:
+                        # 摘要请求已发出 → 压缩在回填途中；补轮会推进 snapshot_turn → CAS 丢弃。
+                        raise TestError("哨兵用例摘要请求已发生但 60s 内未见压缩快照（不补轮）：diag=%s"
+                                        % json.dumps({
+                                            "turns": turns1, "nreq": nreq(),
+                                            "tail_head": tail1[:120],
+                                            "mark": compress_mark(sid1)[:120],
+                                            "snapshot_head": str(snapshot_msgs(sid1)[:2])[:200],
+                                        }, ensure_ascii=False)[:600])
+                    # 从未观测到摘要请求 → 再补一轮（与 A/B-4 同口径）
                     arm(("turn-start", "llm-complete", "llm-error"))
                     run_turn("总结提示词哨兵-补轮", sid=sid1, idx=turns1 + 1)
-                    mk1 = wait_compress(sid1, max_wait=25)
+                    mk1 = wait_compress(sid1)
                     if not tail1:
                         tail1 = last_request_text()
                 if not mk1:
@@ -885,6 +940,8 @@ return {cat:((tn?tn.textContent:(td?td.textContent:''))||'').trim(),
                                         "mark": compress_mark(sid1)[:120],
                                         "file": os.path.exists(SUMMARY_FILE),
                                     }, ensure_ascii=False)[:600]))
+                if SENT not in mk1:
+                    raise TestError("压缩快照摘要正文不含哨兵（未使用自定义摘要提示词）：%r" % mk1[:200])
                 _evi("summary-prompt-B", requests=nreq(), turns=turns1, text=tail1[:160])
                 # A/B（回落）：删除该键 → 回读默认；再压缩 → 末条 user == 默认
                 c.req("data-prompt-delete", {"id": "summary_prompt"})
@@ -900,16 +957,25 @@ return {cat:((tn?tn.textContent:(td?td.textContent:''))||'').trim(),
                 mk2, tail2, turns2 = compress_and_capture(sid2, "总结提示词回落-第1轮", "总结提示词回落-第2轮",
                                                           DEFAULT_SUMMARY)
                 if not mk2:
-                    # 补轮再观测（同上：异步压缩管线偶发滞后；阈值=1 → 每轮必触发）
+                    if tail2:
+                        raise TestError("回落用例摘要请求已发生但 60s 内未见压缩快照（不补轮）：diag=%s"
+                                        % json.dumps({
+                                            "turns": turns2, "nreq": nreq(),
+                                            "tail_head": tail2[:120],
+                                            "mark": compress_mark(sid2)[:120],
+                                        }, ensure_ascii=False)[:600])
+                    # 从未观测到摘要请求 → 再补一轮（与 A/B-4 同口径）
                     arm(("turn-start", "llm-complete", "llm-error"))
                     run_turn("总结提示词回落-补轮", sid=sid2, idx=turns2 + 1)
-                    mk2 = wait_compress(sid2, max_wait=25)
+                    mk2 = wait_compress(sid2)
                     if not tail2:
                         tail2 = last_request_text()
                 if not mk2:
                     raise TestError("回落用例未触发压缩（无法验证摘要请求）")
                 if DEFAULT_SUMMARY not in tail2 or SENT in tail2:
                     raise TestError("删除后摘要请求末条 user 未回落内置默认：%r" % tail2[:200])
+                if DEFAULT_SUMMARY not in mk2 or SENT in mk2:
+                    raise TestError("删除后压缩快照摘要正文未回落内置默认：%r" % mk2[:200])
                 _evi("summary-prompt-B-fallback", requests=nreq(), turns=turns2, text=tail2[:160])
             finally:
                 # 清理项目级覆盖文件（落盘在隔离 work-dir 内，双保险）

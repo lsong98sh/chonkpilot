@@ -5,18 +5,24 @@
 用法（默认输入全部**以本脚本位置为基准**解析成绝对路径 → 不带参数即可直接跑通）:
     python run_mcp_server_tests.py
 
-默认输入（四项均可经同名参数覆盖；**传入的相对路径按当前工作目录**解析）:
+默认输入（各项均可经同名参数覆盖；**传入的相对路径按当前工作目录**解析）:
     --server-exe  <repo>\\dist\\other\\chonkpilot-mcp-server.exe              被测产物
     --root        <repo>\\src\\initdata\\capability                        skills/prompts/resources 契约源（扁平）
     --tools-dir   <repo>\\src\\initdata\\capability\\tools                  `<cat>/*.tool.md` 工具契约源
-    --exec-dir    <repo>\\dist\\other\\capability\\executors                executor 产物（扁平 `chonkpilot-<cat>-executor.exe`）
+    --exec-dir    <server-exe 目录>\\capability\\executors                executor 产物（**已退役，见下**）
+
+`--exec-dir` 默认 = **被测 exe 同目录**的 `capability/executors`（现行产物布局 =
+exe 与 `capability/` 同级；不再假设固定的 repo/dist/other）。**2026-10-31（D-72）出厂
+executor 已全部退场，build-mcp-server.ps1 不再产出该目录** → 目录不存在 = 「已退役」，
+**不是错误**；契约中若仍有 `runtime: ../../executors/<exe>` 的旧工具，逐条 SKIP 并计数
+（不静默假通过）。`runtime: builtin` 的契约无需任何产物。
 
 换产物目录（如部署在别处）:
     python run_mcp_server_tests.py --server-exe=D:\\deploy\\chonkpilot-mcp-server.exe \\
                                    --exec-dir=D:\\deploy\\capability\\executors
 
-输入缺失 → **启动 server 前即报错退出**（不静默跳过、不用旧路径兜底），并提示先构建：
-    .\\build-mcp-server.ps1（或 .\\build-desktop.ps1）→ dist\\other\\
+**Server exe 缺失 / 契约根缺失 → 启动 server 前即报错退出**（不静默跳过、不用旧路径兜底），
+并提示先构建：.\\build-mcp-server.ps1（或 .\\build-desktop.ps1）→ dist\\other\\
 
 现行 CLI 契约（`chonkpilot-mcp-server/main.go:3-6,66-94`；spec 25-mcp-server §2）：
     `--http[=<addr>]`（裸 `--http` → 默认 `127.0.0.1:5700`；端点 `/mcp`）· `--stdio` ·
@@ -28,13 +34,13 @@
 自管理两个 server 实例：
     5702 默认配置；5703 自定义 --config（skip_dirs=["vendor"]）验证默认参数注入。
 --root 提供 skills/prompts/resources（capability 根，扁平）；--tools-dir 提供 tools 契约（src/initdata 唯一源）；
---exec-dir 提供**构建产物的 executor exe**（`capability/executors/`，扁平命名）。
+--exec-dir 提供**构建产物的 executor exe**（`capability/executors/`，扁平命名；D-72 后为空）。
 脚本启动 server 前把三者合并到临时契约根（mcp-server 单根递归扫描四原语；tools/<cat>/*.tool.md 的
 runtime 写 `../../executors/<exe>`，故 exe 合并到 `executors/` 才可解析）。
 调用上下文：DSL 类工具（filesys_run / desktop_run / browser_run）需 `_meta.chonkpilot`
 （`instance_id`/`work_dir`/`data_dir`，`server/server.go:63-69 CallContextMeta`），否则报
 「缺少 instance」；本脚本 `tool_call(context=...)` 统一注入（等价 gateway 的注入路径）。
-退出码: 0 = 全部通过；1 = 存在失败；2 = 输入缺失/参数错误。
+退出码: 0 = 无失败（含 SKIP / executor 已退役）；1 = 存在失败；2 = 输入缺失/参数错误。
 """
 import argparse
 import http.server
@@ -60,7 +66,11 @@ DEFAULT_PORT = 5700  # `main.go:29 defaultAddr` = 127.0.0.1:5700（裸 --http / 
 DEFAULT_SERVER_EXE = DIST_OTHER / "chonkpilot-mcp-server.exe"
 DEFAULT_ROOT = REPO / "src" / "initdata" / "capability"
 DEFAULT_TOOLS_DIR = REPO / "src" / "initdata" / "capability" / "tools"
-DEFAULT_EXEC_DIR = DIST_OTHER / "capability" / "executors"
+# executor 产物目录（现行布局 = 被测 exe 同目录的 capability/executors）。2026-10-31（D-72）
+# 出厂 executor 已全部退场 → 该目录可不存在（= 已退役，不是错误）；实际默认值随
+# --server-exe 动态派生（见 _default_exec_dir）。
+EXEC_DIR_SUBPATH = pathlib.Path("capability") / "executors"
+DEFAULT_EXEC_DIR = DEFAULT_SERVER_EXE.parent / EXEC_DIR_SUBPATH
 BUILD_HINT = "先执行 .\\build-mcp-server.ps1（或 .\\build-desktop.ps1）产出 dist/other\\，或用参数指向既有产物目录"
 
 passed = failed = skipped = 0
@@ -71,6 +81,18 @@ def _die(msg):
     """输入/参数不满足 → stderr 明确报错 + 退出码 2（不静默跳过、不用旧路径兜底）。"""
     print(f"错误: {msg}", file=sys.stderr)
     sys.exit(2)
+
+
+def _default_exec_dir(server_exe):
+    """默认 executor 产物目录 = 被测 exe 同目录的 `capability/executors`（现行布局，D-72 后可缺）。"""
+    return pathlib.Path(server_exe).resolve().parent / EXEC_DIR_SUBPATH
+
+
+def skip(name, reason):
+    """显式记一条 SKIP（计入汇总，绝不静默假通过）。"""
+    global skipped
+    skipped += 1
+    print(f"  SKIP  {name}: {reason}")
 
 
 def call_context(work):
@@ -563,19 +585,21 @@ def main():
                     help=f"契约根（knowledge：skills/prompts/resources）（默认 {DEFAULT_ROOT}）")
     ap.add_argument("--tools-dir", default=str(DEFAULT_TOOLS_DIR),
                     help=f"tools 契约目录（src/initdata/capability/tools）（默认 {DEFAULT_TOOLS_DIR}）")
-    ap.add_argument("--exec-dir", default=str(DEFAULT_EXEC_DIR),
-                    help=f"执行器产物目录（capability/executors/chonkpilot-<cat>-executor.exe）（默认 {DEFAULT_EXEC_DIR}）")
+    ap.add_argument("--exec-dir", default=None,
+                    help="执行器产物目录（默认 = <server-exe 目录>/capability/executors；"
+                         "D-72 后出厂不再产出，目录不存在 = 已退役，不报错）")
     args = ap.parse_args()
+    if not args.exec_dir:
+        args.exec_dir = str(_default_exec_dir(args.server_exe))
 
-    # 输入预检（起 server 前 fail-fast）：缺产物一律明确报错，不静默跳过、不用旧路径兜底。
+    # 输入预检（起 server 前 fail-fast）：**真缺的构建产物**明确报错，不静默跳过、不用旧路径兜底。
+    # executor 目录是例外：D-72（2026-10-31）出厂 executor 已全部退场，目录不存在属**已退役**。
     if not os.path.isfile(args.server_exe):
         _die(f"未找到被测 server exe：{args.server_exe}（--server-exe）\n       {BUILD_HINT}")
     if not os.path.isdir(args.root):
         _die(f"未找到契约根：{args.root}（--root）\n       {BUILD_HINT}")
     if not os.path.isdir(args.tools_dir):
         _die(f"未找到 tools 契约目录：{args.tools_dir}（--tools-dir）\n       {BUILD_HINT}")
-    if not os.path.isdir(args.exec_dir):
-        _die(f"未找到 executor 产物目录：{args.exec_dir}（--exec-dir）\n       {BUILD_HINT}")
     for prim in ("skills", "prompts", "resources"):
         if not os.path.isdir(os.path.join(args.root, prim)):
             _die(f"契约根缺少 {prim}/ 目录：{os.path.join(args.root, prim)}（--root）")
@@ -583,19 +607,29 @@ def main():
                 if os.path.isdir(os.path.join(args.tools_dir, c))]
     if not cat_dirs:
         _die(f"--tools-dir={args.tools_dir} 下无分类目录 <cat>/（{BUILD_HINT}）")
-    exe_names = [fn for fn in os.listdir(args.exec_dir) if fn.lower().endswith(".exe")]
-    if not exe_names:
-        _die(f"未在 --exec-dir={args.exec_dir} 找到 executor exe\n       {BUILD_HINT}")
+    # executor 目录：存在才合并；不存在 = 已退役（不是错误，也不用报错退出码）。
+    exec_dir_ok = os.path.isdir(args.exec_dir)
+    exe_names = ([fn for fn in os.listdir(args.exec_dir) if fn.lower().endswith(".exe")]
+                 if exec_dir_ok else [])
+    if not exec_dir_ok:
+        print(f"提示: executor 产物目录不存在（{args.exec_dir}）—— D-72（2026-10-31）出厂 executor "
+              "已全部退场，不再要求该目录")
+
     # 前置判据（2026-10-22 起）= **按契约 runtime 逐条解析**，不再假设「一分类一 exe」：
-    #   - `runtime: builtin`（file / meta 域，进程内 handler）→ 无需产物；
-    #   - `runtime: ../../executors/<exe>` → 产物在 --exec-dir；
-    #   - `runtime: ../../../mcps/<组>/<exe>`（codegraph / vfts）→ 产物在 <dist>/mcps/。
-    # 解析基准 = 部署布局 `<dist>/capability/tools/<cat>/`（与按 runtime 运行的路径同构）。
-    dist_root = pathlib.Path(args.exec_dir).resolve().parent.parent
-    # mcps/<组>/<exe>（codegraph / vfts 引擎）不在 dist/other 投放，也可能只在 dist/desktop → 允许多候选根。
-    dist_roots = [dist_root, REPO / "dist" / "desktop", REPO / "dist" / "other"]
+    #   - `runtime: builtin`（server / meta 域，进程内 handler）→ 无需产物；
+    #   - `runtime: ../../executors/<exe>` → 产物在 --exec-dir；**缺产物 → 该工具 SKIP 并计数**
+    #     （executor 已退役，契约若残留旧 runtime 不得静默假通过）；
+    #   - `runtime: ../../../mcps/<组>/<exe>`（codegraph / vfts）→ 产物在 <产品根>/mcps/，仍按缺失报错。
+    # 解析基准 = 现行部署布局 `<exeDir>/capability/tools/<cat>/`（exe 与 capability/ 同级）。
+    dist_root = pathlib.Path(args.server_exe).resolve().parent
+    # mcps/<组>/<exe>（codegraph / vfts 引擎）：先按 exe 同级产品根解析；扁平发行根 dist/ 作回落。
+    dist_roots = []
+    for cand in (dist_root, REPO / "dist"):
+        if cand not in dist_roots:
+            dist_roots.append(cand)
     external = {}  # rel（<dist> 相对路径）→ 实际源文件绝对路径
     missing = []
+    retired_exec = []  # 仍声明 executor runtime、但产物已退役/缺失的契约（→ SKIP 并计数）
     for cat in cat_dirs:
         cdir = os.path.join(args.tools_dir, cat)
         for fn in sorted(os.listdir(cdir)):
@@ -603,6 +637,13 @@ def main():
                 continue
             rt = _runtime_of(os.path.join(cdir, fn))
             if not rt or rt == "builtin":
+                continue
+            rt_norm = rt.replace("\\", "/")
+            if "/executors/" in rt_norm or rt_norm.startswith("executors/"):
+                # 旧 executor runtime（`../../executors/<exe>`）：出厂已退役，缺产物只 SKIP。
+                exe_name = os.path.basename(rt_norm)
+                if not (exec_dir_ok and os.path.isfile(os.path.join(args.exec_dir, exe_name))):
+                    retired_exec.append((f"{cat}/{fn}", rt))
                 continue
             rel = os.path.relpath(os.path.normpath(
                 os.path.join(str(dist_root), "capability", "tools", cat, rt)), str(dist_root))
@@ -620,7 +661,16 @@ def main():
     if missing:
         _die("契约 runtime 指向的产物缺失：\n       " + "\n       ".join(sorted(missing)) + f"\n       {BUILD_HINT}")
     print(f"被测 server: {args.server_exe}")
-    print(f"契约源: --root={args.root} + --tools-dir={args.tools_dir}；executor 产物: {args.exec_dir}")
+    print(f"契约源: --root={args.root} + --tools-dir={args.tools_dir}；executor 产物: {args.exec_dir}"
+          f"{'' if exec_dir_ok else '（已退役/不存在）'}")
+    # executor 退役的契约：逐条显式 SKIP + 计数（汇总里可见，绝不静默假通过）。
+    if retired_exec:
+        print(f"警告: 契约中仍有 {len(retired_exec)} 项声明 executor runtime，但出厂 executor 已退役（D-72）：")
+        for name, rt in retired_exec:
+            print(f"  - {name}（runtime: {rt}）")
+        print(f"{len(retired_exec)} 项 SKIP：executor 已退役")
+    for name, _rt in retired_exec:
+        skip(f"[contract] {name}", "executor 已退役（D-72）：契约 runtime 无对应产物")
 
     # 本地 echo server
     echo = http.server.ThreadingHTTPServer(("127.0.0.1", 0), EchoHandler)

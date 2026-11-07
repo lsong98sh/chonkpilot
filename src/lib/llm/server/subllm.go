@@ -9,7 +9,7 @@
 // 2026-11-04（task_llm 全能力委派）：拆出 `startChildTurn` —— 起轮后立即返回句柄，
 // 调用方可选择等待（默认）或先返回 running（detach），后续经 task_status / tool_result
 // 按 turn id 取结果。委派子轮次使用**独立 ctx**（不随父 turn 收尾而取消），取消走
-// `task_stop`/`tool_stop` → 关闭子轮次（见 closeDelegatedTurn）。
+// `task_stop` → 关闭子轮次（见 closeDelegatedTurn）。
 package server
 
 import (
@@ -26,13 +26,21 @@ type childTurn struct {
 	Turn    string
 }
 
+// childOutcome 是子轮次的**真实终态快照**（父侧判定「是否可视为完成」的唯一依据）。
+// Status = complete/incomplete/error/interrupted/cancelled；空状态按 interrupted 兜底。
+type childOutcome struct {
+	Status string
+	Finish string
+	Text   string
+}
+
 // startChildTurn 建会话 / 轮次、登记运行态、广播 turn-start 并投递首个用户消息。
 // 调用方负责等待收尾（`(*childTurn).wait`）或直接返回（detach）。
 //
 // parentCtx 是子轮次 ctx 的父（取消沿链下传）。**task_llm 委派传 context.Background()**：
 // 子代理是独立作业，父轮次正常收尾不应把它一起取消；取消由 task_stop 显式下发。
 func (s *Server) startChildTurn(parentCtx context.Context, parentReq StartReq, subSession, prompt, agent string) (*childTurn, error) {
-	store := newSessionStore(s.bus, parentReq.InstanceID)
+	store := s.newSessionStore(parentReq.InstanceID)
 	if err := store.EnsureSessionWithParent(subSession, parentReq.Session); err != nil {
 		return nil, err
 	}
@@ -61,10 +69,13 @@ func (s *Server) startChildTurn(parentCtx context.Context, parentReq StartReq, s
 	return &childTurn{tc: tc, Session: subSession, Turn: subTurn}, nil
 }
 
-// wait 等子轮次收尾（自然完成 / parentCtx 取消），返回 (结果文本, 错误)。
+// wait 等子轮次收尾（自然完成 / parentCtx 取消），返回**终态快照**与错误。
 // parentCtx 判据与 runChildTurn 同口径：用**发起方** ctx 而**不是** tc.ctx ——
 // 子轮次自身收尾（Close → cancel）同样会取消 tc.ctx，用它判定会把正常完成误判成取消。
-func (h *childTurn) wait(parentCtx context.Context) (string, error) {
+//
+// 2026-11-06：不再只返回文本 —— 父侧必须知道子轮次是 complete 还是
+// incomplete/interrupted/cancelled，否则会把截断/取消文本当成功结果交给主 LLM。
+func (h *childTurn) wait(parentCtx context.Context) (childOutcome, error) {
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
@@ -76,10 +87,7 @@ func (h *childTurn) wait(parentCtx context.Context) (string, error) {
 	// 竞态守卫：若此刻子轮次恰好也已收尾（done 已关），按完成结果返回。
 	select {
 	case <-h.tc.Done():
-		if h.tc.turnErr != nil {
-			return "", h.tc.turnErr
-		}
-		return h.tc.result, nil
+		return h.outcome(), h.tc.turnErr
 	default:
 	}
 	// 级联 Close（幂等）：唤醒仍阻塞在输入等待的子 loop → 其 defer 释放 busy/turns 登记。
@@ -87,22 +95,43 @@ func (h *childTurn) wait(parentCtx context.Context) (string, error) {
 	// 子轮次登记/goroutine 常驻（子 loop 在 ctx 取消时是静默 return 回 select，不自行 Close）。
 	h.tc.Close()
 	if err := h.tc.ctx.Err(); err != nil {
-		return "", fmt.Errorf("子轮次被取消: %w", err)
+		return childOutcome{Status: "interrupted"}, fmt.Errorf("子轮次被取消: %w", err)
 	}
-	return "", nil
+	return childOutcome{Status: "interrupted"}, nil
+}
+
+// outcome 在 Done 关闭后读取真实终态（finish 先写、Close 后关 → happens-before 可见）。
+// 空状态兜底 interrupted（未经 finish 的 Close：进程退出 / 异常关闭）。
+func (h *childTurn) outcome() childOutcome {
+	status := h.tc.turnStatus
+	if status == "" {
+		if h.tc.turnErr != nil {
+			status = "error"
+		} else {
+			status = "interrupted"
+		}
+	}
+	return childOutcome{Status: status, Finish: h.tc.turnFinish, Text: h.tc.result}
 }
 
 // runChildTurn 递归驱动子会话轮次并等待结果（群聊干活子会话等既有调用方的语义不变）。
+// 非 complete 一律按错误返回：截断 / 取消不得当作成功文本交给调用方。
 func (s *Server) runChildTurn(parentCtx context.Context, parentReq StartReq, subSession, prompt, agent string) (string, string, error) {
 	h, err := s.startChildTurn(parentCtx, parentReq, subSession, prompt, agent)
 	if err != nil {
 		return "", "", err
 	}
-	text, werr := h.wait(parentCtx)
-	return text, h.Turn, werr
+	out, werr := h.wait(parentCtx)
+	if werr != nil {
+		return "", h.Turn, werr
+	}
+	if out.Status != "complete" {
+		return "", h.Turn, fmt.Errorf("子轮次未完成（%s）", out.Status)
+	}
+	return out.Text, h.Turn, nil
 }
 
-// closeDelegatedTurn 关闭一个仍在跑的子轮次（task_stop / tool_stop / 父轮次取消），
+// closeDelegatedTurn 关闭一个仍在跑的子轮次（task_stop / 父轮次取消），
 // 并**递归**关闭由它派生的下一级委派（多层子代理）。幂等：未命中 / 已收尾 → false。
 // 终态由 complete 的唯一终态闸门保证只落一次。
 func (s *Server) closeDelegatedTurn(instanceID, turnID string) bool {
@@ -110,6 +139,10 @@ func (s *Server) closeDelegatedTurn(instanceID, turnID string) bool {
 	s.mu.Lock()
 	tc := s.lookupTurnLocked(instanceID, turnID)
 	s.mu.Unlock()
+	if tc != nil {
+		// 取消优先标记：终态屏障按「先关子树、再落自身终态」处理，且阻止自然完成误发 complete。
+		tc.cancelRequested.Store(true)
+	}
 	for _, h := range children {
 		s.closeChildTurn(h)
 	}
@@ -124,9 +157,16 @@ func (s *Server) closeDelegatedTurn(instanceID, turnID string) bool {
 }
 
 // closeChildTurn 关闭一个已知句柄的子轮次（不做 lookup；句柄在登记表内即视为有效）。
+//
+// 2026-11-06：**递归先关下一级委派**（子 agent 先终态，再落本子 agent 终态）。
+// 同级 closeDelegatedTurn 也依赖这一步覆盖多层子树。
 func (s *Server) closeChildTurn(h *childTurn) {
 	if h == nil || h.tc == nil {
 		return
+	}
+	h.tc.cancelRequested.Store(true)
+	for _, g := range s.takeDelegated(h.tc.req.InstanceID, h.Turn) {
+		s.closeChildTurn(g)
 	}
 	s.tasks.cancelByTurn(h.tc.req.InstanceID, h.Turn)
 	s.complete(h.tc, "interrupted", "interrupted", "")
@@ -174,8 +214,44 @@ func (s *Server) takeDelegated(instanceID, parentTurn string) []*childTurn {
 	return out
 }
 
-// closeDelegatedChildren 关闭某轮次派生的全部委派子轮次（父轮次取消 / task-stop 级联；
-// 递归由 closeChildTurn → closeDelegatedTurn 的下一层登记自然完成）。
+// delegatedSnapshot 返回某轮次全部委派子轮次的快照（不移除登记；终态屏障用）。
+func (s *Server) delegatedSnapshot(instanceID, parentTurn string) []*childTurn {
+	k := instKey(instanceID, parentTurn)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*childTurn(nil), s.delegated[k]...)
+}
+
+// awaitDelegatedChildren 是**终态屏障**：本轮有任何委派子 agent 时，先等它们全部终态，
+// 再允许本轮判定/广播终态（子 agent 先终态 → 再判自身终态，递归成立）。
+//
+// 取消语义：本轮已显式取消（cancelRequested）→ 先递归关闭全部子树（closeChildTurn 同步
+// 落子终态 + 关轮），不无限等待；父 ctx 取消同样走关闭路径。正常完成路径则阻塞等待每个
+// 子轮次 Done（子轮次自身的 finish 同样会先等它的下一级，形成递归屏障）。
+func (s *Server) awaitDelegatedChildren(tc *turnCtx) {
+	if tc == nil {
+		return
+	}
+	if tc.cancelRequested.Load() {
+		s.closeDelegatedChildren(tc.req.InstanceID, tc.req.Turn)
+		return
+	}
+	for _, h := range s.delegatedSnapshot(tc.req.InstanceID, tc.req.Turn) {
+		if h == nil || h.tc == nil {
+			continue
+		}
+		select {
+		case <-h.tc.Done():
+		case <-tc.ctx.Done():
+			// 父轮次被关闭（取消 / 实例退出）：先关子树再继续；自身终态由调用方决定。
+			s.closeDelegatedChildren(tc.req.InstanceID, tc.req.Turn)
+			return
+		}
+	}
+}
+
+// closeDelegatedChildren 关闭某轮次派生的全部委派子轮次（父轮次取消 / task-stop 级联）。
+// closeChildTurn 递归关闭下一级，故本函数覆盖多层子树；每个子轮次在返回前已落终态并关轮。
 func (s *Server) closeDelegatedChildren(instanceID, parentTurn string) {
 	for _, h := range s.takeDelegated(instanceID, parentTurn) {
 		s.closeChildTurn(h)
@@ -188,7 +264,7 @@ func (s *Server) partialTurnText(instanceID, turnID string) string {
 	if turnID == "" {
 		return ""
 	}
-	msgs := newSessionStore(s.bus, instanceID).LoadMessages(turnID)
+	msgs := s.newSessionStore(instanceID).LoadMessages(turnID)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "assistant" && strings.TrimSpace(msgs[i].Content) != "" {
 			return msgs[i].Content

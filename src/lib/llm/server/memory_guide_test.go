@@ -1,19 +1,18 @@
-// 记忆库带出指引白盒：类别清单动态获取（data-memory-list）——新增自定义类别后，
-// 指引文本应包含该类别（而非仅静态预置清单）；取数失败才回落静态预置。
-// 另覆盖 I-68 ② 短时缓存：TTL 内第二次不再发 data-memory-list（计数断言）、
+// 记忆库带出指引白盒：类别清单动态获取（门面 `MemoryList`，无门面构造回退 data-memory-list）
+// ——新增自定义类别后，指引文本应包含该类别（而非仅静态预置清单）；取数失败才回落静态预置。
+// 另覆盖 I-68 ② 短时缓存：TTL 内第二次不再读取（计数断言）、
 // data-memory-refresh / TTL 过期后重新取数、并发无 race。
 package server
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestMemoryGuideDynamicCategories：建自定义类别（data-memory-save）→ memoryGuide
@@ -74,13 +73,13 @@ func TestMemoryGuideDisabled(t *testing.T) {
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s)
-	count := countDataMemoryList(t, s)
+	count := countMemoryListCalls(t, s)
 
 	if g := s.memoryGuide("ins-test", testWorkDir); g != "" {
 		t.Fatalf("记忆库关闭（配置缺失）时指引应为空: %q", g)
 	}
 	if got := count(); got != 0 {
-		t.Fatalf("关闭态不应请求 data-memory-list，实得 %d 次", got)
+		t.Fatalf("关闭态不应读取类别清单，实得 %d 次", got)
 	}
 
 	// 显式 false 同样不注入
@@ -89,7 +88,7 @@ func TestMemoryGuideDisabled(t *testing.T) {
 		t.Fatalf("memory.enabled=false 时指引应为空: %q", g)
 	}
 	if got := count(); got != 0 {
-		t.Fatalf("关闭态不应请求 data-memory-list，实得 %d 次", got)
+		t.Fatalf("关闭态不应读取类别清单，实得 %d 次", got)
 	}
 }
 
@@ -140,33 +139,31 @@ func TestMemoryCategoryNamesFallback(t *testing.T) {
 	}
 }
 
-// countDataMemoryList 订阅 data-memory-list，对**请求**（无 ok 字段）计数；返回读取函数。
-// 应答（persist.reply，带 ok）与请求同主题，故须排除应答、只数请求。
-func countDataMemoryList(t *testing.T, s *Server) func() int {
+// countingMemoryAPI 统计类别清单的门面调用次数（门面直调后不再发 data-memory-list 总线请求）。
+type countingMemoryAPI struct {
+	facade.API
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingMemoryAPI) MemoryList(req facade.MemoryListRequest) (facade.MemoryListResponse, error) {
+	c.mu.Lock()
+	c.n++
+	c.mu.Unlock()
+	return c.API.MemoryList(req)
+}
+
+// countMemoryListCalls 包装 s.cfg 统计类别清单读取次数；测试结束恢复原门面。
+// 调用点均在建 server 后、起 turn 前，无并发读 cfg（后台扫描不读它）。
+func countMemoryListCalls(t *testing.T, s *Server) func() int {
 	t.Helper()
-	var mu sync.Mutex
-	n := 0
-	sub, err := s.bus.On("data-memory-list", 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var m map[string]any
-		if json.Unmarshal(v.Payload, &m) != nil {
-			return nil
-		}
-		if _, isReply := m["ok"]; isReply {
-			return nil
-		}
-		mu.Lock()
-		n++
-		mu.Unlock()
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	c := &countingMemoryAPI{API: s.cfg}
+	s.cfg = c
+	t.Cleanup(func() { s.cfg = c.API })
 	return func() int {
-		mu.Lock()
-		defer mu.Unlock()
-		return n
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.n
 	}
 }
 
@@ -177,7 +174,7 @@ func TestMemoryGuideCategoryCache(t *testing.T) {
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s)
 	enableTestMemory(t, s)
-	count := countDataMemoryList(t, s)
+	count := countMemoryListCalls(t, s)
 
 	if g := s.memoryGuide("ins-test", testWorkDir); !strings.Contains(g, "项目概要") {
 		t.Fatalf("首次指引应含预置类别: %q", g)
@@ -186,7 +183,7 @@ func TestMemoryGuideCategoryCache(t *testing.T) {
 		t.Fatalf("二次指引应含预置类别: %q", g)
 	}
 	if got := count(); got != 1 {
-		t.Fatalf("data-memory-list 请求次数 = %d，want 1（第二次应命中缓存）", got)
+		t.Fatalf("类别清单读取次数 = %d，want 1（第二次应命中缓存）", got)
 	}
 }
 
@@ -203,18 +200,18 @@ func TestMemoryGuideCacheProjectScoped(t *testing.T) {
 	}))
 	time.Sleep(30 * time.Millisecond)
 	enableTestMemory(t, s)
-	count := countDataMemoryList(t, s)
+	count := countMemoryListCalls(t, s)
 
 	s.memoryGuide("ins-test", testWorkDir)
 	s.memoryGuide("ins-test-2", testWorkDir) // 另一窗口、同一项目 → 命中同一缓存项
 	if got := count(); got != 1 {
-		t.Fatalf("同项目两窗口应共用缓存（请求次数 = %d，want 1）", got)
+		t.Fatalf("同项目两窗口应共用缓存（读取次数 = %d，want 1）", got)
 	}
 
 	other := t.TempDir() // 另一项目 → 另一份缓存
 	s.memoryGuide("ins-test", other)
 	if got := count(); got != 2 {
-		t.Fatalf("不同项目应各取一次（请求次数 = %d，want 2）", got)
+		t.Fatalf("不同项目应各取一次（读取次数 = %d，want 2）", got)
 	}
 }
 
@@ -226,12 +223,12 @@ func TestMemoryGuideCacheInvalidation(t *testing.T) {
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s)
 	enableTestMemory(t, s)
-	count := countDataMemoryList(t, s)
+	count := countMemoryListCalls(t, s)
 
 	s.memoryGuide("ins-test", testWorkDir) // 1：取数并缓存
 	s.memoryGuide("ins-test", testWorkDir) // 命中缓存
 	if got := count(); got != 1 {
-		t.Fatalf("缓存命中前请求次数 = %d，want 1", got)
+		t.Fatalf("缓存命中前读取次数 = %d，want 1", got)
 	}
 
 	// refresh：记忆域 save/delete 后 persist 发出的既有广播（同步分发 → 返回即已失效）
@@ -240,7 +237,7 @@ func TestMemoryGuideCacheInvalidation(t *testing.T) {
 	}))
 	s.memoryGuide("ins-test", testWorkDir)
 	if got := count(); got != 2 {
-		t.Fatalf("refresh 后请求次数 = %d，want 2（缓存应被失效重取）", got)
+		t.Fatalf("refresh 后读取次数 = %d，want 2（缓存应被失效重取）", got)
 	}
 
 	// TTL 过期：把缓存项过期时刻拨到过去（等价 TTL 到期）→ 重新取数
@@ -252,7 +249,7 @@ func TestMemoryGuideCacheInvalidation(t *testing.T) {
 	s.memCache.mu.Unlock()
 	s.memoryGuide("ins-test", testWorkDir)
 	if got := count(); got != 3 {
-		t.Fatalf("TTL 过期后请求次数 = %d，want 3（过期应重取）", got)
+		t.Fatalf("TTL 过期后读取次数 = %d，want 3（过期应重取）", got)
 	}
 }
 

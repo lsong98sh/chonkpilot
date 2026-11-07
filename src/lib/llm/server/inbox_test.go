@@ -790,7 +790,8 @@ func TestInboxBatchInsertMerged(t *testing.T) {
 	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
 	waitInsertable(t, s, "s-bat")
 
-	// 直接落 3 条 insert 意向（模拟「用户已点击插话、等待合并插入」）→ 轮内 ticker 会一并投递。
+	// 直接落 3 条 insert 意向（模拟「用户已点击插话、等待合并插入」）→ 显式触发一次相位投递
+	// （生产由工具派发 / 回执清空的相位事件触发；本用例绕过 llm-inbox-add，故手动 flush）。
 	contents := []string{"【BATCH】A", "【BATCH】B", "【BATCH】C"}
 	tc := s.turnBySessionForAdd("ins-test", "s-bat")
 	for _, c := range contents {
@@ -805,6 +806,7 @@ func TestInboxBatchInsertMerged(t *testing.T) {
 		}
 		s.inboxRemember(facade.InboxItem{ID: str(res["id"]), SessionID: "s-bat", Type: "insert", Content: c, Status: "pending"})
 	}
+	s.flushInsertIntents(tc)
 
 	// 断言：存在**一次**请求同时携带 3 条 user 消息（= 合并为一次插入）。
 	deadline := time.Now().Add(8 * time.Second)
@@ -883,6 +885,50 @@ func TestInboxRevertIntent(t *testing.T) {
 	rec.wait(t, "session-receive", textContains("插入回答:【REVERT】不应插入"), 8*time.Second)
 }
 
+// appendInsertIntent 直接落一条 pending `insert` 意向并记入内存索引（绕开 llm-inbox-add 的
+// 即时 flush），用于验证「相位事件驱动投递」——不依赖任何定时轮询。
+func appendInsertIntent(t *testing.T, s *Server, session, content string) string {
+	t.Helper()
+	turnID := ""
+	if tc := s.turnBySessionForAdd("ins-test", session); tc != nil {
+		turnID = tc.req.Turn
+	}
+	res, err := dataRequest(s.bus, "data-inbox-append", withDialog(s, session, map[string]any{
+		"instance_id": "ins-test",
+		"data": map[string]any{
+			"session": session, "type": "insert", "content": content, "llm": "mock", "turn_id": turnID,
+		},
+	}))
+	if err != nil {
+		t.Fatalf("append insert intent %q: %v", content, err)
+	}
+	id := str(res["id"])
+	s.inboxRemember(facade.InboxItem{ID: id, SessionID: session, TurnID: turnID, Type: "insert", Content: content, Status: "pending"})
+	return id
+}
+
+// TestInboxInsertFlushOnToolStart：流式期登记（未投递）的插话意向，在工具派发（帧变忙）的
+// 相位事件上自动投递——无需等 100ms ticker。
+func TestInboxInsertFlushOnToolStart(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	startTurn(t, s, "s-fl1", "t-fl1")
+	rec := newInboxRec(t, s.bus)
+
+	// 起轮后、工具派发前登记意向（此处旧实现只能等 ticker）。
+	appendInsertIntent(t, s, "s-fl1", "【FLUSH】工具启动")
+
+	sendMQ(t, s, "s-fl1", "t-fl1", "请用慢工具")
+	rec.wait(t, "session-receive", textContains("插入回答"), 5*time.Second)
+	if n := rec.count("session-complete", byTurn("t-fl1")); n != 0 {
+		t.Fatalf("主轮工具仍 pending，不得 complete（got %d）", n)
+	}
+
+	reportTask(t, s, "tk-tc-main", "C1结果", "s-fl1", "t-fl1")
+	rec.wait(t, "session-receive", textContains("主轮续轮完成"), 5*time.Second)
+	rec.wait(t, "session-complete", byTurn("t-fl1"), 5*time.Second)
+}
+
 // mustPending 读该会话 pending 项（测试助手；失败直接报错）。
 func (s *Server) mustPending(session string) []facade.InboxItem {
 	items, err := s.inboxList("ins-test", session, "pending")
@@ -890,4 +936,175 @@ func (s *Server) mustPending(session string) []facade.InboxItem {
 		return nil
 	}
 	return items
+}
+
+// ── 自动消费广播（session-inbox-changed{action:"consumed"}）──
+//
+// 缺陷背景（2026-11-07）：`consumeNextTurnPass` 逐条置 consumed 后原先只在引擎内插入消费
+// （engine_turn.go commitInbox）广播；自动消费 next_turn（无运行轮 / 轮末批量）不广播 →
+// 前端镜像只能在 turn-start 重拉，且该时点仍可能读到 pending → 已消费项残留成幽灵待发项。
+
+// ensureTestSession 自举 ins-test 实例 + 会话行（一树一库：inbox 行落对话库，须先有 dialog_id）。
+func ensureInboxSession(t *testing.T, s *Server, session string) {
+	t.Helper()
+	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
+	}))
+	t.Cleanup(data.Reset)
+	time.Sleep(50 * time.Millisecond)
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession(session); err != nil {
+		t.Fatalf("EnsureSession(%s): %v", session, err)
+	}
+}
+
+// consumedFor 过滤某会话的 consumed 动作广播。
+func consumedFor(session string) func(map[string]any) bool {
+	return func(m map[string]any) bool {
+		return str(m["session"]) == session && str(m["action"]) == "consumed"
+	}
+}
+
+// appendNextTurn 数据面直落一条 next_turn pending（不经 llm-inbox-add，避免被立即消费）。
+func appendNextTurn(t *testing.T, s *Server, session, content string) string {
+	t.Helper()
+	res, err := dataRequest(s.bus, "data-inbox-append", withDialog(s, session, map[string]any{
+		"instance_id": "ins-test",
+		"data": map[string]any{
+			"session": session, "type": "next_turn", "content": content, "llm": "mock",
+		},
+	}))
+	if err != nil {
+		t.Fatalf("data-inbox-append %q: %v", content, err)
+	}
+	id := str(res["id"])
+	if id == "" {
+		t.Fatalf("data-inbox-append 应返回 item id：%+v", res)
+	}
+	return id
+}
+
+// TestInboxConsumeBroadcastsChanged：无运行轮时 llm-inbox-add 立即消费起轮（走
+// consumeNextTurnPass）→ 必须广播 session-inbox-changed{action:"consumed"}，载荷逐键写死：
+// instance_id/session/action，ids 恰为该条 id；consumed 事件恰 1 条；pending 列表不含该条。
+func TestInboxConsumeBroadcastsChanged(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	rec := newInboxRec(t, s.bus)
+	const sess = "s-ins-bc1"
+
+	ensureInboxSession(t, s, sess)
+
+	res := inboxAddMQ(t, s, sess, "【BROADCAST】自动消费一条")
+	if str(res["type"]) != "next_turn" {
+		t.Fatalf("无运行轮应分类为 next_turn：%+v", res)
+	}
+	id := str(res["id"])
+	if id == "" {
+		t.Fatalf("llm-inbox-add 应返回 item id：%+v", res)
+	}
+
+	ev := rec.wait(t, "session-inbox-changed", consumedFor(sess), 5*time.Second)
+	if str(ev["instance_id"]) != "ins-test" {
+		t.Fatalf("consumed 事件 instance_id 应为 ins-test：%+v", ev)
+	}
+	if str(ev["session"]) != sess {
+		t.Fatalf("consumed 事件 session 应为 %s：%+v", sess, ev)
+	}
+	if str(ev["action"]) != "consumed" {
+		t.Fatalf("consumed 事件 action 应为 consumed：%+v", ev)
+	}
+	ids, _ := ev["ids"].([]any)
+	if len(ids) != 1 || str(ids[0]) != id {
+		t.Fatalf("consumed 事件 ids 应恰为 [%s]：%+v", id, ev)
+	}
+	if n := rec.count("session-inbox-changed", consumedFor(sess)); n != 1 {
+		t.Fatalf("consumed 事件应恰 1 条（got %d）：%+v", n, rec.matches("session-inbox-changed", consumedFor(sess)))
+	}
+
+	pending := s.mustPending(sess)
+	if len(pending) != 0 {
+		t.Fatalf("消费后 pending 应为空（id=%s 已排除），实际 %+v", id, pending)
+	}
+
+	// 等本轮终态（清理阶段不得留存在飞轮次）。
+	rec.wait(t, "session-complete", func(m map[string]any) bool {
+		return str(m["session"]) == sess && str(m["status"]) == "complete"
+	}, 5*time.Second)
+}
+
+// TestInboxConsumeBroadcastsPerItem：一次批量消费 N 条 → **逐条**广播（N 条 consumed 事件，
+// 每条 ids 恰为该条 id，不合并成单事件）；消费后 pending 为空集。
+func TestInboxConsumeBroadcastsPerItem(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	rec := newInboxRec(t, s.bus)
+	const sess = "s-ins-bc3"
+
+	ensureInboxSession(t, s, sess)
+
+	id1 := appendNextTurn(t, s, sess, "【BROADCAST】批量甲")
+	id2 := appendNextTurn(t, s, sess, "【BROADCAST】批量乙")
+	// list 填充内存 pending 索引（consumeNextTurnPass 依赖 inboxHasPending 的内存桶）。
+	lv := s.bus.Emit(context.Background(), "inbox-list", jb(map[string]any{
+		"instance_id": "ins-test", "session": sess,
+	})).Wait()
+	if lv.Err() != nil {
+		t.Fatalf("inbox-list: %v", lv.Err())
+	}
+
+	s.consumeNextTurn("ins-test", sess)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if rec.count("session-inbox-changed", consumedFor(sess)) >= 2 {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	evs := rec.matches("session-inbox-changed", consumedFor(sess))
+	if len(evs) != 2 {
+		t.Fatalf("批量消费应逐条广播 2 条 consumed（got %d）：%+v", len(evs), evs)
+	}
+	want := map[string]bool{id1: true, id2: true}
+	got := make([]string, 0, 2)
+	for _, ev := range evs {
+		ids, _ := ev["ids"].([]any)
+		if len(ids) != 1 {
+			t.Fatalf("每条 consumed 事件 ids 应恰 1 项：%+v", ev)
+		}
+		gid := str(ids[0])
+		if !want[gid] {
+			t.Fatalf("consumed 事件 ids 出现非本批 id=%s（应为 %s / %s）", gid, id1, id2)
+		}
+		delete(want, gid)
+		got = append(got, gid)
+	}
+	if len(want) != 0 {
+		t.Fatalf("consumed 事件未覆盖本批全部 id（got=%v 缺=%v）", got, want)
+	}
+	if pending := s.mustPending(sess); len(pending) != 0 {
+		t.Fatalf("批量消费后 pending 应为空，实际 %+v", pending)
+	}
+
+	rec.wait(t, "session-complete", func(m map[string]any) bool {
+		return str(m["session"]) == sess
+	}, 5*time.Second)
+}
+
+// TestInboxConsumeNoPendingNoBroadcast（负例）：会话无待消费项 → 消费空转，
+// 不得广播 consumed、不得起轮。
+func TestInboxConsumeNoPendingNoBroadcast(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	rec := newInboxRec(t, s.bus)
+
+	s.consumeNextTurn("ins-test", "s-ins-bc2")
+	time.Sleep(200 * time.Millisecond)
+
+	if n := rec.count("session-inbox-changed", nil); n != 0 {
+		t.Fatalf("无待消费项不得广播 session-inbox-changed（got %d）：%+v", n, rec.matches("session-inbox-changed", nil))
+	}
+	if n := rec.count("session-turn-start", nil); n != 0 {
+		t.Fatalf("无待消费项不得起轮（session-turn-start=%d）", n)
+	}
 }

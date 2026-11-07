@@ -82,6 +82,9 @@ func callCaptureScreen(b *Bridge, ctx context.Context, params []json.RawMessage)
 	// 隐藏本窗口（截图不含自身）；结束时按原状态恢复
 	r1, _, _ := pShowWindow.Call(hwnd, swHide)
 	_ = r1
+	// §10.2 白名单（保留）：OS 窗口隐藏后的**屏幕合成副作用**等待——必须等 DWM 完成一次
+	// 重绘/隐没，否则截到的是隐藏前画面；这是本地 OS 副作用而非「等别的执行体」，且运行在
+	// HTTP 边缘 goroutine（非总线派发 / 会话循环）。
 	time.Sleep(350 * time.Millisecond)
 	defer func() {
 		if wasIconic != 0 {

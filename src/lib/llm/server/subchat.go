@@ -122,7 +122,7 @@ func (s *Server) runSubChatOpen(tc *turnCtx, args map[string]any, purpose string
 
 	// ② 建首轮 + 以用户口吻写入交接内容为首条 user 消息（§10 Q2 / D30）。**同一条消息只落一次**：
 	// 异步首轮（startSubChatFirstTurn）以**库内既有上下文**触发一次 LLM 循环（Kick），不再喂新输入。
-	store := newSessionStore(s.bus, instanceID)
+	store := s.newSessionStore(instanceID)
 	turnID := newID()
 	if err := store.EnsureTurn(turnID, sessionID); err != nil {
 		return subchatToolErr("建子聊天首轮失败: " + err.Error()), true

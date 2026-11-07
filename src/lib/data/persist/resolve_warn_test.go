@@ -3,10 +3,13 @@
 package persist
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
 )
 
 // TestResolveFallbackWarns：单实例回退照旧 + 告警；显式 instance 不告警；非唯一拒绝回退 + 告警；
@@ -54,8 +57,8 @@ func TestResolveFallbackWarns(t *testing.T) {
 
 	// 多实例（非唯一）：拒绝回退（ErrInstanceIDRequired）+ 告警
 	s.View.Register("ins-2", "wd2", "dd2")
-	if _, _, err := s.View.Resolve(""); err == nil {
-		t.Fatal("非唯一实例视图应拒绝回退（ErrInstanceIDRequired）")
+	if _, _, err := s.View.Resolve(""); !errors.Is(err, kernel.ErrInstanceIDRequired) {
+		t.Fatalf("非唯一实例视图应拒绝回退（want ErrInstanceIDRequired），got %v", err)
 	}
 	if !strings.Contains(last(), "非唯一") {
 		t.Fatalf("非唯一应告警: %v", logs)

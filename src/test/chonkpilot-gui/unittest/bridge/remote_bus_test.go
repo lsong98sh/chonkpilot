@@ -133,8 +133,10 @@ func TestRemoteBusBridgeOverUDS(t *testing.T) {
 		t.Fatalf("data-demo-load errs: %v", errs)
 	}
 	m, _ := res.(map[string]any)
-	if m == nil || m["list"] == nil {
-		t.Fatalf("data-demo-load result = %#v（应经 UDS 事件回投取回）", res)
+	// 值级断言：fakeFront 回投 result.list=["x"]，桥收敛后须原样透传（不仅"非 nil"）。
+	list, ok := m["list"].([]any)
+	if !ok || len(list) != 1 || list[0] != "x" {
+		t.Fatalf("data-demo-load result = %#v，want list=[\"x\"]（应经 UDS 事件回投取回）", res)
 	}
 
 	// 4) 下行事件（session-receive）→ 桥 → window.mq.emitRemote（前端 type llm-receive）。
@@ -144,9 +146,26 @@ func TestRemoteBusBridgeOverUDS(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		evalMu.Lock()
-		joined := strings.Join(scripts, "\n")
+		snapshot := append([]string(nil), scripts...)
 		evalMu.Unlock()
-		if strings.Contains(joined, "llm-receive") && strings.Contains(joined, "emitRemote") {
+		for _, script := range snapshot {
+			const prefix = "window.mq.emitRemote("
+			if !strings.HasPrefix(script, prefix) {
+				continue
+			}
+			var env evalEnvelope
+			body := strings.TrimSuffix(strings.TrimPrefix(script, prefix), ")")
+			if json.Unmarshal([]byte(body), &env) != nil || env.Type != "llm-receive" {
+				continue
+			}
+			// 值级断言：下行载荷须原样到达前端（session="s"；instance_id 也透传）。
+			var payload map[string]any
+			if json.Unmarshal([]byte(env.Payload), &payload) != nil {
+				t.Fatalf("llm-receive payload 解析失败: %s", env.Payload)
+			}
+			if payload["session"] != "s" || payload["instance_id"] != "i1" {
+				t.Fatalf("llm-receive 载荷未原样转发: %s（want session=s instance_id=i1）", env.Payload)
+			}
 			return
 		}
 		time.Sleep(5 * time.Millisecond)

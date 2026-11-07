@@ -4,6 +4,7 @@ package persist
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,16 +14,40 @@ import (
 
 // newSweepTestService 建一个实例绑定/超时清理测试服务（进程内总线；UsrPath/AppDir 走临时目录，
 // 不污染用户配置；不订阅、不启动扫描——需要时用例自行 Start）。
-func newSweepTestService(t *testing.T) *Service {
+//
+// **返回 helper 创建的 workDir/dataDir**：实例登记的数据根目录须随 Service 一起生命周期管理。
+// t.Cleanup 为 LIFO —— 目录清理必须**最后**执行，否则 Windows 下 SQLite/bbolt 仍打开
+// `<work_dir>/.chonkpilot/.../chonkpilot.db` 时 RemoveAll 会报「file is being used by
+// another process」（split 的两个用例曾因此失败）。故这里先建全部临时目录（注册目录清理），
+// 再注册 Service.Stop（停扫描/退订）与 data.Reset（关闭全部缓存连接）→ 执行顺序恒为
+// **先关库、再删目录**。用例若在 helper 之后自行 t.TempDir()，其清理会早于关库，务必改用
+// 返回的 workDir/dataDir。
+func newSweepTestService(t *testing.T) (s *Service, workDir, dataDir string) {
 	t.Helper()
+
+	// ① 目录先注册清理（LIFO 最后执行）。
+	usrDir := t.TempDir()
+	appDir := t.TempDir()
+	workDir = t.TempDir()
+	dataDir = t.TempDir()
+
+	// ② 清前一用例残留绑定（连接已由上一用例清理关闭）。
 	data.Reset()
-	t.Cleanup(data.Reset)
+
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)
 	}
 	t.Cleanup(func() { _ = bus.Close() })
-	return New(bus, Options{UsrPath: t.TempDir() + "/usr.db", AppDir: t.TempDir()})
+
+	s = New(bus, Options{UsrPath: filepath.Join(usrDir, "usr.db"), AppDir: appDir})
+	// ③ Service 既有 shutdown API（停扫描 + 退订 + 等待在飞 dialogs 对账）→ data.Reset
+	//    （关全部缓存连接）。LIFO：本清理先于 bus.Close / 上述 TempDir RemoveAll 执行。
+	t.Cleanup(func() {
+		s.Stop()
+		data.Reset()
+	})
+	return s, workDir, dataDir
 }
 
 // instancePayload 构造 instance-register/heartbeat/exit 契约载荷（61-消息一览 §4.1；

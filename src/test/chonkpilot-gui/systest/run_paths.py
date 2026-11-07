@@ -216,8 +216,14 @@ def run_turn(q, scenario=""):
     return sid, turn
 
 
-def wait_turn_done(sid, max_wait=120):
-    """等本会话该轮终态 llm-complete。"""
+def wait_turn_done(sid, max_wait=60):
+    """等本会话该轮终态 llm-complete（真实条件轮询；超时带现场快照）。
+
+    批跑负载下首个轮次的启动/收尾可远超短窗口（2026-11-07 全量 88 套定位：原 120s 单窗
+    仍出现「轮次未收尾」）。这里用 60s 有界轮询 + 200ms 间隔，由 `scenario_system` 做**有界重发**
+    （每轮新会话，互不干扰），既不放宽「必须观测到终态 + system 占位符已替换」的断言，
+    也避免把一次偶发停顿当成永久失败。
+    """
     c = CUR[0]
     deadline = time.time() + max_wait
     while time.time() < deadline:
@@ -225,8 +231,18 @@ def wait_turn_done(sid, max_wait=120):
             p = deep(e.get("payload")) or {}
             if isinstance(p, dict) and p.get("session") == sid:
                 return p
-        time.sleep(0.3)
-    raise TestError("轮次未收尾（session=%s）" % sid)
+        time.sleep(0.2)
+    # 现场快照：本轮是否开始过 / mock 是否收到请求 / 已捕获事件条数
+    starts = [deep(e.get("payload")) or {} for e in c.events_of("turn-start", clear=False)]
+    ours_starts = [p for p in starts if isinstance(p, dict) and p.get("session") == sid]
+    last = mock_last()
+    raise TestError("轮次未收尾（%ss 内无 llm-complete，session=%s）: diag=%s"
+                    % (max_wait, sid, json.dumps({
+                        "turn_start": bool(ours_starts),
+                        "llm_complete_n": len(c.events_of("llm-complete", clear=False)),
+                        "mock_nreq": last.get("n_requests"),
+                        "mock_last": {k: last.get(k) for k in ("path", "system", "n_requests")},
+                    }, ensure_ascii=False)[:600]))
 
 
 # 〔2026-10-23〕原 probe()/java_real_probe()（`script_run` runtime 探针）随 core 契约退役删除，
@@ -263,13 +279,28 @@ def scenario_save():
     return sp
 
 
-def scenario_system():
-    """发一轮带该场景的 llm-start → 返回 mock `/last` 的 system 原文（送 LLM 的 system 文本）。"""
-    mock_reset()
-    sid, _ = run_turn("hello paths probe", scenario=SC_ID)
-    wait_turn_done(sid)
-    last = mock_last()
-    return last.get("system") or ""
+def scenario_system(tries=3, per_try=60):
+    """发一轮带该场景的 llm-start → 返回 mock `/last` 的 system 原文（送 LLM 的 system 文本）。
+
+    每次尝试用**新会话**、60s 有界等待终态；未收尾则以「重发一轮」重试（最多 tries 次）。
+    重发不削弱断言：最终仍要求拿到**某一次真实轮次**的 system 原文，并由调用方硬断言
+    `{{toolchain.*}}` 已替换为该轮 usr 配置值。批跑负载下首个轮次偶发停顿属观测时序问题，
+    不是产品终态缺失（单跑均绿）——重试仅重建观测窗口。
+    """
+    last_err = None
+    for attempt in range(1, tries + 1):
+        mock_reset()
+        sid, _ = run_turn("hello paths probe", scenario=SC_ID)
+        try:
+            wait_turn_done(sid, max_wait=per_try)
+        except TestError as e:
+            last_err = e
+            print("[retry] 轮次观测失败（第 %d/%d 次，session=%s）：%s"
+                  % (attempt, tries, sid, str(e)[:400]), flush=True)
+            continue
+        last = mock_last()
+        return last.get("system") or ""
+    raise last_err
 
 
 # ══════════════════════════════════════════════════════════

@@ -154,14 +154,29 @@ def close_all_chats(rounds=3):
 
 
 def wait_win_ready(wid, timeout=60.0):
-    """等对话窗口测试通道就绪（导航完成 → 本窗口 /eval 可用）。"""
+    """等对话窗口**前端初始化完成**，不只是测试通道可 eval。
+
+    仅 `eval("1+1")` 可用时，`ChatOnlyView` 的 `refreshTitle()` / App 事件订阅可能尚未完成：
+      * T25：测试发 `gui.window.set-title` 后，窗口自己的初始标题回填（缺省「新会话 <ws>」）
+        会**后到覆盖**测试标题（2026-11-07 复现）；
+      * T27：`data-user-config-changed` 全局广播可能在页面订阅就绪前到达 → 丢失（同批复现）。
+    真实可观测条件 = 实例 id 已注入 + `.chat-only-view` 已挂载 + `.chat-only-loading` 已消失
+    （`ChatOnlyView.vue:kindLoaded` 在首次 `refreshTitle` 的 finally 置位，标题已应用）。
+    """
     def probe():
         try:
-            return cl(wid).eval("1+1", 10000) is not None
+            c = cl(wid)
+            if c.eval("1+1", 10000) is None:
+                return False
+            v = eval_obj(wid, """JSON.stringify({
+                iid: window.__chonkpilotInstanceId || '',
+                view: !!document.querySelector('.chat-only-view'),
+                loading: !!document.querySelector('.chat-only-loading')})""", 10000)
+            return isinstance(v, dict) and bool(v.get("iid")) and v.get("view") and not v.get("loading")
         except Exception:
             return False
-    if not poll(probe, lambda v: v, timeout=timeout, interval=0.5):
-        raise TestError("对话窗口 %s 测试通道未就绪（%ss）" % (wid, timeout))
+    if not poll(probe, lambda v: v, timeout=timeout, interval=0.3):
+        raise TestError("对话窗口 %s 前端未就绪（%ss）：通道/实例/初始标题加载未完成" % (wid, timeout))
     return True
 
 
@@ -469,9 +484,11 @@ def case_t06():
     cw.mq_on_capture(["data-prj-config-refresh"])
     # ① 主窗触发后端事件 → 主窗收（归属 = 主窗实例）
     req("", "data-prj-config-save", {"data": {"key": "mw.probe6a", "value": "1"}})
-    evm1 = cm.wait_events("data-prj-config-refresh", 1, 20)
+    evm1 = cm.wait_events("data-prj-config-refresh", 1, 30)
     if not evm1:
-        raise TestError("主窗未收到后端事件")
+        raise TestError("主窗未收到后端事件（30s）；已捕获=%s"
+                        % json.dumps(cm.events_of("data-prj-config-refresh", clear=False),
+                                     ensure_ascii=False)[:300])
     if (evm1[0].get("payload") or {}).get("instance_id") != im:
         raise TestError("主窗副本的 instance_id 应为主窗实例: %s" % (evm1[0],))
     # ② 对话窗触发后端事件 → 对话窗收（归属 = 对话窗实例）
@@ -482,14 +499,25 @@ def case_t06():
     if (evw[0].get("payload") or {}).get("instance_id") != iw:
         raise TestError("对话窗副本的 instance_id 应为对话窗实例: %s" % (evw[0],))
     # ③ 主窗也收到同一变更的**自己那份**：不得携对话窗实例 id（归属不串）
-    evm2 = cm.events_of("data-prj-config-refresh")
+    # 扇出是**逐实例串行投递**：对话窗副本先到，主窗副本可能晚到（批跑负载下可 >20s）→
+    # 原「对话窗 wait_events 后立即读主窗」是单次采样，会误判「项目级扇出失效」（2026-11-07 定位）。
+    own_marker = "mw.probe6b"
+
+    def _own_event(e):
+        pl = e.get("payload") if isinstance(e, dict) else None
+        return (isinstance(pl, dict) and pl.get("instance_id") == im
+                and own_marker in json.dumps(pl.get("list") or {}))
+
+    evm2 = poll(lambda: cm.events_of("data-prj-config-refresh", clear=False),
+                lambda v: any(_own_event(e) for e in (v or [])), timeout=30.0, interval=0.2)
     own = [e for e in evm2 if (e.get("payload") or {}).get("instance_id") == im]
     foreign = [e for e in evm2 if (e.get("payload") or {}).get("instance_id") == iw]
     if foreign:
         raise TestError("主窗收到了盖对话窗实例 id 的副本（归属串台）: %s" % foreign)
-    if not any("mw.probe6b" in json.dumps((e.get("payload") or {}).get("list") or {})
-               for e in own):
-        raise TestError("主窗未收到对话窗触发的变更副本（项目级扇出失效）: %s" % evm2)
+    if not any(_own_event(e) for e in own):
+        raise TestError("主窗未在 30s 内收到对话窗触发的变更副本（项目级扇出失效）: 主窗事件键=%s"
+                        % json.dumps([sorted(((e.get("payload") or {}).get("list") or {}).keys())
+                                      for e in own], ensure_ascii=False))
     for k in ("mw.probe6a", "mw.probe6b"):
         req("", "data-prj-config-delete", {"id": k})
     close_all_chats()
@@ -830,7 +858,7 @@ def case_t25():
     r = req(w, "gui.window.set-title", {"title": "MW-T25-对话窗标题"})
     if r.get("ok") is not True:
         raise TestError("对话窗口 set-title 应 ok=true: %s" % r)
-    titles = poll(os_titles, lambda v: "MW-T25-对话窗标题" in v, timeout=15.0)
+    titles = poll(os_titles, lambda v: "MW-T25-对话窗标题" in v, timeout=30.0, interval=0.2)
     if "MW-T25-对话窗标题" not in titles:
         raise TestError("对话窗口标题未更新: %s" % titles)
     main_title = "chonkpilot-" + base
@@ -912,12 +940,16 @@ def case_t27():
     # 只认「本次 theme=dark」那条：对话窗在此之前可能已收到上一用例还原时的 theme=light 广播
     #（批跑负载下更明显）→ 取 evs[0] 会读到旧载荷，误判为「跨窗同步未生效」（2026-10-26 定位）。
     evs = poll(lambda: cw.events_of("data-user-config-changed", clear=False),
-               lambda v: any(_is_dark(e) for e in (v or [])), timeout=12.0)
-    if not evs:
-        raise TestError("对话窗未即时收到 usr 配置变更广播（跨窗口 theme/locale 同步未生效）")
-    pl = next((_payload(e) for e in evs if _is_dark(e)), None)
+               lambda v: any(_is_dark(e) for e in (v or [])), timeout=30.0, interval=0.2)
+    # poll 超时仍返回最后一次采样（可能只有旧的 theme=light）→ 先区分「没收到本次 dark」与
+    # 「收到了但形态异常」，避免 2026-11-07 批跑那种把超时误报成「载荷形态异常」。
+    dark = [e for e in (evs or []) if _is_dark(e)]
+    if not dark:
+        raise TestError("对话窗未在 30s 内收到本次 theme=dark 的 data-user-config-changed"
+                        "（跨窗口 theme/locale 同步未生效）：已捕获载荷=%r" % (evs,))
+    pl = _payload(dark[0])
     if not isinstance(pl, dict):
-        raise TestError("data-user-config-changed 载荷形态异常: %r" % (evs[0],))
+        raise TestError("data-user-config-changed 载荷形态异常: %r" % (dark[0],))
     if "instance_id" in pl:
         raise TestError("data-user-config-changed 不应带 instance_id（61 §3.1：全局投递）: %r" % pl)
     data = pl.get("data")
@@ -925,14 +957,14 @@ def case_t27():
         raise TestError("data-user-config-changed 载荷应为 {data:{theme:'dark'}}（61 §3.1）: %r" % pl)
     # ② 对话窗**已应用**（不只是收到）：本窗口主题属性跟随
     got = poll(lambda: eval_js(w, "document.documentElement.getAttribute('data-theme')", 8000),
-               lambda v: v == "dark", timeout=12.0)
+               lambda v: v == "dark", timeout=30.0, interval=0.2)
     if got != "dark":
         raise TestError("对话窗未应用 theme=dark（本窗口 data-theme=%r）" % (got,))
 
     # ③ 语言同理（WIN-021-S02）：对话窗即时跟随（应用标记 = 本窗口 locale 置位）
     req("", "data-user-config-save", {"data": {"locale": "en-US"}})
     loc = poll(lambda: eval_js(w, "localStorage.getItem('chonkpilot-locale')", 8000),
-               lambda v: v == "en-US", timeout=12.0)
+               lambda v: v == "en-US", timeout=30.0, interval=0.2)
     if loc != "en-US":
         raise TestError("对话窗未应用 locale=en-US（本窗口 locale=%r）" % (loc,))
 
@@ -975,7 +1007,7 @@ def case_t29():
     title = "MW-T29-标题跟随"
     req("", "data-session-title", {"id": s, "title": title, "dialog_id": dlg})
     evs = poll(lambda: cw.events_of("data-session-title-changed", clear=False),
-               lambda v: bool(v), timeout=12.0)
+               lambda v: bool(v), timeout=30.0, interval=0.2)
     if not evs:
         raise TestError("对话窗未即时收到 data-session-title-changed（跨窗口标题跟随未生效）")
     pl = evs[0].get("payload") if isinstance(evs[0], dict) else None
@@ -992,7 +1024,7 @@ def case_t29():
         raise TestError("data-session-title-changed 不应带 instance_id（61 §3.2：全局投递）: %r" % pl)
 
     # ② 对话窗**标题已跟随**（端到端）：OS 窗口标题出现新标题
-    titles = poll(os_titles, lambda v: title in v, timeout=15.0)
+    titles = poll(os_titles, lambda v: title in v, timeout=30.0, interval=0.2)
     if title not in titles:
         raise TestError("对话窗口标题未跟随会话标题: %s" % titles)
 
@@ -1003,7 +1035,7 @@ def case_t29():
     cw.events_of("data-session-title-changed", clear=True)  # 清空前一轮，便于观察下一轮到达
     req("", "data-session-title", {"id": s2, "title": "MW-T29-其它会话", "dialog_id": dlg2})
     poll(lambda: cw.events_of("data-session-title-changed", clear=False),
-         lambda v: bool(v), timeout=12.0)  # 事件确已到达（全局可见）
+         lambda v: bool(v), timeout=30.0, interval=0.2)  # 事件确已到达（全局可见）
     time.sleep(1.0)  # 给前端应用窗口（若误应用则本窗标题会变）
     titles = os_titles()
     if title not in titles:

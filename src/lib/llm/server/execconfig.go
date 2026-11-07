@@ -10,9 +10,9 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/lockfile"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/lockfile"
 )
 
 // loadExecConfig 把本实例的 usr/prj 配置注入内嵌 mcp-server 执行配置（见 36-配置 §3.1）：

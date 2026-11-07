@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -42,9 +43,13 @@ type StartReq struct {
 	// Continue 同轮次继续（llm-start 可选字段，缺省 false）：复用该 session 最后一轮 turn
 	// （未带 turn 时后端按 session 取最近一轮），不新开轮次——本 turn 恒为末段（全量拼接），
 	// 注入的 user 消息以 Kind=continue 落库（非新轮边界）。
-	Continue bool   `json:"continue,omitempty"`
-	WorkDir  string `json:"-"`
-	DataDir  string `json:"-"`
+	Continue bool `json:"continue,omitempty"`
+	// NotifyTurn 标记本 turn 为**内部通知轮**（§5.3 四段链路；仅 server 内部构造，客户端不传）。
+	// json:"-"：不进入 llm-start 消息面契约；内部经 acceptStart → serveLLMStart 直达 newTurnCtx。
+	// 通知轮内派生的后台任务完成 → 只落库/广播，不再级联触发新的通知轮（防循环）。
+	NotifyTurn bool   `json:"-"`
+	WorkDir    string `json:"-"`
+	DataDir    string `json:"-"`
 }
 
 // SendReq 是 llm-send 载荷（进入 LLM 的统一消息）。
@@ -143,11 +148,25 @@ type turnCtx struct {
 	// isRecovery = 本 turn 由 recoverTurnCtx 重建（进程重启 / 死 turn 恢复）→ 引擎在 RunTurn
 	// 前补齐「assistant.tool_calls 缺 tool 行」的断链（engineSynthesizeDanglingToolResults）。
 	isRecovery bool
+	// isNotifyTurn = 本 turn 是后台任务完成通知触发的**内部通知轮**（§5.3）：其内派生的任务
+	// 完成只落库/广播，不再级联触发新通知轮（防循环）。构造后只读（不加锁）。
+	isNotifyTurn bool
 	// autoContinueOff = 引擎接管时的**子轮次判定**（父链非空 / 子会话 / 干活子会话）：不做自动
 	// 续写（子轮次恒不续写；见 engineRuntimeConfig）。
 	autoContinueOff bool
 	result          string // 终态输出文本（子轮次递归时父侧读取；finish 写入）
 	turnErr         error  // 终态错误（子轮次递归时父侧读取；finish error 写入）
+	// turnStatus / turnFinish 是本轮**真实终态**（complete/incomplete/error/interrupted/cancelled）：
+	// 子轮次递归时父侧据此区分「正常完成」与「截断/取消」，不再用「无 error」推断成功。
+	// 与 result/turnErr 同点写入（finish 唯一终态权之后），Done 关闭后父侧读取。
+	turnStatus string
+	turnFinish string
+	// cancelRequested = 本轮被显式取消（llm-cancel / task-stop / 父轮级联）：终态屏障据此
+	// 先关闭子树再收口，且阻止自然完成路径与取消路径竞争时误发 complete。
+	cancelRequested atomic.Bool
+	// discardNextRun = 本轮错误终态需要丢弃 LLM 排队项（NEXTRUN-1 §4）：轮末兜底消费据此
+	// 不再自动起轮（否则会与 discard goroutine 竞态、把已应丢弃的 next_run 当新轮消费）。
+	discardNextRun atomic.Bool
 	// 原子终态标志（E2-2）归 `life.BeginFinish`（session/runner）：正常完成路径与 onLLMCancel（取消）
 	// 可能并发到达同一轮次 → 保证终态仅落库/广播一次（不二次写 CompleteTurnTokens、不二次广播
 	// llm-complete）。与关闭的 once 相互独立。
@@ -220,6 +239,11 @@ type turnCtx struct {
 	keepFullTurns  int
 	keepFullTokens int
 	briefBudget    int
+	// compressWanted / compressJob：组装时判定达阈值 → 暂存压缩任务，终态快照写完后再真正启动
+	// （锚点 = 本轮；见 compress.go:startPendingCompress）。仅本轮组装 goroutine 写、终态读，
+	// 二者严格先后（Step 返回后才 finish），无需加锁。
+	compressWanted bool
+	compressJob    compressJob
 	// turnTokens 会话各轮**预存** token（`data-session-context` 只增伴随数组 turn_tokens，升序、
 	// 排除当前轮）：组装侧三段判定**直接取预存值**（尾部对齐；缺值回退实时估算）。
 	turnTokens []facade.TurnToken
@@ -346,7 +370,7 @@ func (tc *turnCtx) arbitratedTool(name string) bool {
 // 会话 / 历史任务节点里的旧暴露名，不新增语义。
 func inProcessTool(name string) bool {
 	switch strings.TrimPrefix(name, "self_") {
-	case "ask_user", "subchat_open", "subchat_finish", "tool_stop", "tool_result":
+	case "ask_user", "subchat_open", "subchat_finish", "tool_result":
 		return true
 	}
 	return false
@@ -387,7 +411,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	// 同轮次继续（req.Continue）：本 turn 已被快照覆盖（finish 写 snapshot_turn=本 turn），
 	// 若仍走快照分支会与下方引擎上下文的 LoadMessages(本 turn) 重复——改用全量历史分支并
 	// 排除本 turn，本 turn 既有消息由引擎从库带回，保证该 turn 恒为末段（全量拼接）。
-	hist, turnTokens := newSessionStore(s.bus, req.InstanceID).BuildContextTokens(req.Session, req.Turn, !req.Continue)
+	hist, turnTokens := s.newSessionStore(req.InstanceID).BuildContextTokens(req.Session, req.Turn, !req.Continue)
 	// LLM-P4「单轮配置读收敛」：本轮**只读两次配置**——usr 对象 1 次（provider / 超时 / 续写 /
 	// defaultLLM）+ prj 平铺表 1 次（三段边界 + 占位符路径键），其余全部从本快照派生。
 	// 改前一轮内共 5 次（loadUserConfig · prjConfigValues · replaceToolchain 内 usr+prj ·
@@ -524,11 +548,28 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		turnTokens:           turnTokens,
 		engineInbox:          newChatInbox(),
 		sysPromptText:        sc.sysPrompt,
+		isNotifyTurn:         req.NotifyTurn,
 	}
 	// 子轮次（父链非空 / 子会话 / 干活子会话）不做自动续写（见 engineRuntimeConfig）。
 	tc.autoContinueOff = subTurnNoAutoContinue(req, sc)
-	go tc.loop()
+	tc.server.launchTurnLoop(tc)
 	return tc
+}
+
+// launchTurnLoop 启动轮次循环并纳入 Stop 的收口等待（收尾写库完成后再停数据服务）。
+// 关停开始后拒绝新建（否则 Add 与 Wait 并发 → 轮次可能逃过收口等待）。
+func (s *Server) launchTurnLoop(tc *turnCtx) {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.turnWG.Add(1)
+	s.mu.Unlock()
+	go func() {
+		defer s.turnWG.Done()
+		tc.loop()
+	}()
 }
 
 // subTurnNoAutoContinue 判定引擎接管时是否**强制关闭自动续写**（A4-P4a）：
@@ -1044,10 +1085,6 @@ func (tc *turnCtx) Kick() {
 	}
 }
 
-// feedTimeout 是输入队列投递的最长等待（队列满时兜底，B-07）：feed 由工具/异步回执等**非 loop
-// 协程**调用，队列满时无限阻塞会挂住调用方 goroutine；超时则丢弃并记录（不静默吞）。
-const feedTimeout = 5 * time.Second
-
 // feedDroppable 判定该消息在输入队列满时可否丢弃：仅「工具通知」（Role=user、Kind=notify，
 // 非必需）可丢；tool 结果与「继续」（Kind=continue）及用户文本承载 LLM 必需的续轮输入，不可丢。
 func feedDroppable(msg ChatMsg) bool {
@@ -1062,21 +1099,17 @@ func (tc *turnCtx) feed(msg ChatMsg) {
 		return
 	default:
 	}
+	// 队列满：有界邮箱 + 明确丢弃策略。
+	//   - 可丢类（工具通知）：直接丢弃并记录，不等待；
+	//   - 不可丢类（tool 结果 / 「继续」/ 用户文本）：转后台 goroutine 非阻塞投递。
+	//     关键：loop 自身也会投递（引擎的自动续写「继续」）——同步阻塞会自死锁（队列满时
+	//     消费方恰是调用方自身）；非 loop 调用方则在总线同步派发线程上阻塞（宿主 UI 线程冻结）。
+	//     仅 done / ctx 取消才放弃投递。
 	if feedDroppable(msg) {
-		// 队列满：可丢类带超时重试，超时则丢弃并记录（仅此罕见分支才分配定时器，热路径零额外开销）。
-		select {
-		case tc.in <- msg:
-		case <-tc.Done():
-		case <-time.After(feedTimeout):
-			logf("[chonkpilot-server] turn %s 输入队列投递超时（满），丢弃 role=%s 消息\n", tc.req.Turn, msg.Role)
-		}
+		logf("[chonkpilot-server] turn %s 输入队列已满，丢弃 role=%s kind=%s 通知消息\n",
+			tc.req.Turn, msg.Role, msg.Kind)
 		return
 	}
-	// 不可丢类（tool 结果 / 「继续」/ 用户文本）：**不丢**。上方非阻塞尝试已失败（队列满）→
-	// **转后台 goroutine 阻塞投递**（对齐 onGatewayTaskDone 对 asyncDone 的改法）：既不丢弃，也不
-	// 阻塞调用方。关键：loop 自身也会投递（引擎的自动续写「继续」）——同步阻塞会自死锁（队列满时
-	// 消费方恰是调用方自身）；非 loop 调用方则在总线同步派发线程上阻塞（宿主 UI 线程冻结）。
-	// 仅 done / ctx 取消才放弃投递。
 	go func() {
 		select {
 		case tc.in <- msg:
@@ -1102,24 +1135,30 @@ func (tc *turnCtx) loop() {
 		// 仅删仍指向本 turnCtx 的项（同键换实例时，旧 tc 的陈旧索引也须清掉，避免 taskTurnFor
 		// 命中已关闭的旧 tc 而漏续轮）。
 		tc.server.forgetPendingTaskIndexLocked(tc)
-		var removedAsks []*askWaiter
 		if tc.server.turns[key] == tc {
 			delete(tc.server.turns, key)
 			if tc.server.busy[instKey(tc.req.InstanceID, tc.req.Session)] == tc.req.Turn {
 				delete(tc.server.busy, instKey(tc.req.InstanceID, tc.req.Session))
 			}
 			delete(tc.server.continuePending, key)
-			// 轮次关闭 → 摘除本轮的 ask 等待登记（E2-1：否则无答复的 ask 常驻内存）。
-			removedAsks = tc.server.clearAsksByTurnLocked(tc.req.InstanceID, tc.req.Turn)
+			// AskUser S4：轮次**正常结束不摘除** ask 登记 —— 非阻塞提问允许本轮先收尾，
+			// 用户稍后作答时经批次投递（同轮插入或新轮）。显式取消在 onLLMCancel 中清理，
+			// 实例退出由 exitInstance 清理。
 		}
 		tc.server.mu.Unlock()
-		for _, w := range removedAsks {
-			tc.server.notifyAskCenterRemove(w, "turn_closed")
-		}
+		// §5.3 轮末冲刷兜底：finish 的冲刷 goroutine 可能在 busy 尚未摘除时先跑到（Done 先于
+		// defer 的 busy 清理关闭）→ 由这里在 busy 已释放后再触发一次（幂等：队列空即 no-op）。
+		go tc.server.flushNoticeQueue(tc.req.InstanceID, tc.req.Session, false)
 		// 空闲自动结束 → **只释放该 dialog** 的运行态归属（SCOPE-1 第二条释放路径：turn 结束
 		// ∧ inbox 无 pending ∧ 无 async task）。放在 busy 已摘除之后、tc.Close 之前；仍有排队
 		// 输入 / 异步任务 → 归属保留（不释放）。
 		tc.server.releaseOwnerIfIdle(tc.req.InstanceID, tc.req.Session)
+		// 轮次已彻底摘除（busy 已释放）后，若仍有 pending inbox（含 finish 的消费 goroutine
+		// 与 append 交错时漏掉的项），补发一次消费；consumeNextTurn 幂等（无项即 no-op）。
+		// 错误终态已决定丢弃 LLM 排队项（discardNextRun）→ 不在此兜底起轮。
+		if !tc.discardNextRun.Load() && tc.server.inboxHasPending(tc.req.Session) {
+			go tc.server.consumeNextTurn(tc.req.InstanceID, tc.req.Session)
+		}
 		tc.Close()
 	}()
 	tc.runEngineLoop()
@@ -1232,8 +1271,13 @@ func (tc *turnCtx) handleAsyncDone(m asyncDoneMsg) {
 	tc.persistToolResult(pt.toolCallID, resultText, status, &persist.ToolAsyncContent{
 		TaskID: m.taskID, MovedAt: pt.movedAt,
 	})
+	// 结果已被本轮取走 → 登记 consumed（§5.3：之后即使再收到完成回报/调用方离开，也不再发通知）。
+	tc.server.markTaskResultConsumed(tc.req.InstanceID, m.taskID, pt.toolCallID)
 	// 结果进入统一输入队列（与 ask 回执同形），由引擎轮内等待消费。
 	tc.engineInbox.Push(engineToolResultItem(pt.toolCallID, resultText, status != "completed"))
+	// 回执清空一个 pending → 若本帧仍有其他在飞项，则仍处于可插入相位；把待插意向立即投递
+	// （事件驱动，不依赖轮询）。无待插项 / 已不可插入时 flush 内部会直接返回。
+	tc.server.flushInsertIntents(tc)
 }
 
 // takePendingLocked 从各帧摘除一个 task_id 并返回其发起信息与所属帧（nil = 主帧）。
@@ -1429,7 +1473,7 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 	tc.persistToolRunning(call.ID, name, args, askID)
 
 	if isTaskTool(canon) {
-		// task 型域工具（tool_stop/tool_result）：经 gateway 唯一执行入口
+		// task 型域工具（tool_result）：经 gateway 唯一执行入口
 		// （21-llm-server）——内嵌 mcp-server 的域工具 handler 执行并返回文本，
 		// 任务节点由 handler 建/广播（对齐 21-llm-server 任务树）。
 		//
@@ -1481,13 +1525,19 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: errText}, false, serr
 	}
 	node = started
+	// 通知轮内派生的任务节点打标（§5.3 防循环）：完成时只落库/广播，不再级联触发通知轮。
+	if tc.isNotifyTurn && node != nil {
+		tc.server.markTaskNotifyOrigin(node.InstanceID, node.TaskID)
+	}
 
 	if isAskTool(canon) {
-		// ask_user → server ask 通道（广播 ask-user → 等 ask-user-reply → 回填，§6.4）
-		// 登记在飞（结果经 ask-user-reply 异步回喂）→ 续轮闸门须计入（见 sessionrunner.Frames.Open）。
-		tc.markInflight(call.ID)
+		// ask_user → server ask 通道（广播 ask-user → 等 ask-user-reply → 答复后续投递）。
+		// AskUser S4：**非阻塞（快速转异步）**——登记提问后立即回一条占位 tool result，
+		// 本轮继续（LLM 可做其他事或直接收尾）；不 markInflight，引擎不进入 PendingWait。
+		// 任务节点保持 running（"回复并不代表完成"），答复到达后才 tasks.done。
 		tc.server.askWithID(tc.req.Turn, call.ID, args, node.TaskID, askID)
-		return ChatMsg{}, true, nil
+		tc.persistToolResultAsk(call.ID, askAsyncHandoffResult, "completed", nil, askID)
+		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: askAsyncHandoffResult}, false, nil
 	}
 	parentTask := parentID
 	if node != nil {
@@ -1528,6 +1578,8 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 // node 可空（task 型域工具由 domain handler 自行建节点）。
 func (tc *turnCtx) dispatchToolWorker(call ToolCall, name string, args map[string]any, node *TaskNode, ctxMsg mcpgateway.Context) {
 	tc.markInflight(call.ID)
+	// 工具进入在飞 = 可插入窗口打开（流式期登记为 pending 的插话意向在此时投递）。
+	tc.server.flushInsertIntents(tc)
 	go func() {
 		res, taskID, cerr := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(name, args), ctxMsg)
 		if cerr != nil {
@@ -1548,6 +1600,8 @@ func (tc *turnCtx) dispatchToolWorker(call ToolCall, name string, args map[strin
 			// 转异步：登记 task_id → 发起信息；任务节点挂 gateway 任务，turn 挂起等回执。
 			tc.clearInflight(call.ID)
 			tc.registerPending(taskID, call.ID)
+			// pending 已登记（本帧仍忙）→ 再幂等投递一次（覆盖 clear→register 之间的相位观察）。
+			tc.server.flushInsertIntents(tc)
 			if node != nil {
 				tc.server.tasks.setGwTask(node.TaskID, taskID)
 				tc.server.tasks.setState(node.TaskID, TaskStatePending)
@@ -1579,6 +1633,8 @@ func (tc *turnCtx) dispatchToolWorker(call ToolCall, name string, args map[strin
 func (tc *turnCtx) finishBackgroundTool(callID, text, status string) {
 	tc.clearInflight(callID)
 	tc.engineInbox.Push(engineToolResultItem(callID, text, status != "completed"))
+	// 同步 / 失败 / 取消结果回填 → 若本帧仍有其他在飞项，立即投递待插意向。
+	tc.server.flushInsertIntents(tc)
 }
 
 // publishInterrupted 发布 `session-interrupted`（前端 `llm-interrupted`）：载荷与
@@ -1605,7 +1661,7 @@ func (tc *turnCtx) persistMessage(msg ChatMsg) error {
 // persistMessageKeyed 落库 user/assistant 消息；key 非空 = 就地更新该行（assistant 增量落库
 // 回填同一行，I-176），空 = 新键。返回落库主键（供后续回填复用）。
 func (tc *turnCtx) persistMessageKeyed(msg ChatMsg, key string) (string, error) {
-	store := newSessionStore(tc.server.bus, tc.req.InstanceID)
+	store := tc.server.newSessionStore(tc.req.InstanceID)
 	return store.AppendFullKeyed(tc.req.Turn, msg, key)
 }
 
@@ -1614,7 +1670,7 @@ func (tc *turnCtx) toolCallInfo(toolCallID string) (string, any) {
 	if toolCallID == "" {
 		return "", nil
 	}
-	msgs := newSessionStore(tc.server.bus, tc.req.InstanceID).LoadMessages(tc.req.Turn)
+	msgs := tc.server.newSessionStore(tc.req.InstanceID).LoadMessages(tc.req.Turn)
 	for _, m := range msgs {
 		if m.Role != "assistant" {
 			continue
@@ -1649,7 +1705,7 @@ func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]a
 	if meta := tc.server.gc.ToolMeta(name); len(meta) > 0 {
 		msg["_meta"] = meta
 	}
-	id, err := newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, "")
+	id, err := tc.server.newSessionStore(tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, "")
 	if err != nil || id == "" {
 		// B-42：落库失败仅留痕（不阻断执行，语义不变；与终态侧 B-33 对称）。
 		logf("[chonkpilot-server] 工具 running 落库失败（turn=%s tool_call_id=%s）: err=%v id=%q\n",
@@ -1677,6 +1733,12 @@ func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]a
 // 该行主键**就地回填**（recovered 轮次无内存主键时由 data 面按 (turn_id, tool_call_id) 复用）；
 // 未落过 running（白名单拒绝 / 落库失败）→ 新键落一条完整记录。status 与 tool_call_status 同源。
 func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *persist.ToolAsyncContent) {
+	tc.persistToolResultAsk(toolCallID, result, status, async, "")
+}
+
+// persistToolResultAsk 同 persistToolResult，但保留 `messages.ask_id`（AskUser S4：占位结果
+// 回填同一 running 行时不能丢掉提问关联 id，供失效回执 / 历史回查）。
+func (tc *turnCtx) persistToolResultAsk(toolCallID, result, status string, async *persist.ToolAsyncContent, askID string) {
 	// 发起信息（工具名/参数）优先取本进程内存登记（persistToolRunning 时写入，B-05）：
 	// 正常流程零额外读库；仅恢复轮次等未登记路径回落库内反查（toolCallInfo）。
 	tc.mu.Lock()
@@ -1704,6 +1766,9 @@ func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *p
 		"tool_call_id":     toolCallID,
 		"tool_call_status": status,
 	}
+	if askID != "" {
+		msg["ask_id"] = askID
+	}
 	// _meta：该工具自身的 meta 子集（gateway tools/list 缓存原文；I-60），随消息落库并回带
 	// 前端（data-session-history / load-messages），供前端本地判断超时裁决项。
 	if meta := tc.server.gc.ToolMeta(name); len(meta) > 0 {
@@ -1711,7 +1776,7 @@ func (tc *turnCtx) persistToolResult(toolCallID, result, status string, async *p
 	}
 	// 工具终态结果落库失败仅留痕（B-33）：该结果仍会喂给 LLM，但 DB（message 表）缺此条时，
 	// 重载/重启后上下文出现「助理发起 tool_call 但无 tool 结果」断链；返回值语义不变。
-	if _, err := newSessionStore(tc.server.bus, tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key); err != nil {
+	if _, err := tc.server.newSessionStore(tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key); err != nil {
 		logf("[chonkpilot-server] 工具结果落库失败（turn=%s key=%s）: %v\n", tc.req.Turn, key, err)
 	}
 }
@@ -1750,12 +1815,4 @@ func retryableErr(err error) bool {
 		return le.Retryable
 	}
 	return false
-}
-
-// sleepCtx 可取消的等待（重试间隔）。
-func sleepCtx(ctx context.Context, d time.Duration) {
-	select {
-	case <-time.After(d):
-	case <-ctx.Done():
-	}
 }

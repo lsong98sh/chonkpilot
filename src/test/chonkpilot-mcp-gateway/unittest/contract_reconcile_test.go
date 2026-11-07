@@ -217,63 +217,54 @@ func TestGatewayChangedEventSubsetOfContract(t *testing.T) {
 	}
 }
 
-// TestRegistrantCallbackPayloadSubsetOfContract 驱动 gateway → 注册方远程回调（§5.4），断言 gateway
-// **实际发出的回调载荷**键 ⊆ 契约（B3 检索/引擎面：codegraph-tool-call / vfts-tool-call）。
-// 结果侧（插件 onToolCall 回执形状）不在本面驱动，见 TestGatewayNotDrivenRegistry 登记。
-func TestRegistrantCallbackPayloadSubsetOfContract(t *testing.T) {
-	c := crLoad(t)
-	byTopic := c.byTopic()
+// TestRegistrantCallbackPayloadShape 驱动 gateway → 注册方远程回调（§5.4），断言 gateway
+// 实际发出的回调载荷形状（tool / args / context）。
+// 2026-11-05：原 codegraph-tool-call / vfts-tool-call 已退场（插件改走 MCP OnRequest），
+// 本用例改用测试专用 handler_subject，不再做契约键对账。
+func TestRegistrantCallbackPayloadShape(t *testing.T) {
+	const topic = "cr-callback-topic"
+	bus, _ := startTestGW(t, nil)
 
-	for _, topic := range []string{"codegraph-tool-call", "vfts-tool-call"} {
-		topic := topic
-		t.Run(topic, func(t *testing.T) {
-			ts, ok := byTopic[topic]
-			if !ok {
-				t.Fatalf("契约未收录主题 %s", topic)
-			}
-			bus, _ := startTestGW(t, nil)
-
-			got := make(chan map[string]any, 1)
-			sub, err := bus.On(topic, 0, func(_ context.Context, _ string, v *mq.Value) error {
-				var m map[string]any
-				if json.Unmarshal(v.Payload, &m) == nil {
-					select {
-					case got <- m:
-					default:
-					}
-				}
-				// 回执：镜像插件 toolReply 形态（gateway regProv 仅读 content/isError）。
-				v.Result = map[string]any{
-					"resultType": "complete",
-					"content":    []any{map[string]any{"type": "text", "text": "ok"}},
-					"isError":    false,
-				}
-				return nil
-			})
-			if err != nil {
-				t.Fatalf("subscribe: %v", err)
-			}
-			defer func() { _ = sub.Unsubscribe() }()
-
-			callMethod(t, bus, "tools/register", map[string]any{
-				"name": "cr_cb_tool", "description": "d", "handler_subject": topic,
-			})
-			callMethod(t, bus, "tools/call", map[string]any{
-				"name": "cr_cb_tool", "arguments": map[string]any{},
-				// turn 上下文（tools/call 顶层嵌入 Context）→ 回调载荷应带 context。
-				"session": "s1", "turn": "t1", "instance_id": "ins1", "tool_call_id": "tc1",
-			})
-
+	got := make(chan map[string]any, 1)
+	sub, err := bus.On(topic, 0, func(_ context.Context, _ string, v *mq.Value) error {
+		var m map[string]any
+		if json.Unmarshal(v.Payload, &m) == nil {
 			select {
-			case m := <-got:
-				crAssertKeys(t, topic, "payload", ts.Payload, m)
-				if _, ok := m["context"]; !ok {
-					t.Errorf("%s 回调载荷缺 context（tools/call 已下发 turn 上下文）: %v", topic, m)
-				}
-			case <-time.After(3 * time.Second):
-				t.Fatalf("%s 未收到 gateway 回调载荷", topic)
+			case got <- m:
+			default:
 			}
-		})
+		}
+		// 回执：镜像插件 toolReply 形态（gateway regProv 仅读 content/isError）。
+		v.Result = map[string]any{
+			"resultType": "complete",
+			"content":    []any{map[string]any{"type": "text", "text": "ok"}},
+			"isError":    false,
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	callMethod(t, bus, "tools/register", map[string]any{
+		"name": "cr_cb_tool", "description": "d", "handler_subject": topic,
+	})
+	callMethod(t, bus, "tools/call", map[string]any{
+		"name": "cr_cb_tool", "arguments": map[string]any{},
+		// turn 上下文（tools/call 顶层嵌入 Context）→ 回调载荷应带 context。
+		"session": "s1", "turn": "t1", "instance_id": "ins1", "tool_call_id": "tc1",
+	})
+
+	select {
+	case m := <-got:
+		for _, k := range []string{"tool", "args", "context"} {
+			if _, ok := m[k]; !ok {
+				t.Errorf("%s 回调载荷缺 %s: %v", topic, k, m)
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("%s 未收到 gateway 回调载荷", topic)
 	}
 }
 
@@ -285,14 +276,13 @@ func TestGatewayNotDrivenRegistry(t *testing.T) {
 
 	// 本套件**已驱动**的 gateway 面主题（见 TestGatewayResultKeysSubsetOfContract /
 	// TestGatewayTaskReportEventSubsetOfContract / TestGatewayChangedEventSubsetOfContract /
-	// TestRegistrantCallbackPayloadSubsetOfContract 实际驱动的主题）。
+	// TestRegistrantCallbackPayloadShape 实际驱动的主题）。
 	driven := map[string]bool{
 		"mcp-tools-list": true, "mcp-tools-call": true, "mcp-tools-register": true, "mcp-tools-unregister": true,
 		"mcp-prompts-list": true, "mcp-prompts-register": true, "mcp-prompts-unregister": true,
 		"mcp-resources-list": true, "mcp-resources-register": true, "mcp-resources-unregister": true,
 		"mcp-servers-list": true, "mcp-gateway-check": true, "mcp-gateway-reload": true,
 		"mcp-tasks-report": true, "mcp-gateway-changed": true,
-		"codegraph-tool-call": true, "vfts-tool-call": true,
 	}
 
 	entries := []struct {
@@ -308,8 +298,6 @@ func TestGatewayNotDrivenRegistry(t *testing.T) {
 		{"mcp-tools-progress", "下行进度事件（GATEWAY-2 L8）：须一个会上报 notifications/progress 的假下游 + 时序；载荷形状（字段对齐 / total 缺省不写键）由 gwadapter/mqadapter 的 TestProgressHandlerEmitsContractTopic 断言"},
 		{"mcp-tools-wait", "阻塞等待异步工具终态（依赖执行池 + 超时/取消时序），单测级最小驱动成本高；由 async 专测与 gateway 单测覆盖"},
 		{"history-pre-tool-hook", "前置钩子主题由注册方（plugin-history）声明 handler_subject/pre_hook_subject 后触发；gateway 侧仅转发，留待插件侧对账"},
-		{"codegraph-tool-call", "**结果侧**未驱动：codegraph 插件 onToolCall 需引擎子进程/实例装配；回执形状 {resultType,content,isError} 由插件单测 TestToolReply 断言。**载荷侧**已由 TestRegistrantCallbackPayloadSubsetOfContract 驱动"},
-		{"vfts-tool-call", "**结果侧**未驱动：vfts 插件 onToolCall 需引擎子进程/实例装配；回执形状由插件单测断言。**载荷侧**已由 TestRegistrantCallbackPayloadSubsetOfContract 驱动"},
 	}
 	declared := c.byTopic()
 	registered := map[string]bool{}

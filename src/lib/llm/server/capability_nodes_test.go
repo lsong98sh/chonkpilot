@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -94,6 +95,13 @@ func TestCapabilityNodesRuntime(t *testing.T) {
 
 	userTool := "ins-test-user_user_demo"
 	prjTool := "ins-test-project_prj_demo"
+	// 目录节点接入在后台（gateway servers/register 会 spawn 下游进程）→ 按事件最终收敛断言。
+	if _, ok := waitTool(t, s, userTool, true, 5*time.Second); !ok {
+		t.Fatalf("用户级工具未接入 tools/list")
+	}
+	if _, ok := waitTool(t, s, prjTool, true, 5*time.Second); !ok {
+		t.Fatalf("项目级工具未接入 tools/list")
+	}
 	defs, err := s.gc.ListTools(context.Background())
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
@@ -121,9 +129,9 @@ func TestCapabilityNodesRuntime(t *testing.T) {
 		t.Fatalf("LLM 工具面缺用户/项目级工具: %v", llmNames)
 	}
 
-	// 幂等：重复 instance-register 不重复建节点、不产生重复工具。
-	s.onInstanceRegister("instance-register", regPayload)
-	if n := len(s.dirNodes["ins-test"]); n != 2 {
+	// 幂等：重复接入不重复建节点、不产生重复工具（直调同步路径，便于退出前收口）。
+	s.registerCapabilityNodes("ins-test", testWorkDir)
+	if n := len(capDirNodesOf(s, "ins-test")); n != 2 {
 		t.Fatalf("幂等注册后节点数应为 2，got %d", n)
 	}
 	defs2, _ := s.gc.ListTools(context.Background())
@@ -133,7 +141,7 @@ func TestCapabilityNodesRuntime(t *testing.T) {
 
 	// 退出 → 对称注销两个节点，运行时工具面清除。
 	s.onExit("instance-exit", jb(map[string]any{"instance_id": "ins-test"}))
-	if _, ok := s.dirNodes["ins-test"]; ok {
+	if len(capDirNodesOf(s, "ins-test")) != 0 {
 		t.Fatalf("退出后 dirNodes 应清空")
 	}
 	defs3, _ := s.gc.ListTools(context.Background())
@@ -169,16 +177,27 @@ func TestCapabilityNodesPrjUsr(t *testing.T) {
 	s.registerCapabilityNodes("ins-test", testWorkDir)
 
 	prjUsrTool := "ins-test-prjusr_prjusr_demo"
-	defs, err := s.gc.ListTools(context.Background())
-	if err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
-	got := map[string]ToolDef{}
-	for _, d := range defs {
-		got[d.Name] = d
+	// capWatcher 的去抖重扫可能与显式重扫交错（先注销再重建，进程拉起有毫秒级窗口）；
+	// 测试按事件最终收敛断言，不在窗口内判失败。
+	var got map[string]ToolDef
+	var lastDefs []ToolDef
+	for i := 0; i < 100; i++ {
+		defs, err := s.gc.ListTools(context.Background())
+		if err != nil {
+			t.Fatalf("ListTools: %v", err)
+		}
+		lastDefs = defs
+		got = map[string]ToolDef{}
+		for _, d := range defs {
+			got[d.Name] = d
+		}
+		if _, ok := got[prjUsrTool]; ok {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if _, ok := got[prjUsrTool]; !ok {
-		t.Fatalf("prjusr 工具未接入 tools/list: %v", toolNames(defs))
+		t.Fatalf("prjusr 工具未接入 tools/list: %v", toolNames(lastDefs))
 	}
 	if !got[prjUsrTool].Hot {
 		t.Fatalf("prjusr hot=true 契约应标记 hot")
@@ -201,7 +220,98 @@ func TestCapabilityNodesPrjUsr(t *testing.T) {
 
 	// 退出 → 对称注销（含 prjusr）。
 	s.onExit("instance-exit", jb(map[string]any{"instance_id": "ins-test"}))
-	if _, ok := s.dirNodes["ins-test"]; ok {
+	if len(capDirNodesOf(s, "ins-test")) != 0 {
 		t.Fatalf("退出后 dirNodes 应清空")
+	}
+}
+
+// capDirNodesOf 持锁读 dirNodes（capWatcher / 扫描 goroutine 会并发写该表）。
+func capDirNodesOf(s *Server, instanceID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.dirNodes[instanceID]...)
+}
+
+// TestCoreMCPPathInDeploymentLayouts 校验 dir 节点前门 core-mcp-server 的**部署布局解析**：
+// 桌面产物把 core-mcp-server 与独立 MCP 部署同置于 `dist/other/`（03-构建与部署 §1 /
+// build-mcp-server.ps1），旧实现只认 `<exeDir>/<name>` 与 `<exeDir>/mcps/core-mcp/<name>`
+// → 用户/项目/项目私有级 dir 节点全部注册失败（capability 原语不进工具面）。
+// 期望（规格口径 KB-001-S05 · 21-llm-server §2.1）：上述布局均能定位到该 exe。
+func TestCoreMCPPathInDeploymentLayouts(t *testing.T) {
+	name := "chonkpilot-core-mcp-server"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	layouts := []struct {
+		desc string
+		rel  string // 相对 exeDir 的目录（"" = exeDir 根）
+	}{
+		{"扁平产物根", ""},
+		{"62 §6 文档口径 mcps/core-mcp", filepath.Join("mcps", "core-mcp")},
+		{"build-mcp-server 部署区 other", "other"},
+		{"历史便携布局 capability/executors", filepath.Join("capability", "executors")},
+	}
+	for _, tc := range layouts {
+		t.Run(tc.desc, func(t *testing.T) {
+			exeDir := t.TempDir()
+			want := filepath.Join(exeDir, tc.rel, name)
+			if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if err := os.WriteFile(want, []byte("stub"), 0o644); err != nil {
+				t.Fatalf("write stub: %v", err)
+			}
+			got, err := coreMCPPathIn(exeDir)
+			if err != nil {
+				t.Fatalf("应定位到 %s，got err=%v", tc.desc, err)
+			}
+			if got != want {
+				t.Fatalf("定位结果 = %q，want %q", got, want)
+			}
+		})
+	}
+
+	// 旧二元布局：exe 在 dist/desktop → 前门在 dist/other。
+	t.Run("旧二元布局 dist/desktop + dist/other", func(t *testing.T) {
+		root := t.TempDir()
+		exeDir := filepath.Join(root, "desktop")
+		if err := os.MkdirAll(exeDir, 0o755); err != nil {
+			t.Fatalf("mkdir exe dir: %v", err)
+		}
+		want := filepath.Join(root, "other", name)
+		if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+			t.Fatalf("mkdir other: %v", err)
+		}
+		if err := os.WriteFile(want, []byte("stub"), 0o644); err != nil {
+			t.Fatalf("write stub: %v", err)
+		}
+		got, err := coreMCPPathIn(exeDir)
+		if err != nil || got != want {
+			t.Fatalf("got (%q, %v)，want %q", got, err, want)
+		}
+	})
+
+	// 优先级：扁平整装（现行产物）优先于 other 部署区（同名旧副本不得抢先生效）。
+	t.Run("扁平产物优先", func(t *testing.T) {
+		exeDir := t.TempDir()
+		flat := filepath.Join(exeDir, name)
+		if err := os.WriteFile(flat, []byte("stub"), 0o644); err != nil {
+			t.Fatalf("write flat stub: %v", err)
+		}
+		other := filepath.Join(exeDir, "other", name)
+		if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+			t.Fatalf("mkdir other: %v", err)
+		}
+		if err := os.WriteFile(other, []byte("stub"), 0o644); err != nil {
+			t.Fatalf("write other stub: %v", err)
+		}
+		if got, err := coreMCPPathIn(exeDir); err != nil || got != flat {
+			t.Fatalf("got (%q, %v)，want %q", got, err, flat)
+		}
+	})
+
+	// 全部布局缺失 → 明确报错（含已查找路径，便于部署诊断）。
+	if _, err := coreMCPPathIn(t.TempDir()); err == nil {
+		t.Fatal("全部候选缺失应返回错误（不得静默成功）")
 	}
 }

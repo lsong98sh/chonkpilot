@@ -86,15 +86,24 @@ def main():
         return payload.get("result") or ""
 
     def case_m1_surface():
-        res = (c.req("tools-list", {}) or {})
-        if isinstance(res, str):
-            res = json.loads(res)
-        tools = res.get("tools") or []
-        names = {((t or {}).get("name") or "") for t in tools}
-        for want in ("mcp_find", "mcp_load", "mcp_invoke"):
-            if want not in names:
-                raise TestError("工具面缺 %s（外部元工具注册未生效）：%s" % (want, sorted(names)))
-        return "n=%d" % len(names)
+        # 期望（BRIDGE-2 T7① / 26 §5）：三个元工具经外部注册后在客户端能力面 tools-list 可见。
+        # 时序：插件 MCP（manifest `mcp.mode=http`）由插件宿主在 GUI ready **之后**异步登记到
+        # gateway（实测：tools-list 6 → 48 → 55 项，约 2s 收敛）→ 本断言须轮询到工具面收敛，
+        # 而不是拿到首次快照就判缺失（旧版固定 sleep 0.4s → 误报"外部注册未生效"）。
+        deadline = time.time() + 30
+        names = set()
+        while time.time() < deadline:
+            res = (c.req("tools-list", {}) or {})
+            if isinstance(res, str):
+                res = json.loads(res)
+            tools = res.get("tools") or []
+            names = {((t or {}).get("name") or "") for t in tools}
+            if all(want in names for want in ("mcp_find", "mcp_load", "mcp_invoke")):
+                return "n=%d" % len(names)
+            time.sleep(0.3)
+        missing = [w for w in ("mcp_find", "mcp_load", "mcp_invoke") if w not in names]
+        raise TestError("工具面缺 %s（外部元工具注册未生效，30s 内未收敛）：%s"
+                        % (missing, sorted(names)))
 
     def case_m2_find():
         txt = run_turn("call meta-find", "mcp_find")

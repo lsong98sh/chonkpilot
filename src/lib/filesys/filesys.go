@@ -391,15 +391,59 @@ func (f *Filesys) onRename(_ context.Context, _ string, v *mq.Value) error {
 		v.Result = map[string]any{"ok": true, "path": np}
 		return nil
 	}
-	if _, err := os.Stat(np); err == nil && req.Overwrite == 0 {
+	// 大小写不敏感文件系统（Windows / 默认 macOS）上，`a.txt` → `A.TXT` 的 `np` 会命中
+	// 源文件自身，`os.Stat(np)` 因而误报「目标已存在」。仅当目标存在且与源**是同一文件**
+	// （os.SameFile）时，视为大小写/等价路径改名并放行；目标为不同文件时仍保持 exists。
+	statP, errP := os.Stat(p)
+	statNP, errNP := os.Stat(np)
+	sameFile := errP == nil && errNP == nil && os.SameFile(statP, statNP)
+	if errNP == nil && req.Overwrite == 0 && !sameFile {
 		v.Errors = append(v.Errors, errExists("target already exists"))
 		return nil
 	}
-	if err := os.Rename(p, np); err != nil {
+	// Windows 直接 os.Rename(p, np) 对 case-only 改名仍可能报 exists（两者被视作同一目标），
+	// 故同文件改名走「同目录临时名」两步 rename（p → temp → np），失败时回滚 temp → p。
+	if sameFile {
+		if err := renameSameFile(p, np); err != nil {
+			v.Errors = append(v.Errors, errRename(err.Error()))
+			return nil
+		}
+	} else if err := os.Rename(p, np); err != nil {
 		v.Errors = append(v.Errors, errRename(err.Error()))
 		return nil
 	}
 	v.Result = map[string]any{"ok": true, "path": np}
+	return nil
+}
+
+// renameSameFile 用于大小写/等价路径改名（源与目标经 os.Stat 判定为同一文件，但路径字符串不同）：
+// 同目录下取唯一临时名做两步 rename（p → temp → np）。Windows 对 case-only 的直接 rename
+// 会因源与目标被视作同一对象而失败；两步改名绕开该限制。第二步失败时回滚 temp → p，
+// 回滚也失败则在错误中同时报告（不掩盖原始失败）。
+func renameSameFile(p, np string) error {
+	dir := filepath.Dir(p)
+	tmpf, err := os.CreateTemp(dir, ".filesys-rename-*")
+	if err != nil {
+		return err
+	}
+	tmp := tmpf.Name()
+	if err := tmpf.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	// 临时名只用于占位；先删除空文件，避免把目录 rename 到已有文件上（Windows 会拒绝）。
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(p, tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, np); err != nil {
+		if rbErr := os.Rename(tmp, p); rbErr != nil {
+			return fmt.Errorf("%w（回滚失败：%v）", err, rbErr)
+		}
+		return err
+	}
 	return nil
 }
 

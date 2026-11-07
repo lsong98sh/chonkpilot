@@ -42,6 +42,7 @@
   "cannot_delete_main": "Main Agent cannot be deleted",
   "copy_agent": "Copy",
   "optimize_prompt": "Optimize Prompt",
+  "recover_optimize": "Restore Pre-Optimize",
   "optimize_title": "Scenario agent system prompt ({name})",
   "optimize_use_case": "Scenario agent system prompt: defines this agent's role, capabilities and behavioral constraints in the scenario; concatenated with global/scenario layer prompts at runtime",
   "insert_variable": "Insert Variable",

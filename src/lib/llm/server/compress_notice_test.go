@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/lsong98sh/chonkpilot-agent/session"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
-	"github.com/lsong98sh/chonkpilot-agent/session"
 )
 
 // compressNotices 收集 tool-notify 上 plugin=compress 的载荷（并发安全）。

@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { message } from '@ckfw/components/ui/index.js'
 import { i18n } from '../plugins/i18n'
 import { classifyError } from './errorMessage'
+import { mergeHistoryWithLocals, withoutDuplicates } from './sessionMerge'
 
 function computeContentSize(callArgs, result) {
   let sz = 0
@@ -52,6 +53,9 @@ function dbMsgToView(dbMsg) {
       result: dbMsg.result || '',
       has_more: !!dbMsg.has_more,
       result_success: resultSuccess,
+      // 通知轮标记（若落库视图携带）
+      notify: dbMsg.notify,
+      notify_turn: dbMsg.notify_turn,
       createdAt: dbMsg.created_at,
       _meta: dbMsg._meta || null, // 该工具自身的 meta 子集（I-60；来自落库记录）→ 本地判断裁决项
       fromHistory: true, // 来自 DB 的历史消息：reasoning 默认折叠
@@ -61,6 +65,8 @@ function dbMsgToView(dbMsg) {
     id: dbMsg.message_id,
     role: dbMsg.role,
     type: dbMsg.type || 'text',
+    // 用户消息来源标记（text/notify/continue/resume）：历史恢复后通知轮判定用
+    kind: dbMsg.kind || '',
     content: dbMsg.content || '',
     has_more: !!dbMsg.has_more,
     createdAt: dbMsg.created_at,
@@ -133,6 +139,9 @@ export function createSessionMessages() {
         arguments: data.arguments,
         result: null,
         result_success: null,
+        // 通知轮标记（若事件携带）：工具重试候选判定据此排除通知轮产物
+        notify: data.notify,
+        notify_turn: data.notify_turn,
         _meta: data._meta || null, // 该工具自身的 meta 子集（I-60；随 llm-receive tool-call 推送）
         id: 'tp_' + data.tool_call_id,
         createdAt: new Date().toISOString(),
@@ -206,6 +215,8 @@ export function createSessionMessages() {
         arguments: p.arguments || '',
         simplified: p.simplified,
         purpose: p.purpose,
+        notify: p.notify,
+        notify_turn: p.notify_turn,
         _meta: p._meta, // 该工具自身的 meta 子集（I-60；server 随 tool-call 推送）
       })
     }
@@ -279,14 +290,12 @@ export function createSessionMessages() {
       if (res && res.messages) {
         // 竞态保护（2026-10-31）：loadMessages 期间本地新增的消息（乐观 user 气泡 / 流式
         // assistant 段）不能被历史快照整体替换冲掉——历史快照可能早于这些消息落库。
-        // 只保留「本地新增且历史里没有同内容同角色」的条目，追加在历史之后（时序 = 最新）。
+        // 去重口径（2026-11-07）：按**消息身份**（id / tool_call_id）判重——tool_pair 的本地
+        // 卡 role=assistant、DB 视图 role=tool，旧的 role+type+content 判重永不命中 →
+        // 流式中途/之后历史重载会把同一次调用渲染两张（同 tp_<tool_call_id>，:key 冲突）。
         const hist = res.messages.map(dbMsgToView)
         const locals = messages.value.filter(m => m && m.localOnly)
-        messages.value = hist
-        for (const m of locals) {
-          const dup = hist.some(h => h.role === m.role && h.type === m.type && (h.content || '') === (m.content || ''))
-          if (!dup) messages.value.push(m)
-        }
+        messages.value = mergeHistoryWithLocals(hist, locals)
       }
       hasMore.value = !!(res && res.has_more)
       turns.value = (res && res.turns) || []
@@ -340,7 +349,9 @@ export function createSessionMessages() {
       if (gen !== loadGen) return // 代次已变：丢弃本批，不写任何状态
       if (res && res.messages && res.messages.length > 0) {
         const oldMsgs = res.messages.map(dbMsgToView)
-        messages.value = [...oldMsgs, ...messages.value]
+        // 前插更早历史：同一 id / tool_call_id 已在当前列表（含本地流式）→ 丢弃旧份，
+        // 避免重复 :key 与同一次工具调用出现两张卡。
+        messages.value = [...withoutDuplicates(messages.value, oldMsgs), ...messages.value]
       }
       hasMore.value = !!(res && res.has_more)
       turns.value = [...((res && res.turns) || []), ...turns.value]

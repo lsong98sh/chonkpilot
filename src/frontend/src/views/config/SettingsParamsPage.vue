@@ -533,7 +533,7 @@ onUnmounted(() => unsubs.forEach(fn => fn()))
 </script>
 
 <style scoped>
-.settings-page { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.settings-page { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; }
 .settings-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .settings-tabs :deep(.b-tabs-body) { flex: 1; overflow-y: auto; min-height: 0; padding: 8px 0; }
 .page-body { display: flex; flex-direction: column; gap: 10px; }
@@ -543,6 +543,14 @@ onUnmounted(() => unsubs.forEach(fn => fn()))
 /* ⑤ dirty 标记 / ③ 校验错误（仅显示） */
 .unsaved-mark { color: var(--warning, #e6a23c); }
 .param-error { font-size: 12px; color: var(--danger, #dc3545); }
+/* 预览区窄面板（默认 ~300px）：200px 固定标签 + 输入框最小宽度会把输入裁掉。
+   容器查询在窄面板下改纵向堆叠；宽面板保持原布局。 */
+@container (max-width: 520px) {
+  .tab-toolbar { flex-wrap: wrap; }
+  .param-row { flex-direction: column; align-items: stretch; gap: 4px; }
+  .param-label { width: auto; }
+  .param-input { max-width: none; }
+}
 .param-row { display: flex; align-items: center; gap: 10px; }
 .param-label { width: 200px; flex-shrink: 0; font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .param-input { flex: 1; display: flex; align-items: center; gap: 6px; max-width: 420px; }

@@ -253,7 +253,8 @@ class AskUserManager {
   }
 
   // 提交路径（20-gui）：发 ask-user-reply 事件（{ask_id, answer, custom, dialog_id}），
-  // server 按 ask 状态权威路由——活跃回填当前 turn；已超时关闭则转为普通 user 消息（新 turn）。
+  // server 按 ask 状态权威路由（AskUser S4）：答复记入 (instance, session) 批次，
+  // 同会话全部提问答完后合并为一条用户消息投递（原轮运行中 → 轮末起新轮；否则立即起新轮）。
   // 前端不再判断 deadline、不再 sendQueue 兜底、不再发 askUserQueued。
   submitAnswer(item, answer) {
     sendAskReply(item, answer)

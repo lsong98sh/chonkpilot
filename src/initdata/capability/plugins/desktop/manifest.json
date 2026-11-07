@@ -8,7 +8,6 @@
   "publisher": "chonkpilot",
   "product": true,
   "runtime": {
-    "mode": "managed",
     "exe": "chonkpilot-plugin-desktop.exe",
     "args": [],
     "autostart": true,

@@ -120,7 +120,9 @@ function toneOf(state) {
   word-break: break-word;
 }
 .td-empty {
-  color: var(--fg-disabled);
+  /* 空态提示属「可读文案」而非禁用控件：用 text-muted（三主题均 ≥4.5:1），
+     不用 --fg-disabled（light #adb5bd 在 #fff 上仅 1.97:1）。 */
+  color: var(--text-muted);
 }
 .td-badge {
   display: inline-flex;

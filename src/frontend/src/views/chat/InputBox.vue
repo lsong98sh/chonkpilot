@@ -620,8 +620,10 @@ onUnmounted(() => {
   /* 圆角比全局 --border-radius(4px) 略大：猫咪趴边的视觉更柔和 */
   border-radius: 10px;
   font-size: var(--font-size-sm);
-  /* 内部白底：同时作为遮挡猫身/尾巴内侧的不透明层（故需 z-index 高于 .cat-peek / .cat-tail） */
-  background: #fff;
+  /* 内部底：同时作为遮挡猫身/尾巴内侧的不透明层（故需 z-index 高于 .cat-peek / .cat-tail）。
+     THEME-1 三主题：用输入底 token（light=白 / dark=#313244 / nord=#434c5e）——
+     写死 #fff 会让暗色主题下整个输入区仍是一块白板。 */
+  background: var(--input-bg);
   position: relative;
   z-index: 1;
   color: var(--text-primary);

@@ -72,6 +72,14 @@
             <PromptVariablesButton :disabled="optimizing" @insert="insertVariable" />
             <Button size="mini" text v-mq:[EventNames.agentOptimize].click :loading="optimizing" :disabled="optimizing">
               <Icon name="magic-stick" size="14" /> {{ $t('scenario.optimize_prompt') }}</Button>
+            <!-- SCEN-005-S02【恢复优化】：存在优化前快照时可见（优化中禁用）→ 回填草稿（不自动保存） -->
+            <Button
+              v-if="canRecoverOptimize"
+              size="mini"
+              text
+              :disabled="optimizing"
+              @click="emit('recover-optimize')"
+            >{{ $t('scenario.recover_optimize') }}</Button>
             <!-- 「AI 编写」：输入角色 / 要点 → 走 LLM 流式链路按智能体提示词规范撰写（正文默认大纲由后端完成） -->
             <Button size="mini" text :disabled="optimizing || writing" @click="openAiWrite">
               <Icon name="magic-stick" size="14" /> {{ $t('scenario.ai_write') }}</Button>
@@ -415,6 +423,11 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  // 是否存在该 agent 的「优化前快照」→ 显示【恢复优化】按钮（由父组件按 _key 查询）
+  canRecoverOptimize: {
+    type: Boolean,
+    default: false,
+  },
   // 是否显示「复制」按钮（场景子 agent = 复制为新 agent；独立「智能体原语」编辑 = 不适用 → false）
   showCopy: {
     type: Boolean,
@@ -422,7 +435,7 @@ const props = defineProps({
   },
 })
 
-const emit = defineEmits(['update:agent', 'copy', 'optimize'])
+const emit = defineEmits(['update:agent', 'copy', 'optimize', 'recover-optimize'])
 
 const currentTab = ref('basic')
 const expandedCategories = ref(new Set())

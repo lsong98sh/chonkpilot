@@ -474,6 +474,8 @@ var frontMethodSubjects = map[string]string{
 	msgkeys.TopicLlmInboxPromote: "inbox-promote",
 	msgkeys.TopicLlmInboxRevert:  "inbox-revert",
 	msgkeys.TopicAskUserReply:    "session-ask-reply",
+	// 「聊一聊」后点「完成」：解除提问 + 更新 tool-result，不通知 LLM（AskUser S4，2026-11-06）。
+	msgkeys.TopicAskResolve: msgkeys.TopicAskResolve,
 	// Ask 中心订阅（后端唯一分发，2026-11-05）：前端 Ask 中心窗口挂载/卸载时登记/退订。
 	msgkeys.TopicAskCenterSubscribe:   msgkeys.TopicAskCenterSubscribe,
 	msgkeys.TopicAskCenterUnsubscribe: msgkeys.TopicAskCenterUnsubscribe,
@@ -641,6 +643,11 @@ func (b *Bridge) injectInstance(payloadJSON string) string {
 	return string(raw)
 }
 
+// publish 发布一条事件并等派发结果。
+//
+// §10.3 边缘白名单（2026-11-06 判据）：调用方 = HTTP/前端边缘入口（PublishEvent / splitLLMStart）
+// 与窗口关闭线程（CloseInstance 走 publishWithTimeout），**不在总线派发线程 / 会话消息循环内**；
+// 桥是传输门面，上行请求需要同步结果信封，破坏性异步化会改变响应形状 → 保留。
 func (b *Bridge) publish(subject string, payload interface{}) {
 	var raw []byte
 	switch v := payload.(type) {
@@ -665,6 +672,7 @@ func (b *Bridge) publish(subject string, payload interface{}) {
 
 // publishV 发布并等待派发结果（promise 语义）：返回订阅者写回的 Result 与收集的 Errors。
 // 事件类主题（无订阅者写回）→ result=nil、errs=nil，行为与 publish 一致。
+// §10.3 边缘白名单：调用方 = `PublishEvent`（HTTP 上行 / 前端 eval 边缘），需同步结果信封。
 func (b *Bridge) publishV(subject string, payload interface{}) (result any, errs []error) {
 	var raw []byte
 	switch v := payload.(type) {
@@ -689,6 +697,7 @@ const exitPublishTimeout = 1 * time.Second
 // publishWithTimeout 发布并**至多等待 d**（fire-and-forget 语义；用于退出/关闭路径）：
 // 对进程内总线为同步派发（即时完成）；对 UDS 远程总线，Emit 会**先写出帧**再等应答，超时
 // 仅放弃等待应答（不重试）。避免窗口线程被拖到 CallTimeout（60s）而卡住退出。
+// §10.3 边缘白名单：调用方 = `CloseInstance`（窗口关闭线程），有 1s 上限；非派发线程。
 func (b *Bridge) publishWithTimeout(subject string, payload interface{}, d time.Duration) {
 	var raw []byte
 	switch v := payload.(type) {

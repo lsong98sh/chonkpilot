@@ -269,10 +269,16 @@ def case_general_scenario():
     """
     r = c.req("data-scenario-list", {})
     scns = (r or {}).get("scenarios") or (r or {}).get("list") or []
-    if not scns:
-        raise TestError("场景列表为空（应有出厂场景 default）：%r" % (r,))
+    # 期望值断言（2026-11-07）：必须含出厂场景 default（level=app），不接受“列表可能为空”。
+    # 原断言仅查非空 → dist/capability/scenarios 被别的套件清空时这里被误报为 E6 业务失败。
+    rows = [x for x in scns if isinstance(x, dict)]
+    app_defaults = [x for x in rows if x.get("id") == "default" and x.get("level") == "app"]
+    if not app_defaults:
+        raise TestError("场景列表缺少出厂场景 default（期望 id=default、level=app）：%r" % (r,))
+    if len(app_defaults) != 1:
+        raise TestError("出厂场景 default 在 app 级应恰有 1 条：%r" % (app_defaults,))
     # 先进入"已选场景"态，才能验证"能切回通用"
-    c.mq_emit("scenario-select", {"id": scns[0]["id"]})
+    c.mq_emit("scenario-select", {"id": app_defaults[0]["id"]})
     time.sleep(0.8)
 
     # 打开场景下拉（场景 Tag = 唯一带 inline cursor:pointer 的 Tag；其父 = Popover reference）

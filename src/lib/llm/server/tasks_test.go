@@ -285,11 +285,12 @@ func TestTaskAskUserMultiRecommended(t *testing.T) {
 	if askEv["instance_id"] != "ins-test" {
 		t.Fatalf("session-ask 缺 instance_id: %+v", askEv)
 	}
-	// 应答 → 回填 LLM + ask 任务节点 done
+	// 应答 → 回填 LLM + ask 任务节点 done；先订阅再触发（轮次可能在 Emit 内完成）。
+	tw := watchTurn(t, s.bus, "t-tk-ask")
 	s.bus.Emit(context.Background(), "session-ask-reply", jb(map[string]any{
 		"ask_id": askEv["ask_id"], "answer": "y",
 	}))
-	evs := collectTurn(t, s.bus, "t-tk-ask", 10*time.Second)
+	evs := tw.waitComplete(10 * time.Second)
 	if c := lastComplete(evs); c == nil || c["status"] != "complete" {
 		t.Fatalf("no complete: %+v", evs)
 	}
@@ -327,6 +328,10 @@ func TestTaskAskUserMultiRecommended(t *testing.T) {
 	if !foundAsk {
 		t.Fatal("no ask_user task node")
 	}
+	// 答复驱动的后续轮异步起轮：等落库并收口，避免测试清理与在飞写库竞态
+	//（Windows 下库句柄未释放会导致 TempDir 清理失败）。
+	waitAskAnswerDelivered(t, s, "s-tk-ask", "t-tk-ask", "答：y")
+	waitTurnIdle(t, s, "s-tk-ask")
 }
 
 // TestTaskStopCascadeCancel：task-stop → 级联定位任务子树（parent_id 遍历）→

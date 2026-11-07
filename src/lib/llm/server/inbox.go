@@ -19,8 +19,8 @@ import (
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	sessioninbox "github.com/lsong98sh/chonkpilot-agent/session/inbox"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // inboxAddReq 是 llm-inbox-add 载荷（61 §4.3）。
@@ -61,6 +61,16 @@ type inboxListReq struct {
 
 // inboxAppend 写入一条待处理发送，返回 id。
 func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (string, error) {
+	req.InstanceID = instanceID
+	req.DialogID = s.dialogForWrite(instanceID, req.SessionID)
+	if s.cfg != nil {
+		// 本地有界单事务（§2.4 白名单）：门面直调，避免总线派发线程内 Emit().Wait()。
+		res, err := s.cfg.InboxAppend(req)
+		if err != nil {
+			return "", err
+		}
+		return res.ID, nil
+	}
 	payload := map[string]any{
 		"session":         req.SessionID,
 		"turn_id":         req.TurnID,
@@ -73,8 +83,8 @@ func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (
 		"idempotency_key": req.IdempotencyKey,
 		"source":          req.Source,
 	}
-	if dlg := s.dialogForWrite(instanceID, req.SessionID); dlg != "" {
-		payload["dialog_id"] = dlg
+	if req.DialogID != "" {
+		payload["dialog_id"] = req.DialogID
 	}
 	res, err := dataRequest(s.bus, "data-inbox-append", map[string]any{
 		"instance_id": instanceID,
@@ -88,9 +98,25 @@ func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (
 
 // inboxList 读 inbox 项（status 缺省 = pending，按 created_at 升序）。
 func (s *Server) inboxList(instanceID, sessionID, status string) ([]facade.InboxItem, error) {
+	req := facade.InboxListRequest{
+		InstanceID: instanceID,
+		DialogID:   s.ensureDialogIndex(instanceID, sessionID),
+		SessionID:  sessionID,
+		Status:     status,
+	}
+	if s.cfg != nil {
+		res, err := s.cfg.InboxList(req)
+		if err != nil {
+			if strings.Contains(err.Error(), "dialog_required") {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return res.Items, nil
+	}
 	payload := map[string]any{"session": sessionID, "status": status}
-	if dlg := s.ensureDialogIndex(instanceID, sessionID); dlg != "" {
-		payload["dialog_id"] = dlg
+	if req.DialogID != "" {
+		payload["dialog_id"] = req.DialogID
 	}
 	res, err := dataRequest(s.bus, "data-inbox-list", map[string]any{
 		"instance_id": instanceID,
@@ -133,12 +159,25 @@ func (s *Server) inboxList(instanceID, sessionID, status string) ([]facade.Inbox
 // inboxUpdate 更新 inbox 项（空字段 = 不改；content 非空 = 就地覆盖正文，
 // 供 NEXTRUN-1 §3.5「同轮多次调用只保留最后一条」）。
 func (s *Server) inboxUpdate(instanceID, id, status, typ, content string) error {
-	payload := map[string]any{"id": id, "status": status, "type": typ, "content": content}
+	req := facade.InboxUpdateRequest{
+		InstanceID: instanceID,
+		ID:         id,
+		Status:     status,
+		Type:       typ,
+		Content:    content,
+	}
 	// 一树一库：按内存索引回查该 inbox 项所属会话 → 补 dialog_id（未知则不写键）。
 	if item, ok := s.inboxLookup(id); ok {
-		if dlg := s.ensureDialogIndex(instanceID, item.SessionID); dlg != "" {
-			payload["dialog_id"] = dlg
-		}
+		req.DialogID = s.ensureDialogIndex(instanceID, item.SessionID)
+	}
+	if s.cfg != nil {
+		// 本地有界单事务（§2.4 白名单）：门面直调，避免总线派发线程内 Emit().Wait()。
+		_, err := s.cfg.InboxUpdate(req)
+		return err
+	}
+	payload := map[string]any{"id": id, "status": status, "type": typ, "content": content}
+	if req.DialogID != "" {
+		payload["dialog_id"] = req.DialogID
 	}
 	_, err := dataRequest(s.bus, "data-inbox-update", map[string]any{
 		"instance_id": instanceID,
@@ -150,7 +189,7 @@ func (s *Server) inboxUpdate(instanceID, id, status, typ, content string) error 
 // ── 内存索引（promote/discard 仅携带 id，需回查 session / type）─────────────
 //
 // LLM-P4（inboxIndex 分桶 / 有界）：
-//   - **分桶**：`inboxPending[session] = {id → type}` 只装 pending 项 → `inboxHasPendingNextTurn`
+//   - **分桶**：`inboxPending[session] = {id → type}` 只装 pending 项 → `inboxHasPending`
 //     由「遍历全部 inbox 项」变为「只看该会话的 pending 项」（长跑进程下 O(总项数) → O(本会话项数)）；
 //   - **有界**：终态项（consumed / discarded）按 FIFO 只保留最近 `inboxTerminalKeep` 条，
 //     超出即从主索引淘汰最旧条目（幂等消费/撤回守卫只对近期项有意义；重启后索引本就从空建立，
@@ -243,17 +282,12 @@ func (s *Server) inboxSetStatus(id, status string) {
 	s.inboxMu.Unlock()
 }
 
-// inboxHasPendingNextTurn 报告该会话是否有待消费的 next_turn 项（内存索引分桶直取；避免无项时也
-// 发起数据面请求——测试/关停期间不必要地打开 prjusr 库）。
-func (s *Server) inboxHasPendingNextTurn(sessionID string) bool {
+// inboxHasPending 报告该会话是否有待消费的 inbox 项（next_turn 或 insert 意向）。
+// 内存索引分桶直取；避免无项时也发起数据面请求（测试/关停期间不必要地打开 prjusr 库）。
+func (s *Server) inboxHasPending(sessionID string) bool {
 	s.inboxMu.Lock()
 	defer s.inboxMu.Unlock()
-	for _, typ := range s.inboxPending[sessionID] {
-		if typ == string(sessioninbox.NextTurn) {
-			return true
-		}
-	}
-	return false
+	return len(s.inboxPending[sessionID]) > 0
 }
 
 // ── 方法面 handler ──────────────────────────────────────────────────────
@@ -261,7 +295,8 @@ func (s *Server) inboxHasPendingNextTurn(sessionID string) bool {
 // onInboxAdd 统一发送入口（2026-11-01 语义调整）：
 //   - 无运行轮 → `next_turn` 落库后立即消费，起新一轮；
 //   - 有运行轮 + `insert=true`（用户显式「插话」）→ 登记 `insert` 意向（pending），
-//     相位可插入时把该会话**全部意向项一次性批量插入**；否则等相位（由轮内 ticker 重试）；
+//     相位可插入时把该会话**全部意向项一次性批量插入**；否则等相位事件（工具派发 /
+//     回执清空）到达时投递；
 //   - 有运行轮 + 缺省 → `next_turn` 排队，本轮结束自动消费。
 //
 // 不再按相位自动插话（原 ClassifyAdd 行为）：插话是用户显式动作。
@@ -311,16 +346,23 @@ func (s *Server) onInboxAdd(_ context.Context, _ string, v *mq.Value) error {
 	}
 	s.inboxRemember(item)
 	s.publishInboxChanged(req.InstanceID, req.Session, "added", []string{id})
+	// 落库期间目标轮可能已收尾（`turnBySessionForAdd` 取到 tc 后才写库）：此时轮末消费可能
+	// 已经跑过、看不到本条 → 按「无运行轮」补发一次消费（否则 next_turn / insert 会滞留）。
+	live := tc != nil && s.turnBySessionForAdd(req.InstanceID, req.Session) == tc
 	if typ == string(sessioninbox.Insert) {
-		// 相位满足 → 该会话全部意向项一次性批量投递（本次新增项也在其中）。
-		s.flushInsertIntents(tc)
+		if live {
+			// 相位满足 → 该会话全部意向项一次性批量投递（本次新增项也在其中）。
+			s.flushInsertIntents(tc)
+		} else {
+			go s.consumeNextTurn(req.InstanceID, req.Session)
+		}
 		v.Result = map[string]any{"ok": true, "id": id, "type": typ}
 		return nil
 	}
 	// 未进入插入帧（排队 / 无运行轮）：等本轮结束或无轮时由 consumeNextTurn 消费。
 	v.Result = map[string]any{"ok": true, "id": id, "type": typ}
-	if tc == nil {
-		// 无运行轮 → 立即以该条起新一轮（设计 §3.3「done / 无 turn → 立即消费」）。
+	if !live {
+		// 无运行轮（或落库期间已收尾）→ 立即以该条起新一轮（设计 §3.3「done / 无 turn → 立即消费」）。
 		go s.consumeNextTurn(req.InstanceID, req.Session)
 	}
 	return nil
@@ -454,7 +496,7 @@ func (s *Server) onInboxPromote(_ context.Context, _ string, v *mq.Value) error 
 		v.Result = map[string]any{"ok": true, "type": string(sessioninbox.Insert)}
 		return nil
 	}
-	// 相位满足 → 全部意向项批量投递（不满足则由轮内 ticker 在相位到达时重试）。
+	// 相位满足 → 全部意向项批量投递（不满足则由下一次相位事件在可插入窗口投递）。
 	s.flushInsertIntents(tc)
 	typ := string(sessioninbox.NextTurn)
 	if anyInsert {
@@ -492,9 +534,11 @@ func (s *Server) onInboxRevert(_ context.Context, _ string, v *mq.Value) error {
 }
 
 // flushInsertIntents 把握手会话的全部 pending `insert` 意向一次性投递给运行轮（2026-11-01 批量插话）：
-//   - 相位不可插入 / 无运行轮 → 不动（等轮内 ticker 重试或轮末降级为 next_turn）；
-//   - 已投递过的项（`inboxQueued`）跳过，避免 ticker 重复投递；
+//   - 相位不可插入 / 无运行轮 → 不动（等下一次相位事件或轮末降级为 next_turn）；
+//   - 已投递过的项（`inboxQueued`）跳过，避免同一相位内重复投递；
 //   - 引擎侧按 FIFO 连续消费 → 同一插入帧内逐条落 messages、一次 LLM 请求（见 agent chat engine）。
+//
+// 触发点 = 相位事件（工具派发 / 回执清空 / inbox-add·promote），**无定时轮询**。
 func (s *Server) flushInsertIntents(tc *turnCtx) {
 	if tc == nil || !tc.insertable() {
 		return
@@ -532,7 +576,7 @@ func (s *Server) flushInsertIntents(tc *turnCtx) {
 	}
 	for _, it := range items {
 		if !tc.pushInbox(it) {
-			// 队列满 / 轮次刚关 → 撤回本次投递标记，等下一次 ticker 重试。
+			// 队列满 / 轮次刚关 → 撤回本次投递标记，等下一次相位事件重新投递。
 			s.inboxUnqueue(it.ID)
 			break
 		}
@@ -571,21 +615,57 @@ func (s *Server) turnBySessionForAdd(instanceID, sessionID string) *turnCtx {
 //
 // 仅主会话自动续轮（子会话 / 群聊由各自调度器驱动）。失败（会话仍忙 / 无项）→ 保持 pending，
 // 等下一次轮次结束或用户「继续」。
+//
+// 单会话串行：同一会话同时只允许一个消费者（否则两个 goroutine 会各起一轮、重复携带同一批
+// 输入 → 「两条 next_turn 合并为两次请求」）。消费期间新到的 pending 由 pass 收尾交接。
 func (s *Server) consumeNextTurn(instanceID, sessionID string) {
-	if sessionID == "" {
-		return
+	for pass := 0; pass < 4; pass++ {
+		if !s.consumeNextTurnPass(instanceID, sessionID) {
+			return
+		}
 	}
+}
+
+// consumeNextTurnPass 执行一次消费；返回 true = 消费期间又有新 pending 且会话已空闲，需要再跑一轮。
+func (s *Server) consumeNextTurnPass(instanceID, sessionID string) (again bool) {
+	if sessionID == "" {
+		return false
+	}
+	s.mu.Lock()
+	stopped := s.stopped
+	s.mu.Unlock()
+	if stopped {
+		return false // 关停中：不再起新轮 / 写库
+	}
+	// 单会话单消费者：拿不到消费权 → 由当前消费者负责收尾（它会看到新入项）。
+	s.inboxMu.Lock()
+	if s.inboxConsuming == nil {
+		s.inboxConsuming = map[string]bool{}
+	}
+	if s.inboxConsuming[sessionID] {
+		s.inboxMu.Unlock()
+		return false
+	}
+	s.inboxConsuming[sessionID] = true
+	s.inboxMu.Unlock()
+	progress := false
+	defer func() {
+		s.inboxMu.Lock()
+		delete(s.inboxConsuming, sessionID)
+		s.inboxMu.Unlock()
+		again = progress && s.inboxHasPending(sessionID) && !s.sessionBusy(instanceID, sessionID)
+	}()
 	// 无待消费项（内存索引）→ 不发起数据面请求（避免无谓打开 prjusr 库 / 关停期噪音）。
-	if !s.inboxHasPendingNextTurn(sessionID) {
-		return
+	if !s.inboxHasPending(sessionID) {
+		return false
 	}
 	if kind := s.sessionRow(instanceID, sessionID).Kind; kind != "" {
-		return
+		return false
 	}
 	items, err := s.inboxList(instanceID, sessionID, sessioninbox.StatusPending)
 	if err != nil {
 		logf("[chonkpilot-server] consumeNextTurn: inbox 读取失败（session=%s）: %v\n", sessionID, err)
-		return
+		return false
 	}
 	// 读回的行先入内存索引：后续撤回（discard）会同步内存状态，下面两次 pending 复核才能看见。
 	for _, it := range items {
@@ -604,7 +684,7 @@ func (s *Server) consumeNextTurn(instanceID, sessionID string) {
 		}
 	}
 	if len(batch) == 0 {
-		return
+		return false
 	}
 	// 撤回优先（Q6/删除语义）：起轮前再读一次 pending 快照 —— list 与本批写库之间可能发生 discard，
 	// 非 pending 的行**绝不**再落 messages。
@@ -615,11 +695,11 @@ func (s *Server) consumeNextTurn(instanceID, sessionID string) {
 		}
 	} else {
 		logf("[chonkpilot-server] consumeNextTurn: 复核 pending 失败（session=%s）: %v\n", sessionID, err)
-		return // 无法复核 → 保守不发（保持 pending，等下次）
+		return false // 无法复核 → 保守不发（保持 pending，等下次）
 	}
 	// 失效判定（NEXTRUN-1 §4）：LLM 登记项的 `turn_id` 必须等于会话**最新 turn**，否则丢弃
 	// （崩溃 / 被用户新轮抢占后不复活）。用户项不受此约束（沿用既有语义）。
-	latestTurn := newSessionStore(s.bus, instanceID).LatestTurnID(sessionID)
+	latestTurn := s.newSessionStore(instanceID).LatestTurnID(sessionID)
 	req := StartReq{InstanceID: instanceID, Session: sessionID, Turn: newID()}
 	if llm := batch[0].LLM; llm != "" {
 		req.LLMModel = llm
@@ -635,10 +715,10 @@ func (s *Server) consumeNextTurn(instanceID, sessionID string) {
 	}
 	res := s.acceptStart(req)
 	if ok, _ := res["accepted"].(bool); !ok {
-		return // 会话忙 / 实例未注册 → 保持 pending
+		return false // 会话忙 / 实例未注册 → 保持 pending
 	}
 	turnID, _ := res["turn"].(string)
-	st := newSessionStore(s.bus, instanceID)
+	st := s.newSessionStore(instanceID)
 	for _, it := range batch {
 		// 逐条最后复核：复核快照之后、本条写库之前仍可能被撤回（内存由 discard 同步更新）。
 		if !pendingSet[it.ID] {
@@ -653,6 +733,7 @@ func (s *Server) consumeNextTurn(instanceID, sessionID string) {
 			if latestTurn != "" && it.TurnID != latestTurn {
 				_ = s.inboxUpdate(instanceID, it.ID, sessioninbox.StatusDiscarded, "", "")
 				s.inboxSetStatus(it.ID, sessioninbox.StatusDiscarded)
+				progress = true
 				continue
 			}
 			kind = "next_run" // 来源可识别：落库消息 kind=next_run（仍是新 turn 边界的 user 消息）
@@ -669,6 +750,11 @@ func (s *Server) consumeNextTurn(instanceID, sessionID string) {
 			continue
 		}
 		s.inboxSetStatus(it.ID, sessioninbox.StatusConsumed)
+		// 消费即落 messages → 广播 inbox 变更，两端刷新（2026-11-01；逐条 = 与引擎内插入
+		// 消费 `engine_turn.go` commitInbox 的广播同形）。缺此广播时前端镜像只在 `turn-start`
+		// 刷新，且那里读到的可能仍是 pending → 已消费项残留成幽灵待发项。
+		s.publishInboxChanged(instanceID, sessionID, "consumed", []string{it.ID})
+		progress = true
 	}
 	s.mu.Lock()
 	sess := s.lookupTurnSessionLocked(instanceID, turnID)
@@ -676,4 +762,5 @@ func (s *Server) consumeNextTurn(instanceID, sessionID string) {
 	if in, ok := sess.(turnInput); ok {
 		in.Kick() // 以库内既有上下文跑一次 LLM 循环（无新输入、不重复落库）
 	}
+	return false
 }

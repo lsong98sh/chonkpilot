@@ -262,18 +262,28 @@ test('契约已收录 §4 服务端 / §5 网关面主题（B2）', () => {
   }
 })
 
-// ── §5.4 检索/引擎面（codegraph/vfts 工具回调）对账（B3）────────────────────
-// 该面主题的**生产者 = gateway、注册方 = codegraph/vfts 插件**（Go 侧），非前端消费；
-// 前端只碰插件自己的 UI（`/plugins/codegraph/*`，PLUGIN-UI-2 起不再读 `codegraph.status` / `vfts.status`）。
-// 此处断言契约已收录两回调主题 + genmsg 已生成 MsgTopics 常量（供守卫/未来消费）。
+// ── §5.4 检索/引擎面（codegraph/vfts 工具回调）退场（2026-11-05）────────────
+// 两主题在代码中零生产/零消费（插件改走 MCP OnRequest）→ 已从 61 + schema 删除；
+// 此处做反向守卫，防它们被重新写回契约或常量。
 
-test('契约已收录检索/引擎面（B3）回调主题 + msgkeys 常量', () => {
+test('检索/引擎面回调主题已退场（不得回写契约/常量）', () => {
   for (const topic of ['codegraph-tool-call', 'vfts-tool-call']) {
-    assert.ok(byTopic.has(topic), `契约缺 B3 主题 ${topic}`)
+    assert.ok(!byTopic.has(topic), `契约不应再收录已退场主题 ${topic}`)
   }
-  for (const [key, val] of Object.entries({ codegraphToolCall: 'codegraph-tool-call', vftsToolCall: 'vfts-tool-call' })) {
-    assert.match(msgkeysSrc, new RegExp(`export const MsgTopics = \\{[\\s\\S]*\\b${key}: '${val}'`), `msgkeys.js 缺 MsgTopics.${key}`)
+  assert.doesNotMatch(msgkeysSrc, /codegraphToolCall|vftsToolCall/, 'msgkeys 不应再生成已退场主题常量')
+})
+
+test('契约已收录插件管理面 plugin-*（12 条，2026-11-05）', () => {
+  const expected = [
+    'plugin-list', 'plugin-refresh', 'plugin-set-enabled', 'plugin-config-get', 'plugin-config-set',
+    'plugin-command', 'plugin-call', 'plugin-registered', 'plugin-unregistered', 'plugin-status',
+    'plugin-config-changed', 'plugin-event',
+  ]
+  for (const topic of expected) {
+    assert.ok(byTopic.has(topic), `契约缺插件管理主题 ${topic}`)
   }
+  assert.match(msgkeysSrc, /export const MsgTopics = \{[\s\S]*\bpluginList: 'plugin-list'/, 'msgkeys.js 缺 MsgTopics.pluginList')
+  assert.match(msgkeysSrc, /export const MsgTopics = \{[\s\S]*\bpluginCall: 'plugin-call'/, 'msgkeys.js 缺 MsgTopics.pluginCall')
 })
 
 test('mcp-tools-progress 消费（useToolProgress）读键 ⊆ 契约（GATEWAY-2 L8）', () => {

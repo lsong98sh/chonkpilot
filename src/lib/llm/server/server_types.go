@@ -9,16 +9,16 @@ import (
 	"github.com/chonkpilot/chonkpilot-assembly"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
-	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/bridge"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
+	"github.com/lsong98sh/chonkpilot-agent/chat"
 	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
-	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
-	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 	"github.com/lsong98sh/chonkpilot-agent/router"
 	"github.com/lsong98sh/chonkpilot-agent/session/runner"
-	"github.com/lsong98sh/chonkpilot-agent/chat"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/bridge"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -97,7 +97,10 @@ type Server struct {
 	mcpCfg    *mcpms.Config   // 内嵌 mcp-server 执行配置（instance-register 后注入 usr/prj 配置）
 	stack     *assembly.Stack // 入口装配器产物（RB-5 L5：能力源 + 执行配置 + gateway 的持有者）
 	gw        gwRuntime       // 内嵌 gateway（RB-5 L1：窄接口，不持具体类型；nil = DisableMCP）
-	mu       sync.Mutex
+	mu        sync.Mutex
+	// stopped = Stop 已开始关停：拒绝新建轮次 / inbox 兜底消费，保证 turnWG 收口后不再有
+	// 后台写库（与 s.mu 同锁）。
+	stopped  bool
 	filterMu sync.RWMutex
 	filters  *pluginbridge.FilterChain
 	im       *instance.Manager   // 共通实例视图（register/heartbeat/exit，对齐 61-消息一览 §4.1）
@@ -107,10 +110,13 @@ type Server struct {
 	// （`prompts/register asset_kind=agent` 已撤）；25 §8.1 #8 / T6：来源 = app 级场景（非代码 embed）。
 	// 运行态 map 一律以 **instKey(instance, id)** 为键（2026-09-19 缺口 5：按 instance 分桶，
 	// 同进程多 instance 互不可见/互不取消；instance 为空 → 原键，旧语义等价，见 instancescope.go）：
-	turns           runner.Registry[turnSession] // Key(instance, turn) → 会话状态机（A4-P3a-0：接口容器；TURNRUN-1 批次 5 迁入 session/runner）
-	engine          *chat.Engine                // chat 无状态单例（TURNRUN-1 批次 6：端口按轮传入）
-	busy            runner.Registry[string]      // Key(instance, session) → running turn（同 instance 同 session 互斥）
-	continuePending map[string]bool        // instKey(instance, turn) → 下一个 text-user 以 Kind=continue 注入
+	turns runner.Registry[turnSession] // Key(instance, turn) → 会话状态机（A4-P3a-0：接口容器；TURNRUN-1 批次 5 迁入 session/runner）
+	// turnWG 跟踪全部轮次 loop goroutine：Stop 关闭轮次后**等待其收尾**（收尾仍需写库），
+	// 再停数据服务——避免关停后后台写库/库句柄未释放（Windows TempDir 清理失败即此现象）。
+	turnWG          sync.WaitGroup
+	engine          *chat.Engine            // chat 无状态单例（TURNRUN-1 批次 6：端口按轮传入）
+	busy            runner.Registry[string] // Key(instance, session) → running turn（同 instance 同 session 互斥）
+	continuePending map[string]bool         // instKey(instance, turn) → 下一个 text-user 以 Kind=continue 注入
 	// owners / ownersMu：session → 活动运行态 owner 实例（SCOPE-1 强制不变式「同一 dialog 不得在
 	// 两个窗口打开」的运行态归属表；判据 / 产生 / 拒绝 / 两条释放路径见 owner.go）。
 	ownersMu sync.Mutex
@@ -122,6 +128,9 @@ type Server struct {
 	inboxIndex    map[string]facade.InboxItem
 	inboxPending  map[string]map[string]string // session_id → (inbox_id → type)：仅 pending 项
 	inboxTerminal []string                     // 终态项 id 的 FIFO（上限 inboxTerminalKeep，超出淘汰最旧）
+	// inboxConsuming：正在消费 next_turn 的会话（单会话单消费者；防两个 goroutine 各起一轮、
+	// 重复携带同一批输入）。与 inboxIndex 同锁（inboxMu）。
+	inboxConsuming map[string]bool
 	// inboxQueued：已投递到某运行轮 `inboxCh`、等引擎消费的插话项（id → true）。
 	// 批量插话（2026-11-01）：相位满足时把该会话全部 pending insert 一次性投递；本表防重复投递
 	// （消费 / 撤回 / 相位退回时摘除）。与 inboxIndex 同锁（inboxMu）。
@@ -131,11 +140,24 @@ type Server struct {
 	// pending。与 tc.frames 的 pending 同步维护（登记 pending 时写入 / 消费回执 / 轮次收尾时摘除）。
 	taskTurnIndex map[string]*turnCtx
 	asks          runner.Registry[*askWaiter] // Key(instance, ask_id) → 等待的 turn + tool-call-id + 任务节点（TURNRUN-1 批次 5 迁入 session/runner）
+	// askExpireCh / askExpireStop 是 ask 显式超时的**消息队列**（统一异步 §10.4）：
+	// 定时器到点只投递 ask_id，由单一 worker 串行调用 expireAsk（状态变更只在 worker 内发生）。
+	askExpireCh       chan string
+	askExpireStop     chan struct{}
+	askExpireOnce     sync.Once
+	askExpireStopOnce sync.Once
+	// capRegisterWG 跟踪后台 capability dir 节点接入（onInstanceRegister → gateway
+	// servers/register 会 spawn 下游）；Stop 先等其收口，再关 gateway（避免 connect/Close 竞态）。
+	capRegisterWG sync.WaitGroup
 	// askCenterSubs 是 Ask 中心订阅登记（后端唯一分发，2026-11-05）：user → Ask 中心窗口实例。
 	// 同一 user 只保留一个订阅实例（后订阅覆盖，避免多端重复分发）。与 s.mu 同锁。
 	askCenterSubs map[string]askCenterSub
 	// askSeq 是每 workdir 的 ask 单调序号（有序队列）；与 s.mu 同锁。
 	askSeq map[string]int64
+	// askBatches 是**同一会话**的提问批次（AskUser S4：全部回复后一次性投递；与 s.mu 同锁）。
+	// 键 = instKey(turn_instance, session)；批次内 open = 未回答，answered = 已回答未投递。
+	// 轮次正常结束**不**清批次（非阻塞 ask 允许本轮先收尾）；取消 / 实例退出时整批丢弃。
+	askBatches map[string]*askBatch
 	// delegated：发起轮次 → 委派子轮次句柄（键 = instKey(instance, parent_turn)）。
 	// 委派子代理（task_llm）的 ctx 独立于父轮次正常收尾（见 subllm.go）；父轮次取消 /
 	// task-stop 时经本表级联关闭（多层委派递归）。与 s.mu 同锁。
@@ -152,14 +174,18 @@ type Server struct {
 	// （tool_result 轮询等）。独立小锁：回报到达时域工具可能正执行中，避免卷入 s.mu 嵌套。
 	taskExecCancelMu sync.Mutex
 	taskExecCancels  map[string]context.CancelFunc
-	cleaned          map[string]bool      // instanceID → 已做过遗留 running 清理
-	dirNodes         map[string][]string  // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
-	appTools         map[string]bool      // app 根已注册工具名（T-21② 删除/改名回收用）
-	capMu            sync.Mutex           // 串行化 capability dir 节点接入/重扫（T-21）
-	capApplyMu       sync.Mutex           // 串行化 capDirOp 总线应用（B-35：内存态在 capMu 内维护，总线往返在锁外，但**逐实例保序**必须跨调用串行，否则并发重扫会重复 spawn 同名节点 → tool 名冲突）
-	execCfgMu        sync.Mutex           // 串行化 loadExecConfig（G-27：instance-register 与 prj 执行配置刷新两路并发调用，内含「读配置 → SetRuntime」读改写序列，并发交错即 data race；不重入，见 loadExecConfig 头注）
-	capWatch         *capWatcher          // 用户/项目级 capability 根 fswatcher 监听（T-21 保存即生效）
-	memCache         *memoryCategoryCache // 记忆类别清单短时 TTL 缓存（I-68 ②）
+	cleaned          map[string]bool     // instanceID → 已做过遗留 running 清理
+	dirNodes         map[string][]string // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
+	// dirSigs 是 dirNodes 的**契约根签名**（instanceID → 节点名 → 根签名）：热重扫据此只重建
+	// 真正变化的节点（根集合/契约文件变化），未变化节点不动 → 工具面无「先注销再注册」窗口。
+	// 与 dirNodes 同锁（s.mu）。
+	dirSigs    map[string]map[string]string
+	appTools   map[string]bool      // app 根已注册工具名（T-21② 删除/改名回收用）
+	capMu      sync.Mutex           // 串行化 capability dir 节点接入/重扫（T-21）
+	capApplyMu sync.Mutex           // 串行化 capDirOp 总线应用（B-35：内存态在 capMu 内维护，总线往返在锁外，但**逐实例保序**必须跨调用串行，否则并发重扫会重复 spawn 同名节点 → tool 名冲突）
+	execCfgMu  sync.Mutex           // 串行化 loadExecConfig（G-27：instance-register 与 prj 执行配置刷新两路并发调用，内含「读配置 → SetRuntime」读改写序列，并发交错即 data race；不重入，见 loadExecConfig 头注）
+	capWatch   *capWatcher          // 用户/项目级 capability 根 fswatcher 监听（T-21 保存即生效）
+	memCache   *memoryCategoryCache // 记忆类别清单短时 TTL 缓存（I-68 ②）
 	// taskLayer 任务层（21-任务层设计方案 §9.2 P2：层为唯一权威）。层订阅既有事件、同步写
 	// 权威表 tasktree（单写者；llm 不再自写库），并持有执行句柄 → 取消/转后台时回调执行侧
 	// （taskExecSink.CancelExec / DetachExec → 进程内 gateway 执行池，见 §9.3）。
@@ -207,6 +233,22 @@ type Server struct {
 	compressMu      sync.Mutex
 	compressRunning map[string]bool
 	compressPending map[string]compressJob
+
+	// 后台任务完成通知（§5.3 四段链路，见 notifyqueue.go）：
+	//   - notifyQueues：per {instance, session} FIFO 挂账（会话忙碌时只入队，轮末冲刷）；
+	//   - notifyHandled：已受理的 notification id（instKey(instance, message_id)）→ 重复 completion 幂等；
+	//   - notifyConsumed：结果已被取走的 id（instKey(instance, task_id / tool_call_id)）→ 不再通知；
+	//   - notifyOrigin：通知轮内派生的任务节点（instKey(instance, task_id)）→ 完成后只显示/落库，不再级联；
+	//   - notifyTurns：该会话正在跑的内部通知轮（instKey(instance, session) → turn id / 占位）。
+	// 锁序：notifyMu → s.mu（不得反向；持 s.mu 时不调用任何 notify* 方法）。
+	notifyMu       sync.Mutex
+	notifyQueues   map[string][]completionNotice
+	notifyHandled  map[string]bool
+	notifyConsumed map[string]bool
+	notifyOrigin   map[string]bool
+	notifyTurns    map[string]string
+	// notifyProcessing 保证同一会话同一时刻只有一个冲刷者（多条并发通知严格按完成顺序落库）。
+	notifyProcessing map[string]bool
 }
 
 // askWaiter 是 ask-user 等待登记（ask-user-reply 到达后喂回 LLM + 广播 ask 任务节点 done）。
@@ -220,6 +262,14 @@ type askWaiter struct {
 	turnID          string
 	toolID          string
 	taskID          string // ask_user 任务节点 id（reply 到达 → tasks.done）
+	// sessionID 是本 ask 所属会话（AskUser S4：按会话聚合「全部回复后一次性投递」）。
+	sessionID string
+	// batchKey 是本 ask 所属批次键（= instKey(turn_instance, session)；空会话回落 ask 唯一键）。
+	batchKey string
+	// question 是提问原文（批量答复回投时按问答对呈现）。
+	question string
+	// args 是 ask_user 原始参数（AskUser S4：事后就地更新 tool-result 时复用 call 段）。
+	args map[string]any
 	// dialogID 是本 ask 所属**对话**标识（61 §4.3 session-ask `dialog_id`，§0.6 必带；
 	// AskUser S1-3/S1-4）：下发时解析一次并存于此，回带不一致时留痕（路由权威仍是 ask_id）。
 	// 空串 = 会话 → 对话映射确实取不到（唯一允许的空值场景，见 askWithID）。

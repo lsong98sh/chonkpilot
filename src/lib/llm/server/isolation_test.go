@@ -5,8 +5,14 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/persist"
 )
 
 // TestTaskPoolIsolationAcrossInstances：两个 instance 使用**同名** turn / tool_call_id / gw_task_id
@@ -171,50 +177,130 @@ func TestAskCleanupHelpers(t *testing.T) {
 	}
 }
 
-// TestAskTimeoutDefaults：缺省无超时（不下发 expires_at）；显式 timeout 才计算 expires_at，
-// 且超时自动回复优先取 recommended。
-func TestAskTimeoutDefaults(t *testing.T) {
-	if got := askTimeoutSecondsForTest(map[string]any{}, 0); got != 0 {
-		t.Fatalf("缺省应无超时，got=%d", got)
+// stubConfigAPI 只覆写 ConfigKVGet（其余门面调用透传）：用于构造「全局配置不可解析 / 读取失败」
+// 的边界——真实 data 层会拒绝非法 ask_timeout_sec 写入（validate：非负整数），无法经 save 路径制造。
+type stubConfigAPI struct {
+	facade.API
+	values map[string]string
+	err    error
+}
+
+func (c stubConfigAPI) ConfigKVGet(facade.ConfigKVGetRequest) (facade.ConfigKVGetResponse, error) {
+	if c.err != nil {
+		return facade.ConfigKVGetResponse{}, c.err
 	}
-	if got := askTimeoutSecondsForTest(map[string]any{"timeout": 5}, 30); got != 5 {
-		t.Fatalf("显式 timeout 应覆盖全局，got=%d", got)
+	return facade.ConfigKVGetResponse{Values: c.values}, nil
+}
+
+// TestAskTimeoutSecondsProduction 直调生产 `s.askTimeoutSeconds`（不再用测试私有复制逻辑），
+// 断言规格（AskUser §4.3 / 61 §4.2）的四条折算与全局 `ask_timeout_sec` 的真实配置读取：
+//   - 未给 timeout / timeout=0 → 全局；
+//   - timeout>0 → 覆盖全局；
+//   - timeout<0 → 明确不超时（覆盖全局）。
+func TestAskTimeoutSecondsProduction(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+
+	// 全局未配置（缺省 0）：所有「用全局」的入参都折算为 0（一直等）。
+	if got := s.askTimeoutSeconds("ins-test", map[string]any{}); got != 0 {
+		t.Fatalf("全局未配置 + 未给 timeout → 应 0（一直等），got=%d", got)
 	}
-	if got := askTimeoutSecondsForTest(map[string]any{"timeout": 0}, 30); got != 30 {
-		t.Fatalf("timeout=0 应取全局，got=%d", got)
+	if got := s.askTimeoutSeconds("ins-test", map[string]any{"timeout": 0}); got != 0 {
+		t.Fatalf("全局未配置 + timeout=0 → 应取全局 0，got=%d", got)
 	}
-	if got := askTimeoutSecondsForTest(map[string]any{"timeout": -1}, 30); got != 0 {
-		t.Fatalf("timeout=-1 应明确不超时，got=%d", got)
+	if got := s.askTimeoutSeconds("ins-test", map[string]any{"timeout": -1}); got != 0 {
+		t.Fatalf("timeout=-1 → 应明确不超时 0，got=%d", got)
 	}
-	if got := askAutoAnswer(map[string]any{"recommended": []any{"y", "n"}, "multi": true}); got != "y、n" {
-		t.Fatalf("多选超时应取推荐值，got=%q", got)
+
+	// 项目级全局 = 30（真实 data 配置写路径）。
+	saveTestPrjConfig(t, s, askTimeoutKey, "30")
+	if got := s.askTimeoutSeconds("ins-test", map[string]any{}); got != 30 {
+		t.Fatalf("未给 timeout → 应取全局 30，got=%d", got)
 	}
-	if got := askAutoAnswer(map[string]any{"recommended": []any{"y", "n"}}); got != "y" {
-		t.Fatalf("单选超时应取首个推荐值，got=%q", got)
+	if got := s.askTimeoutSeconds("ins-test", map[string]any{"timeout": 0}); got != 30 {
+		t.Fatalf("timeout=0 → 应取全局 30，got=%d", got)
 	}
-	if got := askAutoAnswer(map[string]any{}); got != askAutoTimeoutAnswer {
-		t.Fatalf("无推荐项应回落统一文案，got=%q", got)
+	if got := s.askTimeoutSeconds("ins-test", map[string]any{"timeout": 5}); got != 5 {
+		t.Fatalf("timeout=5 → 应覆盖全局，got=%d", got)
+	}
+	// 负例：显式 -1 优先于全局（规格：timeout<0 = 明确不超时）。
+	if got := s.askTimeoutSeconds("ins-test", map[string]any{"timeout": -1}); got != 0 {
+		t.Fatalf("timeout=-1 应覆盖全局 30 → 0，got=%d", got)
 	}
 }
 
-// askTimeoutSecondsForTest 是无实例依赖的超时折算探针（全局值由参数给出）。
-func askTimeoutSecondsForTest(args map[string]any, global int) int {
-	v, ok := args["timeout"]
-	if !ok {
-		return global
+// TestAskTimeoutSecondsGlobalParseFallback 全局配置不可解析 / 读取失败 → 按「未配置」处 0
+// （不注入负值 / 不崩溃）。
+func TestAskTimeoutSecondsGlobalParseFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		values map[string]string
+		err    error
+	}{
+		{"非数字", map[string]string{askTimeoutKey: "soon"}, nil},
+		{"负数", map[string]string{askTimeoutKey: "-30"}, nil},
+		{"读取失败", nil, errors.New("boom")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{cfg: stubConfigAPI{values: tc.values, err: tc.err}}
+			if got := s.askTimeoutSeconds("", map[string]any{}); got != 0 {
+				t.Fatalf("全局值不可用时应回落 0（一直等），got=%d", got)
+			}
+		})
 	}
-	n := intFromAny(v)
-	if n == 0 {
-		return global
-	}
-	if n < 0 {
-		return 0
-	}
-	return n
 }
 
-// TestAskClearedOnTurnClose：轮次关闭（loop 收尾）摘除本 turn 的 ask 等待登记。
-func TestAskClearedOnTurnClose(t *testing.T) {
+// TestAskTimeoutNoExpiresNoTimer 无超时（timeout=-1 / 0，全局 0）时：
+// 不下发 `expires_at`、不建 timer（AskUser §4.3 / §6.1「一直等待」）。
+func TestAskTimeoutNoExpiresNoTimer(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+
+	tc := s.recoverTurnCtx("ins-test", "s-ask-notimeout", "t-ask-notimeout")
+	t.Cleanup(tc.Close)
+
+	for _, tc := range []struct {
+		toolID string
+		args   map[string]any
+	}{
+		{"tc-no-a", map[string]any{"question": "Q-未设置"}},
+		{"tc-no-b", map[string]any{"question": "Q-zero", "timeout": 0}},
+		{"tc-no-c", map[string]any{"question": "Q-minus", "timeout": -1}},
+	} {
+		askID := s.ask("t-ask-notimeout", tc.toolID, tc.args, "")
+		if askID == "" {
+			t.Fatalf("ask 应返回 askID: %v", tc.args)
+		}
+		s.mu.Lock()
+		w := s.asks[instKey("ins-test", askID)]
+		s.mu.Unlock()
+		if w == nil {
+			t.Fatalf("ask 等待登记缺失: %s", askID)
+		}
+		if !w.expiresAt.IsZero() {
+			t.Fatalf("%v：无超时不应有 expiresAt，got=%v", tc.args, w.expiresAt)
+		}
+		if w.timer != nil {
+			t.Fatalf("%v：无超时不应建 timer", tc.args)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(w.payload, &payload); err != nil {
+			t.Fatalf("payload 解析失败: %v", err)
+		}
+		// 规格（61 §4.2）：无超时不下发 expires_at（可选字段不得出现）。
+		if _, has := payload["expires_at"]; has {
+			t.Fatalf("%v：session-ask 不应下发 expires_at: %v", tc.args, payload)
+		}
+	}
+}
+
+// TestAskSurvivesTurnClose：AskUser S4 —— 轮次**正常结束不摘除** ask 登记
+// （非阻塞 ask 允许本轮先收尾；用户稍后作答仍可投递）。取消 / 实例退出才清理。
+func TestAskSurvivesTurnClose(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
@@ -231,19 +317,29 @@ func TestAskClearedOnTurnClose(t *testing.T) {
 		t.Fatal("ask 等待登记应已登记")
 	}
 
-	tc.Close() // 关闭轮次 → loop defer 收尾
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		s.mu.Lock()
-		n := len(s.asks)
-		s.mu.Unlock()
-		if n == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("轮次关闭后 ask 未被清理：%d", n)
-		}
-		time.Sleep(10 * time.Millisecond)
+	tc.Close() // 关闭轮次（正常收尾）→ 提问登记继续存活
+	time.Sleep(100 * time.Millisecond)
+	s.mu.Lock()
+	_, ok = s.asks[instKey("ins-a", askID)]
+	batches := len(s.askBatches)
+	s.mu.Unlock()
+	if !ok {
+		t.Fatal("轮次正常结束不应摘除 ask 等待登记")
+	}
+	if batches == 0 {
+		t.Fatal("轮次正常结束不应删除会话批次")
+	}
+
+	// 显式清理（取消 / 实例退出路径）→ 登记与批次一并摘除。
+	s.mu.Lock()
+	removed := s.clearAsksByTurnLocked("ins-a", "t-1")
+	nBatches := len(s.askBatches)
+	s.mu.Unlock()
+	if len(removed) != 1 {
+		t.Fatalf("显式清理应摘除 1 条 ask，实际 %d", len(removed))
+	}
+	if nBatches != 0 {
+		t.Fatalf("显式清理后批次应清空：%d", nBatches)
 	}
 }
 
@@ -266,5 +362,100 @@ func TestAskClearedOnInstanceExit(t *testing.T) {
 	s.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("实例退出应清空该实例的 ask：%d", n)
+	}
+}
+
+// TestLLMCancelClearsAsksAndBatches 走**真实方法面** `session-cancel`（onLLMCancel，而非直调
+// clearAsksByTurnLocked）：挂起一轮 + 同会话两条未答 ask + 其中一条已答（批次只齐一半）→
+//   - asks / askBatches 全部为空（批次内已收答复一并丢弃）；
+//   - 不向 LLM 投递后续用户消息（不新起轮）；
+//   - ask-center-remove 不重复：已答那条在作答时摘除（answered），另一条在取消时摘除（turn_closed），
+//     每个 ask_id 恰好一条（AskUser §6.1「轮次被取消」/ §4.8 S4-3）。
+func TestLLMCancelClearsAsksAndBatches(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	const session, turn = "s-cancel-ask", "t-cancel-ask"
+	startTurn(t, s, session, turn)
+
+	// Ask 中心订阅（未登记实例 → user 空，与 ins-test 的空 user 同作用域；workdir 通配）。
+	rec := watchAskCenter(t, s)
+	if res := subscribeAskCenter(t, s, map[string]any{"instance_id": "askc-cancel"}); res["ok"] != true {
+		t.Fatalf("ask-center-subscribe 失败: %v", res)
+	}
+
+	a1 := s.ask(turn, "tc-cancel-1", map[string]any{"question": "Q1"}, "")
+	a2 := s.ask(turn, "tc-cancel-2", map[string]any{"question": "Q2"}, "")
+	if a1 == "" || a2 == "" {
+		t.Fatal("ask 应返回 askID")
+	}
+
+	// 部分批次答复：Q1 答复先暂存（同批仍有未答 Q2 → 不投递）。
+	if v := s.bus.Emit(context.Background(), "session-ask-reply", jb(map[string]any{
+		"instance_id": "ins-test", "ask_id": a1, "answer": "A1",
+	})).Wait(); v.Err() != nil {
+		t.Fatalf("ask-user-reply 失败: %v", v.Err())
+	}
+	s.mu.Lock()
+	nAsks, nBatches, open, answered := len(s.asks), len(s.askBatches), 0, 0
+	for _, b := range s.askBatches {
+		open += len(b.open)
+		answered += len(b.answered)
+	}
+	s.mu.Unlock()
+	if nAsks != 1 || nBatches != 1 || open != 1 || answered != 1 {
+		t.Fatalf("部分答复后状态不符：asks=%d batches=%d open=%d answered=%d",
+			nAsks, nBatches, open, answered)
+	}
+	if n := rec.countRemovesFor(a1); n != 1 {
+		t.Fatalf("Q1 作答应恰好摘除一次（answered），got=%d", n)
+	}
+	if n := rec.countRemovesFor(a2); n != 0 {
+		t.Fatalf("Q2 未作答不应有 remove，got=%d", n)
+	}
+
+	// 真实入口：llm-cancel（session-cancel）。
+	v := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+		"instance_id": "ins-test", "session": session, "turn": turn,
+	})).Wait()
+	res, _ := v.Result.(map[string]any)
+	if ok, _ := res["cancelled"].(bool); !ok {
+		t.Fatalf("llm-cancel 应受理: %v（err=%v）", res, v.Err())
+	}
+
+	s.mu.Lock()
+	nAsks, nBatches = len(s.asks), len(s.askBatches)
+	s.mu.Unlock()
+	if nAsks != 0 || nBatches != 0 {
+		t.Fatalf("取消后应清空 ask 与批次：asks=%d batches=%d", nAsks, nBatches)
+	}
+
+	// remove 不重复：总计 2 条（Q1 answered + Q2 turn_closed），每个 ask_id 各 1 条。
+	time.Sleep(200 * time.Millisecond) // 给任何「多余通知」留出可观测窗口
+	if got := rec.countRemovesTotal(); got != 2 {
+		t.Fatalf("ask-center-remove 应为 2 条（不重复），got=%d: %+v", got, rec.snapshotRemoves())
+	}
+	if n := rec.countRemovesFor(a1); n != 1 {
+		t.Fatalf("Q1 remove 应恰好 1 条，got=%d", n)
+	}
+	if n := rec.countRemovesFor(a2); n != 1 {
+		t.Fatalf("Q2 remove 应恰好 1 条，got=%d", n)
+	}
+	if reasons := rec.reasonsFor(a2); len(reasons) != 1 || reasons[0] != "turn_closed" {
+		t.Fatalf("Q2 remove.reason 应为 turn_closed，got=%v", reasons)
+	}
+
+	// 无后续用户消息投递：不新起轮，且本轮没有任何 user 行携带暂存答复 A1。
+	if got := newSessionStore(s.bus, "ins-test").LatestTurnID(session); got != turn {
+		t.Fatalf("取消后不应起新轮：latest=%s want=%s", got, turn)
+	}
+	if recs := sessionTurnRecords(t, s, session); len(recs) != 1 {
+		t.Fatalf("取消后该会话应仍只有 1 轮：%+v", recs)
+	}
+	for _, m := range msgsOfTurn(t, turn) {
+		if persist.Sval(m["role"]) == "user" && strings.Contains(persist.Sval(m["content"]), "A1") {
+			t.Fatalf("批次内已收答复应随取消丢弃（不得作为用户消息投递）：%+v", m)
+		}
 	}
 }

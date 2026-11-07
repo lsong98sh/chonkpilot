@@ -15,12 +15,12 @@ import (
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
-	"github.com/lsong98sh/chonkpilot-agent/gateway"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
+	tasklayer "github.com/chonkpilot/chonkpilot-task"
+	"github.com/lsong98sh/chonkpilot-agent/gateway"
 	"github.com/lsong98sh/chonkpilot-agent/router"
 	sessionrunner "github.com/lsong98sh/chonkpilot-agent/session/runner"
-	tasklayer "github.com/chonkpilot/chonkpilot-task"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // testBusPrefix 测试总线命名空间前缀（与生产 server/gui main.go 一致：业务只写相对主题）。
@@ -129,8 +129,7 @@ func execCancelledInstances() []string { return testExecSink.cancelInstances() }
 func execDetachedInstances() []string  { return testExecSink.detachInstances() }
 
 var (
-	// fakeStopTaskID / fakeGetResultID：mock LLM 分支注入（tool_stop / tool_result 的 id）。
-	fakeStopTaskID  string
+	// fakeGetResultID：mock LLM 分支注入（tool_result 的 id）。
 	fakeGetResultID string
 	// fakeGWCallCtx 记录 fake gateway 收到的 tools/call 上下文（键 = tool_call_id → {top_session, parent}）：
 	// I-90 断言「llm 确实把任务树归属随调用上下文下发」（gateway 随 mcp-tasks-report 回传 → 层建节点）。
@@ -155,6 +154,10 @@ func setFakeGatewayBlock(ch chan struct{}) {
 // mcp-tools-call；`_async` → pending + 延迟 mcp-tasks-report 完成回报（fire-and-forget）。
 // 2026-09-18：`mcp-tasks-*` / `mcp-tools-background` 方法面已移除 → 不再有对应 stub；
 // 取消 / 转后台经进程内 sink（testExecSink，见 newTestServer 注入）。
+// fakeAgentDelegate 是 task_llm 的 e2e 测试桩：非 nil 时承接 `task_llm` 调用
+// （用例内转发到真实 plugin bridge `plugin/v1/agent.delegate`），其余工具仍走下方固定回复。
+var fakeAgentDelegate func(req mcpgateway.CallReq) (map[string]any, error)
+
 func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 	_, _ = bus.On("mcp-tools-list", 0, func(_ context.Context, _ string, v *mq.Value) error {
 		v.Result = map[string]any{"resultType": "complete", "tools": []any{}, "ttlMs": 0}
@@ -189,6 +192,23 @@ func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 				}
 				return nil
 			}
+		}
+		// 委派 e2e：task_llm 由用例注入的钩子承接（真实 plugin/v1/agent.delegate 链路）。
+		if req.Name == "task_llm" && fakeAgentDelegate != nil {
+			out, err := fakeAgentDelegate(req)
+			if err != nil {
+				v.Result = map[string]any{
+					"resultType": "complete", "isError": true,
+					"content": []any{map[string]any{"type": "text", "text": err.Error()}},
+				}
+				return nil
+			}
+			b, _ := json.Marshal(out)
+			v.Result = map[string]any{
+				"resultType": "complete",
+				"content":    []any{map[string]any{"type": "text", "text": string(b)}},
+			}
+			return nil
 		}
 		if block, _ := req.Arguments["_block"].(bool); block {
 			// 同步工具「执行中阻塞」桩：验证 turn 协调器不被同步工具卡住（插话 / 取消仍可达）。
@@ -319,15 +339,6 @@ func mockLLMServer() *httptest.Server {
 					"function": map[string]any{"name": "ask_user", "arguments": string(args)},
 				}}}, "tool_calls"),
 			})
-		case strings.Contains(lower, "stop please"):
-			args := jb(map[string]any{"task_id": fakeStopTaskID, "tool_call_display_name": "停止任务"})
-			llmSSE(w, []string{
-				sseChunk(map[string]any{"content": ""}, ""),
-				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
-					"index": 0, "id": "tc-stop", "type": "function",
-					"function": map[string]any{"name": "tool_stop", "arguments": string(args)},
-				}}}, "tool_calls"),
-			})
 		case strings.Contains(lower, "get result please"):
 			args := jb(map[string]any{"id": fakeGetResultID, "timeout": 5, "tool_call_display_name": "获取结果"})
 			llmSSE(w, []string{
@@ -426,40 +437,7 @@ func startTurn(t *testing.T, s *Server, session, turn string) {
 // （receive/complete/compress），主题为 kebab 一体（handler 收到去 chonk. 前缀的相对主题）。
 func collectTurn(t *testing.T, bus mq.Bus, turn string, timeout time.Duration) []map[string]any {
 	t.Helper()
-	var mu sync.Mutex
-	var events []map[string]any
-	done := make(chan struct{})
-	_, _ = bus.On(">", 0, func(_ context.Context, subject string, v *mq.Value) error {
-		p := v.Payload
-		if !strings.HasPrefix(subject, "session-") {
-			return nil
-		}
-		var m map[string]any
-		if json.Unmarshal(p, &m) != nil {
-			return nil
-		}
-		if m["turn"] != turn {
-			return nil
-		}
-		mu.Lock()
-		events = append(events, m)
-		mu.Unlock()
-		if subject == "session-complete" {
-			select {
-			case <-done:
-			default:
-				close(done)
-			}
-		}
-		return nil
-	})
-	select {
-	case <-done:
-	case <-time.After(timeout):
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	return events
+	return watchTurn(t, bus, turn).waitComplete(timeout)
 }
 
 func lastComplete(events []map[string]any) map[string]any {
@@ -1427,7 +1405,7 @@ func TestGatewayArgsForceAsyncAllSessions(t *testing.T) {
 	}
 
 	// 本进程域工具（llm-server 同步编排）不得被强制异步：返回体契约不可改为 pending。
-	for _, name := range []string{"subchat_open", "self_subchat_finish", "ask_user", "tool_stop", "tool_result"} {
+	for _, name := range []string{"subchat_open", "self_subchat_finish", "ask_user", "tool_result"} {
 		if _, has := (&turnCtx{}).gatewayArgs(name, map[string]any{})["async"]; has {
 			t.Fatalf("%s 为进程内工具，不得注入 async 覆盖", name)
 		}

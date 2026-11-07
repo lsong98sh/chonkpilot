@@ -279,6 +279,7 @@ export const EventNames = {
   guiChatInsertText: 'gui.chat.insert-text', // Ask 中心「聊一聊」：把文本注入源会话窗口输入框（不发送）：payload {session_id, dialog_id?, work_dir?, text}
   askCenterAdd: 'ask-center-add', // 宿主/server → Ask 中心：新增/更新待办 {ask, work_dir, received_at, seq?}
   askCenterRemove: 'ask-center-remove', // 宿主/server → Ask 中心：待办已办结/摘除 {ask_id, reason?}
+  askResolve: 'ask-resolve', // Ask 中心「聊一聊」后点「完成」：解除提问 + 更新 tool-result，不通知 LLM（AskUser S4）：payload {ask_id} → {ok}
   guiWindowList: 'gui.window.list', // 查已开**对话窗口**（仅 chat；主窗口不入注册表）：payload {}
   guiWindowClosed: 'gui.window.closed', // 宿主 → 前端：对话窗口关闭广播 {window_id, session_id}（解除入口占用）
   guiWindowSetTitle: 'gui.window.set-title', // **仅独立对话窗口**：标题随会话摘要变化更新：payload {title}

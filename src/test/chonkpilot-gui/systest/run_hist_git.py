@@ -310,8 +310,14 @@ def case_h3_default_off_no_tools_no_chain():
     → `refs/chonkpilot/*` 仍为空（前置钩子与轮末补点都不打点 = 零 git 调用）。
     """
     names = tools()
+    # 前置：工具面必须已含**其它产品插件的工具**（file_replace/task_run）——否则「无 history_*」
+    # 可能只是因为插件平台整体未拉起（= 假绿）。main 的就绪栅栏已保证，这里再断言一次口径。
     if not names:
         raise TestError("工具面为空（实例/网关未就绪），无法判定 history 工具是否摘除")
+    canon = {n[5:] if n.startswith("self_") else n for n in names}
+    if not ({"file_replace", "task_run"} <= canon):
+        raise TestError("工具面未含 file_replace/task_run（插件平台未就绪）→ history 缺席不可判：%r"
+                        % names[:20])
     bad = hist_tool_names(names)
     if bad:
         raise TestError("默认（history.enabled 缺失）不应注册 history 工具，实际=%r" % bad)
@@ -709,6 +715,9 @@ def case_h5_non_git_repo_tools_removed():
                       extra_args=("--llm-base=http://127.0.0.1:%d/v1" % MOCK.port,))
     try:
         c2 = g2.client
+        # 第二实例同样要等插件冷启动（否则「无 history_*」可能只是插件未起 = 假绿）。
+        _h.wait_plugins_running(c2, ("history", "file", "task"))
+        _h.wait_tools(c2, ("file_replace", "task_run"))
         if os.path.exists(os.path.join(ws2, ".git")):
             raise TestError("夹具不应是 git 仓库：%s" % os.path.join(ws2, ".git"))
         vcs = c2.req("gui.vcs.info", {}) or {}
@@ -726,11 +735,16 @@ def case_h5_non_git_repo_tools_removed():
             raise TestError("非 git 仓库不应注册 history 工具（基线），实际=%r"
                             % hist_tool_names(base))
         c2.req("data-prj-config-save", {"data": {"key": "history.enabled", "value": "true"}})
-        time.sleep(4.0)   # 给「回读 → 收敛工具面」窗口
+        # 给「回读 → syncTools」完整窗口，并**持续**观察：任何时刻出现 history_* 即判红
+        # （不是只采一次后放行 —— 单次采样可能早于插件处理刷新，构成假绿）。
+        deadline = time.time() + 10
         now = names2()
-        bad = hist_tool_names(now)
-        if bad:
-            raise TestError("非 git 仓库即使 history.enabled=true 也应摘除工具，实际=%r" % bad)
+        while time.time() < deadline:
+            now = names2()
+            bad = hist_tool_names(now)
+            if bad:
+                raise TestError("非 git 仓库即使 history.enabled=true 也应摘除工具，实际=%r" % bad)
+            time.sleep(0.4)
         print("[H5] 非 git 仓库实例：git=%r gitInstalled=%r · 工具面 %d 项无 history_*"
               "（enabled=true 后仍摘除）"
               % (vcs.get("git"), vcs.get("gitInstalled"), len(now)), flush=True)
@@ -780,6 +794,12 @@ def main():
     c = g.client
     c.wait_ready(120)
     c.console(clear=True)
+    # 就绪栅栏（2026-11-07）：`/ping ready` 早于插件冷启动（实测 ready 时工具面仅 5 个内置工具，
+    # 1–3s 后才补齐）。本套件的判据全部经**真实插件工具**（file_replace 改文件 / task_run 打点）
+    # 产生，必须先等 history/file/task 台账 running + 工具面含二者；否则 gateway 回
+    # `unknown tool "file_replace"` → 盘面不变（H3/H1 实跑根因），后续 H2/H4 连锁 refs=[]。
+    _h.wait_plugins_running(c, ("history", "file", "task"))
+    _h.wait_tools(c, ("file_replace", "task_run"))
     SID = "hist-%d" % int(time.time() * 1000)
     print("[env] ws=%s data=%s mock=%d gui=%d 根会话=%s（临时目录，结束即回收）"
           % (WS, DD, MOCK.port, g.port, SID), flush=True)

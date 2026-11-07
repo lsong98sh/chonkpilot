@@ -1,10 +1,11 @@
 """回归测试：排队消息交互（51-FP与测试映射「主chat 输入区操作行」排队消息）。
 
-覆盖：
-- 忙碌态入队 → 队列数字徽章
-- 点击徽章展开队列 popover
-- 撤回（↩）→ 文本写回输入区
-- 删除（✕）→ 队列项移除
+覆盖（INBOX 摘要条，2026-11-01 起替代旧 `.queue-indicator` 徽章）：
+- 0 条不显示摘要条（边界）
+- 忙碌态入队 → `.inbox-bar-count` 计数（1 条 / 2 条）
+- 点击摘要条展开 `.inbox-popover` 全量列表（条目数与顺序）
+- 撤回（↩ title「撤回」）→ 文本写回输入区 + 剩余计数 / 顺序
+- 删除（✕ title「删除」）→ 队列清空、摘要条整体消失
 
 忙碌夹具：usr `llms` 追加一条挂起 provider（本地 HTTP 只收不回），选中它并发一轮 →
 该轮无 llm-complete → turn 持续 busy（否则默认 LLM 轮次失败即 llm-complete
@@ -104,6 +105,9 @@ def main():
         J(gui, "window.mq.emit('session-changed', {session_id: %s}); 'ok'" % json.dumps(sid))
         wait_session_history(gui, sid)  # 等历史回填落地再发（发送与历史回填交错会让气泡落点不可预期）
 
+        # Q0（边界）：会话就绪、尚无待发项 → 摘要条整体不渲染（0 条不显示）
+        c.check("Q0 无排队时摘要条不显示", bool(J(gui, "!document.querySelector('.inbox-bar')")))
+
         # 忙碌态：发一条不结束的 turn（挂起 LLM → 无 llm-complete）
         J(gui, "window.mq.emit('message-send', {sessionId: %s, text: 'hang turn', llm: %s}); 'ok'" % (
             json.dumps(sid), json.dumps(HANG_LLM)))
@@ -111,36 +115,99 @@ def main():
         busy = J(gui, """(()=>{const bs=Array.from(document.querySelectorAll('.input-actions-right button'));return bs.some(b=>(b.textContent||'').trim()==='Queue'||(b.textContent||'').trim()==='入队')})()""")
         c.check("Q1 忙碌态显示入队按钮", bool(busy))
 
-        # 入队 2 条
+        def count_badge():
+            """INBOX 摘要条计数（`.inbox-bar-count`）；摘要条未渲染 → ''（= 0 条）。"""
+            return J(gui, "document.querySelector('.inbox-bar .inbox-bar-count')?.textContent?.trim() || ''")
+
+        def wait_count(expect, timeout=15):
+            """轮询计数至期望值：入队落 prjusr inbox 后由 `llm-inbox-list` 异步回填。"""
+            deadline = time.time() + timeout
+            got = ''
+            while time.time() < deadline:
+                got = count_badge()
+                if str(got) == str(expect):
+                    return got
+                time.sleep(0.3)
+            return got
+
+        def popover_texts():
+            """popover 全量条目文本（按展示顺序）；返回 JS 数组 → 驱动层按 JSON 数组回传。"""
+            return J(gui, "[...document.querySelectorAll('.inbox-popover .inbox-item .inbox-item-content')].map(e => e.textContent.trim())")
+
+        # 夹具同步点：首条 `message-send` 自己也是经 llm-inbox-add 起轮（无运行轮 → 立即消费）。
+        # 必须等服务端 `session-running-list` 里出现该会话（turn 真在跑）再入队；否则入队项会与
+        # 起轮项被同批消费（首轮 start 前的竞态）→ 徽章数少 1 且用例误红。
+        running = []
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            rl = gui.req('session-running-list', {}, 8000) or {}
+            lst = rl.get('list') or (rl.get('result') or {}).get('list') or []
+            running = [x for x in lst if (x or {}).get('session_id') == sid]
+            if running:
+                break
+            time.sleep(0.3)
+        c.check("Q1b 忙碌 turn 已在跑（session-running-list 命中）", bool(running), f"running={running}")
+
+        # 入队 2 条（逐条等摘要条首行文本：服务端 created_at 升序 = 入队顺序 → 撤回顺序断言可预期）。
+        # 注意等「首行文本」而非仅计数：起轮项被服务端消费后无 `session-inbox-changed` 广播时，
+        # 前端镜像会残留上一条（幽灵徽标）→ 只等计数会被残留项提前满足。
         J(gui, "window.mq.emit('message-queue', {sessionId: %s, text: '排队消息甲', llm: %s}); 'ok'" % (
             json.dumps(sid), json.dumps(HANG_LLM)))
+        first_line = ''
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            first_line = J(gui, "document.querySelector('.inbox-bar .inbox-bar-text')?.textContent?.trim() || ''")
+            if first_line == '排队消息甲':
+                break
+            time.sleep(0.3)
+        c.check("Q2a 入队 1 条 → 摘要条首行 = 排队消息甲", first_line == '排队消息甲', f"line={repr(first_line)}")
+        badge = count_badge()
+        c.check("Q2b 入队 1 条 → 计数 = 1", badge == '1', f"badge={repr(badge)}")
+
         J(gui, "window.mq.emit('message-queue', {sessionId: %s, text: '排队消息乙', llm: %s}); 'ok'" % (
             json.dumps(sid), json.dumps(HANG_LLM)))
-        time.sleep(0.6)
-        badge = J(gui, "document.querySelector('.queue-indicator .queue-badge')?.textContent?.trim() || ''")
+        badge = wait_count(2)
         c.check("Q2 队列徽章 = 2", badge == '2', f"badge={repr(badge)}")
 
-        # 点击徽章 → popover 展开 2 条
-        J(gui, "document.querySelector('.queue-indicator')?.click(); 'ok'")
+        # 点击摘要条 → popover 展开全量 2 条（顺序 = 入队顺序）
+        J(gui, "document.querySelector('.inbox-bar .b-popover__reference')?.dispatchEvent(new MouseEvent('click', {bubbles: true})); 'ok'")
         time.sleep(0.6)
-        items = J(gui, "document.querySelectorAll('.queue-popover .queue-item').length")
+        items = J(gui, "document.querySelectorAll('.inbox-popover .inbox-item').length")
         c.check("Q3 队列 popover 2 项", int(items) == 2, f"items={items}")
+        c.check("Q3b popover 条目顺序 = 入队顺序", popover_texts() == ['排队消息甲', '排队消息乙'],
+                f"texts={popover_texts()}")
 
-        # 撤回第一条（↩）→ 文本写回输入区 + 队列剩 1
-        # INBOX：next_turn 项前置「立刻插入」，故撤回 = 倒数第二个动作按钮（不按下标猜）。
-        J(gui, "document.querySelector('.queue-popover .queue-item .queue-item-actions button:nth-last-child(2)')?.click(); 'ok'")  # 倒数第二 = 撤回
-        time.sleep(0.6)
-        ta = J(gui, "document.querySelector('[contenteditable][data-drop-target=\"chat-input\"]')?.innerText || ''")
-        badge = J(gui, "document.querySelector('.queue-indicator .queue-badge')?.textContent?.trim() || ''")
-        c.check("Q4 撤回 → 文本写回输入区 + 队列剩 1", '排队消息甲' in ta and badge == '1', f"ta={repr(ta[:20])} badge={repr(badge)}")
+        # 撤回第二条（↩ = title「撤回」按钮）→ 文本写回输入区 + 队列剩 1（甲保留）
+        # 按钮按 title 语义选（行内 3 个动作：插话/取消插话、删除、撤回），不按下标猜。
+        J(gui, "document.querySelectorAll('.inbox-popover .inbox-item')[1]?.querySelector('.inbox-item-actions button[title^=\"撤回\"]')?.click(); 'ok'")
+        badge = wait_count(1)
+        ta = J(gui, "document.querySelector('[contenteditable][data-drop-target=\"chat-input\"]')?.innerText?.trim() || ''")
+        c.check("Q4 撤回 → 文本写回输入区 + 队列剩 1", ta == '排队消息乙' and badge == '1',
+                f"ta={repr(ta)} badge={repr(badge)}")
+        c.check("Q4b 未撤回项保留（甲）", popover_texts() == ['排队消息甲'], f"texts={popover_texts()}")
 
-        # 删除第二条（✕）→ 队列清空徽章消失（撤回后 popover 关闭，先重新打开）
-        J(gui, "document.querySelector('.queue-indicator')?.click(); 'ok'")
-        time.sleep(0.5)
-        J(gui, "document.querySelector('.queue-popover .queue-item .queue-item-actions button:last-child')?.click(); 'ok'")  # 最后一个 = 删除
-        time.sleep(0.6)
-        badgeGone = J(gui, "!document.querySelector('.queue-indicator .queue-badge')")
-        c.check("Q5 删除 → 队列清空", bool(badgeGone))
+        # 删除剩余一条（✕ = title「删除」）→ 队列清空、摘要条整体消失
+        # （服务端 pending=0 **且** DOM 连续 3 次无摘要条 → 排除瞬时重渲染 / 镜像刷新竞态）
+        # popover 可能随清单重渲染关闭 → 未展开时先点开。
+        if not J(gui, "!!document.querySelector('.inbox-popover .inbox-item')"):
+            J(gui, "document.querySelector('.inbox-bar .b-popover__reference')?.dispatchEvent(new MouseEvent('click', {bubbles: true})); 'ok'")
+            time.sleep(0.5)
+        J(gui, "document.querySelector('.inbox-popover .inbox-item .inbox-item-actions button[title=\"删除\"]')?.click(); 'ok'")
+        stable = 0
+        server_items = None
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            ib = gui.req('llm-inbox-list', {'session': sid}, 8000) or {}
+            server_items = ib.get('items') or (ib.get('result') or {}).get('items') or []
+            if not server_items and J(gui, "!document.querySelector('.inbox-bar')"):
+                stable += 1
+                if stable >= 3:
+                    break
+            else:
+                stable = 0
+            time.sleep(0.3)
+        c.check("Q5 删除 → 队列清空（pending=0 且摘要条持续消失）", stable >= 3,
+                f"stable={stable} server_items={server_items} badge={repr(count_badge())}")
 
         # 结束 turn 清理
         emit_remote(gui, 'llm-complete', {'session': sid, 'status': 'completed'})

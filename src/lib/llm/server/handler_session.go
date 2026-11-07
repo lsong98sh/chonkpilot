@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-agent/router"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // onLLMSimple 无上下文单轮 LLM 方法面（SubjectLLMSimple，mq 方法调用：请求→同主题 promise）：
@@ -96,7 +96,8 @@ func (s *Server) onLLMStart(ctx context.Context, subject string, v *mq.Value) er
 	return s.acceptLLMStart(ctx, subject, v, true)
 }
 
-// acceptLLMStart 承载 llm-start 受理主体（原 onLLMStart 逐字搬迁）。
+// acceptLLMStart 承载 llm-start 方法面（外部 JSON 载荷）：先过 filter、解析 JSON，
+// 再交 serveLLMStart 走同一受理主体。
 // resetNextRun = true（外部用户动作）→ 先归零 `sessions.next_run_count`；false（内部
 // consumeNextTurn 起自动轮）→ 保持计数，自动链才能连续接续到上限。
 func (s *Server) acceptLLMStart(ctx context.Context, _ string, v *mq.Value, resetNextRun bool) error {
@@ -109,6 +110,13 @@ func (s *Server) acceptLLMStart(ctx context.Context, _ string, v *mq.Value, rese
 		v.Result = map[string]any{"accepted": false, "error": "bad request"}
 		return nil
 	}
+	return s.serveLLMStart(v, req, resetNextRun)
+}
+
+// serveLLMStart 是 llm-start 的**受理主体**（校验 + owner/busy + 落库 + 建轮次）：
+// 外部方法面（acceptLLMStart）与内部调用（acceptStart）共用；后者**不经过 JSON**，
+// 因此 StartReq 的内部字段（如 NotifyTurn，json:"-"）不会出现在消息面契约里。
+func (s *Server) serveLLMStart(v *mq.Value, req StartReq, resetNextRun bool) error {
 	if req.Session == "" {
 		v.Result = map[string]any{"accepted": false, "error": "session is required"}
 		return nil
@@ -157,7 +165,7 @@ func (s *Server) acceptLLMStart(ctx context.Context, _ string, v *mq.Value, rese
 		// MOD-1 M6b：启动扫描未答 ask（须在遗留清理**之前**——清理会把 running 行置
 		// interrupted，扫描只用于留痕 / 计数，失效应答由 ask_id 回查兜底）。
 		s.scanPendingAsks(req.InstanceID)
-		store := newSessionStore(s.bus, req.InstanceID)
+		store := s.newSessionStore(req.InstanceID)
 		if err := store.CleanupStaleTurns(); err != nil {
 			// B-41：失败须留痕且**撤销占位** → 下次使用重试（原先吞错 + 提前置位 → 永不重试）。
 			logf("[chonkpilot-server] CleanupStaleTurns failed (instance=%s): %v\n", req.InstanceID, err)
@@ -190,7 +198,7 @@ func (s *Server) acceptLLMStart(ctx context.Context, _ string, v *mq.Value, rese
 	}
 	s.mu.Unlock()
 
-	store := newSessionStore(s.bus, req.InstanceID)
+	store := s.newSessionStore(req.InstanceID)
 	// 同轮次继续：未带 turn → 后端取该 session 最近一轮（带 turn 则直接采用）。
 	if req.Continue && req.Turn == "" {
 		req.Turn = store.LatestTurnID(req.Session)
@@ -250,12 +258,12 @@ func (s *Server) acceptLLMStart(ctx context.Context, _ string, v *mq.Value, rese
 	return nil
 }
 
-// acceptStart 以内部请求走 llm-start 同一受理路径（INBOX 的 next_turn 消费 / 测试复用）：
-// 复用一个临时 mq.Value 承载载荷与应答，避免复制 onLLMStart 的全部校验与落库逻辑。
+// acceptStart 以内部请求走 llm-start 同一受理路径（INBOX 的 next_turn 消费 / 内部通知轮 /
+// 测试复用）：**直接**调用 serveLLMStart（不 marshal/unmarshal JSON），因此 StartReq 的
+// 内部字段（NotifyTurn，json:"-"）可传达到 newTurnCtx，同时不进入 llm-start 消息面契约。
 func (s *Server) acceptStart(req StartReq) map[string]any {
-	b, _ := json.Marshal(req)
-	v := &mq.Value{Payload: b}
-	_ = s.acceptLLMStart(context.Background(), "", v, false)
+	v := &mq.Value{}
+	_ = s.serveLLMStart(v, req, false)
 	if v.Result == nil {
 		return map[string]any{"accepted": false}
 	}
@@ -378,7 +386,17 @@ func (s *Server) onLLMCancel(_ context.Context, _ string, v *mq.Value) error {
 	// gateway ep.cancel → reportTaskDone → Emit(mcp-tasks-report)` 会在本 goroutine 上
 	// 同步回到 `onGatewayTaskDone`，后者 `s.mu.Lock()`；持锁级联 = 同一 goroutine 对
 	// 非重入互斥自锁 → 永久挂起（宿主 publish 走 WebView2 UI 线程 → 窗口整体冻结）。
+	// 取消优先标记：终态屏障「先关子树、再落自身终态」，并阻止自然完成路径误发 complete。
+	tc.cancelRequested.Store(true)
 	s.tasks.cancelByTurn(tc.req.InstanceID, tc.req.Turn)
+	// 用户取消 = 提问终止：显式摘除本轮的 ask 登记与 Ask 中心待办（批次内已收到的答复一并丢弃，
+	// 不再投递）。正常收尾路径不清理（AskUser S4：非阻塞 ask 可跨轮存活）。
+	s.mu.Lock()
+	removedAsks := s.clearAsksByTurnLocked(tc.req.InstanceID, tc.req.Turn)
+	s.mu.Unlock()
+	for _, w := range removedAsks {
+		s.notifyAskCenterRemove(w, "turn_closed")
+	}
 	// 委派子代理：父轮次取消 → 级联关闭其派生（递归）子轮次。
 	s.closeDelegatedChildren(tc.req.InstanceID, tc.req.Turn)
 	s.complete(tc, "interrupted", "interrupted", "")

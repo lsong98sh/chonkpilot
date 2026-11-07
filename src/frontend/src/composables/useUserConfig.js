@@ -38,8 +38,13 @@ async function ensureLoaded() {
   if (loaded.value) return state.value
   if (!loading) {
     loading = getUserConfig()
-      .then((cfg) => {
-        merge(cfg || {})
+      .then((res) => {
+        // getUserConfig 返回 `{ config }`（api/config.js · data-user-config-load）；
+        // 缓存必须是**扁平 usr 配置**（theme / locale / continueText …）。
+        // 此前把外层 `{config:…}` 直接 merge → 所有读者拿不到键，
+        // 独立窗口（ask / chat，独立 WebView2 profile、localStorage 为空）首屏主题恒为 light。
+        const cfg = (res && res.config) || res || {}
+        merge(cfg)
         loaded.value = true
         return state.value
       })

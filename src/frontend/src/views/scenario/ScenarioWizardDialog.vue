@@ -404,7 +404,7 @@
           <template v-else>
             <div class="wz-placeholder">{{ $t('wizard.stack.otherModeHint') }}</div>
             <div class="wz-quick">
-              <Button size="small" @click="closeDialog">{{ $t('wizard.stack.otherModeEnter') }}</Button>
+              <Button size="small" @click="enterScenarioEditor">{{ $t('wizard.stack.otherModeEnter') }}</Button>
             </div>
           </template>
         </section>
@@ -610,13 +610,16 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button, Input, Textarea, Switch, Tooltip, Tabs, message, promptInput } from '@ckfw/components/ui/index.js'
+import { dialog } from '@ckfw/components/dialog/index.js'
 import CombinedPromptPreview from './CombinedPromptPreview.vue'
+import ScenarioEditDialog from './ScenarioEditDialog.vue'
 import PromptVariablesButton from '../../components/common/PromptVariablesButton.vue'
 import { useVariableInsert } from '../../composables/usePromptVariables'
 import { optimizeAgentPrompt } from '../../api/config'
+import { memoryCategoryKey } from '../../utils/memoryCategory'
 import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics } from '../../events/msgkeys'
@@ -627,6 +630,8 @@ const props = defineProps({
   reason: { type: String, default: '' },
   workDir: { type: String, default: '' },
   specPath: { type: String, default: '' },
+  // 'editor' = 从场景编辑器内的【向导】打开：既有编辑器仍在本向导下方。
+  origin: { type: String, default: '' },
   // 关闭对话框（由 scenarioWizard.js 注入 → DialogManager handle.close）
   requestClose: { type: Function, default: null },
   // 已关闭（onUnmounted）→ 复位防重入 flag
@@ -1314,6 +1319,9 @@ function buildProjectSpecMarkdown() {
 }
 function buildPayload() {
   const name = sceneName.value.trim() || defaultSceneName()
+  // 类别键须过后端 capfs.ValidMemoryCategoryName（en-US 显示名含空格 → 不能直接落库）；
+  // UI 仍显示 m.name，只有 payload 的 category 使用净化键，且同一 payload 内保证唯一。
+  const usedCategoryKeys = new Set()
   return {
     scenario_id: slugify(name) || defaultSceneName(),
     scene_name: name,
@@ -1332,7 +1340,7 @@ function buildPayload() {
     }),
     memory: memoryCats.value
       .filter(m => m.content && m.content.trim())
-      .map(m => ({ category: m.name, content: m.content })),
+      .map(m => ({ category: memoryCategoryKey(m, usedCategoryKeys), content: m.content })),
     project_spec: buildProjectSpecMarkdown(),
     // 辅助选项 → prj 配置键（字符串 "true"/"false"；01 §6.1 / 07 §6）
     config: {
@@ -1486,6 +1494,41 @@ function closeDialog() {
   mq.emit(EventNames.agentWizardSkip, {})
   dismissDialog()
 }
+/**
+ * 「其他」模式逃生舱：模板/脚手架不适用 → 先关向导，再打开既有场景编辑器（新建口径，
+ * 名称/描述取自向导当前输入），由用户手动配置场景与 agent。
+ * 不补写 project_spec.md：初始化标记仍以「向导生成」为唯一写入路径（spec schema 为 P2）；
+ * 编辑器保存成功只广播 scenarioReload，列表与场景选择器即时可见。
+ */
+function enterScenarioEditor() {
+  // 从场景编辑器内打开的向导：既有编辑器仍在下方，关闭向导即回到它（不再叠一个新编辑器）。
+  if (props.origin === 'editor') {
+    closeDialog()
+    return
+  }
+  const prefill = {
+    name: sceneName.value.trim() || defaultSceneName(),
+    description: composeDescription(),
+    level: 'user',
+  }
+  // DialogManager.close 同步卸载 → 此处关向导不会与编辑器叠层；_wizardOpen 由 notifyClosed 复位。
+  closeDialog()
+  const handle = dialog.show(h(ScenarioEditDialog, {
+    scenario: prefill,
+    isNew: true,
+    onDone: () => {
+      mq.emit(EventNames.scenarioReload, {})
+      handle.close()
+    },
+    onCancel: () => handle.close(),
+  }), {
+    title: t('scenario.add'),
+    width: 900,
+    height: 640,
+    bodyClass: 'scenario-edit-dialog-body',
+    closable: true,
+  })
+}
 
 onMounted(async () => {
   await runProbe()
@@ -1565,8 +1608,10 @@ onUnmounted(() => {
   border-radius: 50%; background: var(--bg-surface, #dee2e6); color: var(--text-secondary);
   font-size: 11px; flex: 0 0 auto;
 }
-.wz-rail-item.done .wz-rail-n { background: var(--success, #2d9f4e); color: #fff; }
-.wz-rail-item.on .wz-rail-n { background: var(--accent); color: #fff; }
+/* 徽标前景 = 「强调底上的前景」（light 白 / dark·nord 深面）；写死 #fff 在暗色主题
+   的浅强调底 / 浅 success 底上只有 ~2:1。 */
+.wz-rail-item.done .wz-rail-n { background: var(--success, #2d9f4e); color: var(--ck-accent-fg, #fff); }
+.wz-rail-item.on .wz-rail-n { background: var(--accent); color: var(--ck-accent-fg, #fff); }
 .wz-rail-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 内容区 */

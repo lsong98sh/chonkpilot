@@ -247,3 +247,45 @@ def wait_reply(ac, ask_id, max_wait=10.0):
                 return p
         time.sleep(0.2)
     return None
+
+
+def wait_chat_panel(ac, timeout=15.0):
+    """等「聊一聊」内嵌聊天面板覆盖 ask 区（`.ask-chat-panel`）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if has_chat_panel(ac):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def has_chat_panel(ac):
+    try:
+        return int(ac.eval("document.querySelectorAll('.ask-chat-panel').length") or 0) > 0
+    except Exception:
+        return False
+
+
+def click_chat_done(ac):
+    """聊天面板「完成」按钮（解除提问；不向 LLM 通知）。"""
+    return ac.eval("""(() => {
+      const b = document.querySelector('.ask-chat-panel .ask-chat-done');
+      if (!b) return 'no-btn';
+      if (b.disabled) return 'disabled';
+      b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return 'ok';
+    })()""", 5000)
+
+
+def wait_resolve(ac, ask_id, max_wait=10.0):
+    """等 ask-resolve（先调用方 `ac.mq_on_capture(["ask-resolve"])`）。"""
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        evs = ac.events_of("ask-resolve", clear=False)
+        for e in evs:
+            p = e.get("payload") or {}
+            if p.get("ask_id") == ask_id:
+                ac.events_of("ask-resolve", clear=True)
+                return p
+        time.sleep(0.2)
+    return None

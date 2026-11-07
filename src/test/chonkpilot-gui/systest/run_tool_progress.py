@@ -34,7 +34,12 @@ from chonk_client import TestError, run_case  # noqa: E402
 
 c = run_llm.c
 
-EVENTS = run_llm.EVENTS + ["mcp-tools-progress"]
+# 会话消息重载链**末端**主题（run_chat_ui.py 同法）：session-changed → loadMessages
+# → assessContinueState → restoreAwaitingArbitration → data-tasktree-tasks（两次：
+# ChatPanel 即时一次 + MessageList 重载后一次）。等到两次 = 新会话的消息列表已落定。
+RELOAD_TOPIC = "data-tasktree-tasks"
+# 一次注册全部所需主题（mq_on_capture 每次调用都会清空旧事件并重置 handler）。
+EVENTS = run_llm.EVENTS + ["mcp-tools-progress", RELOAD_TOPIC]
 
 _TURN_SEQ = [0]
 
@@ -58,16 +63,66 @@ def _start_turn(sid, q):
     })
 
 
-def _pairs():
-    """当前 DOM 的工具条目列表（消息顺序）：[{label, title}]。
+def _wait_reloaded(sid, max_wait=25):
+    """等本会话 `data-tasktree-tasks` 到达两次（重载链末端，见 run_chat_ui.activate）。"""
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        hits = 0
+        for e in (c.events_of(RELOAD_TOPIC, clear=False) or []):
+            p = e.get("payload") if isinstance(e, dict) else None
+            if isinstance(p, str):
+                try:
+                    p = json.loads(p)
+                except Exception:
+                    p = None
+            if isinstance(p, dict) and p.get("session_id") == sid:
+                hits += 1
+        if hits >= 2:
+            return True
+        time.sleep(0.3)
+    return False
 
+
+def _activate_clean_session(sid):
+    """新建/激活会话并**确证消息列表已清空**（不依赖“可能为空”，也不继承旧会话条目）。
+
+    旧写法 `activate_session` 只固定 sleep 0.3s 后就开始发轮次：若 GUI 是复用的长驻实例
+    （带旧会话/旧构建、消息重载慢），旧会话的 tool_pair 仍在 DOM → 本套件随后统计到的
+    是「旧 3 + 新 3 = 6」（用户实测：同 3 个标签各两次、title 全 None）。夹具缺陷，不是
+    前端重复渲染：新建会话的 DOM 实测恒为 3 条。
+    """
+    c.mq_emit("session-changed", {"session_id": sid})
+    if not _wait_reloaded(sid):
+        raise TestError("等待会话消息重载完成超时（%s, session=%s）" % (RELOAD_TOPIC, sid))
+    deadline = time.time() + 20
+    last = None
+    while time.time() < deadline:
+        last = _pairs()
+        if not last:
+            return
+        time.sleep(0.3)
+    raise TestError("开跑前会话未清空：DOM 仍有 %d 个工具条目（旧会话残留/未隔离）: %s"
+                    % (len(last or []), last))
+
+
+def _pairs():
+    """当前**本会话消息列表**内的工具条目（消息顺序）：[{label, title, message_id}]。
+
+    作用域 = 主 ChatPanel 的 `.message-list`（不再 `document.querySelectorAll` 全局取样：
+    预览/旧会话/其它面板残留会把条数污染），且只取 tool_pair 消息卡。
     title = 工具调用条目根节点 `.toolpair-section` 的 title 属性（无 → None）。
+    message_id = 所属 `.message-item` 的 `data-id`（`tp_<tool_call_id>`，用于断言顺序/唯一性）。
     """
     js = """(() => {
-      const out = [...document.querySelectorAll('.toolpair-section')].map(el => {
+      const root = document.querySelector('.chat-panel .message-list')
+                || document.querySelector('.message-list');
+      if (!root) return JSON.stringify([]);
+      const out = [...root.querySelectorAll('.message-item.tool_pair .toolpair-section')].map(el => {
         const lab = el.querySelector('.tool-name-label');
+        const item = el.closest('.message-item');
         return { label: (lab ? lab.textContent : '').trim(),
-                 title: el.getAttribute('title') };
+                 title: el.getAttribute('title'),
+                 message_id: item ? item.getAttribute('data-id') : '' };
       });
       return JSON.stringify(out);
     })()"""
@@ -75,26 +130,40 @@ def _pairs():
     return v if isinstance(v, list) else []
 
 
-def _wait_pairs(n, max_wait=90):
-    """等 DOM 出现 n 个工具条目（不足则超时）。"""
+def _wait_pairs_exact(n, desc, max_wait=90):
+    """等 DOM **恰好** n 个工具条目；超过 n 立即报重复（不做“>=n 即通过”的弱化）。"""
     deadline = time.time() + max_wait
+    last = []
     while time.time() < deadline:
-        ps = _pairs()
-        if len(ps) >= n:
-            return ps
+        last = _pairs()
+        if len(last) == n:
+            return last
+        if len(last) > n:
+            raise TestError("%s：应有 %d 个工具条目，实际 %d（疑似旧会话残留/重复渲染）: %s"
+                            % (desc, n, len(last), last))
         time.sleep(0.5)
-    raise TestError("DOM 工具条目不足 %d 个（当前 %d）" % (n, len(_pairs())))
+    raise TestError("%s：DOM 工具条目不足 %d 个（当前 %d）: %s"
+                    % (desc, n, len(last), last))
 
 
-def _tool_call_ids():
-    """本轮新增的 tool-pair 事件里的 tool_call_id（按到达顺序，不清空累积）。"""
-    ids = []
-    for e in c.events_of("tool-pair", clear=False):
+def _tool_calls(sid):
+    """本会话本轮新增的 tool-call 事件（按到达/消息顺序）：[{tool, tool_call_id}]。
+
+    以 `llm-tool-call`（= 前端创建 tool_pair 卡片的同一流事件）为序，而不是任务树
+    `tool-pair` 的到达序（批量任务的 task-started 顺序不保证与消息顺序一致）。
+    """
+    out = []
+    seen = set()
+    for e in c.events_of("llm-tool-call", clear=False):
         p = e.get("payload") or {}
         i = p.get("tool_call_id")
-        if i and i not in ids:
-            ids.append(i)
-    return ids
+        if not i or i in seen:
+            continue
+        if p.get("session_id") not in (None, sid):
+            continue
+        seen.add(i)
+        out.append({"tool": p.get("tool") or "", "tool_call_id": i})
+    return out
 
 
 def _inject_progress(tool_call_id, progress, total=None):
@@ -119,24 +188,34 @@ def case_progress_title_three_states():
     """三态：有 total 显示百分比 / 无事件不显示 / 无 total 不显示百分比。"""
     c.mq_on_capture(EVENTS)
     sid = run_llm.create_session()
-    run_llm.activate_session(sid)
+    # 夹具隔离（2026-11-07）：等消息重载落定 + 断言本会话起始为空（必须有 0 条，
+    # 不接受“列表可能为空”）。否则复用长驻 GUI 时会把旧会话的 tool_pair 一并统计。
+    _activate_clean_session(sid)
 
     # ① 一轮两条工具调用（mock: "call batch" → 批处理一/批处理二 两条 task_run）
     _start_turn(sid, "please call batch")
     run_llm.wait_event("llm-complete", max_wait=120)
-    _wait_pairs(2)
+    _wait_pairs_exact(2, "第一轮（期望 2×task_run）")
 
     # ② 第二轮再来一条（mock: "call tool" → file_read）→ 同 DOM 第三个条目
     _start_turn(sid, "please call tool")
     run_llm.wait_event("llm-complete", max_wait=120)
-    pairs = _wait_pairs(3)
-    if len(pairs) != 3:
-        raise TestError("应有 3 个工具条目（2×task_run + 1×file_read），实际 %d: %s"
-                        % (len(pairs), pairs))
-    ids = _tool_call_ids()
-    if len(ids) < 3:
-        raise TestError("tool-pair 事件的 tool_call_id 不足 3 个: %s" % ids)
+    pairs = _wait_pairs_exact(3, "第二轮（期望 2×task_run + 1×file_read）")
+
+    # 期望值断言：本会话 tool-call 事件序列 + DOM 条目**条数与顺序**（tp_<tool_call_id>）。
+    calls = _tool_calls(sid)
+    if [x.get("tool") for x in calls] != ["task_run", "task_run", "file_read"]:
+        raise TestError("本会话 tool-call 事件序列不符（期望 2×task_run + 1×file_read）: %s" % calls)
+    ids = [x["tool_call_id"] for x in calls]
     first, second, third = ids[0], ids[1], ids[2]
+    dom_ids = [p.get("message_id") for p in pairs]
+    if dom_ids != ["tp_" + first, "tp_" + second, "tp_" + third]:
+        raise TestError("工具条目与 tool-call 事件的条数/顺序不符（期望 3 条依序）: DOM=%s 事件=%s"
+                        % (dom_ids, ["tp_" + i for i in ids]))
+    for call, pair in zip(calls, pairs):
+        if call["tool"] not in (pair.get("label") or ""):
+            raise TestError("工具条目标签与 tool 不符（期望含 %r）: %s"
+                            % (call["tool"], pair.get("label")))
 
     # 初始：三个条目均无 title（进度事件尚未到达）
     if [p["title"] for p in pairs] != [None, None, None]:

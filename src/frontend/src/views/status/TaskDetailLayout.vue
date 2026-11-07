@@ -93,7 +93,8 @@ defineProps({
   white-space: nowrap;
 }
 .td-badge.is-disabled {
-  color: var(--fg-disabled);
+  /* 未启用/空闲 = 只读状态徽标，不是禁用控件 → text-muted（三主题 ≥4.5:1）。 */
+  color: var(--text-muted);
   background: var(--bg-secondary);
 }
 .td-badge.is-progress {

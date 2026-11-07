@@ -240,7 +240,7 @@ plugin.ready    {}                                 → {ok}        # 可选：�
 ```
 
 - `plugin.hello` 后宿主分配 `instance_id`（`plugin:<id>:<n>`），**同一连接内 id 不可变更**；
-- **2026-11-04 核对**：`plugin.hello` 载荷实际额外含 `manifest`（插件自读的完整 manifest，D12）与可选 `work_dir`；宿主只校验 `manifest.id`。`plugin.register` 应答**没有** `capabilities.granted`（设计稿要求，未实现）。
+- **2026-11-04 核对**：`plugin.hello` 载荷实际额外含 `manifest`（插件自读的完整 manifest，D12）与可选 `work_dir`；宿主只校验 `manifest.id`（2026-11-05 起为空或与插件 id 不等即失败）。`plugin.register` 应答**没有** `capabilities.granted`（设计稿要求，未实现）。
 - `ui` 段 = manifest `ui` 同构的运行时覆盖（`plugin.ui.register` 走同一入口）；
 - 晚连接插件会自动收到一次 `server-ready` 事件（宿主就绪时补发）。
 
@@ -493,7 +493,7 @@ parent.postMessage({ ckPlugin: 1, id: "r1", type: "call", method: "config.get", 
 允许方法：`config.get` / `config.set` / `config.reset` / `data.read` / `data.write` /
 `rpc` / `action` / `open-url` / `close` / `log`。
 
-> 2026-11-04 核对：`PluginPageHost.vue` 的 `dispatch` 实际还支持 `action`（`POST /plugins/<id>/api/<action>`，请求头带插件 id）。`config.get` 返回 `{ok,fields,values}`，**无 `dirty`**。`rpc` **没有** `ui.rpc` 白名单校验：宿主直接转发 `plugin.ui.rpc`，插件 SDK 的任何 `OnRequest` 方法都可被调用——`ui.rpc` 目前只是声明/约定。
+> 2026-11-04 核对：`PluginPageHost.vue` 的 `dispatch` 实际还支持 `action`（`POST /plugins/<id>/api/<action>`，请求头带插件 id）。`config.get` 返回 `{ok,fields,values}`，**无 `dirty`**。`rpc` **自 2026-11-05 起按 `ui.rpc` 白名单校验**：方法名未在 manifest 声明 → 宿主拒绝；插件须把 iframe 要调用的所有方法登记到 `ui.rpc`（如 codegraph 的 `vfts.session.query` / `vfts.session.reindex`）。
 
 #### 7.2.1 实例归属与定向投递（PLUGIN-INSTANCE-1）
 
@@ -554,7 +554,7 @@ parent.postMessage({ ckPlugin: 1, id: "r1", type: "call", method: "config.get", 
 | `command` | ② ✅ | 布局命令对象：`open-dialog` / `open-tabs` / `open-drawer` / `toggle-drawer` / `close-tabs-active` / `publish-mq`；`plugin-command` 载荷缺 `id` 时自动补当前插件 id |
 
 约束（**2026-11-04 核对：宿主 `normalizeManifest` 只补默认值，不校验、不拒绝**）：`id` 非空且唯一；`view` 与 `command` 至少一个；`view` 必须已注册；
-`container` 仅限上述四值；`style` 仅限上述三值。以上为**插件侧约定**；误配不会让插件 `status=error`（D13 仅校验 `manifest.id`，且 `id` 为空也接受），只会在 UI 打开时表现为找不到视图/命令无效。
+`container` 仅限上述四值；`style` 仅限上述三值。以上为**插件侧约定**；误配不会让插件 `status=error`（D13 只校验 `manifest.id`——2026-11-05 起为空或不等均报错——其余 UI 字段仍不校验），只会在 UI 打开时表现为找不到视图/命令无效。
 
 ---
 

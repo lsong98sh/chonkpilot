@@ -16,7 +16,7 @@
 // 订阅者据此恢复 server turn 执行（写回 v.Result）。
 //
 // 执行路径：
-//   - task 型（tool_stop/tool_result）：turn 经 gateway tools/call 唯一入口 → regProv 回调
+//   - task 型（tool_result）：turn 经 gateway tools/call 唯一入口 → regProv 回调
 //     （本文件）→ execTaskTool 同步执行并返回文本（节点建/广播/收尾在此）。
 //   - ask_user / llm 型（llm_run）：异步交互（等用户回答 / 子会话 DSL），turn 内保留内部通道；
 //     本回调提供兜底（外部经 gateway 直接调用时可执行，返回提交提示文本）。
@@ -366,7 +366,12 @@ func (s *Server) domainNode(tc *turnCtx, callID, tool string, args map[string]an
 		node.Purpose = purpose // 注入通道兜底（args 内展示名已被剥离）；name/simplified 取值口径不变
 	}
 	node.SetToolArgs(args)
-	return s.tasks.start(node)
+	n, err := s.tasks.start(node)
+	// 通知轮内派生的任务节点打标（§5.3 防循环）：完成时只落库/广播，不再级联触发通知轮。
+	if err == nil && tc.isNotifyTurn && n != nil {
+		s.markTaskNotifyOrigin(n.InstanceID, n.TaskID)
+	}
+	return n, err
 }
 
 // ── task 型域工具「执行中取消」登记表（I-83 收尾，18 §3.4）─────────────
@@ -455,6 +460,30 @@ type scenarioAgent struct {
 func (s *Server) loadScenario(instanceID, scenarioID string) (string, string, []scenarioAgent) {
 	if scenarioID == "" {
 		return "", "", nil
+	}
+	// 本地有界读取（§2.4）：门面直调，避免轮次构造 / 提示词组装路径上的同步总线应答；
+	// 实现与 data-scenario-load 同源（内嵌 persist）。
+	if s.cfg != nil {
+		res, err := s.cfg.ScenarioGet(facade.ScenarioGetRequest{InstanceID: instanceID, ScenarioID: scenarioID})
+		if err != nil {
+			logf("[chonkpilot-server] loadScenario: data-scenario-load failed (scenario_id=%s): %v\n", scenarioID, err)
+			return "", "", nil
+		}
+		sc := res.Scenario
+		agents := make([]scenarioAgent, 0, len(sc.Agents))
+		for _, a := range sc.Agents {
+			agents = append(agents, scenarioAgent{
+				Name:         strings.TrimSpace(a.Name),
+				IsMain:       a.IsMain,
+				Description:  a.Description,
+				RoleTag:      a.RoleTag,
+				Prompt:       a.Prompt,
+				Tools:        a.Tools,
+				LLMRef:       strings.TrimSpace(a.LLMRef),
+				DelegateCond: strings.TrimSpace(a.DelegateCond),
+			})
+		}
+		return sc.Description, sc.Level, agents
 	}
 	res, err := dataRequest(s.bus, msgkeys.TopicDataScenarioLoad, map[string]any{
 		"instance_id": instanceID, "data": map[string]any{"id": scenarioID},

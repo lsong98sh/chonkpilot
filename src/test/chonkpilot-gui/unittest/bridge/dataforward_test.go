@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -146,8 +147,14 @@ func TestDataViaPersistOK(t *testing.T) {
 	if m["ok"] != true {
 		t.Fatalf("result.ok 应为 true: %+v", m)
 	}
-	if _, ok := m["list"].([]any); !ok {
-		t.Fatalf("result.list 缺失: %+v", m)
+	// 透传值级断言（不仅存在）：桩应答 list=[{id:1}] 须原样到达。
+	list, ok := m["list"].([]any)
+	if !ok || len(list) != 1 {
+		t.Fatalf("result.list 应为 1 条: %+v", m)
+	}
+	row, _ := list[0].(map[string]any)
+	if row["id"] != float64(1) {
+		t.Fatalf("result.list[0].id = %v，want 1（透传不得改写）: %+v", row["id"], m)
 	}
 	req := <-gotReq
 	if req["instance_id"] != "inst-test" {
@@ -156,8 +163,9 @@ func TestDataViaPersistOK(t *testing.T) {
 	if s, _ := req["req_id"].(string); s == "" {
 		t.Fatalf("请求未注入 req_id: %+v", req)
 	}
-	if _, ok := req["filter"].(map[string]any); !ok {
-		t.Fatalf("原请求字段 filter 丢失: %+v", req)
+	filter, ok := req["filter"].(map[string]any)
+	if !ok || filter["x"] != float64(1) {
+		t.Fatalf("原请求字段 filter 丢失/被改写: %+v", req)
 	}
 }
 
@@ -510,8 +518,19 @@ func TestCompatEmitCarriesInstanceID(t *testing.T) {
 	if err := json.Unmarshal([]byte(env.Payload), &p); err != nil {
 		t.Fatalf("llm-token payload 解析失败: %v (%s)", err, env.Payload)
 	}
-	if p["instance_id"] != "inst-test" {
-		t.Fatalf("兼发 llm-token 缺 instance_id: %s", env.Payload)
+	// 兼容事件 llm-token 的字段值全部定向断言（来源 = session-receive 的
+	// session/turn/type/payload.text + 兼容层注入 instance_id；见 compat.go）。
+	want := map[string]any{
+		"instance_id": "inst-test",
+		"session_id":  "s1",
+		"turn_id":     "t1",
+		"type":        "text",
+		"content":     "hi",
+	}
+	for k, v := range want {
+		if p[k] != v {
+			t.Fatalf("兼发 llm-token.%s = %v，want %v（payload=%s）", k, p[k], v, env.Payload)
+		}
 	}
 }
 
@@ -535,11 +554,13 @@ func TestCompatServerStartingEmitsLlmStarted(t *testing.T) {
 	if p["instance_id"] != "inst-test" {
 		t.Fatalf("兼发 llm-started 缺 instance_id: %s", env.Payload)
 	}
-	if _, ok := p["session_id"]; !ok {
-		t.Fatalf("llm-started 缺 session_id 键: %s", env.Payload)
+	// 就绪 ack 无轮次归属：session_id/turn_id 恒为空串（compat.go 注释；旧订阅方按
+	// {session_id,turn_id} 解析），且**不附** started_at（兼容契约未定义该字段）。
+	if p["session_id"] != "" || p["turn_id"] != "" {
+		t.Fatalf("llm-started session_id/turn_id 应为空串: %s", env.Payload)
 	}
-	if _, ok := p["turn_id"]; !ok {
-		t.Fatalf("llm-started 缺 turn_id 键: %s", env.Payload)
+	if _, has := p["started_at"]; has {
+		t.Fatalf("llm-started 不应携带 started_at（兼容契约未定义）: %s", env.Payload)
 	}
 	if p["sub"] != false || p["notify"] != false {
 		t.Fatalf("llm-started sub/notify 应为 false: %s", env.Payload)
@@ -587,8 +608,10 @@ func TestUploadResultNameOnly(t *testing.T) {
 		t.Fatalf("gui.upload 结果类型异常: %T", res)
 	}
 	name, _ := m["name"].(string)
-	if name == "" {
-		t.Fatalf("gui.upload 未返回 name: %v", m)
+	// 61 §1 / 21 §P2-8：落盘位置由 server 决定，name = <uuid><原扩展名>（`tmp/uploads/<uuid>.png`）；
+	// 回包的是**真实落盘文件名**，不是请求里的原名（防止同名覆盖）。
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.txt$`).MatchString(name) {
+		t.Fatalf("gui.upload.name 应为 <uuid>.txt（保留扩展名），got %q（result=%v）", name, m)
 	}
 	// 不暴露服务器路径：只回 name
 	for _, k := range []string{"path", "url", "file_id"} {
@@ -597,8 +620,13 @@ func TestUploadResultNameOnly(t *testing.T) {
 		}
 	}
 	dest := filepath.Join(br.WorkDir(), ".chonkpilot", "tmp", "uploads", name)
-	if _, err := os.Stat(dest); err != nil {
-		t.Fatalf("落盘文件不存在 %s: %v", dest, err)
+	stored, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("落盘文件不存在/不可读 %s: %v", dest, err)
+	}
+	// data 原样落盘（send 时按 name 读回直接作 image_url，零重编码）。
+	if string(stored) != "hello" {
+		t.Fatalf("落盘内容 = %q，want hello（data 原样写入）", stored)
 	}
 }
 

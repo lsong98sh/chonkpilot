@@ -54,7 +54,7 @@ func (tc *turnCtx) assembly() Assembly { return tc.buildAssembly().Assembly }
 type turnHistorySource struct{ tc *turnCtx }
 
 func (h turnHistorySource) Load(context.Context) (session.History, error) {
-	cur := newSessionStore(h.tc.server.bus, h.tc.req.InstanceID).LoadMessages(h.tc.req.Turn)
+	cur := h.tc.server.newSessionStore(h.tc.req.InstanceID).LoadMessages(h.tc.req.Turn)
 	return session.History{
 		Messages:     h.tc.hist,
 		TurnTokens:   sessionTurnTokens(h.tc.turnTokens),

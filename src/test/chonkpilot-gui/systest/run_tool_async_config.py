@@ -418,11 +418,44 @@ def case_a_entry_and_groups():
     """A 入口与分组渲染：菜单项 → tab → 按 MCP 分组 + 每行四档选择器（文案/aria）+ 行集合与 tools-list 一致
     + 表头 `?` 说明（≥3）+ 干净初始态保存按钮禁用。"""
     require_page()
-    open_page()
-    keys = group_keys()
+    # 插件平台**异步**注册：页面只在挂载时取一次 tools-list（不自刷新），若此时 `plugin-*`
+    # 工具尚未入面 → 页面分组恒缺项。做法：先等插件台账全部 running，再开页面；
+    # 若仍不一致（端口/缓存边缘），关闭重开（最多 3 次）后再做一致性断言。
+    def _group_sets():
+        tl = tools_list() or []
+        want, names = set(), set()
+        for x in tl:
+            srv = (x.get("_meta") or {}).get("server") or {}
+            want.add(srv.get("alias") or srv.get("node") or "全局")
+            names.add(x.get("name"))
+        return want, names
+
+    keys, rs = [], []
+    for attempt in range(3):
+        if attempt == 0:
+            try:
+                _h.wait_plugins_running(c, sorted(_h.plugin_statuses(c).keys()), max_wait=120)
+            except Exception:
+                pass
+        open_page()
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            keys, rs = group_keys(), rows()
+            want, names = _group_sets()
+            if keys and rs and set(keys) == want and set(r["tool"] for r in rs) == names:
+                break
+            time.sleep(0.5)
+        want, names = _group_sets()
+        if keys and rs and set(keys) == want and set(r["tool"] for r in rs) == names:
+            break
+        # 仍有缺口 → 等平台收敛后重开页面（页面无订阅，不重开不会补）
+        try:
+            _h.wait_plugins_running(c, sorted(_h.plugin_statuses(c).keys()), max_wait=60)
+        except Exception:
+            pass
+        time.sleep(0.5)
     if not keys:
         raise TestError("页面无 MCP 分组标题（.group-title）")
-    rs = rows()
     if not rs:
         raise TestError("页面无工具行（.tool-name[data-tool]）")
     for r in rs:

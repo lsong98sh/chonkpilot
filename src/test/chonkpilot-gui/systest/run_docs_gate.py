@@ -11,7 +11,9 @@
      正文检索不再命中）；**不报错、不中断整库索引**。
 
 隔离与环境（51 §5/§6-8）：自起 GUI（动态端口 + 临时 work-dir/data-dir/HOME）+ `_h.suite_config_guard`；
-真转换器由本脚本**自行拉起/停止**（插件**只探测、不 spawn**）——产物取 `dist/desktop/mcps/markitdown/`。
+真转换器由本脚本**自行拉起/停止**（插件**只探测、不 spawn**）——产物探测 `dist/mcps/markitdown/`
+（2026-11-02 扁平化后的产品根布局，与 `build-mcps.ps1` 产出、`docsprobe.go` 候选
+`<产品根>/mcps/markitdown/state.json` 一致）。
 转换器状态文件写在其 exe 同目录 → 正是插件探测的 `<exeDir>/mcps/markitdown/state.json`。
 
 确定性启动（消除偶发 FAIL）：转换器**先写状态文件、后起监听**（`server.py:794-817`）→ 本脚本
@@ -19,8 +21,8 @@
 避免插件探测落入「文件已写、端口未听」的窗口而把服务误判为 absent。
 
 运行：python run_docs_gate.py
-前置：`dist/desktop/mcps/markitdown/markitdown-mcp.exe` **且** vfts 引擎为**含 docs 支持的新构建**
-      （否则 preflight 明确报「未构建」并 SKIP，不算失败）。
+前置：`dist/mcps/markitdown/markitdown-mcp.exe`**且** vfts 引擎为含 docs 支持的新构建（否则
+      preflight 明确报「未构建」并 SKIP，不算失败）。
 """
 
 import json
@@ -39,7 +41,10 @@ import harness as _h  # noqa: E402
 # ── 路径与产物 ────────────────────────────────────────────
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
-CONV_DIR = os.path.join(REPO, "dist", "desktop", "mcps", "markitdown")
+# 发行根已扁平化（2026-11-02，无 dist/desktop/）。转换器是「按需单独投放」的可选组件，
+# 投放点**唯一** = `<产品根>/mcps/markitdown`（build-mcps.ps1 产出；docsprobe.go 探测
+# `<产品根>/mcps/markitdown/state.json`）。缺失 → 明确 SKIP（不伪造通过，也不用旧路径兜底）。
+CONV_DIR = os.path.join(REPO, "dist", "mcps", "markitdown")
 CONV_EXE = os.path.join(CONV_DIR, "markitdown-mcp.exe")
 CONV_STATE = os.path.join(CONV_DIR, "state.json")
 
@@ -247,7 +252,8 @@ def stop_converter():
 def preflight():
     """产物/构建就绪检查：缺失 → 明确报「未构建」，SKIP（不算失败）。"""
     if not os.path.isfile(CONV_EXE):
-        print("[preflight] SKIP：转换器产物缺失（先跑 .\\src\\mcps\\markitdown\\build-mcps.ps1）→ %s" % CONV_EXE)
+        print("[preflight] SKIP：转换器产物缺失（先跑 .\\src\\mcps\\markitdown\\build-mcps.ps1；"
+              "现行投放点 = %s）→ 未找到 %s" % (CONV_DIR, CONV_EXE))
         return False
     return True
 

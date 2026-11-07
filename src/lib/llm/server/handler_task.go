@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // onTaskStop 用户手动结束任务（§6.3 场景 7 / §6.6 取消）：级联定位任务子树 →
@@ -290,14 +289,16 @@ func (s *Server) notifyTaskCompletion(node *TaskNode, session, turn, instanceID,
 	if state != "done" {
 		msg = "🔔 异步任务执行失败：" + tool + "（task_id=" + taskID + "）。"
 	}
-	s.publish(msgkeys.TopicToolNotify, map[string]any{
-		"instance_id": instanceID,
-		"session_id":  session,
-		"turn_id":     turn,
-		"task_id":     taskID,
-		"notice":      "completion",
-		"message":     msg,
-		"message_id":  "msg-notify-" + taskID,
+	s.enqueueCompletionNotice(completionNotice{
+		instanceID: instanceID,
+		sessionID:  session,
+		turnID:     turn,
+		taskID:     taskID,
+		toolCallID: nodeToolCallID(node),
+		tool:       tool,
+		state:      state,
+		message:    msg,
+		messageID:  "msg-notify-" + taskID,
 	})
 }
 

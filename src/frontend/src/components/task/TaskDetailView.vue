@@ -26,8 +26,17 @@
           <div class="td-section-title">{{ $t('taskView.args') }}</div>
           <pre class="td-args-pre">{{ argsText }}</pre>
         </div>
-        <div v-if="task?.output" class="td-output" ref="outRef">{{ task.output }}</div>
-        <div v-else-if="!hasArgs" class="td-note">{{ $t('taskView.no_output') }}</div>
+        <!-- 最终结果（tasks.done.result_summary，终态结果全文）：仅 summary 时也显示 -->
+        <div v-if="resultSections.finalResult" class="td-result-block">
+          <div class="td-section-title">{{ $t('taskView.final_result') }}</div>
+          <div class="td-result">{{ resultSections.finalResult }}</div>
+        </div>
+        <!-- 运行输出（流式/部分输出）：与最终结果相同则只显示一次（见 taskResultSections） -->
+        <div v-if="resultSections.partialOutput" class="td-output-block">
+          <div v-if="resultSections.finalResult" class="td-section-title">{{ $t('taskView.partial_output') }}</div>
+          <div class="td-output" ref="outRef">{{ resultSections.partialOutput }}</div>
+        </div>
+        <div v-if="!resultSections.finalResult && !resultSections.partialOutput && !hasArgs" class="td-note">{{ $t('taskView.no_output') }}</div>
       </div>
 
       <div class="td-footer">
@@ -61,6 +70,7 @@ import Icon from '@ckfw/components/icon/Icon.vue'
 import { Button } from '@ckfw/components/ui/index.js'
 import { EventNames } from '../../events/event-names'
 import { useTaskView } from '../../composables/useTaskView'
+import { taskResultSections } from '../../utils/taskResult'
 import mq from '@ckfw/utils/mq.js'
 
 defineOptions({ name: 'TaskDetailView' })
@@ -93,6 +103,9 @@ const hasArgs = computed(() => {
   const a = task.value?.args
   return !!a && typeof a === 'object' && Object.keys(a).length > 0
 })
+
+// 最终结果（result_summary）与运行输出（output）分区；相同内容只展示一次
+const resultSections = computed(() => taskResultSections(task.value))
 
 const argsText = computed(() => {
   if (!hasArgs.value) return ''
@@ -264,9 +277,29 @@ function fmtElapsed(sec) {
   padding: 6px 8px;
   white-space: pre-wrap;
 }
+.td-output-block {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .td-output {
   flex: 1;
   min-height: 80px;
+  overflow-y: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+/* 最终结果（result_summary）：常展示全文；与运行输出同款等宽排版，单块最大高度内滚动 */
+.td-result {
+  max-height: 360px;
   overflow-y: auto;
   font-family: var(--font-mono, monospace);
   font-size: 12px;

@@ -7,6 +7,15 @@
         <Tag size="small" type="info" class="session-id-tag">#{{ sessionId.slice(0, 8) }}</Tag>
       </template>
       <div class="header-spacer" />
+      <!-- TASK-008：仅任务派生（tasks.* 有运行态快照）的子会话显示；普通聊天子会话无快照不显示 -->
+      <Button
+        v-if="runningTurn"
+        size="small"
+        type="danger"
+        @click="stopSession"
+      >
+        {{ $t('taskView.stop_session') }}
+      </Button>
     </div>
     <div class="session-chat">
       <!-- DSL 作业（DSL-3）：右侧面板 = 步骤表格 + preview，不是「任务详情/标题」 -->
@@ -29,7 +38,7 @@ import { storeToRefs } from 'pinia'
 import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import Icon from '@ckfw/components/icon/Icon.vue'
-import { Tag } from '@ckfw/components/ui/index.js'
+import { Button, Tag } from '@ckfw/components/ui/index.js'
 import MessageList from '../chat/MessageList.vue'
 import TaskDetailView from '../../components/task/TaskDetailView.vue'
 import DslStepsPanel from '../dsl/DslStepsPanel.vue'
@@ -56,7 +65,23 @@ const { isJobNode } = useDslView()
 const dslJobId = computed(() => (taskId.value && isJobNode(taskId.value) ? taskId.value : ''))
 
 // ── TaskView：会话树增量刷新（子会话切换时补全初始状态）──
-const { refresh: refreshTasks } = useTaskView()
+const { refresh: refreshTasks, activeTasks, confirmTurnCancel } = useTaskView()
+
+// TASK-008：当前子会话运行中的轮次。优先取带 turn_id 的任务（实时 tasks.* 事件携带）；
+// data-tasktree-tasks 快照行无 turn_id → 冷启动回落 llm 节点，由 server 按 session
+// 解析运行中轮次（onLLMCancel 的 turn 缺省回退）。只读响应式 tasks Map，不做 watch。
+const runningTurn = computed(() => {
+  if (!sessionId.value) return null
+  const running = activeTasks(sessionId.value)
+  return running.find((t) => !!t.turn_id) || running.find((t) => (t.kind || t.type) === 'llm') || null
+})
+
+// 终止会话 = 现有 llm-cancel{session,turn}：停当前轮并级联取消在飞工具（零新增 MQ 主题）。
+function stopSession() {
+  const t = runningTurn.value
+  if (!t) return
+  confirmTurnCancel({ sessionId: sessionId.value, turnId: t.turn_id || '' })
+}
 
 // 选中子会话（payload = session_id）：store 写入由订阅者承担，本组件只补任务快照。
 function onSubSessionChanged({ session_id: newId }) {

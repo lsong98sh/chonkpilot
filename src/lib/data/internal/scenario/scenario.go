@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
@@ -46,6 +47,11 @@ func New(base *kernel.Base) *Service { return &Service{Base: base} }
 
 // 编译期断言：实现完整 scenario 域门面（缺方法即编译不过）。
 var _ facade.ScenarioAPI = (*Service)(nil)
+
+// maxScenarioFieldLen 是场景 id（目录名）与场景名称的长度上限（字符数，按 rune 计；
+// 与前端 `fieldRules.MAX_NAME = 64` 对齐）。仅保存路径校验——get / delete 复用
+// `capfs.ValidScenarioID`（只校验字符集），历史超长 id 仍可读取 / 删除。
+const maxScenarioFieldLen = 64
 
 // checkFactoryScenarios 校验 **app 级场景根**（`<exeDir>/capability/scenarios/`）是否就位：
 // 出厂场景现为**磁盘目录**（源 `src/initdata/capability/scenarios/`，由构建脚本投放）——**不再 embed、
@@ -228,6 +234,13 @@ func (s *Service) ScenarioSave(req facade.ScenarioSaveRequest) (facade.ScenarioS
 	sc := req.Scenario
 	if !capfs.ValidScenarioID(sc.ID) {
 		return facade.ScenarioSaveResponse{}, errors.New("invalid scenario id: " + sc.ID)
+	}
+	// 长度上限（SCEN-011-S07）：绕过前端时后端同样拒绝 >64 字符的 id / 名称。
+	if n := utf8.RuneCountInString(sc.ID); n > maxScenarioFieldLen {
+		return facade.ScenarioSaveResponse{}, fmt.Errorf("场景 id 超长（>%d 字符）：当前 %d 字符", maxScenarioFieldLen, n)
+	}
+	if n := utf8.RuneCountInString(sc.Name); n > maxScenarioFieldLen {
+		return facade.ScenarioSaveResponse{}, fmt.Errorf("场景名称超长（>%d 字符）：当前 %d 字符", maxScenarioFieldLen, n)
 	}
 	workDir := s.WorkDirLoose(req.InstanceID, req.Scope)
 	prjUsrCap := s.prjUsrCapRoot(req.InstanceID, req.Scope)

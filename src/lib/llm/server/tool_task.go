@@ -1,22 +1,28 @@
-// task 型域工具（tool_stop / tool_result）：
+// task 型域工具（tool_result）：
 // server 自带工具叠加在 gateway 工具之上发给 LLM（对齐 21-llm-server 任务编排 +
-// 域工具契约 llm/contracts/tools/{tool_stop,tool_result}.tool.md）。
+// 域工具契约 llm/contracts/tools/tool_result.tool.md）。
 //
 // 识别与执行：turn 内工具分发命中 isTaskTool → 经 gateway 唯一执行入口（域工具回调
-// domain-tool-call）→ execTaskTool 同步执行（tool_stop 级联取消 / tool_result 返回
-// 转后台结果）→ 结果同步喂回本 turn；任务节点由 domainNode 建/广播、调用方收尾。
+// domain-tool-call）→ execTaskTool 同步执行（tool_result 返回转后台结果）→ 结果同步
+// 喂回本 turn；任务节点由 domainNode 建/广播、调用方收尾。
 //
 // SESSION-1 阶段二·任务树：**入参校验与结果文案的语义映射**已下沉到纯 lib 组件
 // `chonkpilot-session`（`task_tools.go`）；本文件只剩宿主侧副作用——任务层读（状态 /
-// 执行句柄）、message 表读、取消级联（组件）与轮询等待。
+// 执行句柄）、message 表读与轮询等待。
+//
+// 2026-11-04：`tool_stop` 已删除，`task_stop` 为唯一停止入口（`handler_task.go` onTaskStop）。
 package server
 
 import (
 	"context"
+	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/lsong98sh/chonkpilot-agent/session"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // turnInstance 取轮次归属 instance（tc 为空 → ""）：旧调用方（无 turn 上下文的直接调用）不限定
@@ -31,11 +37,11 @@ func turnInstance(tc *turnCtx) string {
 // ─── 识别 ─────────────────────────────────────────────
 
 // isTaskTool 判断工具是否为 task 型（server 编排，不转发 gateway 普通路径）：
-// tool_stop / tool_result（task 型）+ subchat_open / subchat_finish（单聊型，SUBCHAT-2 阶段
+// tool_result（task 型）+ subchat_open / subchat_finish（单聊型，SUBCHAT-2 阶段
 // B-2）——单聊工具经 gateway 域回调执行（节点由 domainNode 建），走本分支以免再建
 // 一个重复节点（见 turn.dispatchToolCall 的 isTaskTool 分支）。
 func isTaskTool(name string) bool {
-	return name == "tool_stop" || name == "tool_result" || isSubChatTool(name)
+	return name == "tool_result" || isSubChatTool(name)
 }
 
 // execTaskTool 执行 task 型工具并返回 (结果文本, isErr)（不含 tasks.done / FeedToolResult——
@@ -45,8 +51,6 @@ func isTaskTool(name string) bool {
 // → onGatewayTaskDone → cancelTaskExec 真停长跑执行体）。
 func (s *Server) execTaskTool(parent *turnCtx, toolCallID string, node *TaskNode, tool string, args map[string]any, execCtx context.Context) (string, bool) {
 	switch tool {
-	case "tool_stop":
-		return s.runToolStop(parent, node, args) // 级联取消为毫秒级快速操作，无 ctx 感知点
 	case "tool_result":
 		return s.runToolResult(parent, node, args, execCtx)
 	default:
@@ -54,47 +58,8 @@ func (s *Server) execTaskTool(parent *turnCtx, toolCallID string, node *TaskNode
 	}
 }
 
-// ─── tool_stop：级联取消 ─────────────────────────────
-
-// runToolStop 停止任务（对齐 tool_stop.md）：task_id → 任务树级联定位子树
-// 标 cancelled + 广播 tasks.done；P2 起**状态判定以任务层为权威**、执行侧取消经层回调
-// （`cancelSubtree` → 层 `CancelSubtree` → `OnCancelExec` → 进程内 sink `CancelExec(gw_task_id)`
-// → gateway `tm.cancel` → provider.Invalidate，**真实打断在飞调用**，21 §9.2 交付物 ⑤）。
-//
-// 返回 (结果文本, isErr)；isErr=true 表示工具级失败（B-17：调用方据此落任务终态 error）。
-// 入参校验（process_id 一律拒绝 / task_id 必填）与结果文案的唯一实现在组件
-// （`session.ParseToolStopArgs` 等），本函数只做副作用与编排。
-func (s *Server) runToolStop(parent *turnCtx, node *TaskNode, args map[string]any) (string, bool) {
-	req, errText, isErr := session.ParseToolStopArgs(args)
-	if isErr {
-		return errText, true
-	}
-	taskID := req.TaskID
-	// 层为权威（RB-5 L4：只经 `taskStateReader` 窄接口读层状态，不直调层的具体方法面）：
-	// 已不可逆终态 → 明确文案（不重复下发执行侧取消）。
-	layer := s.taskState()
-	if layer != nil {
-		if st, ok := layer.State(taskID); ok && terminalTaskState(st) {
-			return session.ToolStopAlreadyDoneText(taskID, st), false
-		}
-	}
-	// 可打断性门控：层持 exec 句柄但执行池未注入 → 明确文案（不静默）。
-	if s.execSink == nil && layer != nil {
-		if exec, ok := layer.ExecOf(taskID); ok && exec.GWTaskID != "" {
-			return session.ToolStopExecUnavailableText(taskID), true
-		}
-	}
-	cancelled := s.tasks.cancelSubtree(turnInstance(parent), taskID)
-	if cancelled == 0 {
-		return session.ToolStopNotFoundText(taskID), false
-	}
-	// 委派子代理（kind=llm 节点）：任务态已级联取消，但子轮次循环独立运行 —— 显式关闭
-	// （递归下一级；与被取消子树同 instance 归属）。只在任务层已授权取消后执行。
-	s.closeDelegatedInSubtree(turnInstance(parent), taskID)
-	return session.ToolStopOKText(taskID, cancelled), false
-}
-
-// closeDelegatedInSubtree 关闭被取消子树内的委派子轮次（task-stop / tool_stop 共用）。
+// closeDelegatedInSubtree 关闭被取消子树内的委派子轮次（task-stop 链路共用；
+// `handler_task.go` onTaskStop 调用）。
 // 仅处理 kind=llm 且持有子 turn 的节点；幂等（closeDelegatedTurn 未命中即 no-op）。
 func (s *Server) closeDelegatedInSubtree(instanceID, rootID string) {
 	for _, n := range s.tasks.subtree(instanceID, rootID) {
@@ -106,13 +71,128 @@ func (s *Server) closeDelegatedInSubtree(instanceID, rootID string) {
 
 // ─── tool_result：返回转后台结果 ─────────────────────────────
 
+// taskTerminalWaiter 是一次 `tool_result` 等待的**终态事件**唤醒信号（一次性；多事件合并）。
+type taskTerminalWaiter struct {
+	ch   chan struct{}
+	once sync.Once
+}
+
+func newTaskTerminalWaiter() *taskTerminalWaiter {
+	return &taskTerminalWaiter{ch: make(chan struct{})}
+}
+
+// signal 唤醒等待方（幂等；事件可能来自多个主题 / 重复回报）。
+func (w *taskTerminalWaiter) signal() {
+	w.once.Do(func() { close(w.ch) })
+}
+
+// watchTaskTerminal 订阅**既有**任务终态事件面（零新增主题），返回唤醒通道与退订函数：
+//   - `task-done`：任务层终态广播（tasks.done，61 §3.4；server 自身 publish，含 task_id/tool_call_id/
+//     turn_id/instance_id）；
+//   - `mcp-tasks-report`：gateway 异步任务完成回报（61 §5，含 task_id/tool_call_id/instance_id）；
+//   - `session-complete`：子会话 turn 终态（tool_result 的 id 支持子 turn id）。
+//
+// 命中判据 = 同 instance（双方均非空时）+ id ∈ {task_id, tool_call_id, turn, id}；载荷无任何
+// 标识字段 → **保守唤醒**（等待方醒来后重查权威状态，不会误判终态）。订阅回调只 close 本地信号，
+// 不触碰 turn 状态（单写者约束）。
+func (s *Server) watchTaskTerminal(instanceID, id string) (*taskTerminalWaiter, func()) {
+	w := newTaskTerminalWaiter()
+	if s == nil || s.bus == nil {
+		return w, func() {}
+	}
+	handler := func(_ context.Context, _ string, v *mq.Value) error {
+		var ev struct {
+			InstanceID string `json:"instance_id"`
+			TaskID     string `json:"task_id"`
+			ToolCallID string `json:"tool_call_id"`
+			Turn       string `json:"turn"`
+			ID         string `json:"id"`
+		}
+		_ = json.Unmarshal(v.Payload, &ev)
+		if instanceID != "" && ev.InstanceID != "" && ev.InstanceID != instanceID {
+			return nil
+		}
+		if ev.TaskID == "" && ev.ToolCallID == "" && ev.Turn == "" && ev.ID == "" {
+			w.signal() // 无标识字段：无法过滤，保守唤醒
+			return nil
+		}
+		if id != "" && (id == ev.TaskID || id == ev.ToolCallID || id == ev.Turn || id == ev.ID) {
+			w.signal()
+		}
+		return nil
+	}
+	subs := make([]mq.Sub, 0, 3)
+	for _, topic := range []string{
+		msgkeys.TopicTaskDone,
+		msgkeys.TopicMcpTasksReport,
+		msgkeys.TopicSessionComplete,
+	} {
+		sub, err := s.bus.On(topic, 0, handler)
+		if err != nil {
+			logf("[chonkpilot-server] tool_result: 订阅 %s 失败（退化为仅超时收口）: %v\n", topic, err)
+			continue
+		}
+		subs = append(subs, sub)
+	}
+	return w, func() {
+		for _, sub := range subs {
+			_ = sub.Unsubscribe()
+		}
+	}
+}
+
+// stopTaskWaitTimer 停止等待 timer 并丢弃已入队的触发（避免伪唤醒）。
+func stopTaskWaitTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+// maxTaskWait 是单次 `plugin/v1/task.wait` 的等待上限（防止插件一次占住桥会话并发槽；
+// 调用方按剩余 timeout 循环调用，语义不变）。
+const maxTaskWait = 60 * time.Second
+
+// waitTaskResult 在宿主侧**事件驱动**地等待任务终态（`plugin/v1/task.wait` 的实现）：
+// 先订阅既有终态事件（task-done / mcp-tasks-report / session-complete），再查一次权威状态；
+// running → 等事件或剩余超时（单 timer），醒来重查后返回。wait<=0 = 只查询一次。
+//
+// 与 runToolResult 共用同一套状态判定与事件面；区别只是调用方（插件桥）跨进程。
+func (s *Server) waitTaskResult(ctx context.Context, parent *turnCtx, id string, wait time.Duration) (string, string, string, bool) {
+	waiter, stopWaiter := s.watchTaskTerminal(turnInstance(parent), id)
+	defer stopWaiter()
+	text, state, partial, found := s.taskResultDetail(parent, id)
+	if !found || state != "running" || wait <= 0 {
+		return text, state, partial, found
+	}
+	if wait > maxTaskWait {
+		wait = maxTaskWait
+	}
+	timer := time.NewTimer(wait)
+	defer stopTaskWaitTimer(timer)
+	select {
+	case <-ctx.Done():
+	case <-waiter.ch:
+	case <-timer.C:
+	}
+	return s.taskResultDetail(parent, id)
+}
+
 // runToolResult 获取转后台任务结果（对齐 tool_result.md）：id 支持 server
-// 任务节点 / gateway 异步任务 / 子会话 turn id；timeout 秒内轮询至终态，超时返回
+// 任务节点 / gateway 异步任务 / 子会话 turn id；timeout 秒内**等终态事件**至终态，超时返回
 // 「任务尚未结束」+ **已产出的部分输出**（不取消任务，可加大 timeout 再次调用）。
 // 返回 (结果文本, isErr)；isErr=true = 工具级失败（参数缺失 / 未找到任务；B-17）。
-// execCtx = 工具执行 ctx（I-83 收尾）：gateway 取消回报 → cancel → 轮询及时退出
+// execCtx = 工具执行 ctx（I-83 收尾）：gateway 取消回报 → cancel → 等待及时退出
 // （不空耗到 timeout；被查询任务本身未受影响）。
 // 入参校验与文案构造的唯一实现在组件（`session.ParseToolResultArgs` 等）。
+//
+// 异步改造 §10.1（2026-11-06）：原 500ms 轮询改为「订阅既有终态主题（task-done /
+// mcp-tasks-report / session-complete）+ 单个剩余超时 timer」；每次唤醒重查权威状态。
 func (s *Server) runToolResult(parent *turnCtx, node *TaskNode, args map[string]any, execCtx context.Context) (string, bool) {
 	req, errText, isErr := session.ParseToolResultArgs(args)
 	if isErr {
@@ -120,17 +200,40 @@ func (s *Server) runToolResult(parent *turnCtx, node *TaskNode, args map[string]
 	}
 	id, timeout := req.ID, req.TimeoutSec
 	deadline := time.Now().Add(time.Duration(timeout * float64(time.Second)))
+	waiter, stopWaiter := s.watchTaskTerminal(turnInstance(parent), id)
+	defer stopWaiter()
+
 	for {
 		if execCtx.Err() != nil {
 			return session.ToolResultCancelledText(id), false
 		}
 		if text, state, partial, found := s.taskResultDetail(parent, id); found {
 			if state == "running" {
-				if time.Now().After(deadline) {
+				remaining := time.Until(deadline)
+				if remaining <= 0 {
 					return session.ToolResultRunningText(id, timeout, partial), false
 				}
-				sleepCtx(execCtx, 500*time.Millisecond)
+				// 等终态事件或剩余超时（单 timer；不再固定 sleep）。事件早到 → 立即重查。
+				timer := time.NewTimer(remaining)
+				select {
+				case <-execCtx.Done():
+					stopTaskWaitTimer(timer)
+				case <-waiter.ch:
+					stopTaskWaitTimer(timer)
+				case <-timer.C:
+				}
 				continue
+			}
+			// 结果已被本工具成功取走 → 登记 consumed（§5.3 第 4 条：之后不再发完成通知）。
+			// id 可能是 server 任务节点 id / gateway 执行 id / tool-call id → 三种定位都登记。
+			inst := turnInstance(parent)
+			s.markTaskResultConsumed(inst, id)
+			if n := s.tasks.nodeIn(inst, id); n != nil {
+				s.markTaskResultConsumed(n.InstanceID, n.TaskID, n.ToolCallID)
+			} else if n := s.tasks.findByGwTask(inst, id); n != nil {
+				s.markTaskResultConsumed(n.InstanceID, n.TaskID, n.ToolCallID)
+			} else if n := s.tasks.findByToolCall(inst, id); n != nil {
+				s.markTaskResultConsumed(n.InstanceID, n.TaskID, n.ToolCallID)
 			}
 			return text, false
 		}
@@ -233,7 +336,7 @@ func (s *Server) asyncResultFromMessage(parent *turnCtx, toolCallID string) (str
 	if toolCallID == "" {
 		return "", "", false
 	}
-	raw, ok := newSessionStore(s.bus, parent.req.InstanceID).LoadToolContent(parent.req.Session, toolCallID)
+	raw, ok := s.newSessionStore(parent.req.InstanceID).LoadToolContent(parent.req.Session, toolCallID)
 	if !ok {
 		return "", "", false
 	}
@@ -265,7 +368,7 @@ func (s *Server) asyncResultFromMessage(parent *turnCtx, toolCallID string) (str
 
 // turnResultText 按子会话 turn id 读结果（llm_run 子轮次最后一条 assistant 消息）。
 func (s *Server) turnResultText(parent *turnCtx, turnID string) (string, bool) {
-	msgs := newSessionStore(s.bus, parent.req.InstanceID).LoadMessages(turnID)
+	msgs := s.newSessionStore(parent.req.InstanceID).LoadMessages(turnID)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "assistant" && msgs[i].Content != "" {
 			return msgs[i].Content, true

@@ -105,6 +105,7 @@ import { useI18n } from 'vue-i18n'
 import MessageItem from './MessageItem.vue'
 import mq from '@ckfw/utils/mq.js'
 import { resolvePublishError } from '../../utils/publishError'
+import { findRetryableToolPair, detectNotifyTurn, isNotifyTurn, isNotifyMessage, isUnfinishedTurn } from '../../utils/chatRetry'
 import { EventNames } from '../../events/event-names'
 import { createSessionMessages } from '../../utils/sessionMessages'
 import { sessionDialogOf } from '../../api/session'
@@ -200,16 +201,13 @@ const emptyReplyHint = ref(false)
 // 本 turn 是否已产生任何 assistant 输出（文本/推理/工具调用/工具结果）：
 // completed 且无输出 = 空回复 → 实时提示"继续"（重发原用户消息）
 let turnHadOutput = false
-// 本 turn 是否为后端通知轮次（llm-started notify=true）：通知轮次空回复不提示"继续"（避免误发用户消息）
-let notifyTurn = false
-// 最后一条中断（interrupted，abort）的 tool_pair：底部"重试"按钮的目标（重跑该工具）
-const lastInterruptedPair = computed(() => {
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    const m = messages.value[i]
-    if (m.type === 'tool_pair' && m.status === 'interrupted') return m
-  }
-  return null
-})
+// 本 turn 是否为后端通知轮次（事件 notify / 消息形态 user-notify）：通知轮次
+// 空回复不提示"继续"，也不提供工具重试（避免把通知误当用户提问重复发送）。
+// ref：lastInterruptedPair 的计算依赖它（turn-start 置位 → 重试按钮即时收起）。
+const notifyTurn = ref(false)
+// 最后一条可工具重试的 tool_pair（仅 interrupted；cancelled 走轮次级「继续」）：
+// 底部"重试"按钮的目标（重跑该工具）。通知轮整体不提供重试。
+const lastInterruptedPair = computed(() => findRetryableToolPair(messages.value, notifyTurn.value))
 
 // ── 虚拟滚动 / 窗口化渲染（2026-10-11）──
 // 仅 messages.length > VIRTUALIZE_THRESHOLD 时启用（纯逻辑见 utils/virtualWindow.js）：
@@ -698,18 +696,16 @@ function isForThisSession(d) {
 
 // ── 继续按钮：turn 未完成判定 + 双开返回恢复订阅 ──
 
-// 未写完的 finish_reason（LLM 未自然结束）：length 超长截断 / insufficient_system_resource
-// 资源不足中断 / interrupted turn 级失败（断链、取消、错误，无终态 finish_reason）。
-const UNFINISHED_REASONS = ['length', 'insufficient_system_resource', 'interrupted']
-
+// 未写完的轮次（权威信号）：finish_reason length / insufficient_system_resource，
+// 或 status/finish_reason = cancelled / interrupted（用户取消、断链、abort）。
+// cancelled 走轮次级「继续」（任务层不可逆，不能做 tool-retry），见 utils/chatRetry.js。
 // 启发式判定"最后 turn 未完成"：
-//  1) 权威信号：最后 turn 的 finish_reason ∈ UNFINISHED_REASONS
-//     （由后端 turn 终结时落库；应用重启后仍可靠）
+//  1) 权威信号：最后 turn 未完成（isUnfinishedTurn；由后端 turn 终结时落库，重启后仍可靠）
 //  2) 兜底：末尾非通知消息不是"带内容的 assistant 回复"（失败/手动取消/中断）
 function lastTurnIncomplete(msgs) {
   const turnsArr = turns.value
   const lastTurn = turnsArr.length ? turnsArr[turnsArr.length - 1] : null
-  if (lastTurn && UNFINISHED_REASONS.includes(lastTurn.finish_reason)) {
+  if (isUnfinishedTurn(lastTurn)) {
     return true
   }
   let last = null
@@ -730,6 +726,12 @@ function assessContinueState() {
   const sid = activeSessionId.value || props.sessionId
   if (props.viewer || !sid || isLoading.value) {
     // isLoading 时（如队列续发刚启动）不评估，避免误显"继续"
+    showContinue.value = false
+    return
+  }
+  // 通知轮（后端自动发起）：不提供"继续"（历史恢复时由消息形态补判）
+  notifyTurn.value = notifyTurn.value || isNotifyTurn(messages.value)
+  if (notifyTurn.value) {
     showContinue.value = false
     return
   }
@@ -772,7 +774,7 @@ function ackRejectedReason(ack) {
 async function sendSameTurnContinue() {
   const text = retryText()
   turnHadOutput = false
-  notifyTurn = false
+  notifyTurn.value = false
   // 取消残留复位（与 doSend 同口径）：无在飞 turn 时点「取消」会置位这两个标志，且仅在
   // llm-complete 复位（无在飞 turn 就无 llm-complete）→ 会污染本轮（正常完成时误走
   // handleCanceledQueue 把队列写回 textarea 并抑制 autoRetry）。每轮起点显式复位。
@@ -869,7 +871,7 @@ async function onSessionChanged({ session_id }) {
   mq.emit(EventNames.dataSessionActiveSet, { session_id: newId || '' })
   // 空回复/输出标记随会话重置（S21）
   turnHadOutput = false
-  notifyTurn = false
+  notifyTurn.value = false
   emptyReplyHint.value = false
   lastTurnRetryable = true
   // 最近一轮 turn 记录随会话重置：继续时改用已加载 turns 列表末项（DB 历史）
@@ -963,6 +965,16 @@ function setupPersistentStreamSubs() {
     if (!d.turn) return
     currentTurnId.value = d.turn
     lastTurnId.value = d.turn
+    // 通知轮判定：事件显式 notify / notify_turn 优先；否则仅当「通知气泡就是本轮的
+    // 最后一条消息」时视为通知轮（本地发送/队列消费的 isLoading 期不按历史推断，
+    // 避免上一轮通知气泡把新一轮误判为通知轮）。
+    const explicitNotify = d && (typeof d.notify === 'boolean' || typeof d.notify_turn === 'boolean')
+    if (explicitNotify) {
+      notifyTurn.value = detectNotifyTurn(d, messages.value)
+    } else if (!isLoading.value) {
+      const last = messages.value[messages.value.length - 1]
+      notifyTurn.value = isNotifyMessage(last)
+    }
     awaitingInboxTurn = false
     clearInboxStartTimer()
     // 起轮即消费：把本地队列镜像与 consumed 状态对齐（避免幽灵队列徽标）。
@@ -1005,6 +1017,8 @@ async function inboxAdd(data) {
     data.thinkFlag || 'on',
     data.effortLevel || 'high',
     data.scenarioId,
+    false,
+    data.instanceId || '',
   )
   await refreshInbox()
 }
@@ -1034,7 +1048,7 @@ function drainQueue() {
 async function doSend(batch) {
   // 每轮重置输出/通知标记（S21 空回复判定按 turn 隔离，非会话级）
   turnHadOutput = false
-  notifyTurn = false
+  notifyTurn.value = false
   // 取消残留复位：无在飞 turn 时点「取消」会置位这两个标志，且仅在 llm-complete 复位
   // （无在飞 turn 就无 llm-complete）→ 会污染后续轮次（如误走 handleCanceledQueue）。
   // 每轮起点显式复位，确保只反映本轮取消。
@@ -1068,6 +1082,8 @@ async function doSend(batch) {
     batch.thinkFlag || 'on',
     batch.effortLevel || 'high',
     batch.scenarioId,
+    false,
+    batch.instanceId || '',
   )
   // 起轮等待 + 看门狗（未收到 turn-start → 消息仍在队列，复位 loading，用户可点「继续」）。
   awaitingInboxTurn = true
@@ -1240,9 +1256,10 @@ function onLlmError(d) {
   if (d.retryable === false) lastTurnRetryable = false
 }
 
-// ── 工具重试（interrupted 的 tool_pair，S2 abort 场景）──
+// ── 工具重试（仅 interrupted 的 tool_pair，S2 abort 场景）──
 // 按钮 @click 即时计算载荷并 publish tool-retry（主流程）；本 on 订阅仅本地乐观
 // 置回 running（列表即时反馈，用本地 lastInterruptedPair，不依赖 payload 的 id 字段）。
+// cancelled 是任务层不可逆终态 → 不做 tool-retry，走轮次级「继续」（见 utils/chatRetry.js）。
 function onRetryToolClick() {
   const pair = lastInterruptedPair.value
   const sid = activeSessionId.value || props.sessionId
@@ -1282,6 +1299,9 @@ function onToolPairUpdate(d) {
   })
   if (!msg) return
   if (d.status) msg.status = d.status
+  // 通知轮标记（若任务事件携带）：工具重试候选判定据此排除通知轮产物
+  if (d.notify !== undefined) msg.notify = d.notify
+  if (d.notify_turn !== undefined) msg.notify_turn = d.notify_turn
   if (d.result && !msg.result) msg.result = d.result
 }
 
@@ -1404,7 +1424,7 @@ function onLlmComplete(d) {
   const wasInterrupted = d.status === 'interrupted' || d.status === 'cancelled'
   // 回复未写完（finish_reason 权威信号：length 超长截断 / insufficient_system_resource
   // 资源不足中断 / interrupted turn 级失败）
-  const unfinished = wasIncomplete || wasInterrupted || UNFINISHED_REASONS.includes(d.finish_reason)
+  const unfinished = wasIncomplete || isUnfinishedTurn(d)
   // 空回复（S21）：turn 无任何 assistant 输出 → 实时提示"继续"（重发原用户消息）。
   // server 定稿协议下空回复收敛为 llm-complete{status:error, code:EMPTY_REPLY}
   //（61-消息一览：错误随 llm-complete 携带；空回复也走 error 终态），此处一并识别。
@@ -1420,7 +1440,7 @@ function onLlmComplete(d) {
   //（session-retry → 提示条「正在重试 n/N」），次数用尽即终态：只在下方提示条显示错误，
   // 并给手动「继续」入口。否则前端静默续写会让"重试"重新变成不可见。
   const autoRetry = unfinished && !wasError && !isEmptyReplyErr && !userCanceled && !props.viewer
-  const emptyReply = !turnHadOutput && !notifyTurn && (d.status === 'complete' || isEmptyReplyErr)
+  const emptyReply = !turnHadOutput && !notifyTurn.value && (d.status === 'complete' || isEmptyReplyErr)
   if (wasError && !isEmptyReplyErr) {
     if (autoRetry) {
       // 断链/中断自动续写：静默收起「加载中」占位（不展示 Error 气泡，续写自然衔接）

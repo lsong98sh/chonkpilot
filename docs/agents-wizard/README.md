@@ -9,9 +9,9 @@
 > **已实施**：GUI 桥 `gui.init-data` 检测 + `agent-wizard` 事件 + `wizard_required` 兜底；5 步向导 UI；`agent-wizard-probe/compose/generate/skip` 四方法面；生成写场景（项目级）+ 项目记忆 + prj 配置 + `project_spec.md` + 可选 `git init`；场景编辑页【向导】按钮；i18n；L1/L2/L4 测试。
 >
 > **未落 / 与本文设计不一致**：
-> - **LLM 推荐**（D10 / 01 §2–§3）：向导 **0 次 LLM 调用**；Step2/Step3 默认值硬编码，Step1 输入不参与推荐。
+> - **LLM 推荐**（D10 / 01 §2–§3）：向导 **0 次 LLM 调用**；Step2/Step3 默认值硬编码，Step1 输入不参与推荐。2026-11-05 已把 UI 文案改为「项目扫描 + 默认值预填」，消除虚假承诺。
 > - **`project_spec.md` 全量快照**（D16 / 04 §5.1）：实际为人类可读散列，无 YAML front-matter；缺 `probe/choices/memory/scenario_id/level/wizard_version`。
-> - **D17「其他」逃生舱**：按钮仅关闭向导，不打开 `ScenarioEditDialog`、不写 `mode=custom` spec。
+> - **D17「其他」逃生舱（部分实现，2026-11-05）**：按钮已关闭向导并打开 `ScenarioEditDialog`（新建态，预填名称/描述，保存后广播 `scenarioReload`）；从编辑器内打开的向导（`origin='editor'`）只关闭回退，不叠新编辑器。**仍未补写 `mode=custom` spec**（spec schema 待定，当前只走向导生成路径）。
 > - **D23 生成进度**：成功后**自动关闭**；仅有 spinner，无步骤条 / 索引进度 / 分步重试。
 > - **D21 记忆 AI 优化**：agent 提示词可优化；记忆「沉淀提示词」**无 AI 优化、无恢复**，且不落盘。
 > - **预置 agent 数量**：实际 **24 个**（非 8 / 21）；文件格式为 **v2**（`# 基本信息` + YAML）。详见 [02](./02-预置智能体目录.md)。
@@ -92,7 +92,7 @@
 | D14 | 项目信息提示 | 提示以 **Label 旁 `?` tooltip（悬停）** 呈现；输入框**空白、不预填**实际文本 |
 | D15 | Step3 按模式分叉 | 新建=脚手架 / 迭代=上下文采集 / 重构=约束定义；B/C 技术栈取自**扫描**（只读可改）；**B 不设「迭代任务类型」**（专项角色按需手选），见 01 §5 |
 | D16 | project_spec | **设计：**= 向导最终选择的**全量快照**；⚠️ **未实现**：实际为人类可读散列（无 YAML front-matter / 无 probe/choices/memory/scenario_id/level/wizard_version），见 04 §5 |
-| D17 | 「其他」模式 | **设计：**逃生舱跳过模板、复用 `ScenarioEditDialog`、保存后补写 `project_spec.md`（mode=custom）；⚠️ **未实现**：按钮仅关闭向导 |
+| D17 | 「其他」模式 | **已实现（2026-11-05）**：关闭向导 → 打开既有 `ScenarioEditDialog`（新建态，预填名称/描述）；保存后广播 `scenarioReload`；从编辑器内打开时只关闭回退；**不补写** `project_spec.md`（`mode=custom` 待 spec schema 决策） |
 | D18 | 新 MQ 主题 | ✅ **已授权**（2026-10-04）`agent-wizard*` 4 个；**须配套门面**（`facade.API.ProjectSpec*` / `ProjectProbe`）并同步 61 + 测试，见 05 §4.3/§4.4 |
 | D19 | 项目记忆进向导 | 记忆编辑并入**预览页 tab**（场景 / 组合提示词 / 项目记忆）：LLM 依项目内容预填预置 8 类；**内容 / 种类（可增删启停）/ 沉淀提示词 均可编辑**，复用既有 `data-memory-*` 与 `data-prj-config-*`，经门面写入 `<workDir>/.chonkpilot/memory/`，见 01 §7.2 |
 | D20 | 预览页（Step5） | = 「场景编辑」**同构 + 记忆 tab**，且为**可编辑的生成前确认台**（场景名/描述/主 agent 提示词/成员增删/记忆可改；子 agent 引用正文只读）；「生成」写 场景 + 记忆 + `project_spec.md`，见 01 §7.1 |

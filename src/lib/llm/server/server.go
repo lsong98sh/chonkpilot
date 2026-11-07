@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
+	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/bridge"
-	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 )
 
 // ─── tasktree 手动删除同步 ─────────────────────
@@ -62,9 +62,14 @@ func (s *Server) onMemoryRefresh(_ string, payload []byte) {
 // onMCPChanged gateway 广播目录/接入变化（mcp-gateway-changed，kind=tool 等）
 // → 刷新工具定义缓存（tools/list）。
 func (s *Server) onMCPChanged(_ string, _ []byte) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	_, _ = s.gc.ListTools(ctx)
+	// 本回调在总线派发线程内执行：tools/list 是同步 RPC（Emit().Wait）→ 转后台，避免
+	// 派发线程等待 gateway；工具缓存属附属能力，失败只降级当次刷新。
+	go func() {
+		defer recoverLog("onMCPChanged/ListTools")
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_, _ = s.gc.ListTools(ctx)
+	}()
 }
 
 // ─── instance 管理 ────────────────────────────
@@ -173,14 +178,21 @@ func (s *Server) onInstanceRegister(_ string, payload []byte) {
 	// 无法自愈 → 实例注册后后台预热一次（失败静默，仍有 llm-start 兜底）。
 	go func() {
 		defer recoverLog("onInstanceRegister/prewarmSessionIndex")
-		newSessionStore(s.bus, msg.InstanceID).Prewarm()
+		s.newSessionStore(msg.InstanceID).Prewarm()
 	}()
 	// 实例 → work_dir 映射**只有一份**：权威 = 共通实例视图 `s.im`（instance.Manager，
 	// 本包在其后订阅 instance-register → 此处读到的是刚登记的记录）。不再维护本地副本。
-	s.registerCapabilityNodes(msg.InstanceID, msg.WorkDir)
-	if s.capWatch != nil {
-		s.capWatch.watchInstance(msg.InstanceID, msg.WorkDir) // T-21：监听该实例可见的 user/project/prjusr 级 capability 根
-	}
+	// 目录节点接入含 gateway `servers/register`（spawn 下游进程）→ **必须放后台**（与
+	// MCP 对账同口径）：本 handler 在总线同步派发线程内，不得等待子进程/网络。
+	s.capRegisterWG.Add(1)
+	go func() {
+		defer s.capRegisterWG.Done()
+		defer recoverLog("onInstanceRegister/registerCapabilityNodes")
+		s.registerCapabilityNodes(msg.InstanceID, msg.WorkDir)
+		if s.capWatch != nil {
+			s.capWatch.watchInstance(msg.InstanceID, msg.WorkDir) // T-21：监听该实例可见的 user/project/prjusr 级 capability 根
+		}
+	}()
 }
 
 // ─── llm-start / llm-send / llm-cancel / ask-user-reply ─────────────

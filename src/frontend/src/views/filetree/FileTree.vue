@@ -245,7 +245,7 @@ function declareRootWatch() {
 let lastRowClick = { path: '', time: 0 }
 
 // 单击（FP）：目录 → 展开/收起；文件 → 打开临时页签；
-// Ctrl/Shift+点击 → 多选切换；多选状态（>1）下普通单击 → 清多选并单选；
+// Ctrl/Shift+点击 → 多选切换；多选状态（>1）下普通单击 → 清多选并单选后直接返回（不打开/改名）；
 // 再次单击已选中的单选节点且间隔 > 500ms → 进入改名（双击序列两次 click < 500ms 不触发）
 function onRowClick(node, event) {
   // 重命名态中点击其它节点 → 提交并退出（tree-row 是 div 不可聚焦，光靠 input 的
@@ -268,11 +268,15 @@ function onRowClick(node, event) {
     return
   }
 
-  // 非 Ctrl 点击：若处于多选状态（>1）→ 清多选退化为单选
-  if (selectedKeys.value.size > 1) {
+  // 非 Ctrl 点击：若处于多选状态（>1）→ 清多选退化为单选。
+  // 鼠标单击只做「多选收敛为单选」，不打开页签、不进入改名，收敛后直接返回；
+  // 键盘 Enter（onRowClick 无 event）保持原逻辑：折叠多选后继续打开/改名判定。
+  const wasMulti = selectedKeys.value.size > 1
+  if (wasMulti) {
     selectedKeys.value = new Set()
   }
   selectedKey.value = node.path
+  if (wasMulti && event) return
 
   if (node.is_dir) {
     lastRowClick = { path: node.path, time: now }

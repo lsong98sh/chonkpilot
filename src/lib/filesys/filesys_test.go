@@ -581,3 +581,87 @@ func TestOnCopyNormalTargetAllowed(t *testing.T) {
 		t.Fatalf("目标文件应存在：%v", err)
 	}
 }
+
+// TestOnRenameCaseOnly（FT-008-S05）：大小写不敏感文件系统（Windows）上 a.txt → A.TXT
+// 属合法改名，不得被 os.Stat(np) 的「目标已存在」误判拒绝；改名后磁盘文件名更新、内容不变。
+// 该断言在大小写敏感文件系统（Linux）上同样成立（普通 rename），无需按 GOOS 跳过。
+func TestOnRenameCaseOnly(t *testing.T) {
+	wd := t.TempDir()
+	src := filepath.Join(wd, "a.txt")
+	const content = "case-only rename"
+	if err := os.WriteFile(src, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newBoundFilesys(t, wd, "i1")
+	payload, _ := json.Marshal(map[string]any{
+		"instance_id": "i1", "path": src, "new_name": "A.TXT",
+	})
+	v := &mq.Value{Payload: payload}
+	if err := f.onRename(context.Background(), "", v); err != nil {
+		t.Fatalf("onRename err: %v", err)
+	}
+	if len(v.Errors) != 0 {
+		t.Fatalf("case-only 改名不应被拒绝：errors=%v", v.Errors)
+	}
+	res, _ := v.Result.(map[string]any)
+	if res["ok"] != true {
+		t.Fatalf("result 应为 ok=true：%v", v.Result)
+	}
+	entries, err := os.ReadDir(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() { // 跳过工作区元数据目录（如 .chonkpilot）
+			files = append(files, e.Name())
+		}
+	}
+	if len(files) != 1 || files[0] != "A.TXT" {
+		t.Fatalf("磁盘文件名应为唯一的 A.TXT：%v", files)
+	}
+	got, err := os.ReadFile(filepath.Join(wd, "A.TXT"))
+	if err != nil {
+		t.Fatalf("改名后文件应可读：%v", err)
+	}
+	if string(got) != content {
+		t.Fatalf("改名不得改变内容：got=%q want=%q", got, content)
+	}
+}
+
+// TestOnRenameDifferentExistingTargetRejected（FT-008-S05 回归）：目标存在且与源**不是**
+// 同一文件时，未带 overwrite 仍返回 exists，且源/目标内容均不得被改动。
+func TestOnRenameDifferentExistingTargetRejected(t *testing.T) {
+	wd := t.TempDir()
+	src := filepath.Join(wd, "a.txt")
+	dst := filepath.Join(wd, "b.txt")
+	if err := os.WriteFile(src, []byte("src"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("dst"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newBoundFilesys(t, wd, "i1")
+	payload, _ := json.Marshal(map[string]any{
+		"instance_id": "i1", "path": src, "new_name": "b.txt",
+	})
+	v := &mq.Value{Payload: payload}
+	if err := f.onRename(context.Background(), "", v); err != nil {
+		t.Fatalf("onRename err: %v", err)
+	}
+	if len(v.Errors) == 0 {
+		t.Fatalf("目标为不同文件时应拒绝：result=%v", v.Result)
+	}
+	if me, ok := v.Errors[0].(mapErr); !ok || me["code"] != "exists" {
+		t.Fatalf("错误码应为 exists：%v", v.Errors[0])
+	}
+	for path, want := range map[string]string{src: "src", dst: "dst"} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s 应仍存在：%v", path, err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s 内容不应变化：got=%q want=%q", path, got, want)
+		}
+	}
+}

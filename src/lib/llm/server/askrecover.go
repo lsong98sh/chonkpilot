@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
@@ -30,6 +31,31 @@ type askRecord struct {
 //   - askID 空 + pendingOnly → 未答 ask（启动扫描）；
 //   - askID 非空 → 该 ask 精确回查（含已终态；失效回执据此判定）。
 func (s *Server) dataAskPending(instanceID, askID string, pendingOnly bool) ([]askRecord, error) {
+	// 本地有界读取（§2.4）：门面直调，避免启动恢复 / 应答受理路径上的同步总线应答；
+	// 实现与 data-ask-pending 同源（内嵌 persist）。
+	if s.cfg != nil {
+		res, err := s.cfg.AskPending(facade.AskPendingRequest{
+			InstanceID:  instanceID,
+			AskID:       askID,
+			PendingOnly: pendingOnly,
+		})
+		if err != nil {
+			return nil, err
+		}
+		items := make([]askRecord, 0, len(res.Items))
+		for _, it := range res.Items {
+			items = append(items, askRecord{
+				AskID:      it.AskID,
+				SessionID:  it.SessionID,
+				TurnID:     it.TurnID,
+				ToolCallID: it.ToolCallID,
+				Status:     it.Status,
+				Question:   it.Question,
+				CreatedAt:  it.CreatedAt,
+			})
+		}
+		return items, nil
+	}
 	data := map[string]any{"pending_only": pendingOnly}
 	if askID != "" {
 		data["ask_id"] = askID

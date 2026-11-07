@@ -27,7 +27,7 @@
     "loading": "Processing…"
   },
   "info": {
-    "banner": "For a new project, fill in the following. For an existing project, it is auto-prefilled by scanning and can be edited. Later options are recommended by the LLM based on this info.",
+    "banner": "For a new project, fill in the following. For an existing project, it is auto-prefilled by scanning and can be edited. Later options are pre-filled from the project scan and defaults, and remain adjustable.",
     "legend": "Project Info",
     "legendNote": "Describe intent first; no need to pick tech item by item",
     "goal": "Project goal",
@@ -47,7 +47,7 @@
     "goalRequired": "Please fill in \"Project goal\""
   },
   "mode": {
-    "banner": "The following mode is pre-selected by the LLM based on \"Project Info\" and can be adjusted.",
+    "banner": "The following mode is pre-selected from the working directory scan and can be adjusted.",
     "legend": "Top-level mode",
     "newBuild": "Greenfield",
     "newBuildDesc": "No existing code; from requirements to a runnable product.",
@@ -58,10 +58,10 @@
     "other": "Other",
     "otherDesc": "Custom mode with an optional note.",
     "otherPlaceholder": "Describe the mode, e.g. data migration / design only",
-    "defaultHint": "One click: generate with all defaults (LLM recommendations + per-step defaults) — scenario + memory + project_spec.md — then close the wizard (skips Step3–5)."
+    "defaultHint": "One click: generate with defaults (project scan + per-step defaults) — scenario + memory + project_spec.md — then close the wizard (skips Step3–5)."
   },
   "stack": {
-    "bannerA": "Step3 varies by mode. Current mode \"Greenfield\": choose the scaffold (stack & architecture), pre-filled by the LLM.",
+    "bannerA": "Step3 varies by mode. Current mode \"Greenfield\": choose the scaffold (stack & architecture), pre-filled from the project scan and defaults.",
     "bannerB": "Step3 varies by mode. Current mode \"Iterate\": collect the existing codebase context (stack comes from scanning; no need to re-select).",
     "bannerC": "Step3 varies by mode. Current mode \"Refactor\": define constraints (behavior-preservation strategy / verification / special roles).",
     "bannerOther": "Step3 varies by mode. Current mode \"Other\": skip the template and go straight to the scenario editor (reuses the existing editor).",
@@ -234,7 +234,7 @@
       "roleGuardian": "Compatibility guardian",
       "roleMigration": "Migration planner"
     },
-    "otherModeHint": "Custom mode: skip the template and go straight to the scenario editor (reuses the existing editor) to configure scenario and agents manually; project_spec.md is written afterwards (mode=custom).",
+    "otherModeHint": "Custom mode: skip the template and go straight to the scenario editor (reuses the existing editor) to configure scenario and agents manually.",
     "otherModeEnter": "Go to scenario editor"
   },
   "summary": {

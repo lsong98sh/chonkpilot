@@ -86,10 +86,16 @@ func collectStreamEvents(evs <-chan StreamEvent) (string, string, []ToolCall, st
 }
 
 // TestNormalizeLLMProtocol：协议归一——responses / echo 生效；openai/空/未知 → openai。
+//
+// `anthropic` → openai 是**文档化的边界**（不是实现细节）：21-llm-server.md §4「anthropic
+// （/v1/messages；usr 配置暂不暴露）」+ docs/llm-bridge §174「归一表把 anthropic 折叠为 openai，
+// 归一化只属 router 出网口径」；桥接入口按原始值区分鉴权头（见 server/bridge_test.go）。
+// 该用例同时固化「本仓 server 的整轮链路**不可能**出现 protocol=anthropic」这一事实。
 func TestNormalizeLLMProtocol(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"", ProtocolOpenAI}, {"openai", ProtocolOpenAI}, {"responses", ProtocolResponses},
 		{"echo", ProtocolEcho}, {"unknown", ProtocolOpenAI}, {" responses ", ProtocolResponses},
+		{"anthropic", ProtocolOpenAI}, // usr 配置暂不暴露 anthropic（21 §4）→ 折叠为 openai
 	} {
 		if got := NormalizeLLMProtocol(tc.in); got != tc.want {
 			t.Fatalf("NormalizeLLMProtocol(%q)=%q want %q", tc.in, got, tc.want)

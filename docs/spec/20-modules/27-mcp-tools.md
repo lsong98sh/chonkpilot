@@ -14,7 +14,7 @@
   - **`script_run` → `task_run`（2026-10-28 P2-3）**：多 runtime 脚本执行器整包迁出。**〔2026-11-04 核对〕实现位于同级仓 `chonkpilot-util/scriptrun/`**（`exec.go` + `exec_test.go`），**不是** `chonkpilot-plugins/task/src/lib/scriptrun`（该路径不存在）；task 插件引用该包。`chonkpilot-script-executor.exe` 不再产出；解释器配置归 task 插件（`plugins.task.interpreter-*`），主仓不再注入 `CHONKPILOT_INTERPRETERS`。见 [49 §2.21](../40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)。
   - **file 域 11 工具**（2026-10-25）随 `file` 插件迁出主仓 → 执行体 = 插件自带 MCP server，契约 = `chonkpilot-plugins/file/src/tools/file/*.tool.md`；
   - **browser / desktop** 为常驻插件（UDS，不接 gateway、不注册 MCP 工具）；
-  - **meta / server 域**（`meta_*` 3 + `ask_user` / `tool_result` / `tool_stop` / `next_run` / `subchat_open` / `subchat_finish` 6）由 `core-mcp-server` **进程内**执行，无独立 exe。**〔2026-11-04 核对〕** 该能力仍在 `cmd/core-mcp-server` + `runtime: builtin`；但**桌面单体已不拉起 core**（`src/lib/llm/server/boot.go:216`），domain 6 改由 llm server `tools/register` 进程内执行，meta 3 由 `mcp` 插件注册；core 仅用于独立 gateway / capability 目录节点。
+  - **meta / server 域**（`meta_*` 3 + `ask_user` / `tool_result` / `next_run` / `subchat_open` / `subchat_finish` 5）由 `core-mcp-server` **进程内**执行，无独立 exe。**〔2026-11-04 核对〕** 该能力仍在 `cmd/core-mcp-server` + `runtime: builtin`；但**桌面单体已不拉起 core**（`src/lib/llm/server/boot.go:216`），domain 5 改由 llm server `tools/register` 进程内执行，meta 3 由 `mcp` 插件注册；core 仅用于独立 gateway / capability 目录节点。**`tool_stop` 已删除（2026-11-04，`task_stop` 为唯一停止入口）。**
   - `filesys_run` / `browser_run` / `desktop_run` / `dsl_run` 与 `chonkpilot-dsl-executor.exe` **已全部删除**（GATEWAY-2 L1 / PLUGIN-SPLIT-1）。
 - **做**：脚本执行（多 runtime）、HTTP 抓取；统一输出层（`Ok`/`Err` + 200KB 落文件）。
 - **不做（历史）**：**零主仓库依赖**（仅 `src/lib/paths`）；无 DB/NATS；**无路径白名单**（越界读写成败由沙箱承担，见 [14-安全域](../10-architecture/14-安全域-agentbox.md)）；零持久状态。**〔2026-11-04 核对〕** `agentbox` 已删除，现行写隔离 = `chonkpilot-util/sandbox`（gateway spawn stdio 下游时实施）与 `chonkpilot-util/scriptrun` 自带 Low IL/Job 约束。
@@ -29,7 +29,7 @@
 |----|----|
 | 形态 | **无内置 executor**（2026-10-31 D-72 整体退场）；工具能力随插件 MCP server |
 | 调用约定 | `<exe> <tool> --input=<参数 JSON 路径>`；`<exe> --help`；`<exe> --help <tool>` |
-| 部署 | `build-mcp-server.ps1` **不再产出** `capability/executors/`（D-72）；插件工具契约随各插件投放。**〔2026-11-04 核对 · 未收尾〕`build-mcp-gateway.ps1:50-51` 仍强制校验 `capability/executors/chonkpilot-tools-executor.exe`，缺失即 throw** —— 按「先 build-mcp-server 再 build-mcp-gateway」的全新构建会在 verify 阶段失败；`dist/other` 当前不存在。 |
+| 部署 | `build-mcp-server.ps1` **不再产出** `capability/executors/`（D-72）；插件工具契约随各插件投放。**2026-11-04 已修**：`build-mcp-gateway.ps1` 的 verify 改为只校验共享 `capability/` 目录存在，不再要求已停产的 `chonkpilot-tools-executor.exe`。 |
 | work-dir | **概念已移除**（`workDir := ""`；不消费 `_work_dir`/`CHONK_WORK_DIR`）。文件参数须**绝对 / `~/` / `!/` 开头**（R-11） |
 | 宿主注入 env | executor **从自身进程环境**读宿主注入的 `CHONKPILOT_*`（`CHONKPILOT_INSTANCE/WORKDIR/DATADIR`），经 `fileops.HostEnv`/`BuildToolEnv` 构造**只读** env：`CHONKPILOT_WORKDIR/DATADIR/TEMPDIR/EXEDIR/PROJECT`，并 `paths.SetTempRoot(CHONKPILOT_INSTANCE)` 定 `!/` 落地根。缺 `CHONKPILOT_INSTANCE` 且需要 `!/` 或 DSL env → 顶层失败（`ErrNoInstance`）。**（2026-10-28 P2-3：`CHONKPILOT_INTERPRETERS` 注入链已删除，解释器配置归 task 插件）** |
 
@@ -49,6 +49,7 @@
 其余工具：server 域 6（契约 `src/lib/llm/contracts/tools/`，core 进程内执行）· **task 插件 4（`task_run` / `task_llm` / `task_status` / `task_stop`；契约 `chonkpilot-plugins/task/src/tools/task/`）** · **web 域 3（`web` 插件：web_search / web_fetch / web_download）** · file 域 11（`file` 插件）· meta 3（`mcp_find` / `mcp_load` / `mcp_invoke`，由 `mcp` 插件 MCP server 暴露）。契约同步规则见 [03-构建与部署](../00-overview/03-构建与部署.md) §7。
 
 > **task 插件口径（2026-11-04）**：`task_llm` = **全能力委派子代理**（独立子会话/子轮次 + 全工具面，可多层；宿主能力 `plugin/v1/agent.delegate`），不再是「单次 LLM 调用」；`task_status` 支持 `task_id` 单任务查询 + `waitSec` + 运行中返回**已产出的部分输出**（与 `tool_result` 同口径）；`task_stop` 经数据面 `task.stop` → 层级联取消并关闭委派子轮次。
+> **完成语义（2026-11-06）**：委派链**先子后父** —— 子轮次全部终态后才判定父轮次终态；`task_llm` 只有 `state=done` + `text` 表示完整结果，`incomplete` → `error/LLM_INCOMPLETE`（`partial` 非终态），`interrupted/cancelled` → `state=cancelled`；`running` 不返回正文，须经 `task_status` 取终态。
 
 ### 3.2 各工具能力
 

@@ -741,6 +741,9 @@ func searchCodegraphSource(b *Bridge, query string, limit int) []map[string]any 
 
 // searchToolCall 经 gateway（mcp-tools-call）调用已注册查询工具，带超时。
 // 引擎未启用/未就绪/超时/调用失败一律返回 ok=false（调用方静默跳过该源）。
+//
+// §10.3 判据：调用方 = 本地搜索（`gui.*` HTTP 边缘 handler，非总线派发线程）；Emit().Wait()
+// 已在**独立 goroutine** 内执行，调用线程只 select 结果/超时 → 不阻塞消息循环，保留。
 func searchToolCall(b *Bridge, tool string, args map[string]any, timeout time.Duration) (string, bool) {
 	if b.bus == nil {
 		return "", false

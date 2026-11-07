@@ -1,5 +1,5 @@
 // Package contracts 是 LLM 域工具契约的**唯一副本**（ask_user / next_run / subchat_open /
-// subchat_finish / tool_stop / tool_result）。
+// subchat_finish / tool_result）。
 //
 // 历史上同一组文件在 `server/contracts/tools/`（进程内注册用）与
 // `cmd/server-tools/contracts/`（进程外实现用）各存一份，靠一致性测试防漂移。

@@ -247,7 +247,7 @@ func TestPluginAgentDelegate(t *testing.T) {
 }
 
 // TestDelegatedTurnLifecycle：委派子轮次的生命周期独立于父轮次（父轮次收尾不取消它），
-// 取消经 `task_stop`/`tool_stop` 的 `closeDelegatedTurn` 显式下发。
+// 取消经 `task_stop` 的 `closeDelegatedTurn` 显式下发。
 func TestDelegatedTurnLifecycle(t *testing.T) {
 	gate := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -283,7 +283,7 @@ func TestDelegatedTurnLifecycle(t *testing.T) {
 		t.Fatal("父轮次收尾不应取消委派子轮次")
 	case <-time.After(150 * time.Millisecond):
 	}
-	// 显式取消（task_stop / tool_stop 链路）→ 子轮次收尾。
+	// 显式取消（task_stop 链路）→ 子轮次收尾。
 	if !s.closeDelegatedTurn("ins-test", h.Turn) {
 		t.Fatalf("closeDelegatedTurn 未命中子轮次 %s", h.Turn)
 	}

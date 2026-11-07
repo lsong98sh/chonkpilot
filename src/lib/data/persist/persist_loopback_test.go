@@ -39,8 +39,7 @@ func TestIsLoopbackReply(t *testing.T) {
 // TestHandleProcessesRequestWithTopLevelOK：经 MQ 发一条**顶层带 ok** 的业务请求，
 // 应正常处理并应答（修复前会被误判为应答丢弃 → 无回应答 → 调用方挂起）。
 func TestHandleProcessesRequestWithTopLevelOK(t *testing.T) {
-	wd := t.TempDir() // 先于 service 创建：清理 LIFO → data.Reset 先于目录删除
-	s := newSweepTestService(t)
+	s, wd, _ := newSweepTestService(t) // workDir 由 helper 创建：先关库再删目录
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

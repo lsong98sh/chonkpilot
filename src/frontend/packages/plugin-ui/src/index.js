@@ -4,6 +4,8 @@
  * 宿主注入 `PluginHostPort`：
  *   - `mq`：`{ on(topic, cb), emit(topic, payload) }`（宿主总线客户端）
  *   - `views`：`{ register(plugin), unregister(id) }`（插件视图注册表）
+ *   - `layout`：`{ openTabs, openDrawer, openDialog, toggleDrawer, closeActiveTabs }`
+ *     （布局域运行态动作；G-89 起内部命令不走 mq，插件动作按钮的打开落点直调）
  *   - `theme`：`{ subscribe(cb), snapshot() }`（主题端口）
  *   - `components`：`{ Icon, Button, Switch }`（设计系统组件）
  *

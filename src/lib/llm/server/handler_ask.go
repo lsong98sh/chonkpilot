@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
@@ -20,10 +22,38 @@ const askTimeoutKey = "ask_timeout_sec"
 // askAutoTimeoutAnswer 是无推荐项时的超时自动回复文案（有 recommended 时优先取推荐值）。
 const askAutoTimeoutAnswer = "用户未在时限内回复，请按推荐做法继续。"
 
+// askAsyncHandoffResult 是 ask_user **立即返回**给 LLM 的占位工具结果（AskUser S4）：
+// 提问不是阻塞调用，先快速转异步——LLM 可继续完成其它可独立完成的任务，或直接收尾本轮；
+// 用户答复到达后作为**后续用户消息**投递（同一轮插入或新轮），不会回填到本次 tool result。
+const askAsyncHandoffResult = "已向用户提问，正在等待回复。你可以继续完成其他可独立完成的任务；如果暂时没有其他可做的，请直接回复文本「等待用户回复」并结束本轮对话。用户答复到达后会作为后续消息送达。"
+
+// askChatResolvedResult 是「聊一聊」后点「完成」写入 tool-result 的文案（AskUser S4）：
+// 用户已在会话里讨论过，由用户显式结束该提问；**不**向 LLM 投递消息。
+const askChatResolvedResult = "参考后续的聊天记录"
+
 // askCenterSub 是 Ask 中心订阅（user 作用域；workDir 非空 = 只订该目录）。
 type askCenterSub struct {
 	instanceID string
 	workDir    string
+}
+
+// askAnswer 是批次内一条已答问题（全部答完后按 seq 顺序一次性投递）。
+type askAnswer struct {
+	askID    string
+	question string
+	answer   string
+	seq      int64
+}
+
+// askBatch 是**同一会话**的提问批次（AskUser S4 要求 5：全部回复后一次性发送）。
+//   - open     = 尚未回答的提问（含跳过 / 超时未结算）；
+//   - answered = 已回答但批次尚未齐（先收着，等最后一条答复到达再投递）；
+//   - 最后一条答复到达 → 合并为一条 user 消息投递并删除批次；
+//   - 轮次正常结束不删除（非阻塞 ask 允许先收尾）；取消 / 实例退出整批丢弃。
+type askBatch struct {
+	key      string
+	open     map[string]*askWaiter
+	answered map[string]askAnswer
 }
 
 // intFromAny 把 JSON 数字/字符串折成 int（失败 → 0）。
@@ -168,7 +198,8 @@ func sameWorkDirPath(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
-// onAskUserReply ask 应答 → 作为 tool-result 喂回 LLM 循环；ask 任务节点 → tasks.done。
+// onAskUserReply ask 应答 → 记入会话批次；同会话全部答完后作为**用户消息**一次性投递
+// （AskUser S4：提问是快速转异步，答复不占用原 tool-result 配对）+ ask 任务节点 → tasks.done。
 func (s *Server) onAskUserReply(_ context.Context, _ string, v *mq.Value) error {
 	// 载荷字段 = ask_id（61 §4.2；I-152 已闭环，旧连字符名不再回落）。
 	var raw map[string]any
@@ -198,14 +229,160 @@ func (s *Server) onAskUserReply(_ context.Context, _ string, v *mq.Value) error 
 	if w.taskID != "" {
 		s.tasks.done(w.taskID, TaskStateDone, answer, "")
 	}
-	s.mu.Lock()
-	tc := s.lookupTurnLocked(w.instanceID, w.turnID)
-	s.mu.Unlock()
-	if tc != nil {
-		tc.FeedToolResult(w.toolID, answer)
-	}
+	// AskUser S4：直接回答同样就地更新 tool-result（历史/重载可见）；答复本身按批次投递。
+	s.updateAskToolResult(w, answer)
 	s.notifyAskCenterRemove(w, "answered")
+	// 同会话多问：先收着；最后一条答复到达才一次性投递（要求 5）。
+	if text, ready := s.recordAskAnswer(w, answer); ready {
+		s.deliverAskAnswers(w, text)
+	}
 	return nil
+}
+
+// recordAskAnswer 把一条答复记入会话批次；返回 (可投递文本, 是否已全部答完)。
+// 批次缺失（旧登记 / 测试直插 s.asks）→ 视为单问批次立即投递。
+func (s *Server) recordAskAnswer(w *askWaiter, answer string) (string, bool) {
+	if w == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	b := s.askBatches[w.batchKey]
+	if b == nil {
+		s.mu.Unlock()
+		return formatAskAnswers([]askAnswer{{
+			askID: w.askID, question: w.question, answer: answer, seq: w.seq,
+		}}), true
+	}
+	delete(b.open, w.askID)
+	b.answered[w.askID] = askAnswer{
+		askID: w.askID, question: w.question, answer: answer, seq: w.seq,
+	}
+	if len(b.open) > 0 {
+		s.mu.Unlock()
+		return "", false
+	}
+	answers := make([]askAnswer, 0, len(b.answered))
+	for _, a := range b.answered {
+		answers = append(answers, a)
+	}
+	delete(s.askBatches, b.key)
+	s.mu.Unlock()
+	sort.SliceStable(answers, func(i, j int) bool { return answers[i].seq < answers[j].seq })
+	return formatAskAnswers(answers), true
+}
+
+// formatAskAnswers 把同会话的问答对合成一条用户消息（LLM 侧可明确对应问题与答复）。
+func formatAskAnswers(answers []askAnswer) string {
+	if len(answers) == 0 {
+		return ""
+	}
+	if len(answers) == 1 {
+		return "【用户回答】\n问：" + answers[0].question + "\n答：" + answers[0].answer
+	}
+	var b strings.Builder
+	b.WriteString("【用户回答】")
+	for i, a := range answers {
+		fmt.Fprintf(&b, "\n%d. 问：%s\n   答：%s", i+1, a.question, a.answer)
+	}
+	return b.String()
+}
+
+// onAskResolve「聊一聊」后点「完成」：解除提问、**就地更新 tool-result**、任务节点 done、
+// 摘除 Ask 中心；不向 LLM 投递任何消息（用户已通过会话讨论）。
+//
+// 语义（AskUser S4）：
+//   - 只改写历史记录（原 `ask_user` 行的 result 文案），不回填当前 LLM 轮；
+//   - 若该 ask 是同会话批次里最后一个未答项 → 暂存的**真实答复**按原口径一次性投递；
+//     「参考后续的聊天记录」本身不进入答复集合；
+//   - 幂等：已解除 / 不存在的 ask → ok:true。
+func (s *Server) onAskResolve(_ context.Context, _ string, v *mq.Value) error {
+	var raw map[string]any
+	_ = json.Unmarshal(v.Payload, &raw)
+	askID := str(raw["ask_id"])
+	if askID == "" {
+		v.Result = map[string]any{"ok": false, "error": "ask_id is required"}
+		return nil
+	}
+	s.mu.Lock()
+	w, ok := s.takeAskLocked(str(raw["instance_id"]), askID)
+	var text string
+	var ready bool
+	if ok {
+		text, ready = s.resolveAskBatchLocked(w)
+	}
+	s.mu.Unlock()
+	if !ok {
+		v.Result = map[string]any{"ok": true} // 幂等：已解除 / 已不存在
+		return nil
+	}
+	s.updateAskToolResult(w, askChatResolvedResult)
+	if w.taskID != "" {
+		s.tasks.done(w.taskID, TaskStateDone, askChatResolvedResult, "")
+	}
+	s.notifyAskCenterRemove(w, "resolved")
+	if ready {
+		s.deliverAskAnswers(w, text)
+	}
+	v.Result = map[string]any{"ok": true}
+	return nil
+}
+
+// resolveAskBatchLocked 从会话批次摘除一条 ask（「完成」语义：**不写入 answered**）。
+// 批次没有未答项且存在真实答复暂存 → 返回合并文本（ready=true）；否则空文本。
+// **须持 s.mu**。
+func (s *Server) resolveAskBatchLocked(w *askWaiter) (string, bool) {
+	if w == nil || w.batchKey == "" {
+		return "", false
+	}
+	b := s.askBatches[w.batchKey]
+	if b == nil {
+		return "", false
+	}
+	delete(b.open, w.askID)
+	if len(b.open) > 0 {
+		return "", false
+	}
+	answers := make([]askAnswer, 0, len(b.answered))
+	for _, a := range b.answered {
+		answers = append(answers, a)
+	}
+	delete(s.askBatches, b.key)
+	if len(answers) == 0 {
+		return "", false
+	}
+	sort.SliceStable(answers, func(i, j int) bool { return answers[i].seq < answers[j].seq })
+	return formatAskAnswers(answers), true
+}
+
+// updateAskToolResult 就地更新已收口的 ask_user tool 行 result 文案（AskUser S4）：
+// 同一 turn + tool_call_id 的既有行由 data 面按 `(turn_id, tool_call_id)` 反查复用
+// （不新增行）；`tool_call_status` 恒 completed。**不向 LLM 投递**（仅历史/重载可见）。
+func (s *Server) updateAskToolResult(w *askWaiter, text string) {
+	if w == nil || w.turnID == "" || w.toolID == "" {
+		return
+	}
+	content := persist.ToolContent{
+		Call:   &persist.ToolCallContent{ToolCallID: w.toolID, Name: "ask_user", Arguments: w.args},
+		Result: &persist.ToolResultContent{Content: text, Status: persist.ToolStatusCompleted},
+	}
+	b, err := json.Marshal(content)
+	if err != nil {
+		return
+	}
+	msg := map[string]any{
+		"role":             "tool",
+		"content":          string(b),
+		"tool_call_id":     w.toolID,
+		"tool_call_status": persist.ToolStatusCompleted,
+		"ask_id":           w.askID,
+	}
+	if meta := s.gc.ToolMeta("ask_user"); len(meta) > 0 {
+		msg["_meta"] = meta
+	}
+	if _, err := s.newSessionStore(w.instanceID).AppendMsgMap(w.turnID, msg, ""); err != nil {
+		logf("[chonkpilot-server] ask tool-result 更新失败（turn=%s tool_call_id=%s）: %v\n",
+			w.turnID, w.toolID, err)
+	}
 }
 
 // ask 登记等待（tool-call 命中 ask_user 时调用）：广播 ask-user
@@ -259,10 +436,11 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 	if timeoutSec > 0 {
 		expiresAt = now.Add(time.Duration(timeoutSec) * time.Second)
 	}
+	question := askQuestion(args)
 	payload := map[string]any{
 		"instance_id":    deliverInstance,
 		"ask_id":         askID,
-		"question":       askQuestion(args),
+		"question":       question,
 		"dialog_id":      dialogID,
 		"session":        sess,
 		"turn":           turnID,
@@ -302,9 +480,24 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 	// 每 workdir 单调序号（有序队列）。
 	s.askSeq[workDir]++
 	seq := s.askSeq[workDir]
+	// 会话批次（要求 5）：同会话的多个提问共用一个批次；会话未知 → 以 ask 唯一键自成一档。
+	batchKey := instKey(turnInstance, sess)
+	if sess == "" {
+		batchKey = instKey(turnInstance, askID)
+	}
+	b := s.askBatches[batchKey]
+	if b == nil {
+		b = &askBatch{
+			key:      batchKey,
+			open:     make(map[string]*askWaiter),
+			answered: make(map[string]askAnswer),
+		}
+		s.askBatches[batchKey] = b
+	}
 	w := &askWaiter{
 		askID: askID, instanceID: turnInstance, deliverInstance: deliverInstance,
 		turnID: turnID, toolID: toolID, taskID: taskID,
+		sessionID: sess, batchKey: batchKey, question: question, args: args,
 		dialogID:      dialogID,
 		expiresAt:     expiresAt,
 		ownerInstance: turnInstance,
@@ -315,10 +508,11 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 		payload:       rawPayload,
 		autoAnswer:    askAutoAnswer(args),
 	}
+	b.open[askID] = w
 	s.asks[instKey(turnInstance, askID)] = w
 	if timeoutSec > 0 {
 		w.timer = time.AfterFunc(time.Duration(timeoutSec)*time.Second, func() {
-			s.expireAsk(askID)
+			s.postAskExpired(askID)
 		})
 	}
 	s.mu.Unlock()
@@ -327,8 +521,30 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 	return askID
 }
 
-// expireAsk 结算显式超时的 ask：取走登记 → 任务节点 done → 自动回复喂回轮次 →
-// 通知 Ask 中心摘除（reason=timeout）。**不中断轮次**（引擎按普通 tool-result 续跑）。
+// postAskExpired 投递一条「ask 到点」消息（定时器 goroutine 只投递，不直接改状态）。
+// worker 由首次投递惰性启动：串行调用 expireAsk，保证 ask 状态只由一个执行体写。
+func (s *Server) postAskExpired(askID string) {
+	s.askExpireOnce.Do(func() {
+		go func() {
+			for {
+				select {
+				case id := <-s.askExpireCh:
+					s.expireAsk(id)
+				case <-s.askExpireStop:
+					return
+				}
+			}
+		}()
+	})
+	select {
+	case s.askExpireCh <- askID:
+	case <-s.askExpireStop:
+	}
+}
+
+// expireAsk 结算显式超时的 ask：取走登记 → 任务节点 done → 超时答复记入会话批次
+// （同批全部答完则一次性投递）→ 通知 Ask 中心摘除（reason=timeout）。
+// 与用户作答同一条路径：答复是**后续用户消息**，不再回填本次 tool-result。
 func (s *Server) expireAsk(askID string) {
 	if askID == "" {
 		return
@@ -342,15 +558,93 @@ func (s *Server) expireAsk(askID string) {
 	if w.taskID != "" {
 		s.tasks.done(w.taskID, TaskStateDone, w.autoAnswer, "")
 	}
-	s.mu.Lock()
-	tc := s.lookupTurnLocked(w.instanceID, w.turnID)
-	s.mu.Unlock()
-	if tc != nil {
-		tc.FeedToolResult(w.toolID, w.autoAnswer)
-	}
+	s.updateAskToolResult(w, w.autoAnswer)
 	s.notifyAskCenterRemove(w, "timeout")
+	if text, ready := s.recordAskAnswer(w, w.autoAnswer); ready {
+		s.deliverAskAnswers(w, text)
+	}
 	logf("[chonkpilot-server] ask 超时自动回复：ask_id=%s session=%s answer=%q\n",
-		w.askID, s.turnSession(w.turnID), w.autoAnswer)
+		w.askID, w.sessionID, w.autoAnswer)
+}
+
+// deliverAskAnswers 把「同会话全部问答」投递回 LLM（要求 4/5：结果传给 LLM，且一次只发一条）：
+//   - 主会话：写持久化 inbox（**next_turn**）——有运行轮则等本轮结束自动消费；
+//     无运行轮立即起新一轮。进程重启 / 相位错过都不丢；
+//   - 群聊 / 子会话（kind 非空）：沿用既有口径——有运行轮直接喂入，否则起新一轮
+//     （这些会话由各自调度器驱动，不经 consumeNextTurn）。
+func (s *Server) deliverAskAnswers(w *askWaiter, text string) {
+	if w == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	if w.sessionID == "" {
+		logf("[chonkpilot-server] ask 答复无法投递（缺会话标识）: ask_id=%s\n", w.askID)
+		return
+	}
+	inst := s.askAnswerInstance(w)
+	if inst == "" {
+		logf("[chonkpilot-server] ask 答复无法投递（缺实例归属）: ask_id=%s session=%s\n", w.askID, w.sessionID)
+		return
+	}
+	// 非主会话：有在飞轮次 → 直接喂入；否则起新轮（与 replyExpiredAsk 同口径）。
+	if kind := s.sessionRow(inst, w.sessionID).Kind; kind != "" {
+		if tc := s.turnBySessionForAdd(inst, w.sessionID); tc != nil {
+			s.sendTextToTurn(inst, w.sessionID, tc.req.Turn, text)
+			return
+		}
+		s.startAskAnswerTurn(inst, w.sessionID, text)
+		return
+	}
+	// 主会话：持久化 inbox（next_turn）——有运行轮时等其正常结束再起新一轮；
+	// 不走 insert（未消费的 insert 项会挡住 consumeNextTurn，答复可能滞留）。
+	payload, err := json.Marshal(map[string]any{
+		"instance_id": inst,
+		"session":     w.sessionID,
+		"content":     text,
+	})
+	if err != nil {
+		logf("[chonkpilot-server] ask 答复序列化失败: ask_id=%s err=%v\n", w.askID, err)
+		return
+	}
+	if err := s.onInboxAdd(context.Background(), "", &mq.Value{Payload: payload}); err != nil {
+		logf("[chonkpilot-server] ask 答复投递失败: ask_id=%s session=%s err=%v\n", w.askID, w.sessionID, err)
+	}
+}
+
+// askAnswerInstance 选择答复投递实例：源会话所在窗口 → 发起 turn 的实例。
+func (s *Server) askAnswerInstance(w *askWaiter) string {
+	if s.im != nil && w.sessionID != "" {
+		if ins, ok := s.im.InstanceForSession(w.sessionID); ok && ins != "" {
+			return ins
+		}
+	}
+	if w.instanceID != "" {
+		return w.instanceID
+	}
+	return w.ownerInstance
+}
+
+// sendTextToTurn 向已存在的运行轮投递一条用户文本（群聊 / 子会话答复路径）。
+func (s *Server) sendTextToTurn(inst, sess, turn, text string) {
+	body, err := json.Marshal(SendReq{
+		InstanceID: inst, Session: sess, Turn: turn, Type: SendTypeTextUser, Content: text,
+	})
+	if err != nil {
+		return
+	}
+	if err := s.onLLMSend(context.Background(), "", &mq.Value{Payload: body}); err != nil {
+		logf("[chonkpilot-server] ask 答复喂入运行轮失败: session=%s turn=%s err=%v\n", sess, turn, err)
+	}
+}
+
+// startAskAnswerTurn 在无运行轮时以答复起新一轮（群聊 / 子会话路径）。
+func (s *Server) startAskAnswerTurn(inst, sess, text string) {
+	res := s.acceptStart(StartReq{InstanceID: inst, Session: sess, Turn: "turn-" + newID()})
+	if ok, _ := res["accepted"].(bool); !ok {
+		logf("[chonkpilot-server] ask 答复起新轮被拒: session=%s target=%s res=%v\n", sess, inst, res)
+		return
+	}
+	turnID, _ := res["turn"].(string)
+	s.sendTextToTurn(inst, sess, turnID, text)
 }
 
 // askCenterSubscriber 取 Ask 中心该 user 的订阅实例（workdir 作用域匹配；无 → ok=false）。

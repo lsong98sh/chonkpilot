@@ -11,7 +11,8 @@
   P2 页面：`preview-tab-open{kind:settings-llm}` → 预览区 LLM 配置页签
   P3 偏好：`theme-select{themeId:dark}` → data-theme=dark + usr theme 落库
   P4 偏好：`lang-select{lang:en-US}` → localStorage locale
-  P5 抽屉：`lf-layout-toggle-drawer{drawer_files}` → `.drawer-overlay` 开；再点 → 关
+  P5 抽屉：布局域动作 `runtime.toggleDrawer('drawer_task')`（G-89 口径）→ `.drawer` 开（标题
+     「任务详情」+ `task-detail` 视图槽）；再执行 → 关；布局面板与视图池保活不重建
   P6 布局后端动作：`gui.ui.save{ui:{locale:en-US}}` → usr locale 落库
   P7 未知动作：明确报错（不得静默）
 """
@@ -135,11 +136,40 @@ def main():
         return "en-US"
 
     def case_p5_drawer():
-        apply_ok("lf-layout-toggle-drawer", {"drawerId": "drawer_files"})
-        wait_js("document.querySelectorAll('.drawer-overlay').length", 1, desc="抽屉打开")
-        apply_ok("lf-layout-toggle-drawer", {"drawerId": "drawer_files"})
-        wait_js("document.querySelectorAll('.drawer-overlay').length", 0, desc="抽屉关闭")
-        return "toggle ok"
+        # G-89（2026-10-31）：`lf-*` MQ 主题已删除（宿主零订阅者）→ 抽屉开/关 = 布局域动作。
+        # 驱动与 `PluginManagerPage.vue#layoutActions().toggleDrawer` / `window.__ckLayout.actions`
+        # 同一执行体（`layout-free/stores/runtime.js#toggleDrawer`；actions.js 只是薄转发）。
+        # 期望值（31-窗口与布局 WIN-027 + 默认布局文档 drawers[0]）：
+        #   drawer_task → 标题「任务详情」、内容视图 `task-detail`；关闭后抽屉子树移除，
+        #   但布局区块仍挂载、视图池实例不重建（mounts 不变 = 保活）。
+        mounts0 = deep_loads(c.eval("JSON.stringify(window.__ckViewPool.mounts)", 6000)) or {}
+        c.eval("window.__ckLayout.engine.state.runtime.toggleDrawer('drawer_task'); 'ok'", 6000)
+        wait_js("document.querySelectorAll('.drawer').length", 1, desc="抽屉打开")
+        snap = deep_loads(c.eval("""(()=>{const d=document.querySelector('.drawer');
+          return JSON.stringify({ttl:(d&&(d.querySelector('.drawer-head .ttl')||{}).textContent)||'',
+            slots:d?[...d.querySelectorAll('.lf-view-slot')].map(x=>x.getAttribute('data-view-key')):[],
+            empty:d?!!d.querySelector('.drawer-empty'):null})})()""", 6000)) or {}
+        if snap.get("ttl") != "任务详情":
+            raise TestError("抽屉标题不符：%r（want='任务详情'）" % (snap.get("ttl"),))
+        if "task-detail" not in (snap.get("slots") or []):
+            raise TestError("抽屉内容视图不符：%r（want=task-detail）" % (snap.get("slots"),))
+        if snap.get("empty"):
+            raise TestError("抽屉为空态（应承载 task-detail 视图）")
+        mounts_open = deep_loads(c.eval("JSON.stringify(window.__ckViewPool.mounts)", 6000)) or {}
+
+        c.eval("window.__ckLayout.engine.state.runtime.toggleDrawer('drawer_task'); 'ok'", 6000)
+        wait_js("document.querySelectorAll('.drawer').length", 0, desc="抽屉关闭")
+        wait_js("document.querySelectorAll('.drawer-overlay').length", 0, desc="抽屉蒙板关闭")
+        mounts1 = deep_loads(c.eval("JSON.stringify(window.__ckViewPool.mounts)", 6000)) or {}
+        if mounts1.get("task-detail") != mounts_open.get("task-detail"):
+            raise TestError("关闭抽屉后 view 实例被重建/卸载：%r -> %r"
+                            % (mounts_open.get("task-detail"), mounts1.get("task-detail")))
+        panels = deep_loads(c.eval("""(()=>{return JSON.stringify({
+          chat:!!document.querySelector('.chat-panel'), tree:!!document.querySelector('.filetree-panel'),
+          leaves:document.querySelectorAll('.layout-leaf').length})})()""", 6000)) or {}
+        if not (panels.get("chat") and panels.get("tree") and panels.get("leaves") == 5):
+            raise TestError("关闭抽屉后布局面板未保持挂载：%r" % (panels,))
+        return "open/close（title=任务详情 viewKey=task-detail；mounts 保活）"
 
     def case_p6_layout_save():
         apply_ok("gui.ui.save", {"ui": {"locale": "en-US"}})
@@ -165,7 +195,7 @@ def main():
         ("P2 页面：preview-tab-open → LLM 配置页签", case_p2_page),
         ("P3 主题：theme-select → DOM + 落库", case_p3_theme),
         ("P4 语言：lang-select → localStorage", case_p4_lang),
-        ("P5 抽屉：lf-layout-toggle-drawer 开/关", case_p5_drawer),
+        ("P5 抽屉：布局域 toggleDrawer 开/关（标题/视图 + 保活）", case_p5_drawer),
         ("P6 布局后端动作：gui.ui.save 落库", case_p6_layout_save),
         ("P7 未知动作明确报错", case_p7_unknown),
     ]

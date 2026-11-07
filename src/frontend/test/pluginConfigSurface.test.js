@@ -117,3 +117,22 @@ test('④ 无遗留 Vue 设置页改同一批配置（框架级 FileTreeConfig �
     assert.equal(ft.includes(`plugins.${id}.`), false, `FileTreeConfig 不得写 ${id} 插件配置`)
   }
 })
+
+test('⑤ G-89 后插件维护页动作落点：直调宿主注入的 layout 端口（不再发 lf-layout-* 死主题）', () => {
+  // G-89（2026-10-31）：机制层内部命令不再经 `lf-*` MQ 主题（宿主零订阅者）
+  // → 插件维护页的 open-tabs / open-drawer / open-dialog / toggle-drawer / close-tabs-active
+  //   必须走 `PluginHostPort.layout`（宿主注入 layout-free 域动作）。
+  const page = readFileSync(join(here, '..', 'packages', 'plugin-ui', 'src', 'PluginManagerPage.vue'), 'utf8')
+  const pageCode = page.replace(/<!--[\s\S]*?-->/g, '')
+  assert.doesNotMatch(pageCode, /lf-layout-/, '插件维护页不得再发 lf-layout-* 主题（无订阅者）')
+  for (const fn of ['openTabs', 'openDrawer', 'openDialog', 'toggleDrawer', 'closeActiveTabs']) {
+    assert.ok(pageCode.includes(`${fn}(`), `插件维护页缺 layout.${fn} 落点`)
+  }
+  assert.match(pageCode, /function layoutActions\(\)[\s\S]*pluginHost\(\)\.layout/, '须经宿主端口 layout 取动作')
+
+  const host = read('pluginHost.js')
+  for (const fn of ['openTabs', 'openDrawer', 'openDialog', 'toggleDrawer', 'closeActiveTabs']) {
+    assert.match(host, new RegExp(`layout:\\s*\\{[\\s\\S]*?\\b${fn}\\b`), `pluginHost 未注入 layout.${fn}`)
+  }
+  assert.match(host, /from '@ckfw\/layout-free\/stores\/actions\.js'/, 'layout 端口须取自 layout-free 域动作')
+})

@@ -50,8 +50,10 @@ export function publishLLMStart(sessionId, text, llmName, thinkEnabled, effort, 
 // 发送统一入口：落 prjusr inbox。`insert=true` = 用户点「插话」→ 登记插话意向，
 // 可插入相位时该会话全部意向一次性批量插入；缺省 = 排队下一轮。
 // 返回应答 promise：{ok, id, type}；type=insert 表示已登记插话意向。
-export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, scenarioId, insert = false) {
-  return mq.emit(EventNames.llmInboxAdd, {
+// `instanceId` 可选：Ask 中心内嵌聊天面板需以**源会话实例**发送（否则 owner conflict）；
+// 空 = 由 mq 自动注入当前窗口实例（既有行为）。
+export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, scenarioId, insert = false, instanceId = '') {
+  const payload = {
     session: sessionId,
     llm: llmName || '',
     content: text,
@@ -59,7 +61,9 @@ export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, 
     effort: effort || '',
     scenario_id: scenarioId || '',
     insert: !!insert,
-  }, { timeout: 10000 })
+  }
+  if (instanceId) payload.instance_id = instanceId
+  return mq.emit(EventNames.llmInboxAdd, payload, { timeout: 10000 })
 }
 
 // 读回 inbox 项（status 缺省 = pending）：队列指示器 / 重启拉回。
@@ -92,6 +96,48 @@ export async function listRunningSessions() {
   const r = backend.result && typeof backend.result === 'object' ? backend.result : {}
   const list = r[SessionRunningListKeys.list]
   return Array.isArray(list) ? list : []
+}
+
+/** 删除会话前取消其全部在跑轮次时的单项等待上限（llm-cancel 为事件面，超时即放弃该轮）。 */
+export const CANCEL_RUNNING_TURN_TIMEOUT_MS = 5000
+
+/**
+ * cancelRunningTurnsOf 取消某会话的**全部**在跑轮次（含其它对话窗口 / 非当前会话）。
+ *
+ * 删除会话前调用：先读 `session-running-list` 快照，按 session_id 过滤出该会话的所有轮次，
+ * 逐项 await `llm-cancel {session, turn, instance_id}`（server 按 session+turn 精确取消）。
+ * 快照读取失败 → 返回 []（不阻断删除）；单项取消失败/超时 → warn 后继续其它轮次。
+ *
+ * deps 仅用于单测注入（listRunningSessions / emit）。
+ */
+export async function cancelRunningTurnsOf(sessionId, deps = {}) {
+  if (!sessionId) return []
+  const listRunning = deps.listRunningSessions || listRunningSessions
+  const emit = deps.emit || ((topic, payload, context) => mq.emit(topic, payload, context))
+
+  let list
+  try {
+    list = await listRunning()
+  } catch (e) {
+    console.warn('[chat] cancelRunningTurnsOf listRunningSessions failed:', e)
+    return []
+  }
+
+  const turns = (Array.isArray(list) ? list : []).filter(
+    (it) => it && it.session_id === sessionId
+  )
+  await Promise.all(
+    turns.map((it) =>
+      emit(
+        EventNames.llmCancel,
+        { session: sessionId, turn: it.turn, instance_id: it.instance_id },
+        { timeout: CANCEL_RUNNING_TURN_TIMEOUT_MS }
+      ).catch((e) => {
+        console.warn('[chat] cancelRunningTurnsOf llm-cancel failed:', sessionId, it.turn, e)
+      })
+    )
+  )
+  return turns
 }
 
 // 发布「同轮次继续」llm-start（continue=true）：复用既有 turn（不新开 uuid turn），

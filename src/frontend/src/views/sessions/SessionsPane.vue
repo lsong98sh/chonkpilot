@@ -178,7 +178,7 @@ import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
 import { MsgTopics, FieldKeys } from '../../events/msgkeys'
 import * as sessionApi from '../../api/session'
-import { listRunningSessions } from '../../api/chat'
+import { listRunningSessions, cancelRunningTurnsOf } from '../../api/chat'
 import { buildCopyMessages, serializeCopyMessages } from '../../utils/sessionCopy'
 import { useChatWindows } from '../../composables/useChatWindows'
 import { windowForSession } from '../../utils/chatWindows'
@@ -414,8 +414,12 @@ async function handleDelete(session) {
   }
 
   const wasCurrent = session.session_id === currentSessionId.value
+
+  // 删除前取消该会话的**全部**在跑轮次（覆盖非当前会话 / 其它对话窗口），等全部取消回执后再删；
+  // 快照失败不阻断删除（函数内部 warn 后返回空）。wasCurrent 再走本地 sessionCancelLlm
+  // 收尾 Ask 等前端状态（可能与上面按轮取消重复，server 侧幂等）。
+  await cancelRunningTurnsOf(session.session_id)
   if (wasCurrent) {
-    // 删除当前会话前先取消其 LLM 运行
     mq.emit(EventNames.sessionCancelLlm)
   }
 

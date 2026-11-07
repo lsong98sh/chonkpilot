@@ -18,7 +18,8 @@
   A10 无 expires_at 时短时间不转 busy
   A11 选项 + 「其他」自定义文本可并存
   A12 选项 {value,label} 对象：渲染 label / 回链 value
-  A13 聊一聊：切/开对话窗口 + defer 回填 + 问题引用注入输入框（不发送）
+  A13 聊一聊：内嵌聊天面板覆盖 ask 区（不再 defer/不再开对话窗口）；完成 → ask-resolve + 移除
+  A13b 面板中切到其他 ask → 仅退出面板，不解除、不产生后端动作
   A14 聊一聊边界：无会话 → 可见提示且待办保留
   A15 关窗/重开：待办不丢（宿主 gui.ask.list 回填），窗口仍为单例
 
@@ -317,39 +318,58 @@ def case_option_objects():
 
 
 def case_chat():
-    """A13：聊一聊 → defer 回填 + 打开源会话对话窗口 + 问题引用注入输入框（不发送）。"""
+    """A13：聊一聊 → 内嵌聊天面板（覆盖 ask 区）→ 完成 → ask-resolve + 待办移除；不发 defer。"""
     s = "s-askchat"
     r = c.req("data-session-ensure-session", {"data": {"session_id": s}}) or {}
     dlg = r.get("dialog_id") or ""
     if not dlg:
         raise TestError("ensure-session 未回带 dialog_id")
     ac, aid = inject({"question": "需要讨论的问题", "options": ["F1", "F2"], "session": s, "dialog_id": dlg})
+    ac.mq_on_capture(["ask-resolve", "ask-user-reply"])
     ac_mod.click_chat(ac)
-    p = ac_mod.wait_reply(ac, aid)
+    if not ac_mod.wait_chat_panel(ac):
+        raise TestError("聊一聊未打开内嵌聊天面板（.ask-chat-panel）")
+    # 旧行为（defer 回填 / 打开独立对话窗口）不再发生。
+    if any((e.get("payload") or {}).get("ask_id") == aid for e in ac.events_of("ask-user-reply", clear=False)):
+        raise TestError("聊一聊不应自动提交 defer 回答")
+    lst = (c.req("gui.window.list", {}) or {}).get("windows") or []
+    if any(w.get("session_id") == s for w in lst):
+        raise TestError("聊一聊不应再打开独立对话窗口（改为内嵌面板）")
+    if not ac_mod.has_item(ac, aid):
+        raise TestError("进入聊天面板时待办应保留（仅完成/回答才解除）")
+
+    ac_mod.click_chat_done(ac)
+    p = ac_mod.wait_resolve(ac, aid)
     if not p:
-        raise TestError("聊一聊未发送 defer 回填")
-    if p.get("dialog_id") != dlg:
-        raise TestError(f"defer 回填 dialog_id 不一致: {p.get('dialog_id')!r}")
-    if "不直接作答" not in str(p.get("answer") or ""):
-        raise TestError(f"defer 文案异常: {p.get('answer')!r}")
+        raise TestError("完成未发送 ask-resolve")
     ac_mod.wait_no_item(ac, aid)
 
-    def chat_wid():
-        lst = (c.req("gui.window.list", {}) or {}).get("windows") or []
-        for w in lst:
-            if w.get("session_id") == s:
-                return w.get("window_id") or ""
-        return ""
 
-    wid = wait_until(chat_wid, 20)
-    if not wid:
-        raise TestError("聊一聊未打开源会话对话窗口")
-    cc = ChonkClient(base=c.base, timeout=30, window_id=wid)
-    draft = wait_until(lambda: ac_mod._unwrap(cc.eval(
-        "document.querySelector('[contenteditable=\"true\"]')?.innerText || ''", 8000)) or '', 20)
-    if not draft or "需要讨论的问题" not in str(draft):
-        raise TestError(f"问题引用未注入输入框: {draft!r}")
-    close_chat_windows()
+def case_chat_switch_keeps_ask():
+    """A13b：面板中点击其他 ask → 仅退出面板，不解除、不产生后端动作。"""
+    s = "s-askchat-sw"
+    r = c.req("data-session-ensure-session", {"data": {"session_id": s}}) or {}
+    dlg = r.get("dialog_id") or ""
+    if not dlg:
+        raise TestError("ensure-session 未回带 dialog_id")
+    ac, aid1 = inject({"question": "讨论中的问题", "options": ["S1"], "session": s, "dialog_id": dlg})
+    aid2 = ask_id()
+    ac_mod.emit_ask(c, {"ask_id": aid2, "question": "另一个问题", "options": ["S2"], "session": s, "dialog_id": dlg})
+    if not ac_mod.wait_item(ac, aid2):
+        raise TestError("第二个待办未出现")
+    ac.mq_on_capture(["ask-resolve", "ask-user-reply"])
+    ac_mod.select_item(ac, aid1)
+    ac_mod.click_chat(ac)
+    if not ac_mod.wait_chat_panel(ac):
+        raise TestError("聊一聊未打开内嵌聊天面板")
+    ac_mod.select_item(ac, aid2)
+    time.sleep(0.3)
+    if ac_mod.has_chat_panel(ac):
+        raise TestError("切到其他 ask 应退出聊天面板")
+    if not ac_mod.has_item(ac, aid1):
+        raise TestError("切走不应解除原 ask")
+    if ac_mod.wait_resolve(ac, aid1, max_wait=0.5):
+        raise TestError("切走不应发送 ask-resolve")
 
 
 def case_chat_missing_session():
@@ -417,7 +437,8 @@ def main():
     ok &= run_case("A10 无 expires_at 时短时间不转 busy", case_no_deadline)
     ok &= run_case("A11 选项 + 「其他」自定义文本可并存", case_custom_with_options)
     ok &= run_case("A12 选项 {value,label} 对象：渲染 label / 回链 value", case_option_objects)
-    ok &= run_case("A13 聊一聊：defer 回填 + 开对话窗口 + 问题引用入输入框", case_chat)
+    ok &= run_case("A13 聊一聊：内嵌面板 + 完成 → ask-resolve + 移除", case_chat)
+    ok &= run_case("A13b 面板中切到其他 ask：仅退出，不解除", case_chat_switch_keeps_ask)
     ok &= run_case("A14 聊一聊边界：缺会话 → 提示且待办保留、不误提交", case_chat_missing_session)
     ok &= run_case("A15 关窗/重开：待办回填 + 窗口单例", case_reopen)
     cleanup_all()

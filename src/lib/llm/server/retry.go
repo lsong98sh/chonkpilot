@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 	sessionrunner "github.com/lsong98sh/chonkpilot-agent/session/runner"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
 // retryCallTimeout 是 tool-retry 经 gateway 重跑一次调用的超时（B-03：对齐本包 gateway 直调
@@ -80,7 +80,8 @@ func (s *Server) onToolRetry(_ context.Context, _ string, v *mq.Value) error {
 		return nil
 	}
 	if gwTaskID != "" {
-		// 转后台：节点挂 gateway 任务等待完成回报（onGatewayTaskDone 续轮/广播）
+		// 转异步 / 待裁决（pending 或 awaiting）：节点挂 gateway 任务等待完成回报
+		// （onGatewayTaskDone 续轮/广播）；不得在此落 done 终态（结果仍经 mcp-tasks-report 交付）。
 		s.tasks.setGwTask(node.TaskID, gwTaskID)
 		s.tasks.setState(node.TaskID, TaskStatePending)
 		v.Result = map[string]any{"ok": true, "task_id": gwTaskID}
@@ -175,7 +176,7 @@ func (s *Server) retryRecover(req retryReq, known *TaskNode) (*TaskNode, *turnCt
 		node.TurnID = req.Turn // tasktree 记录不存 turn_id；续轮消息按请求 turn 读取
 	}
 	// ② 续轮上下文 = 该轮消息（末条 assistant.tool_calls 无 tool 结果）
-	st := newSessionStore(s.bus, instanceID)
+	st := s.newSessionStore(instanceID)
 	msgs := st.LoadMessages(req.Turn)
 	toolName, args, toolCallID, ok := lastToolCallPair(msgs, req.ToolCallID)
 	if !ok {
@@ -348,7 +349,7 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 	}
 	// 子轮次（父链非空 / 子会话 / 干活子会话）不做自动续写（见 engineRuntimeConfig）。
 	tc.autoContinueOff = subTurnNoAutoContinue(req, sc)
-	go tc.loop()
+	s.launchTurnLoop(tc)
 	s.mu.Lock()
 	// 竞态二次确认（P3）：构造期间可能已被并发恢复登记 → 回收本新 tc（Close 停其 loop）并复用
 	// 已存在者，保证同 {instance,turn} 只跑一个 loop。

@@ -48,6 +48,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from chonk_client import ChonkClient  # noqa: E402
+from chonk_client import TestError  # noqa: E402
 from chonk_client import TRANSIENT_ERRORS as TRANSIENT_PROBE_ERRORS  # noqa: E402
 
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", "..", ".."))
@@ -262,6 +263,83 @@ def wait_idle(client, max_wait=30.0, fast=0.4, probes=2, interval=0.2):
     return False
 
 
+# ── 产品插件 / 工具面就绪栅栏（2026-11-07）────────────────────────
+#
+# 必要性（实跑定位）：GUI `/ping ready` 只代表**主视图可交互**，**产品插件随后异步拉起**
+# （file/task/history 等 runtime autostart；实测 ready 瞬间 `tools-list` 仅 5 个内置工具
+# `ask_user/next_run/subchat_finish/subchat_open/tool_result`，约 1–3s 后才补齐到 55）。
+# 套件若只等 ready 就起轮，gateway 对尚未注册的插件工具返回 `unknown tool "<name>"`：
+#   · run_hist_git H3/H1：`file_replace` → 文件未被修改（"真实工具未改到文件"）；
+#   · run_sem_task_tree T1：`task_run` → 任务节点 state=error，永不 done。
+# 故「真实工具用例」必须先等**插件台账 running** 且**对应工具出现在 `tools-list`**，
+# 再开始驱动；这不是放宽断言（判据仍是真实产物），而是消除「插件冷启动 vs 起轮」竞争。
+# 先例：run_sem_tool_result.wait_task_plugin（同因，2026-11-04 加固）。
+
+
+def plugin_statuses(client):
+    """`plugin-list` → {plugin_id: status}（兼容顶层 plugins / data.plugins；失败 → {}）。
+
+    用 `publish` 而非 `req`：插件平台未就绪时 `req` 会抛（超时），此处按空表处理。
+    """
+    try:
+        r = client.publish("plugin-list", {}, timeout=10000) or {}
+    except Exception:
+        return {}
+    if not isinstance(r, dict):
+        return {}
+    # publish 返回信封 {ok,result,errors}；req 已解到 result。两种形态都兼容。
+    res = r.get("result") if isinstance(r.get("result"), dict) else r
+    plugins = res.get("plugins")
+    if not isinstance(plugins, list) and isinstance(res.get("data"), dict):
+        plugins = res["data"].get("plugins")
+    out = {}
+    for p in plugins or []:
+        if isinstance(p, dict) and p.get("id"):
+            out[p["id"]] = p.get("status") or ""
+    return out
+
+
+def wait_plugins_running(client, ids, max_wait=180, interval=1.0):
+    """有界等待若干插件在台账中 status=running（插件注册 MCP server / 钩子后上报）。
+
+    超时抛 TestError（末次状态随消息打印）——插件没起来就无法验证其工具行为，
+    继续跑只会得到 `unknown tool` 的连锁假失败。
+    """
+    ids = tuple(ids)
+    end = time.time() + max_wait
+    last = {}
+    while time.time() < end:
+        last = plugin_statuses(client)
+        if all(last.get(i) == "running" for i in ids):
+            return last
+        time.sleep(interval)
+    raise TestError("插件 %r 在 %ss 内未就绪（末次台账=%r）→ 工具面缺其工具"
+                    % (list(ids), max_wait, last))
+
+
+def wait_tools(client, required, max_wait=120, interval=0.5):
+    """有界等待 `tools-list` 含全部 required（按暴露名；`self_` 前缀自动归一）。
+
+    返回末次工具名列表（去前缀后的判定集合命中即返回）。超时抛 TestError。
+    用于消除「ready 早于插件工具注册」的竞争（见上方就绪栅栏说明）。
+    """
+    req = tuple(required)
+    end = time.time() + max_wait
+    last = []
+    while time.time() < end:
+        try:
+            raw = (client.req("tools-list", {}) or {}).get("tools") or []
+            last = sorted(t.get("name") or "" for t in raw if isinstance(t, dict))
+        except Exception:
+            last = []
+        canon = {n[5:] if n.startswith("self_") else n for n in last}
+        if all(r in canon for r in req):
+            return last
+        time.sleep(interval)
+    raise TestError("工具面 %ss 内未含 %r（末次 %d 项：%r）"
+                    % (max_wait, list(req), len(last), last[:20]))
+
+
 def ensure_task_panel_open(client, timeout=DEFAULT_PROBE_TIMEOUT):
     """确保任务面板已展开（2026-09-27「首屏减负」后 `MainLayout.vue taskOpen` 默认 false）。
 
@@ -336,40 +414,176 @@ def _plain(v):
     return v
 
 
-def ensure_locale(client, locale="zh-CN", timeout=60):
-    """把本实例前端语言固定为 locale（localStorage 置位 + 重载）——**语言确定性**（兜底）。
+# 语言生效探针：用顶栏首个菜单文案判定 UI **实际**语言（localStorage 里有值不等于已生效）。
+_LOCALE_PROBE_TEXT = {"zh-CN": "打开", "en-US": "Open"}
 
-    必要性：`gui.ui.save{ui:{locale}}` 落 **usr 主库**（`bridge/local.go:207 callSaveUIState`
-    → `data-user-config-save`；非 work-dir 项目库），`gui.init-data` 的 `ui.locale` 即取自此，
-    `MainLayout` 在 localStorage 缺失时按它兜底 → 若某套件把 usr `locale` 改成 en-US 且不还原，
-    同批"zh-CN 文案断言"就会随套件顺序漂移（实测：run_config_ui / run_project_cfg /
-    run_fp_extra_ui / run_server_deps / run_explore_kb / run_ui_regressions 会话语言变 en-US 而 FAIL）。
-    localStorage 属**本实例专属** WebView2 profile（I-68 每实例一份）→ 置位后重载即生效，
-    不写 DB、不影响他套件；目标语言已就位时直接返回（幂等，不重载）。
 
-    定位（2026-09-16 起）：本文为**兜底**；漂移源头已由各套件的「配置快照-还原」
-    （见 `snapshot_user_config` / `user_config_guard`）消除，正常不应再被依赖。
-    """
-    try:
-        cur = _plain(client.eval("localStorage.getItem('chonkpilot-locale')"))
-    except Exception:
-        return False
-    if cur == locale:
+def _locale_applied(client, locale):
+    key = _LOCALE_PROBE_TEXT.get(locale)
+    if not key:
         return True
     try:
-        client.eval("localStorage.setItem('chonkpilot-locale', %s); 'ok'" % json.dumps(locale))
-        client.eval("location.reload(); 'ok'")  # 重载期间连接可能中断 → 容错
+        txt = (_plain(client.eval("document.body ? document.body.innerText : ''")) or "").strip()
+        # 顶栏第一个菜单就是语言敏感文案（zh：打开 / en：Open）；用**前缀**判定，
+        # 避免正文里偶发同名英文单词（文件名/模型名）造成假通过。
+        return txt[:12].startswith(key)
     except Exception:
-        pass
-    deadline = time.time() + timeout
+        return False
+
+
+def _try_save_locale(client, locale, budget=20.0):
+    """把 locale 写进 usr 主库并**回读确认**（写成功但广播携带旧值是隐性失败，必须对账）。"""
+    deadline = time.time() + budget
     while time.time() < deadline:
         try:
-            if _plain(client.eval("typeof document!=='undefined' && !!document.querySelector('.statusbar')")):
+            res = client.req("data-user-config-load", {}, timeout=6000)
+            cur = ((res or {}).get("data") or {}).get("locale")
+            if cur == locale:
+                return True
+        except Exception:
+            cur = None
+        try:
+            client.req("gui.ui.save", {"ui": {"locale": locale}}, timeout=8000)
+        except Exception:
+            pass
+        time.sleep(0.4)
+    return False
+
+
+def _wait_locale_applied(client, locale, wait=20.0):
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        try:
+            if (_plain(client.eval("typeof document!=='undefined' && !!document.querySelector('.statusbar')"))
+                    and _locale_applied(client, locale)):
                 return True
         except Exception:
             pass
         time.sleep(0.5)
     return False
+
+
+_STATUS_PROBE = {"zh-CN": "记忆", "en-US": "Memory"}
+
+
+def _nudge_statusbar_locale(client, locale, wait=6.0):
+    """状态栏（layoutFree 命名空间）语言**挂载后**对齐。
+
+    真机现象（2026-11-07）：重载后顶栏已是目标语言，但 `.statusbar` 的
+    `Memory · Idle` / `Compression · Idle` 仍是英文——状态栏组件在配置广播到达前
+    先以 framework 默认语言挂载，且不随后续同值保存自动重渲。这里在重载完成后再
+    下发一次 `gui.ui.save{ui:{locale}}`（应用层既有入口，不新增主题），等状态栏文案对齐。
+    """
+    key = _STATUS_PROBE.get(locale)
+    if not key:
+        return True
+
+    def ok():
+        try:
+            t = _plain(client.eval(
+                "document.querySelector('.statusbar') ? document.querySelector('.statusbar').innerText : ''")) or ""
+            return key in t
+        except Exception:
+            return False
+
+    if ok():
+        return True
+    try:
+        client.req("gui.ui.save", {"ui": {"locale": locale}}, timeout=5000)
+    except Exception:
+        pass
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if ok():
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def ensure_locale(client, locale="zh-CN", timeout=60):
+    """把本实例前端语言固定为 locale（DB + localStorage 双写 + 重载 + **生效校验**）。
+
+    必要性（2026-11-07 全量批跑定位）：只写 localStorage 不够 —— 启动/保存窗口几何等
+    `gui.ui.save` 会触发 `data-user-config-changed` 广播，`useUserConfigSync` 的
+    `applyLocale` 用 **usr 主库** 的 `ui.locale` 覆盖本窗口 localStorage；若机器 usr 库
+    停在另一语言（任一「中文断言」套件写成 zh-CN 后未还原），英文断言套件即使置了
+    localStorage 也会被广播改回 zh-CN（实测：test_chat/test_richtext/test_task/
+    test_filetree_ctxmenu 同时红，body 仍是中文、localStorage 回读 zh-CN）。
+
+    修正：
+      1) **先**把目标语言写 usr 主库（等数据面就绪后 `gui.ui.save{ui:{locale}}`，重试直至成功），
+         使后续配置广播携带目标值；
+      2) 再置 localStorage + 重载；
+      3) 按 **DOM 实际文案** 校验（顶栏首菜单前缀），不通过则整轮重试（最多 3 轮）——
+         负载下 persist/广播可能晚到，单次尝试会误判。
+    幂等：DB/localStorage/DOM 三者一致时直接返回，不重载。
+    """
+    try:
+        cur = _plain(client.eval("localStorage.getItem('chonkpilot-locale')"))
+    except Exception:
+        cur = None
+    if cur == locale and _locale_applied(client, locale):
+        return True
+
+    per_try = max(15, timeout // 3)
+    for _ in range(3):
+        _try_save_locale(client, locale, budget=min(25, per_try))
+        try:
+            client.eval("localStorage.setItem('chonkpilot-locale', %s); 'ok'" % json.dumps(locale))
+            client.eval("location.reload(); 'ok'")  # 重载期间连接可能中断 → 容错
+        except Exception:
+            pass
+        if _wait_locale_applied(client, locale, wait=per_try):
+            _nudge_statusbar_locale(client, locale)
+            return True
+    return False
+
+
+_BASELINE_LOCALE_DONE = "CHONK_TEST_LOCALE_DONE"
+
+
+def ensure_baseline_locale(client):
+    """批跑基线语言归一（**每套件一次**；`run_all.py` 注入 `CHONK_TEST_LOCALE`，默认 zh-CN）。
+
+    背景（2026-11-07）：usr `ui.locale` 是**机器级共享状态**，任一套件写 en-US 后若还原失败，
+    后续「中文断言」套件会成批变红（实测 test_statusbar/test_config/test_queue 全英文 UI）。
+    在**唯一起停入口**（`GUIHandle.__init__`）把首个实例统一到基线语言，使每套件起点确定；
+    同一套件内中途重启（`CHONK_TEST_LOCALE_DONE` 已置位）**跳过**，以免破坏
+    「语言持久化/跨重启」类用例（如 run_sem_window_layout_loop）。
+
+    未设 `CHONK_TEST_LOCALE`（单跑）时不动 —— 保持既有直跑行为。
+    """
+    target = (os.environ.get("CHONK_TEST_LOCALE") or "").strip()
+    if not target or os.environ.get(_BASELINE_LOCALE_DONE):
+        return
+    os.environ[_BASELINE_LOCALE_DONE] = "1"  # 同套件后续实例不再归一
+    probe = _LOCALE_PROBE_TEXT.get(target)
+
+    def applied():
+        try:
+            txt = (_plain(client.eval("document.body ? document.body.innerText : ''")) or "").strip()
+            return probe is None or txt[:12].startswith(probe)
+        except Exception:
+            return False
+
+    if applied():
+        _nudge_statusbar_locale(client, target)
+        return
+    try:
+        _try_save_locale(client, target, budget=20.0)
+    except Exception:
+        pass
+    try:
+        client.eval("localStorage.setItem('chonkpilot-locale', %s); 'ok'" % json.dumps(target))
+        client.eval("location.reload(); 'ok'")
+    except Exception:
+        pass
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if applied():
+            _nudge_statusbar_locale(client, target)
+            return
+        time.sleep(0.4)
 
 
 def reload_and_settle(client, max_wait=120):
@@ -932,6 +1146,8 @@ class GUIHandle(ProcResource):
         # 否则套件启动后**首个断言 eval** 会撞上该窗口而超时崩溃（见 wait_idle 注释）。
         wait_probe(self.client, ["!!document.querySelector('.panel-inner')"], timeout=30.0)
         wait_idle(self.client, max_wait=30.0)
+        # 批跑基线语言（每套件一次；`run_all.py` 注入 CHONK_TEST_LOCALE）——见函数注释。
+        ensure_baseline_locale(self.client)
 
 
 def ensure_project_spec(work_dir):

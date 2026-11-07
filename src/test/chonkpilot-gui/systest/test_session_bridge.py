@@ -78,12 +78,13 @@ def main():
         r = gui.req('data-session-get', {'id': 'no-such-session', 'dialog_id': dlg})
         c.check("S4 data-session-get 不存在返回 null", r.get('data') is None, repr(r)[:80])
 
-        # S5 data-session-title 不存在 → error
+        # S5 data-session-title 不存在 → error（2G §4.4 固定错误码 E_SESSION_NOT_FOUND；
+        # 验证码而非英文文案——文案「session ... 不在对话 ...」是动态详情，不参与断言）
         try:
             gui.req('data-session-title', {'data': {'id': 'no-such-session', 'title': '新标题', 'dialog_id': dlg}})
             c.check("S5 data-session-title 不存在报错", False, "未抛错")
         except RuntimeError as e:
-            c.check("S5 data-session-title 不存在报错", 'not found' in str(e), str(e)[:80])
+            c.check("S5 data-session-title 不存在报错", 'E_SESSION_NOT_FOUND' in str(e), str(e)[:120])
 
         # S6 data-session-delete 不存在 → 成功（幂等）
         try:

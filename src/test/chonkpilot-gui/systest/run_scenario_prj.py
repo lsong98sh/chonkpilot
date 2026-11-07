@@ -37,10 +37,12 @@
 
 隔离（51-FP与测试映射 §5/§6-8）：
   * 自起 GUI：动态端口 + 独立 work-dir + 独立 `HOME`
-    （app 级场景 = 发行目录磁盘目录 `dist/desktop/capability/scenarios/`；user 级自建落在临时 HOME 内并即时清理，绝不碰机器 ~/.chonkpilot）。
+    （app 级场景 = **被测 exe 同级**的 `capability/scenarios/`（2026-11-02 扁平化后 = `dist/capability/scenarios/`）；
+    user 级自建落在临时 HOME 内并即时清理，绝不碰机器 ~/.chonkpilot）。
   * 套件级快照-还原 `_h.suite_config_guard(c)`（usr+prj；含异常/中断路径）。
   * 项目级场景落在临时 work-dir 内 → 结束随 `harness.tmp_dir` 删除 → **零残留**；
-    app 级 default 用例收尾删除后由 cleanup 从唯一源 `src/initdata/capability/scenarios/default` 还原（不再 embed/物化）。
+    app 级 default 用例：开跑前快照 → P3 真实编辑 → `finally` 从快照还原（快照缺失回落唯一源），
+    并在退出前自检 `capability/scenarios/default/scenario.json` 仍在（缺失即报「测试污染产物」）。
 
 运行：python run_scenario_prj.py
 """
@@ -74,10 +76,73 @@ HOME = _h.tmp_home()
 PRJ_PROMPTS = os.path.join(WS, ".chonkpilot", "capability", "scenarios")
 os.makedirs(PRJ_PROMPTS, exist_ok=True)
 
-# 出厂场景唯一源 与 发行落点（app 级场景根 = <exeDir>/capability/scenarios = dist/desktop/capability/scenarios）
-REPO = r"e:\BizWorks\chonkpilot"
-SRC_SCN_DIR = os.path.join(REPO, "src", "initdata", "capability", "scenarios")
-APP_SCN_DIR = os.path.join(REPO, "dist", "desktop", "capability", "scenarios")
+# 出厂场景唯一源 与 发行落点。2026-11-07：产物目录已扁平化（dist/chonkpilot.exe，
+# 不再有 dist/desktop 层）→ app 级场景根必须**由被测 exe 推导**，不得写死历史路径，
+# 否则 cleanup 会把还原内容投到错误目录、真正出厂目录被删后无法复原（全量跑后
+# dist/capability/scenarios 被清空的真因）。
+SRC_SCN_DIR = os.path.join(_h._REPO_ROOT, "src", "initdata", "capability", "scenarios")
+APP_SCN_DIR = os.path.join(os.path.dirname(_h.resolve_gui_exe()), "capability", "scenarios")
+APP_DEF_DIR = os.path.join(APP_SCN_DIR, "default")
+# 套件启动前的 app default 快照（P3 会真实编辑该目录；收尾必须用它复原，失败也必还原）
+APP_DEF_BACKUP = _h.tmp_dir("ck-scprj-appdef-bak-")
+
+
+def _app_default_intact():
+    """app 级出厂场景是否完好（scenario.json + main.agent.md 均在）。"""
+    return (os.path.isfile(os.path.join(APP_DEF_DIR, "scenario.json"))
+            and os.path.isfile(os.path.join(APP_DEF_DIR, "main.agent.md")))
+
+
+def _backup_app_default():
+    """快照当前 app default → 备份目录（返回是否成功）。"""
+    dst = os.path.join(APP_DEF_BACKUP, "default")
+    if not os.path.isdir(APP_DEF_DIR):
+        return False
+    try:
+        if os.path.isdir(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(APP_DEF_DIR, dst)
+        return True
+    except Exception as e:
+        print("[warn] 出厂场景快照失败: %s" % e, flush=True)
+        return False
+
+
+def _restore_app_default():
+    """还原 app 级出厂场景：优先用**本套件开跑前快照**，快照缺失时回落到唯一源。"""
+    src = os.path.join(APP_DEF_BACKUP, "default")
+    if not os.path.isdir(src):
+        src = os.path.join(SRC_SCN_DIR, "default")
+    try:
+        if not os.path.isdir(src):
+            print("[cleanup] 出厂场景还原失败：快照与唯一源均不存在（%s）" % src, flush=True)
+            return False
+        if os.path.isdir(APP_DEF_DIR):
+            shutil.rmtree(APP_DEF_DIR)
+        os.makedirs(APP_SCN_DIR, exist_ok=True)
+        shutil.copytree(src, APP_DEF_DIR)
+        return True
+    except Exception as e:
+        print("[cleanup] 出厂场景还原失败: %s" % e, flush=True)
+        return False
+
+
+def ensure_app_default():
+    """前置自检：开场快照 app default；若已被历史套件污染（缺失）先从唯一源还原。
+
+    出厂场景是**共享产物**（所有依赖 default 的套件的前提）。本套件 P3 会真实编辑它，
+    因此必须在任何用例前快照、并保证开场态完好；不能带着缺装继续跑（那会把
+    “产物被污染”伪装成 P3 业务失败）。
+    """
+    if _backup_app_default():
+        print("[env] 已快照 app default → %s" % os.path.join(APP_DEF_BACKUP, "default"), flush=True)
+    if not _app_default_intact():
+        print("[污染] 测试污染产物：开跑前 %s 缺失 → 从唯一源还原后再执行" % APP_DEF_DIR,
+              flush=True)
+        _restore_app_default()
+    if not _app_default_intact():
+        raise TestError("app 级出厂场景缺失（%s），无法执行 P3；请检查 dist 产物是否被测试污染"
+                        % APP_DEF_DIR)
 
 MOCK = _h.start_mock_llm(_h.free_port())
 _g = _h.start_gui(port=_h.free_port(), work_dir=WS, data_dir=DD, home=HOME,
@@ -247,17 +312,21 @@ def case_p2_switch_takes_effect():
 
 def case_p3_app_default_editable_and_duplicate_rejected():
     """P3：出厂场景 = app 级（可编辑）（A+B）+ 跨级同名 save 被拒（A+B）。"""
-    # A ①：出厂场景在 **app 级**
+    # A ①：出厂场景在 **app 级**（期望值断言：列表必须含 id=default 且 level=app 的行）
     rows = scenario_ids("default")
     if not rows:
-        raise TestError("data-scenario-list 未含出厂场景 default")
-    if rows[0].get("level") != "app":
-        raise TestError("出厂场景应落在 app 级: %r" % (rows,))
+        raise TestError("data-scenario-list 未含出厂场景 default（期望 id=default、level=app）：%r"
+                        % ((c.req("data-scenario-list", {}) or {}).get("list"),))
+    app_rows = [x for x in rows if x.get("level") == "app"]
+    if not app_rows:
+        raise TestError("出厂场景应落在 app 级（期望 level=app）：%r" % (rows,))
+    if len(rows) != 1:
+        raise TestError("出厂场景 default 应恰有 1 条（id 全局唯一）：%r" % (rows,))
 
     # B ①：默认场景（app 级）主 agent 提示词真的进 LLM
     arm_events()
     p, system = system_of_turn("hello app default", "default")
-    evi("P3-1 出厂场景（app 级）", level=rows[0].get("level"), name=rows[0].get("name"),
+    evi("P3-1 出厂场景（app 级）", level=app_rows[0].get("level"), name=app_rows[0].get("name"),
         status=p.get("status"), system_has_builtin=APP_DEF_MARK in system, system_head=system[:70])
     if p.get("status") != "complete":
         raise TestError("本轮未正常收尾: %r" % (p,))
@@ -451,30 +520,34 @@ def case_p4_save_as_new_dir():
 
 
 def cleanup():
+    """收尾清理（**必还原** app 级出厂场景，返回 app default 是否完好）。
+
+    2026-11-07：原实现还原到历史路径 `dist/desktop/capability/scenarios`，而产物已扁平化
+    到 `dist/`：`data-scenario-delete{level:app}` 删掉真正的出厂目录后，copytree 写到了
+    一个不在用的旧路径 → 全量跑后 `dist/capability/scenarios/` 为空，后续 E6/P3 连锁红。
+    现：路径由被测 exe 推导；开场快照、finally 还原、退出前自检。
+    """
     for sid in (PRJ_ID, PRJ_ID2, PRJ_ID_SAVEAS):
         try:
             c.req("data-scenario-delete", {"data": {"id": sid, "level": "project"}})
         except Exception as e:
             print("[cleanup] 项目级场景删除失败(%s): %s" % (sid, e), flush=True)
-    # app 级 default 若被 P3-4 编辑 → 删除后从**出厂唯一源** `src/initdata/capability/scenarios/default` 还原
-    # （2026-09-29：不再 embed、不再自动物化 —— 缺装须显式恢复）
+    # app 级 default 若被 P3-4 编辑 → 删除后从**开跑前快照**还原（快照缺失回落唯一源）。
     try:
         c.req("data-scenario-delete", {"data": {"id": "default", "level": "app"}})
     except Exception:
         pass
-    src_def = os.path.join(SRC_SCN_DIR, "default")
-    dst_def = os.path.join(APP_SCN_DIR, "default")
-    if os.path.isdir(src_def):
-        try:
-            if os.path.isdir(dst_def):
-                shutil.rmtree(dst_def)
-            shutil.copytree(src_def, dst_def)
-        except Exception as e:
-            print("[cleanup] 出厂场景还原失败: %s" % e, flush=True)
+    _restore_app_default()
     try:
         c.req("data-scenario-list", {})
     except Exception:
         pass
+    if not _app_default_intact():
+        print("[污染] 测试污染产物：收尾后 %s 仍缺失（scenario.json/main.agent.md 不全）"
+              % APP_DEF_DIR, flush=True)
+        return False
+    print("[cleanup] app 级出厂场景完好：%s" % APP_DEF_DIR, flush=True)
+    return True
 
 
 def main():
@@ -482,25 +555,37 @@ def main():
     c.console(clear=True)
     print("依赖：--test-port=%d 的 GUI（harness 自起）+ mock LLM:%d + 隔离 work-dir/data-dir/HOME"
           % (_g.port, MOCK.port), flush=True)
+    setup_err = ""
     try:
-        for name, fn in [
-            ("P1 项目级场景：A 回读（消息面+main.agent.md）+ B system 含哨兵", case_p1_prj_scenario),
-            ("P2 切换场景即生效：system 换哨兵2 且不含哨兵1（B）", case_p2_switch_takes_effect),
-            ("P3 出厂场景（app 级，可编辑）+ 跨级同名 save 被拒（A+B）",
-             case_p3_app_default_editable_and_duplicate_rejected),
-            ("P4 另存为（新目录）：新目录落盘 + 列表/回读可见 + 原场景不变（A）+ 编辑有/新建无按钮（UI）",
-             case_p4_save_as_new_dir),
-        ]:
-            total += 1
-            ok += run_case(name, fn)
-    finally:
-        cleanup()
+        ensure_app_default()
+    except Exception as e:
+        setup_err = "前置自检失败: %s" % e
+        print("[污染] " + setup_err, flush=True)
+    intact = True
+    if not setup_err:
+        try:
+            for name, fn in [
+                ("P1 项目级场景：A 回读（消息面+main.agent.md）+ B system 含哨兵", case_p1_prj_scenario),
+                ("P2 切换场景即生效：system 换哨兵2 且不含哨兵1（B）", case_p2_switch_takes_effect),
+                ("P3 出厂场景（app 级，可编辑）+ 跨级同名 save 被拒（A+B）",
+                 case_p3_app_default_editable_and_duplicate_rejected),
+                ("P4 另存为（新目录）：新目录落盘 + 列表/回读可见 + 原场景不变（A）+ 编辑有/新建无按钮（UI）",
+                 case_p4_save_as_new_dir),
+            ]:
+                total += 1
+                ok += run_case(name, fn)
+        finally:
+            intact = cleanup()
+    else:
+        intact = cleanup()
+    if setup_err or not intact:
+        ok = 0
     for e in (c.console() or {}).get("entries", []):
         if e.get("level") == "error":
             print("  [CONSOLE-ERROR] %s" % e.get("text"), flush=True)
     print("\n场景（项目级 + 出厂 app 级可编辑 + 重名拒绝）：%d/%d 通过" % (ok, total), flush=True)
-    print("RESULT: %s" % (ok == total), flush=True)
-    return 0 if ok == total else 1
+    print("RESULT: %s" % (ok == total and not setup_err and intact), flush=True)
+    return 0 if (ok == total and not setup_err and intact) else 1
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sgtdi/fswatcher"
@@ -33,6 +34,11 @@ const capWatchDebounce = 60 * time.Millisecond
 
 // capWatchReadyTimeout = 等待 fswatcher 初始路径就绪（WithReadyChannel）的兜底上限。
 const capWatchReadyTimeout = 5 * time.Second
+
+// capWatchRescanInterval 周期兜底重扫间隔：Windows 快速保存（写临时文件 + rename）或事件通道
+// 过载（Dropped）时 fswatcher 事件可能丢失，仅靠事件会让热生效一直失效到下次变更。周期重扫
+// 走既有签名差量路径（未变更零注册），与 60ms 去抖相称——取 1s，既兜住漏事件又不放大扫描开销。
+const capWatchRescanInterval = time.Second
 
 // capWatcher 监听 app + 用户/项目级 capability 根，变更去抖后触发对应重扫。
 //
@@ -54,7 +60,27 @@ type capWatcher struct {
 	dirtyApp  bool                            // 本轮是否有 app 根内变更待重扫
 	timer     *time.Timer
 	done      chan struct{}
-	closeOnce sync.Once // Close 幂等守卫（B-16：并发/重复 Close 不双重 close）
+	loopDone  chan struct{} // loop 退出信号（Close 据此确认 ticker 已停、无残留 goroutine）
+	closeOnce sync.Once     // Close 幂等守卫（B-16：并发/重复 Close 不双重 close）
+
+	// scanMu 串行化一次重扫（去抖 fire 与周期兜底重扫可能并发；差量路径本身幂等，
+	// 但串行化避免重复 ReadDir/重复 plan）。fireMu/firing 仍用于 Close 等待重扫收口。
+	scanMu sync.Mutex
+
+	// 周期兜底重扫观测（测试断言「无事件时靠周期重扫」「未变更加零注册」；原子读写）。
+	rescanRuns atomic.Int64
+	rescanOps  atomic.Int64
+	// dropEvents 测试钩子：置位后丢弃 fswatcher 事件，模拟 Windows 快速保存丢事件，
+	// 仅保留周期重扫路径（最小暴露面，生产恒为 false）。
+	dropEvents atomic.Bool
+
+	// closed / fireMu / fireCond 让 Close 等待已触发的去抖重扫收口：fire 在后台执行
+	// gateway servers/register（spawn + connect），与 Server.Stop 的 provider.Close 并发
+	// 会读写同一条连接态；Close 必须在停 gateway 前等它结束。
+	closed   atomic.Bool
+	fireMu   sync.Mutex
+	fireCond *sync.Cond
+	firing   bool
 
 	cancel context.CancelFunc
 	ready  <-chan struct{}
@@ -91,9 +117,11 @@ func newCapWatcher(s *Server) (*capWatcher, error) {
 		refs:      make(map[string]int),
 		instRoots: make(map[string]map[string]bool),
 		done:      make(chan struct{}),
+		loopDone:  make(chan struct{}),
 		cancel:    cancel,
 		ready:     ready,
 	}
+	cw.fireCond = sync.NewCond(&cw.fireMu)
 	go cw.runWatcher(ctx)
 	go cw.loop()
 	return cw, nil
@@ -232,28 +260,40 @@ func (cw *capWatcher) pruneSynced() {
 	}
 }
 
-// Close 停止事件循环并关闭 fswatcher（幂等）。
+// Close 停止事件循环并关闭 fswatcher（幂等）。返回前等待已触发的 fire 收口 ——
+// 它可能正在 gateway servers/register（spawn/connect），不能与调用方的 provider.Close 并发。
 func (cw *capWatcher) Close() {
 	if cw == nil {
 		return
 	}
+	cw.closed.Store(true)
 	// B-16：close(cw.done) 经 sync.Once 守卫，并发/重复 Close 不再双重 close panic。
 	cw.closeOnce.Do(func() { close(cw.done) })
 	cw.cancel()
 	cw.w.Close()
+	// 等 loop 退出：其 defer 会停掉周期重扫 ticker（无残留 goroutine）。
+	<-cw.loopDone
 	cw.mu.Lock()
 	if cw.timer != nil {
 		cw.timer.Stop()
 		cw.timer = nil
 	}
 	cw.mu.Unlock()
+	cw.fireMu.Lock()
+	for cw.firing {
+		cw.fireCond.Wait()
+	}
+	cw.fireMu.Unlock()
 }
 
 // loop 读取 fswatcher 事件；Dropped 通道仅消费（丢弃不致命：事件面本身已去抖合并）；
-// 通道关闭即退出（下次实例注册重建监听）。
+// 通道关闭即退出（下次实例注册重建监听）。同时驱动周期兜底重扫 ticker（漏事件兜底）。
 func (cw *capWatcher) loop() {
+	defer close(cw.loopDone)
 	events := cw.w.Events()
 	dropped := cw.w.Dropped()
+	ticker := time.NewTicker(capWatchRescanInterval)
+	defer ticker.Stop() // 退出即停 ticker（Close 等待 loopDone）
 	for {
 		select {
 		case ev, ok := <-events:
@@ -265,6 +305,8 @@ func (cw *capWatcher) loop() {
 			if !ok {
 				dropped = nil // 通道关闭 → 摘除该分支（避免零值忙轮询）
 			}
+		case <-ticker.C:
+			cw.rescan() // 周期兜底：仅差量重扫已监听的非 app 根
 		case <-cw.done:
 			return
 		}
@@ -278,6 +320,9 @@ func (cw *capWatcher) loop() {
 // LLM-P4：监听补齐（sync）全程在 mu **外**执行（stat / AddPath 是 IO），脏标记与定时器只在
 // 短临界区内维护。
 func (cw *capWatcher) handle(ev fswatcher.WatchEvent) {
+	if cw.dropEvents.Load() {
+		return // 测试钩子：模拟 fswatcher 漏投递（只剩周期重扫路径）
+	}
 	p := normPath(ev.Path)
 	needSync := hasEventType(ev.Types, fswatcher.EventCreate) ||
 		hasEventType(ev.Types, fswatcher.EventRemove) ||
@@ -300,24 +345,75 @@ func (cw *capWatcher) handle(ev fswatcher.WatchEvent) {
 
 // armLocked 重置去抖定时器（多次事件合并为一次 fire）。
 func (cw *capWatcher) armLocked() {
+	if cw.closed.Load() {
+		return // 已关闭：handle/loop 的残余事件不再调度重扫
+	}
 	if cw.timer != nil {
 		cw.timer.Stop()
 	}
 	cw.timer = time.AfterFunc(capWatchDebounce, cw.fire)
 }
 
-// fire 去抖到期：按脏标记触发对应重扫（用户/项目级 → dir 节点重建；app 根 → 契约重注册）。
-func (cw *capWatcher) fire() {
+// fire 去抖到期：复用 scan 执行脏重扫（用户/项目级 → dir 节点重建；app 根 → 契约重注册）。
+func (cw *capWatcher) fire() { cw.scan() }
+
+// rescan 周期兜底重扫（事件丢失兜底）：只对已登记的**非 app（用户/项目/prjusr）根**置脏，
+// 复用到去抖 fire 的既有差量重扫路径。app 根不走此路——reloadAppContracts 是「全量重注册 +
+// gateway/reload」，周期调用会造成工具面抖动，其事件丢失仍由下次实例注册/变更收敛。
+// 未变更时 capRootSignature 相同 → plan 产出零操作（不注销不注册、不 refreshTools）。
+func (cw *capWatcher) rescan() {
+	if cw == nil || cw.s == nil || cw.closed.Load() {
+		return
+	}
+	cw.mu.Lock()
+	hasDirRoot := false
+	for r := range cw.want {
+		if !cw.appWant[r] {
+			hasDirRoot = true
+			break
+		}
+	}
+	if hasDirRoot {
+		cw.dirty = true // 仅置 dir 脏标记；app 重扫只由真实事件触发（避免周期性全量重注册）
+	}
+	cw.mu.Unlock()
+	if !hasDirRoot {
+		return
+	}
+	cw.rescanRuns.Add(1) // 先记「本轮已重扫」：工具面操作可能在 scan 返回前即可观测
+	cw.rescanOps.Add(int64(cw.scan()))
+}
+
+// scan 执行一次差量重扫（去抖 fire 与周期兜底共用），返回产生的 dir 节点操作数。
+// scanMu 串行化并发触发（timer fire / ticker rescan）；firing 供 Close 等待收口。
+func (cw *capWatcher) scan() int {
+	cw.scanMu.Lock()
+	defer cw.scanMu.Unlock()
+	cw.fireMu.Lock()
+	if cw.closed.Load() || cw.s == nil {
+		cw.fireMu.Unlock()
+		return 0
+	}
+	cw.firing = true
+	cw.fireMu.Unlock()
+	defer func() {
+		cw.fireMu.Lock()
+		cw.firing = false
+		cw.fireCond.Broadcast()
+		cw.fireMu.Unlock()
+	}()
 	cw.mu.Lock()
 	dirty, dirtyApp := cw.dirty, cw.dirtyApp
 	cw.dirty, cw.dirtyApp = false, false
 	cw.mu.Unlock()
+	ops := 0
 	if dirty {
-		cw.s.reconcileCapabilityNodes()
+		ops = cw.s.reconcileCapabilityNodes()
 	}
 	if dirtyApp {
 		cw.s.reloadAppContracts()
 	}
+	return ops
 }
 
 // sync 保证每个目标根都有监听：根存在 → 递归监听（WatchNested）；不存在 → 监听最近的

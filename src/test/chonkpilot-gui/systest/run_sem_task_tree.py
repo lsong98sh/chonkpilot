@@ -59,6 +59,11 @@ def main():
                                     "-llm-model=m-exe-default"))
     c = _g.client
     _h.suite_config_guard(c)
+    # 就绪栅栏（2026-11-07）：`/ping ready` 早于 task 插件冷启动（实测 ready 时工具面仅 5 个内置
+    # 工具，task_run 约 1–3s 后才注册）。若立即起轮，gateway 回 `unknown tool "task_run"` →
+    # T1 任务节点 state=error 永不 done（实跑根因），T2/T3 因 rid='' 连锁失败。
+    _h.wait_plugins_running(c, ("task",))
+    _h.wait_tools(c, ("task_run",))
     print("[env] mock=%d gui=%d ws=%s（临时目录，结束即删）" % (m1.port, _g.port, _g.work_dir), flush=True)
 
     entry = {"name": PROVIDER, "protocol": "openai", "apiKey": "", "model": "m-sem-task",
@@ -173,6 +178,8 @@ def main():
     def case_t2_done_and_single_source():
         """T2：tasks 视图同 id 行 status/state==done（终态回读 + 单源）。"""
         rid = RES.get("root_id") or ""
+        if not rid:
+            raise TestError("前置：T1 未建立任务节点（root_id 空）→ T2 无从回读")
         deadline = time.time() + 30
         while True:  # 层落库异步 → 有界等待（不放宽判据）
             rows = [t for t in tasks() if t.get("task_id") == rid]
@@ -193,6 +200,8 @@ def main():
     def case_t3_logical_delete_closed():
         """T3：delete → 默认 list 过滤该节点；include_closed 仍含且 closed==true（历史保留）。"""
         rid = RES.get("root_id") or ""
+        if not rid:
+            raise TestError("前置：T1 未建立任务节点（node_id 空）→ 无法发起逻辑删除")
         r = c.req("data-tasktree-delete", {"node_id": rid}) or {}
         if not r.get("ok"):
             raise TestError("data-tasktree-delete 未成功：%r" % r)

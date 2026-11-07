@@ -2,12 +2,18 @@
 """L4：工具沙箱配置页（usr 键 `tool_sandbox`，**被 spawn 执行体级**）—— 执行体行渲染 /
 只读工具清单口径 / 手动保存（无改动禁用）/ 重置未设置 / 边界说明。
 
-需求（用户口径，2026-10-12 重整；本脚本 2026-10-22 按实现对齐）：
-  沙箱开关按「被 spawn 的执行体」为单位 ——
-  ① 内置 executor：按 **exe 基名**一行（`chonkpilot-tools-executor.exe` /
-     `chonkpilot-script-executor.exe` / `chonkpilot-web-executor.exe`；DSL 退役、browser/desktop
-     改常驻插件后不再受本开关约束）；管制该执行体下全部工具；
-  ② 外部 MCP：按 **MCP 条目**一行（仅 stdio&spawn 可施加；http/sse 不可）。
+需求（用户口径，2026-10-12 重整；本脚本 2026-10-22 按实现对齐，2026-11-07 补插件 MCP 行）：
+  沙箱开关按「被 spawn / 被注入策略的执行体」为单位 ——
+  ① 内置 executor：按 **exe 基名**一行（2026-10-31 D-72 起全部退场 → 空表）；
+  ② 外部 MCP：按 **MCP 条目**一行（数据源 = `data-mcp-list`；仅 stdio&spawn 可施加进程沙箱，
+     http/sse 不可，行仍展示但开关禁用）；
+  ③ **插件 MCP**：按 **插件 MCP server 名**一行（框架固定命名 `plugin-<id>`，见
+     `chonkpilot-framework/plugin/src/mgr/api.go` 的 `registerMCP`；插件 MCP 是 HTTP 长连接、
+     不是文件条目 → **不在 `data-mcp-list`**）。它们与外部 MCP 同属 usr `tool_sandbox.mcps` 维度：
+     gateway 在每次 `tools/call` 按同名开关注入 `_meta.chonkpilot.sandbox`（见
+     `docs/spec/10-architecture/14-安全域-agentbox.md` §0.2/§0.6、
+     `docs/sandbox/插件写隔离与定时任务整改方案.md` §5.2 的 `tool_sandbox.mcps["task"]`）。
+     故本页把「工具带 `_meta.server.alias` 的插件 MCP」也并入行集合，避免配置隐身。
   拨动只改本地待保存态，点【保存】才落库；**无改动时保存按钮禁用**。
 
 驱动面（**零新增 MQ 主题**）：
@@ -17,24 +23,24 @@
     JSON `{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`）。
 
 覆盖：
-  A 执行体行渲染：3 个内置 executor 行（data-exec = exe 基名，顺序固定）+ 每行一个 `.b-switch`
-    （aria-label 含该行单位名）+ 其余行必须是 `data-mcp-list` 里的 MCP 条目
+  A 执行体行渲染：内置 executor 行（当前 0 个，D-72 退场；页面不得出现退役 executor）+
+    每行一个 `.b-switch`（aria-label 含该行单位名）+ MCP 行归属 = `data-mcp-list`
+    ∪ 插件 MCP（`_meta.server.alias` = `plugin-<id>`）∪ 已配置残留（usr `mcps` 键）
   B 只读工具清单口径：页面出现的工具项必须来自 `tools-list`，`:title` = 完整暴露名，
     展示名 = 现有剥前缀规则（见 utils/toolSource.js）
   C 无改动时保存禁用：干净初始态 → 保存按钮 disabled 且无「未保存」标记
-  D 拨动 → 「未保存」标记出现 + 保存按钮可用 → 点保存 → 回读 `executors['<exe>']=true`
-    （executor 级形态；不含任何工具名键）
+  D 拨动 → 「未保存」标记出现 + 保存按钮可用 → 点保存 → 回读 `mcps['<单位>']=true`
+    （MCP 级形态；不含任何工具名键）
   E 「重置」→ 待保存态 → 保存 → 键项/整键被删除（回落不设置）
   F 外部 MCP / http·sse 边界说明存在（.exec-note 文案含「外部 MCP」+「http/sse」）+ 跳转入口
 
-**已知缺口（TOOLCFG-1，2026-10-22 登记）**：GATEWAY-2/L1 后 `_meta.category` 变为
-`file/core/meta/server`（`script_run` / `web_fetch` 同为 `core`，且 `_meta` 未透出 executor
-runtime）→ 本页按 `file/script/web` 归组无法命中，内置 executor 行的工具清单当前恒空
-（工具被归到 `byServer['core']`、不渲染）。用例 B 因此只校验「页面项 ⊆ tools-list + title 完整 +
-展示名符合现有规则」，不校验按行清单完整性。
+**已知缺口（TOOLCFG-1，2026-10-22 登记；2026-10-31 D-72 后进一步收窄）**：GATEWAY-2/L1 后
+`_meta.category` 变为 `file/core/meta/server`（`script_run` / `web_fetch` 同为 `core`，且 `_meta`
+未透出 executor runtime）→ 「内置 executor 行清单」已无对象（executor 全退场）；用例 B 因此只校验
+「页面项 ⊆ tools-list + title 完整 + 展示名符合现有规则」，不校验按行清单完整性。
 
 前置（本脚本自起，结束自动回收；见 harness.py）：
-  `dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir ws`
+  `dist/chonkpilot.exe --test-port=2345 --work-dir ws`（2026-11-02 扁平化发行根）
 运行：`python run_tool_sandbox.py`
 
 **PENDING 口径（不伪造、不放宽断言）**：产物未含新页面（`preview-tab-open{kind:'settings-tool-sandbox'}`
@@ -57,7 +63,8 @@ KIND = "settings-tool-sandbox"
 ROOT = ".settings-page"
 # 内置 executor 单位（= useToolSandbox.js EXECUTOR_UNITS；写入 executors 子表的键）。
 # 2026-10-31（D-72）：内置 executor 已全部退场（`src/lib/mcp-tools` 整体删除）→ 空表；
-# 沙箱单位只剩外部 MCP（写入 mcps 子表）。
+# 沙箱单位只剩 MCP 维度：外部 MCP（data-mcp-list）+ 插件 MCP（_meta.server.alias = plugin-<id>），
+# 均写入 `mcps` 子表。
 EXECUTORS = []
 # 未被沙箱覆盖的执行体（browser/desktop 改常驻插件；dsl 退役）
 NOT_EXECUTORS = ["chonkpilot-browser-executor.exe", "chonkpilot-dsl-executor.exe"]
@@ -151,6 +158,30 @@ def mcp_names():
     """外部 MCP 条目名集合（data-mcp-list，四级文件化合并视图）。"""
     r = c.req("data-mcp-list", {}) or {}
     return set(str((m or {}).get("name") or "").strip() for m in (r.get("list") or [])) - {""}
+
+
+def plugin_mcp_names():
+    """插件 MCP 单元名集合（框架固定命名 `plugin-<id>`）。
+
+    数据源 = `tools-list` 每项的 `_meta.server.alias`（插件 MCP 不是文件条目，不在
+    `data-mcp-list`；gateway 暴露名规则见 26-mcp-gateway / 28-plugins）。只认 `plugin-` 前缀，
+    避免把外部 MCP 的 alias 重复计入（重复不影响集合，但前缀让判据可解释）。
+    """
+    out = set()
+    for tl in tools_list():
+        meta = tl.get("_meta") or {}
+        srv = meta.get("server")
+        if not isinstance(srv, dict):
+            continue
+        alias = str(srv.get("alias") or srv.get("node") or "").strip()
+        if alias.startswith("plugin-"):
+            out.add(alias)
+    return out
+
+
+def configured_mcp_keys():
+    """已落到 usr `tool_sandbox.mcps` 的单位名（含旧配置残留 → 页面仍展示，避免配置隐身）。"""
+    return set(((user_map().get("mcps") or {}).keys()))
 
 
 def tool_servers():
@@ -296,34 +327,75 @@ if(!b)return 'no-btn';if(b.disabled)return 'disabled';b.click();return 'ok';""")
 # ══════════════════════════════════════════════════════════
 
 def case_a_executor_rows():
-    """A 执行体行渲染：3 个内置 executor 行（data-exec = exe 基名，顺序固定）+ 每行 Switch
-    （aria-label 含该行单位名）+ 其余行必须是 data-mcp-list 里的 MCP 条目。"""
+    """A 执行体行渲染：内置 executor 行（当前 0 个，D-72 退场）+ 每行 Switch（aria-label 含单位名）
+    + MCP 行归属 = `data-mcp-list` ∪ 插件 MCP（`plugin-<id>`）∪ 已配置残留。
+
+    边界（显式）：
+      ① 无插件 MCP（tools-list 无 `plugin-*` alias）→ 页面不得出现 `plugin-*` 行；
+      ② `data-mcp-list` 为空 → 非插件 / 非残留的 MCP 行不得出现。
+    两边界由「行集合 = 期望并集」的精确比对兜底，这里再显式报错便于定位。
+    """
     require_page()
-    open_page()
-    rs = rows()
+    # 期望集合取「页面挂载时刻」的数据面。插件 MCP 注册可能晚于套件启动（main 已有栅栏，
+    # 但页面 reload 只在挂载时取一次 tools-list）→ 页面行集合与数据面不符时重开（最多 3 次）。
+    rs = []
+    for attempt in range(3):
+        want_mcp = mcp_names()              # 外部 MCP（data-mcp-list）
+        plugin_mcp = plugin_mcp_names()     # 插件 MCP（tools-list _meta.server.alias = plugin-<id>）
+        configured = configured_mcp_keys()  # 旧配置残留（页面仍展示）
+        want_units = want_mcp | plugin_mcp | configured
+        open_page()
+        rs = (poll(lambda: rows() or None, max_wait=15) or rows()) if want_units else rows()
+        page_units = set(r["key"] for r in rows() if r["key"] not in EXECUTORS)
+        if not want_units or page_units == want_units:
+            break
+        time.sleep(1.0)  # 等插件注册再重开（reload 重新取 tools-list / mcp-list / usr 配置）
     if not rs:
-        raise TestError("页面无执行体行（.exec-row）")
+        if want_units:
+            raise TestError("页面无执行体行（.exec-row），但数据面期望 %d 个单位：%r"
+                            % (len(want_units), sorted(want_units)))
+        print("      执行体行：0（无内置 executor / 外部 MCP / 插件 MCP / 残留）", flush=True)
+        return
     keys = [r["key"] for r in rs]
+    if len(keys) != len(set(keys)):
+        raise TestError("页面出现重复执行体行：%r" % keys)
     builtin = [k for k in keys if k in EXECUTORS]
     if builtin != EXECUTORS:
         raise TestError("内置 executor 行不符（期望顺序 %r）：页面 %r" % (EXECUTORS, keys))
     for bad in NOT_EXECUTORS:
         if bad in keys:
             raise TestError("已不受沙箱约束的执行体不应成行：%s（页面 %r）" % (bad, keys))
-    want_mcp = mcp_names()
+
     extra = [k for k in keys if k not in EXECUTORS]
-    unknown = [k for k in extra if k not in want_mcp]
-    if unknown:
-        raise TestError("出现既非内置 executor 又不在 data-mcp-list 的行：%r（MCP 清单 %r）"
-                        % (unknown, sorted(want_mcp)))
+    unknown = [k for k in extra if k not in want_units]
+    missing = sorted(want_units - set(extra))
+    if unknown or missing:
+        raise TestError("MCP 行归属不符：未知行 %r / 缺失行 %r（data-mcp-list=%r，插件 MCP=%r，"
+                        "已配置=%r，页面 %r）"
+                        % (unknown, missing, sorted(want_mcp), sorted(plugin_mcp),
+                           sorted(configured), keys))
+
+    # 边界①：无插件 MCP 注册 → 不得出现 plugin-* 行
+    if not plugin_mcp:
+        stray = [k for k in extra if k.startswith("plugin-")]
+        if stray:
+            raise TestError("tools-list 无插件 MCP，但页面出现插件行：%r" % stray)
+    # 边界②：外部 MCP 清单为空 → 非插件 / 非残留行不得出现
+    if not want_mcp:
+        leftovers = [k for k in extra if k not in plugin_mcp and k not in configured]
+        if leftovers:
+            raise TestError("data-mcp-list 为空，但页面出现清单外的 MCP 行：%r" % leftovers)
+
     for r in rs:
         if not r["aria"] or r["key"] not in r["aria"]:
             raise TestError("执行体 %s 的 Switch 缺 aria-label（可访问性）：%r" % (r["key"], r["aria"]))
         if r["key"] in EXECUTORS and "MCP" in r["cat"]:
             raise TestError("内置 executor 行不应标 MCP：%s %r" % (r["key"], r["cat"]))
         if r["key"] not in EXECUTORS and "MCP" not in r["cat"]:
-            raise TestError("外部 MCP 行应标 MCP：%s %r" % (r["key"], r["cat"]))
-    print("      执行体行：内置 %d + 外部 MCP %d" % (len(builtin), len(extra)), flush=True)
+            raise TestError("外部/插件 MCP 行应标 MCP：%s %r" % (r["key"], r["cat"]))
+    print("      执行体行：内置 %d + 外部 MCP %d + 插件 MCP %d + 残留 %d"
+          % (len(builtin), len(want_mcp), len(plugin_mcp & set(extra)),
+             len((configured - want_mcp - plugin_mcp) & set(extra))), flush=True)
 
 
 def case_b_readonly_tool_lists():
@@ -452,13 +524,41 @@ const n=R.querySelector('.exec-note');return n?{text:n.innerText,hasBtn:!!n.quer
 
 
 CASES = [
-    ("A 执行体行渲染（3 个内置 executor exe + 每行 Switch 带 aria-label + MCP 行归属）", case_a_executor_rows),
+    ("A 执行体行渲染（无内置 executor + 外部/插件 MCP 行归属 + 每行 Switch aria-label）", case_a_executor_rows),
     ("B 只读工具清单口径（⊆ tools-list；title 完整名；展示名按剥前缀规则）", case_b_readonly_tool_lists),
     ("C 无改动时保存禁用（不做 change 就保存）", case_c_save_disabled_when_clean),
-    ("D 拨动 → 未保存标记 + 保存 → 回读 executors['<exe>']=true", case_d_toggle_then_save),
+    ("D 拨动 → 未保存标记 + 保存 → 回读 mcps['<单位>']=true", case_d_toggle_then_save),
     ("E 重置 → 待保存态 → 保存 → 删键/整键删除", case_e_restore_unset),
     ("F 外部 MCP / http·sse 边界说明 + 跳转 MCP 入口", case_f_boundary_hint),
 ]
+
+
+def wait_plugin_mcp_units(max_wait=90):
+    """启动栅栏：等插件 MCP 注册完成（tools-list 出现 `plugin-*` alias）。
+
+    背景（同 harness.wait_plugins_running 注释）：`/ping ready` 早于产品插件异步拉起；
+    页面 `reload()` 只在挂载时取一次 `tools-list`，若此时插件尚未注册 → 插件 MCP 行恒空
+    （实跑：A 偶发「页面无执行体行」，数秒后 B 已见 40 个工具）。故先等插件单元就绪再开页。
+
+    边界：真无插件（台账存在且全部为终结态 disabled/error/stopped/discovered）→ 直接返回空集；
+    插件仍在 starting/registering/degraded 时继续等，不把「启动中」误判为「无插件」。
+    """
+    end = time.time() + max_wait
+    last = set()
+    # 只有「全部插件都已终结」才判无插件；starting/registering/degraded 都还要等（框架状态集）。
+    terminal = {"discovered", "disabled", "error", "stopped"}
+    while time.time() < end:
+        try:
+            last = plugin_mcp_names()
+            if last:
+                return last
+            st = _h.plugin_statuses(c)
+            if st and all(v in terminal for v in st.values()):
+                return set()
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return last
 
 
 def wait_frontend(max_wait=90):
@@ -480,7 +580,10 @@ def main():
         c.console(clear=True)
     except Exception:
         pass
-    print("依赖：--test-port=%d 的 GUI（产物 = dist/desktop）；配置面 = usr `%s`（执行体级）" % (PORT, CFG_KEY))
+    print("依赖：--test-port=%d 的 GUI（产物 = dist）；配置面 = usr `%s`（执行体级）" % (PORT, CFG_KEY))
+    # 插件 MCP 异步注册栅栏（避免 A 在插件未就绪时看到空行集合 → 假边界）
+    units = wait_plugin_mcp_units()
+    print("前置探测：插件 MCP=%r" % sorted(units))
     print("前置探测：页面=%s" % probe_page())
     for name, fn in CASES:
         try:

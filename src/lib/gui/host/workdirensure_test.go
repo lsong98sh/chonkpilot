@@ -3,6 +3,7 @@
 package host
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -11,24 +12,29 @@ import (
 )
 
 // SANDBOX-WRITE-1 P3：`workdirEnsurer` = `plugin/v1/workdir.ensure` 的可测核心
-// （fake 窗口工厂 = `open`，fake 实例视图 = `registered`）。
-func newTestEnsurer(open func(string, bool) error, registered func(string) (string, bool)) *workdirEnsurer {
-	return &workdirEnsurer{
+// （fake 窗口工厂 = `open`，fake 实例视图 = `registered`，fake 事件源 = 广播通道）。
+//
+// 异步改造 §10.1（2026-11-06）：等待改为「实例视图变更事件 + 单个超时 timer」，测试不再注入
+// sleep/poll；事件唤醒路径由测试自行 `notify()` 驱动。
+func newTestEnsurer(open func(string, bool) error, registered func(string) (string, bool), changes *instanceChangeBroadcaster) *workdirEnsurer {
+	e := &workdirEnsurer{
 		open:       open,
 		registered: registered,
 		timeout:    200 * time.Millisecond,
-		poll:       100 * time.Millisecond,
-		sleep:      func(time.Duration) {}, // 测试不真等
 	}
+	if changes != nil {
+		e.changed = changes.changed
+	}
+	return e
 }
 
 // 已在册 → 直接返回主实例 id，不建窗（opened=false）。
 func TestWorkdirEnsureAlreadyOpen(t *testing.T) {
 	opened := 0
 	e := newTestEnsurer(func(string, bool) error { opened++; return nil },
-		func(string) (string, bool) { return "ins-main", true })
+		func(string) (string, bool) { return "ins-main", true }, nil)
 
-	id, isOpen, err := e.ensure(`E:\proj\a`, true)
+	id, isOpen, err := e.ensure(context.Background(), `E:\proj\a`, true)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -40,34 +46,42 @@ func TestWorkdirEnsureAlreadyOpen(t *testing.T) {
 	}
 }
 
-// 未在册 → 隐藏打开（hidden 原样透传）→ 轮询到 instance-register → opened=true。
+// 未在册 → 隐藏打开（hidden 原样透传）→ 等待 instance-register 事件 → opened=true。
+// 断言「事件唤醒」而非超时命中：timeout 取 2s，事件在 20ms 内到达，总耗时须明显小于超时。
 func TestWorkdirEnsureHiddenOpen(t *testing.T) {
+	changes := newInstanceChangeBroadcaster()
 	var mu sync.Mutex
 	registered := false
-	polls := 0
 	var gotDir string
 	var gotHidden bool
 	e := newTestEnsurer(
 		func(dir string, hidden bool) error {
 			mu.Lock()
 			gotDir, gotHidden = dir, hidden
-			registered = true // 模拟「建窗即经桥发 instance-register」
 			mu.Unlock()
+			// 模拟「建窗后经桥异步发 instance-register」：登记与广播稍后到达。
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				mu.Lock()
+				registered = true
+				mu.Unlock()
+				changes.notify()
+			}()
 			return nil
 		},
 		func(string) (string, bool) {
 			mu.Lock()
 			defer mu.Unlock()
-			polls++
-			// 第 1 次轮询模拟「登记尚未到达」，第 2 次命中。
-			if registered && polls >= 2 {
+			if registered {
 				return "ins-hidden", true
 			}
 			return "", false
-		})
-	e.timeout, e.poll = 300*time.Millisecond, 100*time.Millisecond // 3 次轮询
+		}, changes)
+	e.timeout = 2 * time.Second
 
-	id, isOpen, err := e.ensure(`E:\proj\a`, true)
+	start := time.Now()
+	id, isOpen, err := e.ensure(context.Background(), `E:\proj\a`, true)
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -77,12 +91,12 @@ func TestWorkdirEnsureHiddenOpen(t *testing.T) {
 	if gotDir != `E:\proj\a` || !gotHidden {
 		t.Fatalf("open 入参不符: dir=%q hidden=%v", gotDir, gotHidden)
 	}
-	if polls < 2 {
-		t.Fatalf("应轮询直到命中，polls=%d", polls)
+	if elapsed >= time.Second {
+		t.Fatalf("应由事件唤醒而非等到超时，耗时 %v", elapsed)
 	}
 
-	// hidden=false 原样透传（可见打开）。
-	pre := true // 首次查询 = 未在册（触发建窗），其后命中
+	// hidden=false 原样透传（可见打开；登记同步命中，不进入等待）。
+	pre := true
 	e2 := newTestEnsurer(func(_ string, hidden bool) error { gotHidden = hidden; return nil },
 		func(string) (string, bool) {
 			if pre {
@@ -90,8 +104,8 @@ func TestWorkdirEnsureHiddenOpen(t *testing.T) {
 				return "", false
 			}
 			return "ins-visible", true
-		})
-	if _, _, err := e2.ensure(`E:\proj\b`, false); err != nil {
+		}, changes)
+	if _, _, err := e2.ensure(context.Background(), `E:\proj\b`, false); err != nil {
 		t.Fatalf("ensure visible: %v", err)
 	}
 	if gotHidden {
@@ -101,12 +115,13 @@ func TestWorkdirEnsureHiddenOpen(t *testing.T) {
 
 // 等不到 instance-register → **明确错误**（不静默成功）。
 func TestWorkdirEnsureTimeout(t *testing.T) {
+	changes := newInstanceChangeBroadcaster()
 	opened := 0
 	e := newTestEnsurer(func(string, bool) error { opened++; return nil },
-		func(string) (string, bool) { return "", false })
-	e.timeout, e.poll = 200*time.Millisecond, 100*time.Millisecond
+		func(string) (string, bool) { return "", false }, changes)
+	e.timeout = 80 * time.Millisecond
 
-	id, isOpen, err := e.ensure(`E:\proj\a`, true)
+	id, isOpen, err := e.ensure(context.Background(), `E:\proj\a`, true)
 	if err == nil {
 		t.Fatal("超时应回错误")
 	}
@@ -121,18 +136,41 @@ func TestWorkdirEnsureTimeout(t *testing.T) {
 	}
 }
 
-// 建窗失败 → 明确错误，且不再轮询。
-func TestWorkdirEnsureOpenFails(t *testing.T) {
-	slept := 0
-	e := newTestEnsurer(func(string, bool) error { return errors.New("无效的项目目录") },
-		func(string) (string, bool) { return "", false })
-	e.sleep = func(time.Duration) { slept++ }
+// ctx 取消 → 及时返回明确取消错误（不等到 timeout）。
+func TestWorkdirEnsureCanceled(t *testing.T) {
+	changes := newInstanceChangeBroadcaster()
+	e := newTestEnsurer(func(string, bool) error { return nil },
+		func(string) (string, bool) { return "", false }, changes)
+	e.timeout = 2 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
 
-	if _, _, err := e.ensure(`E:\proj\a`, true); err == nil {
+	start := time.Now()
+	_, _, err := e.ensure(ctx, `E:\proj\a`, true)
+	if err == nil || !strings.Contains(err.Error(), "已取消") {
+		t.Fatalf("ctx 取消应回明确错误: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("ctx 取消应及时返回，耗时 %v", elapsed)
+	}
+}
+
+// 建窗失败 → 明确错误，且不再等待。
+func TestWorkdirEnsureOpenFails(t *testing.T) {
+	changes := newInstanceChangeBroadcaster()
+	e := newTestEnsurer(func(string, bool) error { return errors.New("无效的项目目录") },
+		func(string) (string, bool) { return "", false }, changes)
+	e.timeout = 2 * time.Second
+
+	start := time.Now()
+	if _, _, err := e.ensure(context.Background(), `E:\proj\a`, true); err == nil {
 		t.Fatal("建窗失败应回错误")
 	}
-	if slept != 0 {
-		t.Fatalf("建窗失败不应进入轮询: sleep %d 次", slept)
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("建窗失败不应进入等待，耗时 %v", elapsed)
 	}
 }
 
@@ -140,8 +178,8 @@ func TestWorkdirEnsureOpenFails(t *testing.T) {
 func TestWorkdirEnsureEmptyDir(t *testing.T) {
 	opened := 0
 	e := newTestEnsurer(func(string, bool) error { opened++; return nil },
-		func(string) (string, bool) { return "", false })
-	if _, _, err := e.ensure("  ", true); err == nil {
+		func(string) (string, bool) { return "", false }, nil)
+	if _, _, err := e.ensure(context.Background(), "  ", true); err == nil {
 		t.Fatal("空 work_dir 须报错")
 	}
 	if opened != 0 {
@@ -151,6 +189,7 @@ func TestWorkdirEnsureEmptyDir(t *testing.T) {
 
 // 并发同 work_dir → 只建一次窗（门面内串行化「查 → 开 → 等」）。
 func TestWorkdirEnsureConcurrentSingleOpen(t *testing.T) {
+	changes := newInstanceChangeBroadcaster()
 	var mu sync.Mutex
 	openCalls := 0
 	registered := false
@@ -169,7 +208,7 @@ func TestWorkdirEnsureConcurrentSingleOpen(t *testing.T) {
 				return "ins-main", true
 			}
 			return "", false
-		})
+		}, changes)
 
 	var wg sync.WaitGroup
 	results := make([]string, 2)
@@ -177,7 +216,7 @@ func TestWorkdirEnsureConcurrentSingleOpen(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			id, _, err := e.ensure(`E:\proj\a`, true)
+			id, _, err := e.ensure(context.Background(), `E:\proj\a`, true)
 			if err != nil {
 				t.Errorf("ensure[%d]: %v", i, err)
 			}
@@ -192,5 +231,32 @@ func TestWorkdirEnsureConcurrentSingleOpen(t *testing.T) {
 		if id != "ins-main" {
 			t.Fatalf("results[%d] = %q", i, id)
 		}
+	}
+}
+
+// 广播语义：notify 后旧通道关闭、新通道未关闭；多次 notify 不 panic。
+func TestInstanceChangeBroadcasterCloseAndReplace(t *testing.T) {
+	b := newInstanceChangeBroadcaster()
+	first := b.changed()
+	b.notify()
+	select {
+	case <-first:
+	default:
+		t.Fatal("notify 应关闭上一代通道")
+	}
+	second := b.changed()
+	if second == first {
+		t.Fatal("notify 应换新通道")
+	}
+	select {
+	case <-second:
+		t.Fatal("新一代通道不应已关闭")
+	default:
+	}
+	b.notify()
+	select {
+	case <-second:
+	default:
+		t.Fatal("第二次 notify 应关闭新一代通道")
 	}
 }

@@ -35,6 +35,17 @@ def J(gui, js):
         return r
 
 
+def JD(gui, js):
+    """二级解码：eval 返回的是 JSON 字符串（`JSON.stringify(...)` 结果）时再解析一次。"""
+    v = J(gui, js)
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)
+        except Exception:
+            pass
+    return v
+
+
 def bar_btn_js(pat):
     """按 title 正则定位顶栏条目（按钮 / 菜单触发）并点击（不按下标）。"""
     return ("(()=>{const b=[...document.querySelectorAll('.ck-topbar .bar-btn')]"
@@ -82,22 +93,49 @@ def main():
   .some(x=>/打开|Open/.test(x.getAttribute('title')||''))})()""")),
                 "点击弹系统对话框，自动化不触发")
 
-        # T3 最近项目（栏视图条目）：点箭头 → 下拉出现（空态提示）
+        # T3 最近项目（栏视图条目）：点箭头 → 下拉出现（条目 = gui.recent.list 的 dirs + 默认工作区）
         J(gui, "document.querySelector('.rd-arrow')?.click(); 'ok'")
         time.sleep(0.5)
         c.check("T3 最近项目下拉出现", J(gui, "!!document.querySelector('.b-dropdown-popper')"),
                 "栏视图条目 recent-dirs → 动态清单（gui.recent.list）")
         if J(gui, "!!document.querySelector('.b-dropdown-popper')"):
-            c.check("T3b 最近项目空态提示", J(gui, "!!document.querySelector('.b-dropdown-item.is-disabled')"))
+            # 期望值来自消息面真值（61 §1 gui.recent.list）：dirs 逐条 + 末尾默认工作区；
+            # 两者皆空 → 单条禁用空态。2026-11-03 新增 default_dir（仅展示、不写 recent_dirs）。
+            rl = gui.req("gui.recent.list", {}) or {}
+            dirs = [str(d) for d in (rl.get("dirs") or [])]
+            dflt = rl.get("default_dir") or ""
+            rows = JD(gui, """(()=>{return JSON.stringify([...document.querySelectorAll('.b-dropdown-popper .b-dropdown-item')].map(el=>({
+  title:(el.querySelector('.recent-item')||{}).getAttribute?((el.querySelector('.recent-item')||{}).getAttribute('title')||''):'',
+  text:(el.textContent||'').trim(),
+  disabled:el.classList.contains('is-disabled'),
+  dflt:el.classList.contains('recent-row-default')})))})()""") or []
+            got_dirs = [r["title"] for r in rows if not r["dflt"] and not r["disabled"]]
+            def_row = next((r for r in rows if r["dflt"]), None)
+            if dirs:
+                ok3b = got_dirs == dirs and (not dflt or dflt in dirs or (def_row is not None))
+                detail3b = f"dirs={dirs} rows={got_dirs} default={bool(def_row)}"
+            elif dflt:
+                # 空历史但存在内置默认工作区 → 只剩末尾「默认工作区」条目（不再是空态提示）
+                ok3b = (def_row is not None and def_row["title"] == dflt
+                        and def_row["text"] in ("默认工作区", "Default Workspace")
+                        and not any(r["disabled"] for r in rows))
+                detail3b = f"rows={rows} default_dir={dflt!r}"
+            else:
+                ok3b = (len(rows) == 1 and rows[0]["disabled"]
+                        and rows[0]["text"] in ("暂无最近目录", "No recent directories"))
+                detail3b = f"rows={rows}"
+            c.check("T3b 最近项目下拉 = dirs + 默认工作区（空态仅当两者皆空）", ok3b, detail3b)
         J(gui, "document.querySelector('.rd-arrow')?.click(); 'ok'")
         time.sleep(0.3)
 
-        # T4 设置菜单（配置菜单条目）→ 叶子发 preview-tab-open{settings-llm} → 预览区 LLM 配置页签
+        # T4 配置菜单（2026-11-02 v7 条目化：标题 = tooltip「配置」；旧「设置」已改文案）
+        # → 叶子发 preview-tab-open{settings-llm} → 预览区 LLM 配置页签
         gui.console(clear=True)
-        J(gui, bar_btn_js("设置|Settings"))
+        clicked = J(gui, bar_btn_js("配置|Settings|Config"))
         time.sleep(0.6)
-        c.check("T4a 设置菜单展开（机制层下拉 + 菜单叶子）",
-                J(gui, "!!document.querySelector('.b-dropdown-popper .menu-row')"))
+        c.check("T4a 配置菜单展开（机制层下拉 + 菜单叶子）",
+                clicked is True and J(gui, "!!document.querySelector('.b-dropdown-popper .menu-row')"),
+                f"clicked={clicked}")
         J(gui, menu_leaf_click("LLM"))
         time.sleep(1.0)
         c.check("T4 用户配置打开 preview 页签",
@@ -112,11 +150,20 @@ def main():
                 J(gui, "!!document.querySelector('.code-view .special-tab.dialog-content')"),
                 "bar button publish-mq(scenario-open) → previewTabOpen(scenario)")
 
-        # T6 检索框（栏视图条目 `search`）
+        # T6 检索框（栏视图条目 `search`）→ gui.search 聚合 file + vfts + codegraph（SRCH-001-S04）
+        # 三源并发、引擎源各有 3s 超时（未就绪静默跳过）→ 下拉最迟 ~3s 出现，轮询而非固定 sleep。
         gui.input(".search-input-wrap input", "a")
-        time.sleep(0.9)
-        n = J(gui, "document.querySelectorAll('.search-result-item').length")
-        c.check("T6 检索框输入出现下拉备选", n > 0, f"results={n}（SearchProjectFiles 桥未实现 → 无结果）— 待实施")
+        deadline = time.time() + 8.0
+        n = 0
+        while time.time() < deadline:
+            n = J(gui, "document.querySelectorAll('.search-result-item').length")
+            if n > 0:
+                break
+            time.sleep(0.25)
+        names = JD(gui, """(()=>{return JSON.stringify([...document.querySelectorAll('.search-result-item .search-filename')]
+  .map(e=>(e.textContent||'').trim()))})()""") or []
+        c.check("T6 检索框输入出现下拉备选（file 源命中 a.txt）",
+                n > 0 and "a.txt" in names, f"results={n} names={names[:6]}")
         gui.input(".search-input-wrap input", "")
         time.sleep(0.3)
 

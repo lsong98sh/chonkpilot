@@ -27,6 +27,7 @@ import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import mq from '@ckfw/utils/mq.js'
 import { EventNames } from './events/event-names'
+import { MsgTopics } from './events/msgkeys'
 import { getActiveSessionID } from './api/session'
 import MainLayout from './views/layout/MainLayout.vue'
 import ChatOnlyView from './views/chat/ChatOnlyView.vue'
@@ -118,7 +119,7 @@ async function waitPluginsReady() {
   const deadline = Date.now() + 20000
   while (Date.now() < deadline) {
     try {
-      const res = await mq.emit('plugin-list', {})
+      const res = await mq.emit(MsgTopics.pluginList, {})
       if (res && !(res.errors && res.errors.length)) {
         pluginsReady.value = true
         return

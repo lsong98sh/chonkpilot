@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/lsong98sh/chonkpilot-agent/chat"
 )
@@ -58,5 +59,42 @@ func TestChatInboxAdapter(t *testing.T) {
 	}
 	if len(seen) != n {
 		t.Fatalf("并发 Push 丢项：len=%d want %d", len(seen), n)
+	}
+}
+
+// TestChatInboxWait：Wait 空队列时阻塞（不推进时间），Push 立即唤醒；ctx 取消可退出。
+func TestChatInboxWait(t *testing.T) {
+	q := newChatInbox()
+	type got struct {
+		item chat.InboxItem
+		ok   bool
+		err  error
+	}
+	ch := make(chan got, 1)
+	go func() {
+		item, ok, err := q.Wait(context.Background())
+		ch <- got{item: item, ok: ok, err: err}
+	}()
+
+	select {
+	case <-ch:
+		t.Fatal("空队列 Wait 应立即阻塞（不应返回）")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	q.Push(chat.InboxItem{ID: "w1"})
+	select {
+	case g := <-ch:
+		if g.err != nil || !g.ok || g.item.ID != "w1" {
+			t.Fatalf("Push 应唤醒 Wait 并返回该条：%+v", g)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Push 未唤醒 Wait")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, ok, err := q.Wait(ctx); ok || err == nil {
+		t.Fatalf("ctx 取消应返回 ok=false + err：ok=%v err=%v", ok, err)
 	}
 }

@@ -226,6 +226,28 @@ func (s *Server) memoryCategoryNames(instanceID, workDir string) []string {
 			return names
 		}
 	}
+	// 本地有界读取（§2.4）：门面直调，避免提示词组装（循环 goroutine）内的同步总线应答；
+	// 实现与 data-memory-list 同源（内嵌 persist）。
+	if s.cfg != nil {
+		res, err := s.cfg.MemoryList(facade.MemoryListRequest{InstanceID: instanceID})
+		if err != nil {
+			return persist.MemoryCategoryNames()
+		}
+		out := make([]string, 0, len(res.List))
+		for _, e := range res.List {
+			if e.Level != "project" || e.Category == "" {
+				continue
+			}
+			out = append(out, e.Category)
+		}
+		if len(out) == 0 {
+			return persist.MemoryCategoryNames()
+		}
+		if key != "" {
+			s.memCache.put(key, out)
+		}
+		return out
+	}
 	res, err := dataRequest(s.bus, msgkeys.TopicDataMemoryList, map[string]any{"instance_id": instanceID})
 	if err != nil {
 		return persist.MemoryCategoryNames()

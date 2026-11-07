@@ -6,21 +6,35 @@
 // 适配**——单飞调度、退避重试、日志文案、提示词读取、摘要调用（`s.chat`）与快照读写端口。
 //
 // 语义（用户 2026-10-23 定案）：
-//  1. **触发**：本轮组装完成（`Assembly.Usage` 已算出）→ 正常请求照常发出（用户无感）→
-//     若达阈值则后台触发压缩。阈值沿用现有配置键（`keep_full_max_tokens` +
+//
+//  1. **触发**：本轮组装完成（`Assembly.Usage` 已算出）时**判定**阈值，任务暂存到轮上下文；
+//     **真正起压缩在终态快照写完之后**（`startPendingCompress`，锚点 = 本轮 `snapshot_turn`）——
+//     非阻塞、用户无感。阈值沿用现有配置键（`keep_full_max_tokens` +
 //     `compress_token_threshold`，读序 prjusr → prj → usr），**不新增配置键**。
+//
+//     〔2026-11-07 修正〕原实现于「组装完成即起 worker」，锚点 = 上一已完成轮；而当前轮终态
+//     写快照会把 `snapshot_turn` 推到本轮。压缩摘要调用与当前轮生成并发，当前轮先完成时
+//     `snapshotWriteBase` 与 `SetSnapshot` 之间的窗口会让已回填的摘要被覆盖（实测 A/B-4：
+//     摘要请求已发、日志「已压缩」、最终快照无 `[已压缩早前对话]`）；后完成则 CAS 丢弃。
+//     改为终态后启动后，CAS 基准恒等于刚落库的本轮快照，压缩不再与自身触发轮竞争。
+//
 //  2. **输入 = 刚发出的 payload 复用**：取 `Assembly.Context.Messages`，**去掉全部 system 角色
 //     消息**（含系统提示词 / 记忆指引 / 资产指引 / 既有摘要），把**最后一条 user** 换成压缩要求
 //     （要求文本读 `capability/system/summary.md`）→ 走进程内单轮 LLM（`llmOnceMessages`，
 //     不新开 HTTP 通道）。
-//  3. **回填**：摘要 → 写会话快照 `[system 摘要] + 保留段`、`snapshot_turn = Assembly.LastTurnID`；
-//     **CAS**：仅当快照仍停在压缩基准时才写，否则丢弃（已有别的压缩 / 新一轮推进过快照）。
+//
+//  3. **回填**：摘要 → 写会话快照 `[system 摘要] + 保留段`、`snapshot_turn` = 启动时快照覆盖轮
+//     （终态启动 = 本轮；本轮消息已追加进保留段）。**CAS**：仅当快照仍停在压缩基准时才写，
+//     否则丢弃（已有别的压缩 / 新一轮推进过快照）。
+//
 //  4. **四约束**：① 同会话同一时刻只允许一个压缩（单飞）；② 快照 + snapshot_turn 单事务写
 //     （一次 `SnapshotSet` = 同一条记录）、`snapshot_turn` 单调不减；③ 组装只读**已提交**快照
 //     （组装走 `BuildContextTokens`，本文件不参与读路径）；④ 压缩失败不影响主流程（原文保留、
 //     只记日志、按退避重试）。
+//
 //  5. **兜底**：正常请求因**超窗**失败 → 用同一份 payload 立刻压缩后**重试一次**（见
 //     `compressOnOverflow` / `engineStepLLM.Step`）。
+//
 //  6. **进度通知**：后台压缩在**既有**通知面 `tool-notify` 发 `compress-queued` / `compress-start` /
 //     `compress-done`（与原 compress 插件同形，前端零改动）；失败另发 `plugin-failure`。
 //
@@ -71,17 +85,21 @@ const (
 // 类型定义在组件包（`session.CompressionJob`），此处别名保持宿主调用点不变。
 type compressJob = session.CompressionJob
 
-// maybeStartCompress 组装完成后的**异步**触发点（非阻塞；不等待结果、不影响主流程）。
+// maybeStartCompress 组装完成后的**阈值判定点**（非阻塞；不等待结果、不影响主流程）。
+//
+// 达阈值时只把任务暂存到 `tc.compressWanted/compressJob`；真正启动见 `startPendingCompress`
+// （终态快照写完之后，锚点 = 本轮）——避免与当前轮终态写快照竞争导致摘要被覆盖 / CAS 丢弃。
+// 同一轮只保留**首个**达阈值的 payload（此时尚未产生本轮 assistant/tool 消息，摘要输入最干净）。
 //
 // 门控：
 //   - 无已完成轮（首轮）→ 不压缩（无回填锚点）；
 //   - 未达阈值 → 不压缩；
 //   - 子会话 + 项目未开「压缩子会话」（`compress.subsession`，默认关）→ 不压缩（既有口径）。
-//
-// 阈值判定通过后、真正起压缩前，先用**既有** `memory.flush` 触发一次记忆沉淀
-// （2026-10-31 用户定案：记忆提取跟随压缩，不再每轮提取；零新增主题）。
 func (tc *turnCtx) maybeStartCompress(a session.Result) {
 	if tc == nil || tc.server == nil || a.LastTurnID == "" {
+		return
+	}
+	if tc.compressWanted {
 		return
 	}
 	if !session.Due(a.Usage, tc.keepFullTokens, tc.briefBudget) {
@@ -90,8 +108,30 @@ func (tc *turnCtx) maybeStartCompress(a session.Result) {
 	if tc.isSubsession() && !tc.server.compressSubsessionOn(tc.req.InstanceID) {
 		return
 	}
-	tc.server.flushMemoryBeforeCompress(tc.req.InstanceID, tc.req.Session)
-	tc.server.startCompress(session.NewJob(a, tc.req.InstanceID, tc.req.Session, tc.req.Turn))
+	tc.compressJob = session.NewJob(a, tc.req.InstanceID, tc.req.Session, tc.req.Turn)
+	tc.compressWanted = true
+}
+
+// startPendingCompress 在**终态快照已落库之后**启动本轮暂存的压缩任务：
+// 锚点改为本轮（快照覆盖轮），CAS 必命中；压缩期间不会再被本轮终态覆盖（终态已过）。
+//
+// `currentTurn` = 本轮全部消息：任务在组装期暂存时 Retain 只含历史轮（当时本轮未完成），
+// 而终态快照必须保留本轮——故启动时把它追加到保留段，压缩回填不会丢掉刚落库的本轮内容。
+//
+// 记忆沉淀（`memory.flush`）同在此时触发——提取跟随压缩且能读到本轮完整产物（2026-10-31 定案）。
+func (s *Server) startPendingCompress(tc *turnCtx, currentTurn []ChatMsg) {
+	if s == nil || tc == nil || !tc.compressWanted {
+		return
+	}
+	job := tc.compressJob
+	tc.compressWanted = false
+	if tc.req.Turn == "" {
+		return
+	}
+	job.Anchor = tc.req.Turn
+	job.Retain = append(append([]ChatMsg{}, job.Retain...), currentTurn...)
+	s.flushMemoryBeforeCompress(job.InstanceID, job.SessionID)
+	s.startCompress(job)
 }
 
 // flushMemoryBeforeCompress 在压缩前用**既有** `memory.flush` 主题触发一次记忆沉淀
@@ -212,10 +252,19 @@ func (s *Server) compressWithRetry(ctx context.Context, job compressJob) error {
 	var lastErr error
 	for attempt := 0; attempt <= compressRetryMax; attempt++ {
 		if attempt > 0 {
+			// 后台压缩 goroutine 允许等待（§10.2 白名单）；用显式 timer + ctx 取消，
+			// 不留 `<-time.After`（§11.2 验收：白名单外无 time.After）。
+			timer := time.NewTimer(time.Duration(attempt) * compressRetryBackoff)
 			select {
 			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
 				return lastErr
-			case <-time.After(time.Duration(attempt) * compressRetryBackoff):
+			case <-timer.C:
 			}
 		}
 		if _, err := s.compressOnce(ctx, job); err == nil {
@@ -288,7 +337,7 @@ func (tc *turnCtx) refreshHistoryFromSnapshot() {
 	if tc == nil || tc.server == nil {
 		return
 	}
-	hist, tokens := newSessionStore(tc.server.bus, tc.req.InstanceID).
+	hist, tokens := tc.server.newSessionStore(tc.req.InstanceID).
 		BuildContextTokens(tc.req.Session, tc.req.Turn, true)
 	if hist == nil {
 		return

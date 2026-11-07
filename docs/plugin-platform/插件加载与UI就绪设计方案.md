@@ -1,7 +1,8 @@
 # 插件加载与 UI 就绪设计方案（PLUGIN-LOAD-1）
 
 > 状态：✅ **D1–D18 均有实现**（2026-11-02；**2026-11-04 核对**）：`plugin-refresh` 差量刷新、启动并发闸门 2、先登记后拉起、就绪态文案、刷新遮罩 / 失败关闭；`plugin.json` 极简化（`id/cmd/enabled/name/icon`）+ 完整 manifest 由插件在 `plugin.hello` 上报（Go SDK 读 `<插件目录>/manifest.json`，Python/Node 自读）；只校验 ID；`external` 模式与 `channel.*` 删除；CK Store（`window.ckStore` getter 仓库 + 状态栏抽屉）。
-> 2026-11-04 核对偏差：**D5 遮罩可见**（旧审计“不可达”系误判，实为 Teleport 内 `v-if=refreshing` 兄弟节点；仅单行卡片，无双行/并发进度、无 Esc 处理）；**D11 文案未统一**（按状态分 5–7 种）；**D13 校验偏松**（`manifest.id` 为空也接受）；**D14 只清代码、未清数据面**（12 份 `manifest.json` 仍留 `channel`/`runtime.mode`）。
+> 2026-11-04 核对偏差：**D5 遮罩可见**（旧审计“不可达”系误判，实为 Teleport 内 `v-if=refreshing` 兄弟节点；仅单行卡片，无双行/并发进度、无 Esc 处理）。
+> 2026-11-05 收口：**D11 已统一**（插件页/维护页共用 `layoutFree.plugin.status*` 六词表，维护页不再硬编码中文、不渲染 detail 行）；**D13 已收紧**（`manifest.id` 必须等于插件 id，空值不再接受）；**D14 数据面已清理**（12 份 `manifest.json` 的 `channel`/`runtime.mode` 死字段已删）。
 > 关联：[28-plugins](../spec/20-modules/28-plugins.md)（插件体系，权威）· [2C-UI插件](../spec/20-modules/2C-UI插件.md)（插件 UI 四通道）· [61-消息一览](../spec/60-reference/61-消息一览.md)（§7.2 `plugin-*`）· [41-未决项登记](../spec/40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决) · [49-待实现项](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)
 > 代码落点：`chonkpilot-framework/plugin/src/{mgr,bridge}` · `src/lib/gui/host` · `src/frontend/packages/plugin-ui/src/*` · `src/frontend/src/{pluginHost.js,layout/*,views/codeview/CodeView.vue}` · 框架仓 `chonkpilot-framework/host/web/src/layout-free/*`
 > 口径来源：2026-11-02 用户逐条裁决；**本文 §2 为唯一决策表**，实现与文档冲突时以本文为准并回改 spec。
@@ -55,10 +56,10 @@
 | D8 | 取消 `plugin-ready` | 不新增“批次结束”哨兵；状态判定只靠快照 + `plugin-registered` / `plugin-status` |
 | D9 | 启动并发上限 2 | 闸门只约束 `spawn → hello` 段，进程起来后不占槽 |
 | D10 | 先扫描 → 先登记 → 再并发拉起 | 扫描同步全量；登记后入口即可见（仅 `id/name/icon`）；拉起按 D9 分批 |
-| D11 | 失败文案统一「插件未安装」 | 只显示状态文字（`运行中` / `启动中` / `启动失败` / `已停止` / `已禁用` / `未安装`），**不加 detail 行**。**2026-11-04 核对：文案未统一**——`PluginPageHost.vue:100-116` 按 status 渲染 未安装/启动中/启动失败/已停止/已禁用；`PluginManagerPage.vue` 另有“失败/降级/注册中”。不加 detail 行这一点符合。 |
+| D11 | 失败文案统一「插件未安装」 | 只显示状态文字（`运行中` / `启动中` / `启动失败` / `已停止` / `已禁用` / `未安装`），**不加 detail 行**。**2026-11-05 已统一**：插件页 `PluginPageHost.vue` 与维护页 `PluginManagerPage.vue` 共用 `layoutFree.plugin.status*`（discovered/registering/starting→启动中，degraded/error→启动失败，stopping/stopped→已停止）；维护页原硬编码「失败/降级/注册中」与 detail 行已删；回归 `test/pluginStatusCopy.test.js`。 |
 | D12 | `plugin.json` 极简 | `{ id, cmd(exe+args), enabled, name?, icon? }`；manifest（`version/description/ui/mcp/permissions`…）由插件进程上报。**2026-11-04 核对：Go SDK 读 `<插件目录>/manifest.json`（文件，非 embed）**；Python/Node 自读同一文件 |
-| D13 | 只校验 ID | 上报 `id` 必须等于目录名（`plugin.json` 若写 `id` 也须一致）；其余字段一律信任。**2026-11-04 核对：偏松**——`manifest.id` **为空时被默认为插件 id 并接受**（`mgr/api.go:366-393`），并非“必须相等”。 |
-| D14 | 删除 `external` | 去掉 `runtime.mode`、`channel.{transport,addr}`、「等待外部进程连接」分支；插件一律由宿主 spawn。**2026-11-04 核对：框架代码已删**（`mgr/manager.go`；`grep external` 仅注释/图标），**但 12 份 `manifest.json` 仍保留 `"channel":{...}` 和/或 `"runtime":{"mode":"managed"}`**（browser/codegraph/crontab/demo-python/desktop/file/history/mcp/memory/remote/task/web）——数据面未清理。 |
+| D13 | 只校验 ID | 上报 `id` 必须等于目录名（`plugin.json` 若写 `id` 也须一致）；其余字段一律信任。**2026-11-05 已收紧**——`manifest.id` 为空或不等即报错（`mgr/api.go` `registerManifest`；回归 `mgr/discover_test.go`）。 |
+| D14 | 删除 `external` | 去掉 `runtime.mode`、`channel.{transport,addr}`、「等待外部进程连接」分支；插件一律由宿主 spawn。**2026-11-05 已收口**：框架代码此前已删；12 份 `manifest.json` 的 `channel`/`runtime.mode` 死字段本次清除。 |
 | D15 | 监管参数宿主默认 + 上报可选覆盖 | `restart` / `health` / `stop.grace_ms` / `mcp.timeout` 宿主内置默认；插件上报后以上报值为准（hello 之后生效） |
 | D16 | CK Store | 前端全局 getter 仓库：组件注册 `key → () => value`；只提供 `get`；未注册返回空；**仅 iframe 可读**（`window.top.ckStore`）；无权限白名单、无 key 登记表 |
 | D17 | CK Store 抽屉 | 状态栏加一个图标，点击打开抽屉；列表 = 当前窗口已注册 key + 当前值；打开时求值一次 + 手动「刷新」按钮；不做搜索/附加列/展开交互 |
@@ -230,7 +231,7 @@ await ckStore.get('chat.currentSession')   // 未注册 → 空
 
 | 层 | 内容 |
 |---|---|
-| L1 Go（framework `mgr`） | 差量刷新（新增/消失/未变）；消失时停进程；并发闸门最多 2；`manifest.id` 不一致 → error、为空 → 接受；`hello.manifest` 合并 |
+| L1 Go（framework `mgr`） | 差量刷新（新增/消失/未变）；消失时停进程；并发闸门最多 2；`manifest.id` 为空/不一致 → error（2026-11-05 收紧）；`hello.manifest` 合并 |
 | L1 Go（bridge） | `plugin.hello` 携带 manifest 的解析与 `id` 校验 |
 | L1 前端（node:test） | `usePlugins`（`plugin-refresh` 应答替换快照、`plugin-unregistered` 摘除视图）；`usePluginReadiness`（未知 id → 未安装；starting → 启动中；running → 探活/iframe）；`ckStore`（注册/get/未注册返回空/重复注册告警）；抽屉渲染（key + 值 + 刷新） |
 | L4 systest（mq 驱动） | `plugin-list` 快照 → `plugin-refresh` 新增/消失 → 断言 `plugin-registered` / `plugin-unregistered` / `plugin-status`；卡死插件保持 `starting` |

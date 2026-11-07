@@ -20,9 +20,8 @@ import (
 // TestSessionTitleBroadcastMQ：改名成功 → 总线收到 data-session-title-changed
 // `{session_id, title}` 且**不含 instance_id**；改名失败（会话不存在）→ 无事件。
 func TestSessionTitleBroadcastMQ(t *testing.T) {
-	// 工作目录先于服务创建：清理顺序 LIFO → data.Reset（关连接）先于 TempDir RemoveAll 执行。
-	wd := t.TempDir()
-	s := newSweepTestService(t)
+	// workDir 由 helper 创建：清理顺序 LIFO → Stop → data.Reset（关连接）→ TempDir RemoveAll。
+	s, wd, _ := newSweepTestService(t)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

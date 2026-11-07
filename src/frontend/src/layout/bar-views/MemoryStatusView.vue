@@ -72,7 +72,9 @@ onUnmounted(() => {
   font-size: 12px;
 }
 .sb-task.is-disabled {
-  color: var(--fg-disabled);
+  /* 状态栏文案（12px）：disabled 语义不适用于「功能未启用」的只读状态；
+     用 text-muted 保证三主题 ≥4.5:1（旧 light 2.07 / dark 3.59 / nord 2.74）。 */
+  color: var(--text-muted);
 }
 .sb-task.is-progress {
   color: var(--fg-secondary);

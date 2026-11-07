@@ -301,3 +301,49 @@ func TestScenarioRejectsUnknownLevel(t *testing.T) {
 		t.Fatal("不可用级别不得回落 user 级落盘")
 	}
 }
+
+// TestScenarioSaveRejectsTooLongFields（SCEN-011-S07）：场景 id（目录名）或名称 > 64 字符 →
+// 保存**拒绝且不落盘**（绕过前端时后端同样拦截）；恰好 64 字符 / 64 rune 放行。
+func TestScenarioSaveRejectsTooLongFields(t *testing.T) {
+	s, _, usrPath := testRoots(t)
+	userRoot := capfs.ScenarioUserRoot(usrPath)
+
+	// ① 65 字符 id → 拒绝（未落盘）
+	tooLongID := strings.Repeat("a", 65)
+	if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
+		ID: tooLongID, Level: capfs.KindUser,
+	}}); err == nil {
+		t.Fatal("65 字符 id 应被拒")
+	} else if !strings.Contains(err.Error(), "超长") {
+		t.Fatalf("错误文案应指明超长：%v", err)
+	}
+	if capfs.ScenarioDirExists(userRoot, tooLongID) {
+		t.Fatal("被拒的超长 id 不应落盘")
+	}
+
+	// ② 65 个汉字名称（65 rune，215 字节）→ 拒绝（未落盘）
+	tooLongName := strings.Repeat("场", 65)
+	const nameID = "long-name-scn"
+	if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
+		ID: nameID, Name: tooLongName, Level: capfs.KindUser,
+	}}); err == nil {
+		t.Fatal("65 rune 名称应被拒")
+	} else if !strings.Contains(err.Error(), "超长") {
+		t.Fatalf("错误文案应指明超长：%v", err)
+	}
+	if capfs.ScenarioDirExists(userRoot, nameID) {
+		t.Fatal("被拒的超长名称不应落盘")
+	}
+
+	// ③ 恰好 64 字符 id + 64 rune 名称 → 放行并落盘
+	maxID := strings.Repeat("b", 64)
+	maxName := strings.Repeat("景", 64)
+	if _, err := s.ScenarioSave(facade.ScenarioSaveRequest{Scenario: facade.Scenario{
+		ID: maxID, Name: maxName, Level: capfs.KindUser,
+	}}); err != nil {
+		t.Fatalf("恰好 64 字符 / 64 rune 应放行：%v", err)
+	}
+	if !capfs.ScenarioDirExists(userRoot, maxID) {
+		t.Fatal("64 字符 id 应落盘")
+	}
+}

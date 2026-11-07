@@ -74,7 +74,23 @@ def main():
         snap = _h.snapshot_config(gui)
 
         # 后端真值（经消息面）：插件清单（含 command / config_view / actions）
-        env = gui.req("plugin-list", {}, timeout=20)
+        # 就绪栅栏（2026-11-07）：插件进程 `plugin.hello` 上报完整 manifest 之前，
+        # `plugin-list` 快照只有极简 plugin.json 骨架（views/actions/config_view 全空、
+        # status=starting）。断言「动作按钮与 manifest 一致」必须以**完整清单**为期望值 →
+        # 先轮询到目标插件 source-of-truth 就绪（status=running 且 manifest 字段已上报）。
+        def wait_plugin_manifest(gui, plugin_id, timeout=40.0):
+            deadline = time.time() + timeout
+            env = {}
+            cg = {}
+            while time.time() < deadline:
+                env = gui.req("plugin-list", {}, timeout=20) or {}
+                cg = next((p for p in (env.get("plugins") or []) if p.get("id") == plugin_id), {}) or {}
+                if cg.get("status") == "running" and cg.get("config_view") and cg.get("actions"):
+                    return env, cg
+                time.sleep(0.4)
+            return env, cg
+
+        env, cg = wait_plugin_manifest(gui, "codegraph")
         plugins = (env or {}).get("plugins") or []
         by_id = {p["id"]: p for p in plugins}
 
@@ -86,18 +102,32 @@ def main():
                 f"plugins={len(plugins)} cards={len(cs)}")
 
         # ── PM2 卡片要素：名称 / 启动命令 / 配置按钮 ──
-        bad = []
-        for p in plugins:
-            hit = [x for x in cs if x["name"] == (p.get("name") or p["id"])]
-            if not hit:
-                bad.append((p["id"], "no-card"))
-                continue
-            card = hit[0]
-            if not card["cmd"] or not (p.get("command") or ""):
-                bad.append((p["id"], "no-command"))
-            want_cfg = bool(p.get("config_view"))
-            if want_cfg != ("配置" in card["btns"] or "Configure" in card["btns"]):
-                bad.append((p["id"], "config-btn-mismatch"))
+        # 逐插件 manifest 上报（`plugin-registered`）与卡片 DOM 更新均在途 → 断言前轮询到
+        # 「卡片按钮集 == 当前 plugin-list 快照的 config_view」收敛（最终比对仍是严格全量）。
+        def pm2_mismatch():
+            env2 = gui.req("plugin-list", {}, timeout=20) or {}
+            ps = env2.get("plugins") or []
+            cs2 = cards(gui)
+            bad2 = []
+            for p in ps:
+                hit = [x for x in cs2 if x["name"] == (p.get("name") or p["id"])]
+                if not hit:
+                    bad2.append((p["id"], "no-card"))
+                    continue
+                card = hit[0]
+                if not card["cmd"] or not (p.get("command") or ""):
+                    bad2.append((p["id"], "no-command"))
+                want_cfg = bool(p.get("config_view"))
+                if want_cfg != ("配置" in card["btns"] or "Configure" in card["btns"]):
+                    bad2.append((p["id"], "config-btn-mismatch"))
+            return ps, bad2
+
+        deadline = time.time() + 20.0
+        plugins, bad = pm2_mismatch()
+        while bad and time.time() < deadline:
+            time.sleep(0.3)
+            plugins, bad = pm2_mismatch()
+        by_id = {p["id"]: p for p in plugins}
         c.check("PM2 每张卡片：名称/启动命令/配置按钮与 manifest 一致", not bad, repr(bad[:4]))
 
         # ── PM3 动作按钮 == manifest ui.actions（名称 + 数量）──
@@ -117,7 +147,8 @@ def main():
         cb = by_id.get("codegraph") or {}
         cb_labels = [a.get("label") for a in (cb.get("actions") or [])]
         c.check("PM3 动作按钮与 manifest 注册一致（codegraph 含索引进度）",
-                not bad and "索引进度" in cb_labels, f"bad={bad[:3]} codegraph={cb_labels}")
+                not bad and "索引进度" in cb_labels,
+                f"status={cb.get('status')} bad={bad[:3]} codegraph={cb_labels}")
 
         # ── PM6 启用开关：关 → 卡片 is-off；开 → 恢复（真实落库 + 进程收停）──
         # 放在 PM4/PM5 之前：切页签/开抽屉会改变预览区挂载态，把开关用例留在此刻最稳。
@@ -154,15 +185,22 @@ def main():
                    ".find(x=>(x.textContent||'').indexOf(%s)>=0);b&&b.click();return 'ok'})()"
               % (find_card(gui, "代码知识库"), json.dumps(act["label"])))
             _h.wait_probe(gui, ["!!document.querySelector('.drawer')"], timeout=20.0)
-            dr = J(gui, "(()=>{const d=document.querySelector('.drawer');if(!d)return null;"
-                        "const t=(d.querySelector('.drawer-head .ttl')||{}).textContent||'';"
-                        "const f=d.querySelector('iframe.pph-frame');"
-                        "return JSON.stringify({title:t,src:f?f.getAttribute('src'):''})})()")
-            dr = json.loads(dr) if dr else {}
-            view_title = ""
+            # iframe `src` 由插件页面地址异步拼装（插件就绪/实例参数注入后才非空）：
+            # 抽屉出现即采样会读到空串（2026-11-07 全量批跑实测）→ 有界轮询到出现插件前缀。
+            dr, view_title = {}, ""
             for v in (cb.get("views") or []):
                 if v.get("id") == act.get("view"):
                     view_title = v.get("title") or ""
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                dr = J(gui, "(()=>{const d=document.querySelector('.drawer');if(!d)return null;"
+                            "const t=(d.querySelector('.drawer-head .ttl')||{}).textContent||'';"
+                            "const f=d.querySelector('iframe.pph-frame');"
+                            "return JSON.stringify({title:t,src:f?f.getAttribute('src'):''})})()")
+                dr = json.loads(dr) if dr else {}
+                if "/plugins/codegraph/" in (dr.get("src") or ""):
+                    break
+                time.sleep(0.4)
             c.check("PM4 索引进度 → 抽屉（标题=视图标题 + 插件页 iframe）",
                     bool(dr) and dr.get("title") == view_title
                     and "/plugins/codegraph/" in (dr.get("src") or ""),

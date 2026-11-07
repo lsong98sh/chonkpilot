@@ -407,7 +407,17 @@ onUnmounted(() => unsubs.forEach(fn => fn()))
 </script>
 
 <style scoped>
-.settings-page { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* 预览区默认只有 ~300px 宽：窄面板下工具栏/表单行必须改纵向堆叠，
+   否则提示文字会挤成「一字一行」、输入框被裁到只剩边。容器查询按**页面自身宽度**判断，
+   宽面板（用户拉宽预览区）保持原两列布局。 */
+.settings-page { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; }
+@container (max-width: 520px) {
+  .path-toolbar { flex-wrap: wrap; }
+  .path-toolbar .hint { flex: 1 1 100%; }
+  .path-row { flex-direction: column; align-items: stretch; gap: 4px; }
+  .path-label { width: auto; padding-top: 0; }
+  .path-input { width: 100%; max-width: none; }
+}
 .settings-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .settings-tabs :deep(.b-tabs-body) { flex: 1; overflow-y: auto; min-height: 0; padding: 8px 0; }
 .page-body { display: flex; flex-direction: column; gap: 10px; }

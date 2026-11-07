@@ -48,8 +48,10 @@ from chonk_client import ChonkClient, run_case
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
 
 ROOT = r"e:\BizWorks\chonkpilot"
-GUI_EXE = os.path.join(ROOT, r"dist\desktop\chonkpilot.exe")
-CAP_DIR = os.path.join(ROOT, r"dist\desktop\capability")
+# 发行根布局（2026-11-02 目录扁平化后）：dist/chonkpilot.exe + dist/capability/
+# （旧 dist/desktop/ 已删除；产物仍按 00-overview/03-构建与部署.md §2 的 dist/ 布局）。
+GUI_EXE = os.path.join(ROOT, r"dist\chonkpilot.exe")
+CAP_DIR = os.path.join(ROOT, r"dist\capability")
 BASE_WS = os.path.join(ROOT, r"src\test\chonkpilot-gui\systest\ws")
 WORK_DIR = os.path.join(ROOT, r"src\test\chonkpilot-gui\systest\ws_kb")
 # prjusr 随 work-dir（固定规则）：项目私有级（prjusr）capability 根落在
@@ -519,7 +521,7 @@ def prepare_ws():
 
 
 # 应用级原语夹具：C4/C5 打开并编辑 `ask_user.tool.md` —— 产品的原语保存/恢复路径会把契约
-# 原文按**规范化形态**回写（实测多出 1 字节尾换行）→ 该文件属于 **dist 产物**（dist/desktop/capability），
+# 原文按**规范化形态**回写（实测多出 1 字节尾换行）→ 该文件属于 **dist 产物**（dist/capability），
 # 套件跑完必须**按字节还原**，否则 capability 与契约源静默分叉（`sync-contracts.ps1 -Check` 会报漂移）。
 # 口径变更（2026-10-23）：app 级 tools 只剩 server 分类 → 夹具改用 `ask_user.tool.md`
 #（同一断言面：app 级 .md 原语的预览/编辑/恢复）。
@@ -617,14 +619,24 @@ def main():
             # 分类目录（core/go/ui…）→ 不再出现 `<type>` 子目录行，也不显示其它类型目录。
             for ext in ("resource", "skill"):
                 assert kb.switch_mode("extensions", ext=ext), f"切扩展页子 tab {ext} 失败"
+                # 子 tab 切换是异步重载树：switch_mode 只等到段激活，行可能尚未回来 →
+                # 先等子 tab 文案激活 + 树行出现（不新增断言，只消除「刚切换就读」的竞态）。
+                lab = EXT_LABELS[ext]
+                assert kb.poll(lambda: any(x in (lab[0], lab[1]) for x in kb.ext_active()), timeout=8), \
+                    f"扩展页子 tab {ext} 未激活：{kb.ext_active()}"
+                ok = kb.poll(lambda: bool(kb.kb_rows()), timeout=10)
+                assert ok, f"扩展页（{ext}）树无行（根未加载）"
                 rows = kb.kb_rows()
-                assert rows, f"扩展页（{ext}）树无行（根未加载）"
                 root_label = kb.row_label(rows[0])
                 assert root_label.startswith(EXT_LABELS[ext][0]) or root_label.startswith(EXT_LABELS[ext][1]), \
                     f"根行名异常（{ext}）：{root_label!r}"
                 assert kb.click_kb_root(), f"点击根失败：{root_label}"
                 # 仅当前子 tab 的类型目录内容可见（其余类型目录不显示）
                 assert kb.ensure_kb_expanded([], timeout=10), f"扩展页（{ext}）根展开失败"
+                # 展开标记到位 ≠ 子项已回填（负载下分类目录会晚到）：有界等到出现目录行。
+                ok = kb.poll(lambda: any(r["d"] for r in kb.kb_rows()), timeout=20)
+                assert ok, ("扩展页（%s）根下分类目录未加载（树未回填）：%r"
+                            % (ext, {kb.row_label(r) for r in kb.kb_rows()}))
                 dirlabels = {kb.row_label(r) for r in kb.kb_rows() if r["d"]}
                 for other in ("tools", "prompts", "resources", "skills", "agents"):
                     assert other not in dirlabels, f"{ext} 子 tab 不应显示 {other}：{dirlabels}"

@@ -22,8 +22,8 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 )
 
 // toolchainUserConfigKeys 占位符 key → 配置键（与 gui 工具链探测 id 一致；usr/prj 同名）。

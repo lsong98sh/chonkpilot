@@ -85,7 +85,7 @@ func TestPluginBridgeEndToEnd(t *testing.T) {
 		t.Fatalf("turn.context result=%+v", resCtx.Value)
 	}
 
-	// T7 原子能力：task.node.start / task.result / tool.stop / task.node.done
+	// T7 原子能力：task.node.start / task.result / task.node.done
 	resNode, err := cli.Call(ctx, "plugin/v1/task.node.start", map[string]any{
 		"instance_id": "inst-pb", "turn": "t0", "tool": "tool_result",
 		"tool_call_id": "call-1", "args": map[string]any{"id": "x"},
@@ -105,15 +105,6 @@ func TestPluginBridgeEndToEnd(t *testing.T) {
 	}
 	if m, _ := resRunning.Value.(map[string]any); m["found"] != true || m["state"] != "running" {
 		t.Fatalf("task.result(running) result=%+v", resRunning.Value)
-	}
-	resStop, err := cli.Call(ctx, "plugin/v1/tool.stop", map[string]any{
-		"instance_id": "inst-pb", "turn": "t0", "args": map[string]any{"task_id": "no-such"},
-	})
-	if err != nil || !resStop.OK {
-		t.Fatalf("tool.stop: %+v %v", resStop, err)
-	}
-	if m, _ := resStop.Value.(map[string]any); !strings.Contains(m["text"].(string), "不存在或已结束") {
-		t.Fatalf("tool.stop text=%+v", resStop.Value)
 	}
 	if res, err := cli.Call(ctx, "plugin/v1/task.node.done", map[string]any{
 		"task_id": nodeID, "state": "done", "result": "ok",

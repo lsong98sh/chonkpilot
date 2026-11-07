@@ -14,7 +14,7 @@
           class="ask-list-item"
           :class="{ active: item.ask_id === selectedId, expired: isExpired(item) }"
           :data-ask-id="item.ask_id"
-          @click="selectedId = item.ask_id"
+          @click="selectAsk(item.ask_id)"
         >
           <span class="ask-list-top">
             <span class="ask-list-dir">{{ dirName(item.work_dir) }}</span>
@@ -27,33 +27,44 @@
         <div v-if="items.length === 0" class="ask-list-empty">{{ $t('chat.ask_center_empty') }}</div>
       </aside>
 
-      <!-- 右侧：选中项详情（复用 ask 卡片：选项/推荐/自定义/跳过/取消/聊一聊/发送） -->
+      <!-- 右侧：选中项详情（复用 ask 卡片：选项/推荐/自定义/跳过/取消/聊一聊/发送）；
+           「聊一聊」= 内嵌聊天面板覆盖 ask 区（加载源会话既有内容，可讨论；完成后解除）。 -->
       <main class="ask-detail">
         <template v-if="current">
-          <div class="ask-detail-meta">
-            <span>{{ $t('chat.ask_center_session') }}: {{ summaryOf(current) }}</span>
-            <span v-if="current.work_dir">{{ $t('chat.ask_center_workdir') }}: {{ dirName(current.work_dir) }}</span>
-            <span>{{ $t('chat.ask_center_received') }}: {{ timeLabel(current) }}</span>
-          </div>
-          <AskUserContent
-            :key="current.ask_id"
-            :uid="current.ask_id"
-            :question="current.question"
-            :options="current.options"
-            :custom="current.custom"
-            :multi="current.multi"
-            :recommended="current.recommended"
-            :context="current.context"
-            :sub-session-id="current.sub_session_id"
-            :session-id="current.session"
-            :deadline="deadlineMs(current.expires_at)"
-            :no-timeout="deadlineMs(current.expires_at) === 0"
-            :can-chat="true"
-            @answer="onAnswer"
-            @skip="onSkip"
-            @cancel="onCancel"
-            @chat="onChat"
+          <AskChatPanel
+            v-if="chatMode"
+            :key="'chat-' + current.ask_id"
+            :ask="current"
+            :resolving="chatResolving"
+            @back="closeChat"
+            @done="onChatDone"
           />
+          <template v-else>
+            <div class="ask-detail-meta">
+              <span>{{ $t('chat.ask_center_session') }}: {{ summaryOf(current) }}</span>
+              <span v-if="current.work_dir">{{ $t('chat.ask_center_workdir') }}: {{ dirName(current.work_dir) }}</span>
+              <span>{{ $t('chat.ask_center_received') }}: {{ timeLabel(current) }}</span>
+            </div>
+            <AskUserContent
+              :key="current.ask_id"
+              :uid="current.ask_id"
+              :question="current.question"
+              :options="current.options"
+              :custom="current.custom"
+              :multi="current.multi"
+              :recommended="current.recommended"
+              :context="current.context"
+              :sub-session-id="current.sub_session_id"
+              :session-id="current.session"
+              :deadline="deadlineMs(current.expires_at)"
+              :no-timeout="deadlineMs(current.expires_at) === 0"
+              :can-chat="true"
+              @answer="onAnswer"
+              @skip="onSkip"
+              @cancel="onCancel"
+              @chat="onChat"
+            />
+          </template>
         </template>
         <div v-else class="ask-detail-empty">{{ $t('chat.ask_center_select') }}</div>
       </main>
@@ -70,12 +81,15 @@ import { EventNames } from '../../events/event-names'
 import { getSession, seedDialog } from '../../api/session'
 import { sendAskReply } from '../../utils/askUserManager'
 import AskUserContent from '../chat/AskUserContent.vue'
+import AskChatPanel from './AskChatPanel.vue'
 
 const { t } = useI18n()
 
 const items = ref([])
 const selectedId = ref('')
 const titles = ref({}) // session_id → 标题（懒加载；失败回落会话 id 前缀）
+const chatMode = ref(false) // 右侧是否处于内嵌聊天面板（「聊一聊」）
+const chatResolving = ref(false)
 const unsubs = []
 
 const current = computed(() => items.value.find((it) => it.ask_id === selectedId.value) || null)
@@ -128,6 +142,7 @@ function normalize(raw) {
     sub_session_id: a.sub_session_id || '',
     turn: a.turn || a.turn_id || '',
     dialog_id: a.dialog_id || '',
+    instance_id: a.instance_id || '',
     owner_instance: a.owner_instance || '',
     session_title: a.session_title || '',
     context: a.context || '',
@@ -175,7 +190,11 @@ function upsert(item) {
 
 function removeItem(askId) {
   items.value = items.value.filter((it) => it.ask_id !== askId)
-  if (selectedId.value === askId) selectedId.value = items.value[0]?.ask_id || ''
+  if (selectedId.value === askId) {
+    selectedId.value = items.value[0]?.ask_id || ''
+    chatMode.value = false
+    chatResolving.value = false
+  }
 }
 
 /** 从宿主进程级缓存 + 后端权威快照拉回（挂载 / 重载 / 窗口重开；按 ask_id 去重合并）。 */
@@ -231,7 +250,24 @@ function onSkip() {
   selectedId.value = items.value[0]?.ask_id || ''
 }
 
-/** 聊一聊：定位源会话（不存在 → 可见提示并保留）；defer 回填 → 摘除 → 问题引用注入输入框。 */
+/** 选中待办：切走 = 关闭聊天面板（**不解除**，无后端动作）。 */
+function selectAsk(askId) {
+  if (askId === selectedId.value && !chatMode.value) return
+  chatMode.value = false
+  chatResolving.value = false
+  selectedId.value = askId
+}
+
+/** 关闭聊天面板（返回回复界面）：ask 保持未解除，可再次聊一聊或直接回答。 */
+function closeChat() {
+  chatMode.value = false
+  chatResolving.value = false
+}
+
+/**
+ * 聊一聊：进入内嵌聊天面板（加载源会话既有内容，可讨论）。
+ * 不发送 defer、不解除 ask；只有「完成」或直接回答才解除。
+ */
 async function onChat() {
   const it = current.value
   if (!it) return
@@ -253,20 +289,32 @@ async function onChat() {
     message.error(t('chat.ask_user_chat_session_missing', { id: sid.slice(0, 8) }))
     return
   }
-  // defer 语义回填（不把答案当最终作答；不新增字段）+ 摘除待办。
-  finishItem(it, t('chat.ask_user_chat_defer_answer'))
-  const text = t('chat.ask_user_chat_quote', { question: it.question || '' }) + '\n'
+  chatMode.value = true
+}
+
+/**
+ * 「完成」：解除提问（AskUser S4）——后端只更新 tool-result + 任务节点 done + 摘除待办，
+ * **不向 LLM 发消息**；前端同时摘除宿主缓存与本地项。
+ */
+async function onChatDone() {
+  const it = current.value
+  if (!it || chatResolving.value) return
+  chatResolving.value = true
   try {
-    const env = await mq.emit(EventNames.guiChatInsertText, {
-      session_id: sid,
-      dialog_id: it.dialog_id || '',
-      work_dir: it.work_dir || '',
-      text,
-    }, { timeout: 15000 })
+    const env = await mq.emit(EventNames.askResolve, { ask_id: it.ask_id }, { timeout: 8000 })
     const result = env && env.backend && env.backend.result
-    if (!(result && result.ok)) message.error(t('chat.ask_user_chat_session_missing', { id: sid.slice(0, 8) }))
+    if (result && result.ok === false) {
+      message.error(t('chat.ask_resolve_failed'))
+      return
+    }
+    mq.emit(EventNames.guiAskRemove, { ask_id: it.ask_id })
+    removeItem(it.ask_id)
+    chatMode.value = false
   } catch (e) {
-    console.warn('[AskCenter] gui.chat.insert-text failed:', e)
+    console.warn('[AskCenter] ask-resolve failed:', e)
+    message.error(t('chat.ask_resolve_failed'))
+  } finally {
+    chatResolving.value = false
   }
 }
 

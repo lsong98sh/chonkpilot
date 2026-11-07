@@ -3,7 +3,8 @@
 // L1（mq 驱动 + mq 断言）：
 //   - 提问方向：`session-ask.dialog_id` = 该会话的「会话 → 对话」映射值（既有 sessionStore 备忘，
 //     与 turn / message 落库同一份），非空；
-//   - 应答方向：回带**同一值**的 `ask-user-reply` 被受理（无错误）→ 回填 tool_result → 本轮续跑至终态。
+//   - 应答方向：回带**同一值**的 `ask-user-reply` 被受理（无错误）→ 就地回填 tool-result →
+//     答复作为后续用户消息投递（S4：不要求原轮续跑）。
 //
 // 边界（设计 §6.2 / §8）：`dialog_id` 只作会话标识留痕，路由权威仍是 `ask_id`；缺失/不一致
 // 只记 Warn、不阻断（旧前端 / 历史载荷仍可用，见 onAskUserReply）。
@@ -12,10 +13,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
@@ -83,9 +86,14 @@ func TestAskDialogIDBothDirections(t *testing.T) {
 	if v := f.Wait(); v.Err() != nil {
 		t.Fatalf("ask-user-reply（带 dialog_id）应被受理: %v", v.Err())
 	}
-	evs := collectTurn(t, s.bus, "t-ask-dlg", 10*time.Second)
-	if c := lastComplete(evs); c == nil || c["status"] != "complete" {
-		t.Fatalf("回带 dialog_id 后本轮应续跑到终态: %+v", evs)
+	// S4：答复就地更新原 tool-result，并作为后续用户消息投递给 LLM（原轮已收尾 → 新轮）。
+	delivered := waitAskAnswerDelivered(t, s, "s-ask-dlg", "t-ask-dlg", "答：y")
+	if !strings.Contains(delivered, "确认继续？") {
+		t.Fatalf("答复应携带原问题：%q", delivered)
+	}
+	rows := toolRowsOf(t, "t-ask-dlg")
+	if len(rows) != 1 || !strings.Contains(persist.Sval(rows[0]["content"]), `"content":"y"`) {
+		t.Fatalf("答复应就地更新 tool-result：%v", rows)
 	}
 }
 
@@ -139,8 +147,9 @@ func TestAskReplyWithoutDialogIDStillRoutes(t *testing.T) {
 	if v := f.Wait(); v.Err() != nil {
 		t.Fatalf("缺 dialog_id 的应答仍应按 ask_id 路由（不阻断）: %v", v.Err())
 	}
-	evs := collectTurn(t, s.bus, "t-ask-old", 10*time.Second)
-	if c := lastComplete(evs); c == nil || c["status"] != "complete" {
-		t.Fatalf("缺 dialog_id 的应答应照常回填并续跑: %+v", evs)
+	// S4：缺 dialog_id 不阻断，答复照常就地回填并作为后续用户消息投递。
+	delivered := waitAskAnswerDelivered(t, s, "s-ask-old", "t-ask-old", "答：y")
+	if !strings.Contains(delivered, "确认继续？") {
+		t.Fatalf("答复应携带原问题：%q", delivered)
 	}
 }

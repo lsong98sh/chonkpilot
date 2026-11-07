@@ -85,7 +85,10 @@ func TestStaleInstanceSweptViaExitPath(t *testing.T) {
 		"instance_id": "ins-stale", "client_type": "unittest", "work_dir": testWorkDir,
 	})
 	s.im.HandleRegister(payload)                       // 实例视图登记（LastBeat = 时钟当前值）
-	s.onInstanceRegister("instance-register", payload) // capability dir 节点接入
+	s.onInstanceRegister("instance-register", payload) // capability dir 节点接入（后台）
+	// 接入在后台 goroutine（server.go onInstanceRegister → capRegisterWG）→ 用产品自带的
+	// 收口点等待，而非轮询时序：返回后 dirNodes 已定，断言才表达「拓扑」而不是「抢跑」。
+	s.capRegisterWG.Wait()
 	if n := len(dirNodesOf(s, "ins-stale")); n != 2 {
 		t.Fatalf("前置：应接入 2 个 dir 节点，got %d", n)
 	}
@@ -211,6 +214,9 @@ func TestInstanceSweepTickerWired(t *testing.T) {
 	payload := jb(map[string]any{"instance_id": "ins-tick", "work_dir": testWorkDir})
 	s.im.HandleRegister(payload)
 	s.onInstanceRegister("instance-register", payload)
+	// 同 TestStaleInstanceSweptViaExitPath：dir 节点接入在后台（server.go capRegisterWG），
+	// 先等产品收口再断言拓扑（user + project 两个根；WORKDIR 已写两份 hot 契约）。
+	s.capRegisterWG.Wait()
 	if n := len(dirNodesOf(s, "ins-tick")); n != 2 {
 		t.Fatalf("前置：应接入 2 个 dir 节点，got %d", n)
 	}

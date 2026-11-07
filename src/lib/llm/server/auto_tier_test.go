@@ -39,7 +39,7 @@ func TestAutoCandidatesTier(t *testing.T) {
 		map[string]any{"name": "b", "capability": autoTestCaps(5.0, 0)}, // 差 0.5（含端点）→ 候选
 		map[string]any{"name": "c", "capability": autoTestCaps(3.9, 0)}, // 差 0.6 → 不同档
 		map[string]any{"name": "d", "capability": autoTestCaps(0, 5)},   // 显式 reasoning=0 = 不具备 → 不参与
-		map[string]any{"name": "e"},                                    // 缺省 = 按默认 LLM 的能力值 → 候选
+		map[string]any{"name": "e"},                                     // 缺省 = 按默认 LLM 的能力值 → 候选
 	)
 	got := autoCandidates(cfg, "def")
 	want := []string{"a", "b", "e"}
@@ -110,14 +110,14 @@ func TestLLMCapabilityDimsLegacy(t *testing.T) {
 // 再 vision 高者）；默认已具备识图 / 无合格候选 → nil。
 func TestAutoVisionCandidates(t *testing.T) {
 	cfg := autoTestConfig("def",
-		map[string]any{"name": "def", "capability": autoTestCaps(4.0, 0)},        // 默认：不具备识图
-		map[string]any{"name": "a", "capability": autoTestCaps(4.0, 2.0)},        // 同档（差 0）vision 2
-		map[string]any{"name": "b", "capability": autoTestCaps(4.0, 5.0)},        // 同档（差 0）vision 5 → 优先
-		map[string]any{"name": "c", "capability": autoTestCaps(4.5, 4.0)},        // 差 0.5（含端点）
-		map[string]any{"name": "far", "capability": autoTestCaps(3.0, 5.0)},      // 差 1.0 → 不同档
-		map[string]any{"name": "novis", "capability": autoTestCaps(4.0, 0)},      // vision=0 → 排除
-		map[string]any{"name": "norea", "capability": autoTestCaps(0, 5.0)},      // reasoning=0 → 排除
-		map[string]any{"name": "undec"},                                          // 未声明 → 不具备识图
+		map[string]any{"name": "def", "capability": autoTestCaps(4.0, 0)},   // 默认：不具备识图
+		map[string]any{"name": "a", "capability": autoTestCaps(4.0, 2.0)},   // 同档（差 0）vision 2
+		map[string]any{"name": "b", "capability": autoTestCaps(4.0, 5.0)},   // 同档（差 0）vision 5 → 优先
+		map[string]any{"name": "c", "capability": autoTestCaps(4.5, 4.0)},   // 差 0.5（含端点）
+		map[string]any{"name": "far", "capability": autoTestCaps(3.0, 5.0)}, // 差 1.0 → 不同档
+		map[string]any{"name": "novis", "capability": autoTestCaps(4.0, 0)}, // vision=0 → 排除
+		map[string]any{"name": "norea", "capability": autoTestCaps(0, 5.0)}, // reasoning=0 → 排除
+		map[string]any{"name": "undec"},                                     // 未声明 → 不具备识图
 	)
 	got := autoVisionCandidates(cfg, "def")
 	want := []string{"b", "a", "c"}

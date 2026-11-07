@@ -341,7 +341,10 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 		{"session-complete", "llm-complete", `{"instance_id":"inst-test","session":"s","turn":"t","status":"complete","finish_reason":"stop","parents":[],"work_dir":"/w","data_dir":"/d"}`},
 		// 2026-10-31：session-compress 已退出消息面（压缩 = 内部方法面），桥不再有该映射。
 		// AskUser S1-3（2026-10-29）：session-ask 补齐 §0.6 必带的 dialog_id。
-		{"session-ask", "ask-user", `{"instance_id":"inst-test","ask_id":"a","dialog_id":"dlg-1","session":"s","turn":"t","expires_at":0,"question":"q"}`},
+		// AskUser S3（2026-11-05）：补必带 owner_instance（= 发起 turn 的窗口）；expires_at 改可选
+		// （无超时不下发，故 fixture 不带）。instance_id = 该会话所在窗口（投递目标），
+		// 与 owner_instance **允许不同**（群聊/子会话：卡片投承载窗口，归属仍记发起轮窗口）。
+		{"session-ask", "ask-user", `{"instance_id":"inst-test","owner_instance":"inst-owner","ask_id":"a","dialog_id":"dlg-1","session":"s","turn":"t","question":"q"}`},
 		{"server-starting", "server-starting", `{"started_at":123}`},
 		{"prompt-optimised", "prompt-optimised", `{"instance_id":"inst-test","type":"t","content":"c"}`},
 		{"tool-notify", "tool-notify", `{"instance_id":"inst-test","session_id":"s","turn_id":"t","notice":"completion","message":"m","message_id":"mid"}`},
@@ -398,6 +401,22 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 				t.Fatalf("%s payload 解析失败: %v", tc.subject, err)
 			}
 			assertKeysSubset(t, tc.subject, "event", ts.Event, p)
+			if tc.subject == "session-ask" {
+				// 定向语义（61 §4.3 / AskUser专题 §4.1，S3 2026-11-05）：
+				//   instance_id    = 该会话所在窗口实例 = **投递目标**（桥按精确相等过滤）；
+				//   owner_instance = 发起 turn 的窗口实例 = **作答归属**（跨窗口作答 / Ask 中心
+				//                    「聊一聊」以它为源实例），二者允许不同（群聊 / 子会话）。
+				// 桥只做转发：两个值都必须原样保留，不得把 owner_instance 改写成交付目标。
+				if got, want := p["instance_id"], "inst-test"; got != want {
+					t.Fatalf("session-ask.instance_id = %v，want %q（= 该会话所在窗口 / 投递目标）", got, want)
+				}
+				if got, want := p["owner_instance"], "inst-owner"; got != want {
+					t.Fatalf("session-ask.owner_instance = %v，want %q（= 发起 turn 的窗口，桥须原样转发）", got, want)
+				}
+				if p["owner_instance"] == p["instance_id"] {
+					t.Fatal("fixture 未覆盖跨窗口场景：owner_instance 与 instance_id 必须可不同（否则无法区分投递目标与作答归属）")
+				}
+			}
 		})
 	}
 }
@@ -521,21 +540,24 @@ func TestLlmStartSplitsIntoSessionStartAndSend(t *testing.T) {
 // 桥（已注入门面）。返回桥、persist 服务、实例 id、工作目录。
 func newContextParityEnv(t *testing.T) (*bridge.Bridge, *persist.Service, string, string) {
 	t.Helper()
+	// 临时目录先注册清理：LIFO 下目录 RemoveAll 最后执行（先 Stop/关库，避免 Windows 文件占用）。
+	usrDir := t.TempDir()
+	wd := t.TempDir()
 	data.Reset()
 	bus, err := mq.New(mq.Options{Prefix: "chonk."})
 	if err != nil {
 		t.Fatalf("mq.New: %v", err)
 	}
 	t.Cleanup(func() { _ = bus.Close() })
-	svc := persist.New(bus, persist.Options{UsrPath: t.TempDir() + "/usr.db"})
+	// 清理顺序（LIFO）：svc.Stop（停扫描/等在飞对账）→ data.Reset（关连接）→ bus.Close → 删目录。
+	t.Cleanup(data.Reset)
+	svc := persist.New(bus, persist.Options{UsrPath: filepath.Join(usrDir, "usr.db")})
 	if err := svc.Start(); err != nil {
 		t.Fatalf("persist.Start: %v", err)
 	}
 	t.Cleanup(svc.Stop)
-	t.Cleanup(data.Reset)
 
 	const instanceID = "ins-ctx"
-	wd := t.TempDir()
 	body, _ := json.Marshal(map[string]any{"instance_id": instanceID, "work_dir": wd, "data_dir": ""})
 	if err := bus.Emit(context.Background(), "instance-register", body).Wait().Err(); err != nil {
 		t.Fatalf("instance-register: %v", err)
@@ -596,5 +618,15 @@ func TestSessionContextTwoPathsKeyParity(t *testing.T) {
 	// 键集须含 61 §3.2a 声明的 messages + 可选伴随数组 turn_tokens。
 	if !keys["messages"] || !keys["turn_tokens"] {
 		t.Fatalf("应答应含 {messages, turn_tokens}：%v", keys)
+	}
+	// 值级断言（不仅键存在）：预存 full=123/brief=45 → turn_tokens[0] 须为
+	// {turn_id:t-ctx, full:123, brief:45}（wire.TurnTokenToWire，P3 伴随数组）。
+	tokens, ok := toMap(t, res)["turn_tokens"].([]any)
+	if !ok || len(tokens) != 1 {
+		t.Fatalf("turn_tokens 应为 1 条: %+v", toMap(t, res)["turn_tokens"])
+	}
+	tt, _ := tokens[0].(map[string]any)
+	if tt["turn_id"] != "t-ctx" || tt["full"] != float64(123) || tt["brief"] != float64(45) {
+		t.Fatalf("turn_tokens[0] = %+v，want {turn_id:t-ctx, full:123, brief:45}", tt)
 	}
 }

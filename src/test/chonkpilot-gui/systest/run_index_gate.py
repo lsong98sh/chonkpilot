@@ -668,6 +668,47 @@ def _want_idx_retry(expected, desc, settle_wait=60, retries=1):
     return _want_idx_retry(expected, desc, settle_wait, retries - 1)
 
 
+def _converge_index(expected, desc, status_pred=None, settle_wait=60, retries=1):
+    """有界轮询「status 就绪 + 同一快照的 indexedFiles 计数 + 落盘命中集合」三者同时收敛。
+
+    为什么必须三者同时、且不能单次采样：`engine-status` 的 `state=ready` 可能仍是**上一轮**的
+    快照（重建/配置 apply 是异步的——触发后 status 仍报旧 `indexedFiles`，旧 `index.db` 也还在），
+    批跑负载下单次采样会读到旧值（2026-11-07 全量 88 套定位：G3 基线 5/6、G4 重建 6/5）。
+    因此以**落盘命中集合**（唯一权威）+ 与之同快照的 `indexedFiles` 计数为联合条件轮询；
+    超时后允许一次重建重试（终态断言不变，不放宽），仍不符才判失败并打印现场快照。
+    """
+    want = set(expected)
+    deadline = time.time() + settle_wait
+    st, got, qerr = {}, set(), ""
+    while time.time() < deadline:
+        st = status_obj()
+        try:
+            got = _idx_files()
+            qerr = ""
+        except TestError as e:   # 插件动作瞬时失败 → 记现场，下一轮继续
+            got, qerr = set(), str(e)[:200]
+        n = st.get("indexedFiles")
+        try:
+            n = int(n) if n is not None else -1
+        except (TypeError, ValueError):
+            n = -1
+        ok = (st.get("state") == "ready" and n == len(want) and got == want
+              and (status_pred is None or bool(status_pred(st))))
+        if ok:
+            return st, got
+        time.sleep(0.25)
+    if retries > 0:
+        print("[G3/G4] %s：%ss 内未收敛 → 再重建一次（异步索引/配置应用可能滞后）" % (desc, settle_wait),
+              flush=True)
+        cg_index()
+        return _converge_index(expected, desc, status_pred, settle_wait, retries - 1)
+    raise TestError("%s：索引未收敛（等待 %ss）\n  status=%r\n"
+                    "  落盘实际=%d / 期望=%d\n  多出（不应含却有）=%r\n  缺少（应含而缺）=%r\n"
+                    "  查询面错误=%r"
+                    % (desc, settle_wait, st, len(got), len(want),
+                       sorted(got - want), sorted(want - got), qerr))
+
+
 def wait_applied(pred, desc, max_wait=30):
     """等「prj 配置已被插件应用到引擎」（插件动作 `engine-status` 的状态收敛）。
 
@@ -703,28 +744,24 @@ def case_g3_index_scope():
     if prj().get("plugins.codegraph.enabled") != "true":
         cg_save({"enabled": "true"})                   # 独立 work-dir：由上用例关闭后重新启用
         cg_index()
-    base = wait_status(lambda o: o.get("state") == "ready", "启用后 codegraph 索引就绪")
-    if base.get("indexedFiles") != len(_G3_AB):
-        raise TestError("基线索引文件数应为 %d（夹具 .go 全集；note.md/.txt 非受支持语言；"
-                        "stack-gitignore 关 → .gitignore 不读），实际=%r"
-                        % (len(_G3_AB), base.get("indexedFiles")))
-    _want_idx(_G3_AB, "G3 基线（exts=默认全语言，skip-dirs 空，stack 关）")
+    # 基线：exts=默认全语言 / skip-dirs 空 / stack 关 → 6 个 .go 全收。
+    # 不能只看 `wait_status(state=ready)`（可能读到上一轮快照）+ 单次 `_want_idx`：两者都要等
+    # 「status 计数 == 6 == 落盘命中集合」同时成立。
+    base, _base_disk = _converge_index(
+        _G3_AB, "G3 基线（exts=默认全语言，skip-dirs 空，stack 关）")
     print("[G3] 基线 status: state=ready exts=%r indexedFiles=%r；落盘索引命中集合字面全等 %d 个"
           % (base.get("exts"), base.get("indexedFiles"), len(_G3_AB)), flush=True)
 
     # ── 步骤 A：exts=".go"（+清空 skip-dirs）──
     cg_save({"exts": ".go", "skip-dirs": "", "stack-gitignore": "false"})
     cg_index()
-    a = wait_status(lambda o: o.get("state") == "ready" and o.get("exts") == [".go"],
-                    "exts=.go 重建完成")
+    a, _a_disk = _converge_index(
+        _G3_AB, "G3 A（exts=.go，skip-dirs 空，stack 关）",
+        status_pred=lambda o: o.get("exts") == [".go"])
     if prj().get("plugins.codegraph.exts") != ".go" or \
        prj().get("plugins.codegraph.skip-dirs") not in (None, ""):
         raise TestError("A：prj 回读不符（exts=%r skip-dirs=%r）"
                         % (prj().get("plugins.codegraph.exts"), prj().get("plugins.codegraph.skip-dirs")))
-    if a.get("indexedFiles") != len(_G3_AB):
-        raise TestError("A：exts=.go 后 indexedFiles 应=%d，实际=%r"
-                        % (len(_G3_AB), a.get("indexedFiles")))
-    _want_idx(_G3_AB, "G3 A（exts=.go，skip-dirs 空，stack 关）")
     print("[G3] A exts=.go → status.exts=%r indexedFiles=%r；"
           "落盘索引命中集合字面全等 %d 个（含 gate_src+gate_skip）"
           % (a.get("exts"), a.get("indexedFiles"), len(_G3_AB)), flush=True)
@@ -732,14 +769,11 @@ def case_g3_index_scope():
     # ── 步骤 B：追加 skip-dirs="gate_skip" ──
     cg_save({"exts": ".go", "skip-dirs": "gate_skip"})
     cg_index()
-    b = wait_status(lambda o: o.get("state") == "ready" and "gate_skip" in (o.get("skipDirs") or []),
-                    "skip-dirs=gate_skip 重建完成")
+    b, _b_disk = _converge_index(
+        _G3_B, "G3 B（skip-dirs=gate_skip）",
+        status_pred=lambda o: "gate_skip" in (o.get("skipDirs") or []))
     if prj().get("plugins.codegraph.skip-dirs") != "gate_skip":
         raise TestError("B：prj 回读 skip-dirs=%r" % (prj().get("plugins.codegraph.skip-dirs"),))
-    if b.get("indexedFiles") != len(_G3_B):
-        raise TestError("B：跳过 gate_skip 后 indexedFiles 应=%d，实际=%r"
-                        % (len(_G3_B), b.get("indexedFiles")))
-    _want_idx(_G3_B, "G3 B（skip-dirs=gate_skip）")
     print("[G3] B skip-dirs=gate_skip → status.skipDirs=%r indexedFiles=%r；"
           "落盘索引命中集合字面全等（gate_skip/delta.go 已剔除）"
           % (b.get("skipDirs"), b.get("indexedFiles")), flush=True)
@@ -769,11 +803,13 @@ def case_g4_action_rebuild_retry_clear():
     for action, why in (("重建", "全量重建（= 配置页「立即索引」）"),
                         ("重试", "失败后重试（同全量重建，引擎无独立 retry 面）")):
         cg_index()
-        st = wait_status(lambda o: o.get("state") == "ready", "%s后回到 ready" % action)
+        # 关键：不能 `wait_status(state=ready)` 单次采样——触发重建后 status 仍是**上一轮**的
+        # ready 快照（2026-11-07 批跑实测读到旧 indexedFiles=6，期望 5）。改为等「status 计数
+        # == 落盘命中集合 == _G3_B」同时收敛，超时带现场快照。
+        st, disk = _converge_index(_G3_B, "%s后索引（配置未变，期望 %d）" % (action, len(_G3_B)))
         if st.get("indexedFiles") != len(_G3_B):
             raise TestError("%s：indexedFiles 应=%d（配置未变），实际=%r"
                             % (action, len(_G3_B), st.get("indexedFiles")))
-        disk = _want_idx(_G3_B, "%s后落盘索引" % action)
         if st.get("indexedFiles") != len(disk):
             raise TestError("%s：status.indexedFiles=%r ≠ 落盘 files=%d（须由同一快照派生）"
                             % (action, st.get("indexedFiles"), len(disk)))
@@ -791,7 +827,15 @@ def case_g4_action_rebuild_retry_clear():
         time.sleep(0.3)
     if os.path.isfile(IDX_DB):
         raise TestError("clear 后索引库 index.db 应被删除：%s" % IDX_DB)
-    _want_idx(_CLEAR, "G4 clear 后落盘索引（应为空集）")
+    # 落盘空集同样有界轮询（查询面可能仍读到清理前的缓存）；clear 不重建 → 不调用 cg_index。
+    clear_deadline = time.time() + 30
+    got = _idx_files()
+    while time.time() < clear_deadline and got != _CLEAR:
+        time.sleep(0.2)
+        got = _idx_files()
+    if got != _CLEAR:
+        raise TestError("G4 clear 后落盘索引应为空集（等待 30s），实际=%r；status=%r"
+                        % (sorted(got), status_obj()))
     st = wait_status(lambda o: (not o.get("state")) and int(o.get("indexedFiles") or 0) == 0,
                      "clear 后 status 回未初始化")
     print("[G4] clear → index.db 已删除、落盘为空集；status state=%r indexedFiles=%r"
@@ -900,20 +944,18 @@ def case_g7_codegraph_stack_gitignore():
     cg_save({"exts": ".go", "skip-dirs": "", "stack-gitignore": "true"})
     cg_index()
 
-    st = wait_status(lambda o: o.get("state") == "ready" and o.get("stackGitignore") is True
-                     and not (o.get("skipDirs") or []),
-                     "叠加 gitignore 勾选后重建完成（stackGitignore=true）")
+    st, _disk = _converge_index(
+        _G7, "G7 勾选叠加 gitignore（.gitignore 文件级排除 + '!' 反选 + 目录剪枝）",
+        status_pred=lambda o: o.get("stackGitignore") is True and not (o.get("skipDirs") or []))
     if prj().get("plugins.codegraph.stack-gitignore") != "true":
         raise TestError("A：prj stack-gitignore=%r，期望 'true'"
                         % (prj().get("plugins.codegraph.stack-gitignore"),))
     if (st.get("skipDirs") or []):
         raise TestError("A：勾选 stack-gitignore 时用户规则应为空，实际 skipDirs=%r"
                         % (st.get("skipDirs"),))
-
     if st.get("indexedFiles") != len(_G7):
         raise TestError("B：勾选后 indexedFiles 应=%d，实际=%r"
                         % (len(_G7), st.get("indexedFiles")))
-    _want_idx(_G7, "G7 勾选叠加 gitignore（.gitignore 文件级排除 + '!' 反选 + 目录剪枝）")
     print("[G7] 勾选叠加 gitignore → A: stack-gitignore=%r stackGitignore=%r skipDirs=%r；"
           "B: 落盘索引命中集合字面全等（含 keep/special、不含 gen.gen/sub/u），indexedFiles=%r"
           % (prj().get("plugins.codegraph.stack-gitignore"), st.get("stackGitignore"),

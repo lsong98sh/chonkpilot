@@ -108,9 +108,11 @@
                 :resource-options="resourceOptions"
                 :mcp-resources="mcpResources"
                 :optimizing="optimizing"
+                :can-recover-optimize="hasOptimizeSnapshot(selectedAgent._key)"
                 :show-copy="false"
                 @update:agent="updateAgentField"
                 @optimize="handleOptimize"
+                @recover-optimize="handleRecoverOptimize"
               />
             </div>
             <div v-else class="empty-state">
@@ -183,6 +185,9 @@ const optimizing = ref(false)
 // E-27：优化订阅句柄（内部 3 个 mq.on + guiReq 兜底仅在 done/error 自退订）→ 卸载时主动 abort，
 // 防止流进行中关闭弹框后订阅残留（闭包持组件 ref，残留 onToken 会写回已关闭表单）。
 let optimizeAbort = null
+// SCEN-005-S02【恢复优化】：按 agent._key 保存「优化前提示词」快照；仅真正开始优化前写入，
+// 优化完成/失败都保留。恢复 = 回填草稿（不自动落库，与 TextEditDialog 同口径）。
+const optimizeSnapshots = ref(new Map())
 const form = ref({ name: '', description: '' })
 const agents = ref([])
 const selectedAgentIdx = ref(-1)
@@ -401,7 +406,9 @@ async function handleSaveAs() {
  * agent-wizard 路径）。本地动作 @click，不新增 MQ 主题；防重入由打开助手的模块级 flag 承担。
  */
 function handleWizard() {
-  openScenarioWizard({})
+  // origin=editor：向导「其他」模式的「进入场景编辑」只需关闭向导回到本编辑器，
+  // 不再新开一个场景编辑器（避免同层两个编辑弹窗）。
+  openScenarioWizard({ origin: 'editor' })
 }
 
 /**
@@ -569,6 +576,8 @@ function handleOptimize() {
     return
   }
   const key = agent._key
+  // 快照只在真正发起优化前保存（空 prompt 已在上方返回）；重复优化以本次优化前内容为准。
+  optimizeSnapshots.value.set(key, agent.prompt)
   optimizing.value = true
   optimizeAbort = optimizeAgentPrompt(
     {
@@ -590,6 +599,23 @@ function handleOptimize() {
       message.error(t('common.optimize_failed') + ': ' + err)
     },
   )
+}
+
+// 【恢复优化】：把当前 agent.prompt 回填为优化前快照，并清空该 agent 的快照。
+// 恢复后仍是草稿态 —— 是否落库由用户点顶部【保存】决定（不自动保存）。
+function hasOptimizeSnapshot(key) {
+  return !!key && optimizeSnapshots.value.has(key)
+}
+
+function handleRecoverOptimize() {
+  if (optimizing.value) return
+  const idx = selectedAgentIdx.value
+  if (idx < 0 || idx >= agents.value.length) return
+  const agent = agents.value[idx]
+  const key = agent._key
+  if (!optimizeSnapshots.value.has(key)) return
+  agent.prompt = optimizeSnapshots.value.get(key)
+  optimizeSnapshots.value.delete(key)
 }
 
 onMounted(async () => {

@@ -465,7 +465,9 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
 /* 能力值 = 0（不具备，不参与 auto 档位调度）的就地提示 */
 .cap-zero-hint {
   font-size: 12px;
-  color: var(--warning, #e6a23c);
+  /* --warning 作为正文色在 light 底上仅 ~2.2:1；与正文色混合后三主题都可读
+     （light 压深为琥珀色 / dark·nord 提亮），仍保留「告警」色相。 */
+  color: color-mix(in srgb, var(--warning, #e6a23c) 55%, var(--text-primary));
 }
 /* AI 填充（AICFG-1）：自然语言输入 + 【AI 填充】按钮 + 提示/结果行 */
 .ai-fill {

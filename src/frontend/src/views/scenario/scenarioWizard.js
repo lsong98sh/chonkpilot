@@ -15,8 +15,8 @@ let _autoOpened = false
 
 /**
  * 打开场景向导对话框。
- * @param {{reason?:string, work_dir?:string, workDir?:string, spec_path?:string, specPath?:string}} [payload]
- *        来自 `agent-wizard` 事件（reason/work_dir/spec_path）或手动入口（可空）。
+ * @param {{reason?:string, work_dir?:string, workDir?:string, spec_path?:string, specPath?:string, origin?:string}} [payload]
+ *        来自 `agent-wizard` 事件（reason/work_dir/spec_path）或手动入口（可空；`origin='editor'` 表示从场景编辑器内打开）。
  * @returns {object|null} DialogManager handle；已在打开中时返回 null。
  */
 export function openScenarioWizard(payload = {}) {
@@ -29,6 +29,7 @@ export function openScenarioWizard(payload = {}) {
         reason: payload.reason || '',
         workDir: payload.work_dir || payload.workDir || '',
         specPath: payload.spec_path || payload.specPath || '',
+        origin: payload.origin || '',
         // 关闭请求（底部【关闭】按钮）→ 关闭对话框；不写任何文件。
         requestClose: () => { if (handle) handle.close() },
         // 已关闭（onUnmounted）→ 复位防重入 flag。

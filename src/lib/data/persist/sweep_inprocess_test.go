@@ -15,9 +15,8 @@ import (
 // TestNoStaleSweepInMergedForm：默认构建 Start 后无扫描 goroutine（sweepStop = nil）；
 // 即使实例心跳陈旧（远超 90s 阈值），等待数个"若存在扫描即会触发"的窗口后绑定依然保留。
 func TestNoStaleSweepInMergedForm(t *testing.T) {
-	// 数据目录先于服务创建：清理顺序 LIFO → data.Reset（关连接）先于 TempDir RemoveAll 执行。
-	wd, dd := t.TempDir(), t.TempDir()
-	s := newSweepTestService(t)
+	// workDir/dataDir 由 helper 创建：清理顺序 LIFO → Stop → data.Reset（关连接）→ TempDir RemoveAll。
+	s, wd, dd := newSweepTestService(t)
 	if err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

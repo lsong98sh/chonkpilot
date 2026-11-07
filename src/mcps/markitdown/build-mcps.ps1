@@ -1,6 +1,6 @@
 # build-mcps.ps1：冻结 ChonkPilot 文档转换服务（mcps/markitdown）为 PyInstaller 产物
 #
-# 产物布局（dist/desktop/mcps/markitdown/）：
+# 产物布局（dist/mcps/markitdown/；与 docsprobe.go 探测的 `<产品根>/mcps/markitdown/state.json` 一致）：
 #   ├── markitdown-mcp.exe        # PyInstaller 冻结产物（MCP + /vfts 双入口，只监听 127.0.0.1）
 #   │                             #   默认 --onedir（目录模式）；-Onefile 时改为单文件
 #   ├── _internal/                # onedir 依赖目录（仅默认模式产出；-Onefile 时不产出）
@@ -31,7 +31,9 @@ $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path                                   # src\mcps\markitdown
 $repoRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $here))            # 仓库根
 $venvPy = Join-Path $here ".venv\Scripts\python.exe"
-$dist = Join-Path $repoRoot "dist\desktop\mcps\markitdown"
+# 现行扁平发行根（2026-11-02 起无 dist/desktop/）：投放点 = <产品根>/mcps/markitdown，
+# 与插件 docsprobe 的候选状态文件 `<产品根>/mcps/markitdown/state.json` 同构。
+$dist = Join-Path $repoRoot "dist\mcps\markitdown"
 $work = Join-Path $here "build"
 
 # ── 破坏性操作防护（2026-10-11；本仓曾发生误删用户主目录事故，见 .trae/rules 全局规则）──

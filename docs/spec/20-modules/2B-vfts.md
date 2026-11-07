@@ -103,7 +103,7 @@
 - **查询工具**：`vfts_query` 新增可选 `scope`（`file` 默认 \| `session`）+ `session_id?`（缺省 = `_meta.chonkpilot.session`，回退 `top_session`）+ `role?`；`scope=session` 返回 `hits[{session_id, dialog_id, turn_id, message_id, role, ts, snippet, score}]`（**必须带 `snippet` 正文片段**，只回 id 不可用）。
 - **工具表面不带 `workdir`**（修正历史偏差）：`vfts_query` 的 `workdir` 由插件从 `_meta.chonkpilot.work_dir` 注入（gateway `contextmeta.go` 已透传），缺失回退「当前唯一实例」，仍缺失则明确失败；管理工具（`vfts_configure`/`vfts_index`/`vfts_status`）仍带 `workdir`（LLM 不可见）。
 - **配置键**：`plugins.codegraph.vfts.sessions`（`"true"`/`"false"`，缺省关闭）。
-- **UI 入口通道（2026-11-01 E2E 订正）**：会话内查找（`vfts.session.query`）与全量重建（`vfts.session.reindex`）在 codegraph 插件里以 `OnRequest` 注册 → 实际走**插件 UI 动作面**（前端 `mq.emit('plugin-call',{id:'codegraph',method:'rpc',params:{method,params}})` → 宿主 `plugin.ui.rpc` → 插件 `OnRequest` 同名方法）。**总线无同名订阅**（原「点分主题」写法会得到 `null` 应答）。`vfts.reindex` 语义不变（仅文件索引）。
+- **UI 入口通道（2026-11-01 E2E 订正）**：会话内查找（`vfts.session.query`）与全量重建（`vfts.session.reindex`）在 codegraph 插件里以 `OnRequest` 注册 → 实际走**插件 UI 动作面**（前端 `mq.emit('plugin-call',{id:'codegraph',method:'rpc',params:{method,params}})` → 宿主 `plugin.ui.rpc` → 插件 `OnRequest` 同名方法）。**总线无同名订阅**（原「点分主题」写法会得到 `null` 应答）。`vfts.reindex` 语义不变（仅文件索引）。**2026-11-05**：两个方法已补进 codegraph `manifest.json` 的 `ui.rpc` 白名单（`plugin-call` 未声明即拒绝）。
 
 ---
 

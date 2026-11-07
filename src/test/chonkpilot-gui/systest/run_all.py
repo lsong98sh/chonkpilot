@@ -170,6 +170,11 @@ def _run_script(path):
     """
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"  # PIPE 下子进程默认块缓冲 → 逐行刷新以保实时性
+    # 批跑基线语言（2026-11-07）：usr `ui.locale` 机器级共享，套件间会互相污染 →
+    # 每个子套件从**确定基线**（zh-CN）起跑；需要 en-US 的套件在套件内显式 ensure_locale。
+    # `_DONE` 每子进程独立（env 不共享）→ 同套件中途重启不重复归一。
+    env["CHONK_TEST_LOCALE"] = "zh-CN"
+    env.pop("CHONK_TEST_LOCALE_DONE", None)
     r = subprocess.Popen([sys.executable, path], cwd=HERE, env=env,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     buf = getattr(sys.stdout, "buffer", None)

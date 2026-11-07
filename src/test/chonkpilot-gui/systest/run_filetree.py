@@ -6,6 +6,7 @@
 断言：/exists /text 查 DOM + /console 查前端错误。
 """
 
+import json
 import os
 import sys
 import time
@@ -14,14 +15,15 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 from chonk_client import ChonkClient, TestError, run_case
 
-# 仓库根 = systest 上溯四级（systest → chonkpilot-gui → test → src → 仓库根）。
-_ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", "..", ".."))
+# 仓库根布局：发行产物 = dist/chonkpilot.exe（2026-11-02 扁平化；由 harness.resolve_gui_exe 解析）。
 WS = os.path.join(_HERE, "ws")
 WS_POSIX = WS.replace("\\", "/")
-IDE_EXE = os.path.join(_ROOT, "dist", "desktop", "chonkpilot.exe")
 # GUI 窗口标题 = `chonkpilot-<work_dir 名>`（gui.MainWindowTitle：固定任务栏标题，不随会话变化）。
 WIN_TITLE = "chonkpilot-" + os.path.basename(WS)
 import harness as _h  # 按需加载 + 结束即回收（见 harness.py / 51-FP与测试映射 §测试资源规范）
+# 发行根布局随 2026-11-02 扁平化：dist/chonkpilot.exe（旧 dist/desktop/ 已删除）。
+# 用 harness 唯一解析口径（含旧布局/开发布局兜底），C6 重启不再指向不存在的 exe。
+IDE_EXE = _h.resolve_gui_exe()
 _G = _h.acquire_gui(2345, work_dir=WS)  # 复用优先；无实例则自起并在结束时回收
 c = _G.client
 _h.suite_config_guard(c)  # 套件级配置快照-还原（51 §6-8）：filetree-*/opened-files/window.* 退出前回滚
@@ -54,6 +56,40 @@ def wait_tree(rel, present=True, max_wait=15):
 def dir_expanded(rel_path):
     """目录是否已展开。"""
     return c.exists(tree_sel(rel_path) + " .arrow svg.expanded").get("count", 0) > 0
+
+
+def _js(js, timeout=10000):
+    """eval 并解包（测试通道可能把数组/对象序列化为 JSON 字符串）。"""
+    v = c.eval(js, timeout)
+    for _ in range(4):
+        if not isinstance(v, str):
+            return v
+        try:
+            v = json.loads(v)
+        except Exception:
+            return v
+    return v
+
+
+def expanded_dirs():
+    """当前 DOM 中所有「已展开目录」的 work-dir 相对路径集合（正斜杠）。
+
+    判据 = `.tree-row` 内的 `.arrow svg.expanded`（与 dir_expanded 同一事实源），
+    用集合做**精确比对**（既不漏，也不多）。
+    """
+    js = ("([...document.querySelectorAll('.tree-row .arrow svg.expanded')]"
+          ".map(s=>{const r=s.closest('.tree-row');return r?r.getAttribute('data-path'):null})"
+          ".filter(Boolean))")
+    out = set()
+    for raw in (_js(js) or []):
+        p = str(raw).replace("\\", "/")
+        if p == WS_POSIX or p.startswith(WS_POSIX + "/"):
+            rel = p[len(WS_POSIX) + 1:] if len(p) > len(WS_POSIX) else ""
+            if rel:
+                out.add(rel)
+        else:
+            out.add(p)  # 越界节点原样保留 → 精确比对会报出（不静默吞）
+    return out
 
 
 def expand_dir(rel_path):
@@ -486,26 +522,74 @@ def _graceful_quit(port=2345, timeout=20):
     _wait_ide_down(timeout)
 
 
+def _wait_restart_ready(proc, timeout=60):
+    """重启就绪栅栏：**进程存活** + `/ping ready` + 主视图挂载 + UI 线程空闲。
+
+    只用 `/ping ready` 会漏「ready 早于首屏 bundle / 文件树首扫」的窗口（见 harness.GUIHandle
+    启动栏栅注释）；C6 重启后的首个断言就是 DOM 树，故必须等到可稳定 eval。
+    进程已退出 → 立即报明确错误（而不是后面 console/wait_ready 连锁 `10061`）。
+    """
+    deadline = time.time() + timeout
+    last = None
+    got_ready = False
+    while time.time() < deadline:
+        if proc is not None and not proc.alive():
+            raise TestError("重启实例进程已退出（exit=%r）→ 检查 GUI 产物/启动参数"
+                            % (getattr(proc.proc, "returncode", None),))
+        try:
+            p = c.ping()
+            if p.get("ok") and p.get("ready"):
+                got_ready = True
+                break
+        except Exception as e:
+            last = e
+        time.sleep(0.5)
+    if not got_ready:
+        raise TestError("重启后 IDE 测试通道 %ss 内未就绪（末次 %r）" % (timeout, last))
+    if proc is not None and not proc.alive():
+        raise TestError("重启实例在 /ping ready 后立即退出")
+    if not _h.wait_probe(c, ["!!document.querySelector('.panel-inner')"], timeout=30.0):
+        raise TestError("重启后主视图未挂载（.panel-inner 不存在）")
+    _h.wait_idle(c, max_wait=30.0)
+
+
 def case_persistence_restart():
-    """C6 filetree 状态持久化：展开 a/b/c/d → 优雅退出（/quit）→ 脚本重启 → 展开状态恢复。"""
+    """C6 filetree 状态持久化：展开 a/b/c/d → 优雅退出（/quit）→ 脚本重启 → 展开状态精确恢复。
+
+    断言按**期望值**：重启后已展开目录集合 == {a, a/b, a/b/c, a/b/c/d}（精确集合比对，
+    不多不少）；页签/展开恢复来自同一份 prjusr `filetree-expanded-key` 快照。
+    """
     # 1. 展开目录链（触发 filetree-data 快照写入 config 桶）
     expand_dir("a")
     expand_dir(os.path.join("a", "b"))
     expand_dir(os.path.join("a", "b", "c"))
     expand_dir(os.path.join("a", "b", "c", "d"))
     wait_tree(os.path.join("a", "b", "c", "d", "f1.txt"))
+    want_expanded = {"a", "a/b", "a/b/c", "a/b/c/d"}
+    got = expanded_dirs()
+    if got != want_expanded:
+        raise TestError("重启前展开集合不符（期望 %r）：%r" % (sorted(want_expanded), sorted(got)))
     time.sleep(3)  # 快照落库
     # 2. 优雅退出（测试通道 /quit；关主窗按 PRODSIM-1 只终止项目、进程常驻托盘）
     _graceful_quit(2345, 30)
+    # 单调就绪栅栏：旧实例 HTTP 已拒答 ≠ 端口已释放（新实例抢端口会静默失败）
+    if not _h.wait_port_free(2345):
+        raise TestError("/quit 后 15s 内端口 2345 未释放（重启会抢端口失败）")
     # 3. 脚本重启 IDE（同一 workdir + test-port）；经 harness 自起 → 结束即回收
     # 夹具：预置工程规格文件 → 抑制场景向导启动自动弹出（本实例走 popen_own，不经 harness.start_gui）
+    if not os.path.isfile(IDE_EXE):
+        raise TestError("重启用 GUI 产物不存在：%s（发行根应为 dist/chonkpilot.exe）" % IDE_EXE)
     _h.ensure_project_spec(WS)
-    _h.popen_own([IDE_EXE, "--test-port=2345", "--work-dir=" + WS],
-                 name="gui:filetree-restart", cwd=os.path.dirname(IDE_EXE))
-    c.wait_ready(60)
-    # 4. 断言展开状态恢复（快照递归保存展开节点）
+    restart = _h.popen_own([IDE_EXE, "--test-port=2345", "--work-dir=" + WS],
+                           name="gui:filetree-restart", cwd=os.path.dirname(IDE_EXE))
+    _wait_restart_ready(restart, timeout=60)
+    # 4. 断言展开状态精确恢复（快照递归保存展开节点）
     wait_tree(os.path.join("a", "b", "c", "d", "f1.txt"), max_wait=30)
-    for rel in ["a", os.path.join("a", "b"), os.path.join("a", "b", "c"), os.path.join("a", "b", "c", "d")]:
+    recovered = expanded_dirs()
+    if recovered != want_expanded:
+        raise TestError("重启后展开集合不符（期望 %r）：%r"
+                        % (sorted(want_expanded), sorted(recovered)))
+    for rel in sorted(want_expanded):
         if not dir_expanded(rel):
             raise TestError(f"重启后目录未恢复展开: {rel}")
     # 收尾：折叠回初始态

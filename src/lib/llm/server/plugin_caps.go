@@ -104,7 +104,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		return map[string]any{"ok": true}, nil
 	})
 
-	// task.cancel / task.result：tool_stop / tool_result 的原子能力。
+	// task.cancel / task.result：task_stop / tool_result 的原子能力。
 	reg.Register("plugin/v1/task.cancel", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
 		var in struct {
 			InstanceID string `json:"instance_id"`
@@ -136,28 +136,52 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		text, state, partial, found := s.taskResultDetail(tc, in.ID)
 		return map[string]any{"text": text, "state": state, "found": found, "partial": partial}, nil
 	})
+	// task.wait：跨进程 tool_result 的**终态事件等待**（2026-11-06，统一异步 §10.1 P2）。
+	// 插件桥能力面（非 MQ 话题）：复用 task-done / mcp-tasks-report / session-complete 三个既有事件，
+	// 到点或终态即返；调用方据此循环，不再 500ms→2s 退避轮询。timeout<=0 = 只查询一次。
+	reg.Register("plugin/v1/task.wait", func(ctx context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
+		var in struct {
+			InstanceID string  `json:"instance_id"`
+			Turn       string  `json:"turn"`
+			ID         string  `json:"id"`
+			Timeout    float64 `json:"timeout"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, err
+		}
+		tc := s.lookupTurnIn(in.InstanceID, in.Turn)
+		if tc == nil {
+			return nil, &pluginbridge.Error{Code: "turn_not_found", Msg: "turn 不存在或已结束"}
+		}
+		wait := time.Duration(in.Timeout * float64(time.Second))
+		if wait < 0 {
+			wait = 0
+		}
+		text, state, partial, found := s.waitTaskResult(ctx, tc, in.ID, wait)
+		return map[string]any{"text": text, "state": state, "found": found, "partial": partial}, nil
+	})
 
 	// agent.delegate：**全能力委派子代理**（task_llm 的原子能力，2026-11-04）。
 	//
 	// 起一个完整子轮次（子会话 + 全工具面 + 同构 turnCtx 状态机，可再委派下一级），
 	// 调用方可等 wait_sec 后取结果（0 = 一直等到收尾；detach=true = 立即返回 running）。
-	// 子轮次使用独立 ctx —— 父轮次正常收尾不取消它；取消经 task_stop/tool_stop 关闭。
+	// 子轮次使用独立 ctx —— 父轮次正常收尾不取消它；取消经 task_stop 关闭。
 	//
 	// 任务树：父调用节点下挂一个 kind=llm 子节点（SessionID/TurnID = 子轮次），
 	// 子轮次内的工具节点再挂在该节点下（多层工具调用可见、可级联取消）。
 	reg.Register("plugin/v1/agent.delegate", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
 		var in struct {
-			InstanceID string `json:"instance_id"`
-			Turn       string `json:"turn"`
-			Session    string `json:"session"`
-			ToolCallID string `json:"tool_call_id"`
-			Prompt     string `json:"prompt"`
-			Agent      string `json:"agent"`
-			SessionID  string `json:"session_id"`
-			Title      string `json:"title"`
-			Purpose    string `json:"purpose"`
+			InstanceID string  `json:"instance_id"`
+			Turn       string  `json:"turn"`
+			Session    string  `json:"session"`
+			ToolCallID string  `json:"tool_call_id"`
+			Prompt     string  `json:"prompt"`
+			Agent      string  `json:"agent"`
+			SessionID  string  `json:"session_id"`
+			Title      string  `json:"title"`
+			Purpose    string  `json:"purpose"`
 			WaitSec    float64 `json:"wait_sec"`
-			Detach     bool   `json:"detach"`
+			Detach     bool    `json:"detach"`
 		}
 		if err := json.Unmarshal(args, &in); err != nil {
 			return nil, err
@@ -202,19 +226,17 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 			return nil, &pluginbridge.Error{Code: "delegate_failed", Msg: nerr.Error()}
 		}
 		// 后台收尾：子轮次结束后推进节点终态（被 task_stop 取消时节点已终态，done 幂等）。
+		// 终态映射与同步返回共用一处（incomplete/cancelled 不得落 done）。
 		go func() {
 			defer s.forgetDelegated(tc.req.InstanceID, tc.req.Turn, h.Turn)
-			text, werr := h.wait(context.Background())
-			if werr != nil {
-				s.tasks.done(node.TaskID, TaskStateError, "", werr.Error())
-				return
-			}
-			s.tasks.done(node.TaskID, TaskStateDone, text, "")
+			out, werr := h.wait(context.Background())
+			s.finalizeDelegatedNode(node, out, werr)
 		}()
 
+		// running 不携带 partial：主 LLM 只应看到「仍在运行」，正文经 task_status 显式查询。
 		running := map[string]any{
 			"ok": true, "session_id": h.Session, "turn_id": h.Turn, "task_id": node.TaskID,
-			"state": "running", "partial": s.partialTurnText(tc.req.InstanceID, h.Turn),
+			"state": "running", "message": "子代理仍在运行；结果请用 task_status(task_id=…) 获取",
 		}
 		if in.Detach {
 			return running, nil
@@ -224,40 +246,10 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 			wait = time.Duration(in.WaitSec * float64(time.Second))
 		}
 		if !delegatedWait(h, wait) {
-			running["partial"] = s.partialTurnText(tc.req.InstanceID, h.Turn)
 			return running, nil
 		}
-		// 收尾竞态：后台 goroutine 可能刚把结果写回节点，等待其可见。
-		text, werr := h.wait(context.Background())
-		if werr != nil {
-			return map[string]any{
-				"ok": false, "session_id": h.Session, "turn_id": h.Turn, "task_id": node.TaskID,
-				"state": "error", "error": werr.Error(),
-			}, nil
-		}
-		return map[string]any{
-			"ok": true, "session_id": h.Session, "turn_id": h.Turn, "task_id": node.TaskID,
-			"state": "done", "text": text,
-		}, nil
-	})
-
-	// tool.stop：tool_stop 的完整语义（终态判定 / 执行池门控 / process_id 拒绝）留在
-	// server（任务层是唯一权威）；外部进程只转发 args 并采用返回文本。
-	reg.Register("plugin/v1/tool.stop", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
-		var in struct {
-			InstanceID string         `json:"instance_id"`
-			Turn       string         `json:"turn"`
-			Args       map[string]any `json:"args"`
-		}
-		if err := json.Unmarshal(args, &in); err != nil {
-			return nil, err
-		}
-		tc := s.lookupTurnIn(in.InstanceID, in.Turn)
-		if tc == nil {
-			return nil, &pluginbridge.Error{Code: "turn_not_found", Msg: "turn 不存在或已结束"}
-		}
-		text, isErr := s.runToolStop(tc, nil, in.Args)
-		return map[string]any{"text": text, "is_error": isErr}, nil
+		out, werr := h.wait(context.Background())
+		return delegatedWireResult(h, node, out, werr), nil
 	})
 
 	// ask.user：外部工具把提问交回 server 的 ask 通道（等用户回答 / 回填 turn）。
@@ -399,7 +391,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if dialogID == "" {
 			dialogID = s.dialogOf(instanceID, in.SessionID)
 		}
-		if err := newSessionStore(s.bus, instanceID).EnsureTurnInDialog(in.TurnID, in.SessionID, dialogID); err != nil {
+		if err := s.newSessionStore(instanceID).EnsureTurnInDialog(in.TurnID, in.SessionID, dialogID); err != nil {
 			return nil, &pluginbridge.Error{Code: "turn_ensure_failed", Msg: err.Error()}
 		}
 		return map[string]any{"ok": true, "turn_id": in.TurnID, "session_id": in.SessionID, "dialog_id": dialogID}, nil
@@ -427,7 +419,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if instanceID == "" {
 			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "未找到该项目的主窗口实例"}
 		}
-		if err := newSessionStore(s.bus, instanceID).CompleteTurnInDialog(in.TurnID, strings.TrimSpace(in.DialogID), status, in.FinishReason); err != nil {
+		if err := s.newSessionStore(instanceID).CompleteTurnInDialog(in.TurnID, strings.TrimSpace(in.DialogID), status, in.FinishReason); err != nil {
 			return nil, &pluginbridge.Error{Code: "turn_complete_failed", Msg: err.Error()}
 		}
 		return map[string]any{"ok": true}, nil
@@ -448,6 +440,54 @@ func (s *Server) resolveInstanceForWorkDir(instanceID, workDir string) string {
 		return id
 	}
 	return ""
+}
+
+// finalizeDelegatedNode 把子轮次真实终态映射到 kind=llm 任务节点：
+// 只有 complete（且有正文）才是 done；incomplete / interrupted / cancelled / error 一律非 done。
+func (s *Server) finalizeDelegatedNode(node *TaskNode, out childOutcome, werr error) {
+	if node == nil {
+		return
+	}
+	switch {
+	case werr != nil:
+		s.tasks.done(node.TaskID, TaskStateError, "", werr.Error())
+	case out.Status == "complete" && strings.TrimSpace(out.Text) != "":
+		s.tasks.done(node.TaskID, TaskStateDone, out.Text, "")
+	case out.Status == "incomplete":
+		s.tasks.done(node.TaskID, TaskStateError, "", "子代理输出不完整（"+out.Status+"）")
+	case out.Status == "cancelled" || out.Status == "interrupted":
+		s.tasks.done(node.TaskID, TaskStateCancelled, "", "子代理未完成（"+out.Status+"）")
+	case out.Status == "complete":
+		s.tasks.done(node.TaskID, TaskStateError, "", "子代理返回空回复")
+	default:
+		s.tasks.done(node.TaskID, TaskStateError, "", "子代理未完成（"+out.Status+"）")
+	}
+}
+
+// delegatedWireResult 把子轮次终态映射为 agent.delegate 的返回体（主 LLM 直接消费）：
+// 只有 complete 带 text；incomplete 带 code + partial（明确非终态正文）；
+// interrupted/cancelled 明确 state=cancelled；error 明确 state=error。
+func delegatedWireResult(h *childTurn, node *TaskNode, out childOutcome, werr error) map[string]any {
+	m := map[string]any{"session_id": h.Session, "turn_id": h.Turn, "task_id": node.TaskID}
+	switch {
+	case werr != nil:
+		m["ok"], m["state"], m["error"] = false, "error", werr.Error()
+	case out.Status == "complete" && strings.TrimSpace(out.Text) != "":
+		m["ok"], m["state"], m["text"] = true, "done", out.Text
+	case out.Status == "incomplete":
+		m["ok"], m["state"], m["code"] = false, "error", "LLM_INCOMPLETE"
+		m["error"] = "子代理输出不完整"
+		if strings.TrimSpace(out.Text) != "" {
+			m["partial"] = out.Text
+		}
+	case out.Status == "cancelled" || out.Status == "interrupted":
+		m["ok"], m["state"], m["error"] = false, "cancelled", "子代理未完成（"+out.Status+"）"
+	case out.Status == "complete":
+		m["ok"], m["state"], m["code"], m["error"] = false, "error", "EMPTY_REPLY", "子代理返回空回复"
+	default:
+		m["ok"], m["state"], m["error"] = false, "error", "子代理未完成（"+out.Status+"）"
+	}
+	return m
 }
 
 // oneLine 把文本压成单行并按 rune 截断（委派子代理任务节点标题用；不改变原文语义）。

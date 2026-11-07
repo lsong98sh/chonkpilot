@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -90,6 +91,29 @@ func waitTool(t *testing.T, s *Server, name string, want bool, timeout time.Dura
 	}
 }
 
+// waitCapWatched 等待 capWatcher 已对该根建立监听（AddPath 收口）。instance-register 的
+// 注册链在后台「先 register 再 watchInstance」，工具面已可见不代表监听已建立；用例若在
+// AddPath 前保存，事件面天然看不到已存在文件（Windows 尤其明显），会把测试同步缺陷误判为
+// 热生效缺陷。保存前等待监听就绪，保持「保存 → 热生效」的既有语义。
+func waitCapWatched(t *testing.T, cw *capWatcher, root string, timeout time.Duration) {
+	t.Helper()
+	if cw == nil {
+		t.Fatal("capability watcher 未启动")
+	}
+	root = normPath(root)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		cw.mu.Lock()
+		_, watched := cw.synced[root]
+		cw.mu.Unlock()
+		if watched {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("capability 根未在超时内建立监听: %s", root)
+}
+
 // TestCapabilityHotReload T-21：项目级原语保存（新增/删除 *.tool.md）后，工具面在
 // 数十毫秒级热生效——目录监听 → 去抖重扫 → servers/register 重新扫描契约。
 func TestCapabilityHotReload(t *testing.T) {
@@ -111,6 +135,7 @@ func TestCapabilityHotReload(t *testing.T) {
 	if _, ok := waitTool(t, s, before, true, 2*time.Second); !ok {
 		t.Fatalf("初始项目级工具未接入 tools/list")
 	}
+	waitCapWatched(t, s.capWatch, prjRoot, 5*time.Second) // 确保「保存」发生在监听建立之后
 
 	// 模拟「保存」：新写一个 hot 契约（等价 data-knowledge-save 落盘）。
 	writeHotToolContract(t, prjRoot, "prj_after")
@@ -135,6 +160,111 @@ func TestCapabilityHotReload(t *testing.T) {
 	if _, ok := waitTool(t, s, before, true, time.Second); !ok {
 		t.Fatalf("重扫误删既有工具: %s", before)
 	}
+}
+
+// startWatchedProjectInstance 建真实内嵌 MCP 栈并注册一个项目级实例：初始工具可见且
+// 项目 capability 根已进入监听。返回后即可精确控制「保存」时点（热生效用例共用）。
+func startWatchedProjectInstance(t *testing.T, instanceID, beforeTool string) (*Server, string) {
+	t.Helper()
+	llm := mockLLMServer()
+	t.Cleanup(llm.Close)
+	s := newTestServerMCP(t, llm)
+	prjRoot := persist.CapProjectRoot(testWorkDir)
+	writeHotToolContract(t, prjRoot, beforeTool)
+	payload := jb(map[string]any{
+		"instance_id": instanceID, "client_type": "unittest", "work_dir": testWorkDir,
+	})
+	s.im.HandleRegister(payload)
+	s.onInstanceRegister("instance-register", payload)
+	before := instanceID + "-project_" + beforeTool
+	if _, ok := waitTool(t, s, before, true, 5*time.Second); !ok {
+		t.Fatalf("初始项目级工具未接入 tools/list: %s", before)
+	}
+	waitCapWatched(t, s.capWatch, prjRoot, 5*time.Second)
+	return s, prjRoot
+}
+
+// TestCapabilityWatchLostEventFallback 事件丢失兜底：模拟 fswatcher 漏投递（Windows 快速保存
+// 写临时文件 + rename 的典型症状），仅靠周期重扫也必须让新工具在一个周期左右进入 tools/list、
+// 删除后退出——证明热生效不会因单次丢事件而永久失效。
+func TestCapabilityWatchLostEventFallback(t *testing.T) {
+	s, prjRoot := startWatchedProjectInstance(t, "ins-lost", "prj_before")
+	cw := s.capWatch
+	// 先让注册前后的既有事件/去抖收口，避免把在途事件误当兜底路径。
+	time.Sleep(capWatchDebounce + 50*time.Millisecond)
+	cw.dropEvents.Store(true) // 此后丢弃全部 fsnotify 事件（只留周期重扫）
+	runs0, ops0 := cw.rescanRuns.Load(), cw.rescanOps.Load()
+
+	writeHotToolContract(t, prjRoot, "prj_lost")
+	after := "ins-lost-project_prj_lost"
+	elapsed, ok := waitTool(t, s, after, true, capWatchRescanInterval+5*time.Second)
+	if !ok {
+		t.Fatalf("事件丢失后新工具未热生效（周期兜底重扫未起作用）")
+	}
+	if cw.rescanRuns.Load() <= runs0 {
+		t.Fatalf("工具生效但周期重扫计数未增长（走的是事件路径？）")
+	}
+	// rescanOps 在该轮 scan 返回后累加（工具面操作先于计数可观测）→ 轮询收口再断言。
+	opsDeadline := time.Now().Add(2 * time.Second)
+	for cw.rescanOps.Load() <= ops0 && time.Now().Before(opsDeadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if cw.rescanOps.Load() <= ops0 {
+		t.Fatalf("周期重扫未产生新节点操作（无法证明差量重扫接入新契约）")
+	}
+	t.Logf("漏事件 → 周期兜底生效耗时 %v（间隔 %v）", elapsed, capWatchRescanInterval)
+
+	// 删除同样只靠周期重扫退出工具面。
+	if err := os.Remove(filepath.Join(prjRoot, "tools", "prj_lost.tool.md")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	runs1 := cw.rescanRuns.Load()
+	elapsed, ok = waitTool(t, s, after, false, capWatchRescanInterval+5*time.Second)
+	if !ok {
+		t.Fatalf("事件丢失后删除未在周期内退出 tools/list")
+	}
+	if cw.rescanRuns.Load() <= runs1 {
+		t.Fatalf("删除生效但周期重扫计数未增长")
+	}
+	t.Logf("漏事件 → 删除退出耗时 %v（间隔 %v）", elapsed, capWatchRescanInterval)
+	if _, ok := waitTool(t, s, "ins-lost-project_prj_before", true, time.Second); !ok {
+		t.Fatalf("周期重扫误删既有工具")
+	}
+}
+
+// TestCapabilityWatchPeriodicRescanNoDuplicate 负例：无任何变更时，周期重扫不得产生重复
+// 节点 / 重复注册（capRootSignature 差量判据 → 零操作），工具面也不得抖动。
+func TestCapabilityWatchPeriodicRescanNoDuplicate(t *testing.T) {
+	s, _ := startWatchedProjectInstance(t, "ins-dup", "prj_dup")
+	cw := s.capWatch
+	tool := "ins-dup-project_prj_dup"
+	cw.dropEvents.Store(true) // 隔离事件路径，只观察周期重扫
+
+	beforeNodes := capDirNodesOf(s, "ins-dup")
+	if len(beforeNodes) != 1 {
+		t.Fatalf("初始 dir 节点数应为 1，got %v", beforeNodes)
+	}
+	runs0, ops0 := cw.rescanRuns.Load(), cw.rescanOps.Load()
+
+	// 静默跨越至少 2 个重扫周期（期间无任何文件变更）。
+	time.Sleep(2*capWatchRescanInterval + 200*time.Millisecond)
+	if delta := cw.rescanRuns.Load() - runs0; delta < 2 {
+		t.Fatalf("周期重扫未按间隔执行: %d 次（间隔 %v）", delta, capWatchRescanInterval)
+	}
+	if delta := cw.rescanOps.Load() - ops0; delta != 0 {
+		t.Fatalf("未变更时周期重扫产生 %d 次重复注册/注销（工具面抖动）", delta)
+	}
+	if afterNodes := capDirNodesOf(s, "ins-dup"); !reflect.DeepEqual(beforeNodes, afterNodes) {
+		t.Fatalf("周期重扫后 dir 节点变化: before=%v after=%v", beforeNodes, afterNodes)
+	}
+	defs, err := s.gc.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if c := countTool(defs, tool); c != 1 {
+		t.Fatalf("未变更时工具 %s 出现 %d 次（重复注册）", tool, c)
+	}
+	t.Logf("周期重扫 %d 次，注册操作 0（无重复节点）", cw.rescanRuns.Load()-runs0)
 }
 
 // TestAppCapabilityHotReload T-21②：系统级 app 根（<exeDir>/capability，内嵌 self 节点承载）

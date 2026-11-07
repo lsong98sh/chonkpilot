@@ -254,10 +254,13 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 	c := srvLoad(t)
 
 	// 本套件**已驱动**的 server 面主题（见 TestServerResultKeysSubsetOfContract /
-	// TestServerEventKeysSubsetOfContract 实际驱动的主题）。
+	// TestServerEventKeysSubsetOfContract / TestAskCenterSubscribeResolveUnsubscribe 实际驱动的主题）。
 	driven := map[string]bool{
 		"llm-start": true, "llm-simple": true,
 		"session-receive": true, "session-complete": true, "session-turn-start": true,
+		// Ask 中心三方法面（2026-11-07）：askcenter_test.go 经内存总线真实驱动
+		// （mock LLM 两条 ask_user → subscribe 快照 / resolve / unsubscribe）。
+		"ask-center-subscribe": true, "ask-center-unsubscribe": true, "ask-resolve": true,
 	}
 
 	entries := []struct {

@@ -117,7 +117,8 @@ function toneOf(state) {
   word-break: break-word;
 }
 .td-empty {
-  color: var(--fg-disabled);
+  /* 同 MemoryStatusDetail：空态提示用 text-muted，禁用色在 light 上仅 1.97:1。 */
+  color: var(--text-muted);
 }
 .td-badge {
   display: inline-flex;

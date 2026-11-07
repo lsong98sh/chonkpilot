@@ -135,9 +135,27 @@ def case_b4_client_proxy():
     try:
         if not _h.wait_port(port, 20):
             raise AssertionError("demo proxy 未在 127.0.0.1:%d 监听" % port)
-        status, data = _post_tcp(port, "/llm/%s/v1/chat/completions" % PROVIDER,
-                                 json.dumps({"model": "mock-model", "stream": False,
-                                             "messages": [{"role": "user", "content": "proxy-smoke"}]}))
+        # 桥 UDS 由 GUI 启动后异步创建：先等 socket 出现（负载下可达数秒），
+        # 否则 proxy 的首次 UDS 连接会被拒 → `RemoteDisconnected`（2026-11-07 全量批跑实测）。
+        deadline = time.time() + 30
+        while time.time() < deadline and not os.path.exists(_ctx["uds"]):
+            time.sleep(0.2)
+        if not os.path.exists(_ctx["uds"]):
+            raise AssertionError("LLM 桥 UDS 未就绪：%s" % _ctx["uds"])
+        # 瞬时 RemoteDisconnected（proxy 侧 dial 竞态）→ 有界重试一次；断言口径不变。
+        last = None
+        for attempt in range(3):
+            try:
+                status, data = _post_tcp(
+                    port, "/llm/%s/v1/chat/completions" % PROVIDER,
+                    json.dumps({"model": "mock-model", "stream": False,
+                                "messages": [{"role": "user", "content": "proxy-smoke"}]}))
+                break
+            except (http.client.RemoteDisconnected, ConnectionError, OSError) as e:
+                last = e
+                time.sleep(1.0)
+        else:
+            raise AssertionError("proxy→UDS 连接失败（3 次）：%r" % (last,))
         if status != 200:
             raise AssertionError("经 proxy 转发状态=%d body=%r" % (status, data[:400]))
         if b"choices" not in data:

@@ -47,8 +47,10 @@ try {
 Write-Host "==> [2/2] verify"
 $probe = Join-Path $dist $dstExe
 if (-not (Test-Path $probe)) { throw "$dstExe missing in $dist" }
-if (-not (Test-Path (Join-Path $dist "capability\executors\chonkpilot-tools-executor.exe"))) {
-    throw "capability executors missing in $dist"
+# D-72（2026-10-31）：内置 executor 已全部退场，capability/executors 不再产出；
+# verify 只校验共享 capability 目录存在（由 build-mcp-server.ps1 铺好）。
+if (-not (Test-Path (Join-Path $dist "capability"))) {
+    throw "capability missing in $dist（先运行 .\build-mcp-server.ps1）"
 }
 Write-Host "    ok: $dstExe + capability staged in $dist"
 

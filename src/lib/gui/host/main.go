@@ -35,6 +35,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/lsong98sh/chonkpilot-framework/host/assetserver"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/tray"
 	"github.com/lsong98sh/chonkpilot-framework/host/gui"
@@ -242,6 +243,20 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 	bus := app.Bus
 	fsys = app.Filesys
 	srv = app.Server
+	// 实例视图变更广播（异步改造 §10.1）：`workdir.ensure` 等隐藏打开后**不再轮询**实例视图，
+	// 改由既有 `instance-register` / `instance-exit` 主题（61 §4.1，零新增主题）唤醒。
+	// 订阅者只做非阻塞 close-and-replace 广播；权威状态仍由 `srv.MainInstanceForWorkDir` 反查。
+	instanceChanges := newInstanceChangeBroadcaster()
+	// 顺序 = 1：**必须晚于** server 实例视图（`instance.Manager` 以 order 0 维护登记）执行，
+	// 否则唤醒方在 im 更新前重查会看到「仍未登记」，而同一事件不会二次唤醒（丢唤醒）。
+	for _, topic := range []string{msgkeys.TopicInstanceRegister, msgkeys.TopicInstanceExit} {
+		if _, err := bus.On(topic, 1, func(_ context.Context, _ string, _ *mq.Value) error {
+			instanceChanges.notify()
+			return nil
+		}); err != nil {
+			slog.Warn("instance change subscription failed（workdir.ensure 退化为仅超时）", "topic", topic, "err", err)
+		}
+	}
 	defer func() {
 		// 只读静态资产端口（UIBRIDGE-1）：独立子系统（无总线 / 无数据依赖），直接关监听。
 		if assetSrv != nil {
@@ -445,6 +460,12 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 	var exitOnce sync.Once
 	requestExit := func() { exitOnce.Do(func() { close(exitCh) }) }
 
+	// 项目集合变更广播（异步改造 §10.1）：无托盘退回路径不再 500ms 轮询项目数。
+	// 每个项目主窗口 `Done()` 关闭（= `windowHost.finish` 收尾）→ 一条 watcher 广播；
+	// 所有打开路径（首个窗口 / 托盘 / gui.dir.open / workdir.ensure）都经 openProjectAs 或
+	// 首次 OpenProject 登记 watcher。
+	projectClosed := newProjectCloseTracker()
+
 	// 项目主窗口（PRODSIM-1：单进程多项目，统一走 OpenProject —— 同 work_dir 唯一）。
 	// 测试通道（--test-port）：仅绑进程内**第一个**主窗口。
 	onProjectWired := func(h *gui.Window) error {
@@ -479,7 +500,7 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 		if perr != nil {
 			return fmt.Errorf("项目数据根解析失败: %w", perr)
 		}
-		_, _, oerr := env.OpenProject(gui.ProjectConfig{
+		h, existed, oerr := env.OpenProject(gui.ProjectConfig{
 			WorkDir:        dir,
 			DataDir:        "",
 			ProjectDataDir: pdd,
@@ -488,7 +509,14 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 			Hidden:         hidden,
 			OnWired:        onProjectWired,
 		})
-		return oerr
+		if oerr != nil {
+			return oerr
+		}
+		if !existed {
+			// 新窗口：关闭时广播项目集合变更（已存在窗口的 Done 只登记一次）。
+			projectClosed.watch(h.Done())
+		}
+		return nil
 	}
 	openProject := func(dir string) error { return openProjectAs(dir, false) }
 	// 回调必须先于**任何窗口创建**注入（createWindow 会把它转给桥的 gui.dir.open）。
@@ -510,15 +538,19 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 	}
 
 	// 首个项目主窗口（**先于日志窗口与插件平台**：用户先看到主视图，插件随后收敛）。
-	if _, _, err := env.OpenProject(gui.ProjectConfig{
+	h, existed, err := env.OpenProject(gui.ProjectConfig{
 		WorkDir:        workDir,
 		DataDir:        dataDirArg,
 		ProjectDataDir: projectDataDir,
 		PrjUsrRoot:     prjUsrRoot,
 		Title:          gui.MainWindowTitle(workDir), // 固定 Taskbar 标题 = chonkpilot-<工程目录名>
 		OnWired:        onProjectWired,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("main window create: %w", err)
+	}
+	if !existed {
+		projectClosed.watch(h.Done())
 	}
 	gui.LogStartupStage("主窗口创建（bridge/WebView2 环境就绪）")
 
@@ -575,8 +607,9 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 				registered: srv.MainInstanceForWorkDir,
 				logf:       func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) },
 				timeout:    workDirEnsureTimeout,
-				poll:       workDirEnsurePoll,
-				sleep:      time.Sleep,
+				// 事件驱动：既有 instance-register / instance-exit 广播（上方订阅）；
+				// 不再 sleep/poll（异步改造 §10.1）。
+				changed: instanceChanges.changed,
 			}
 			// SANDBOX-WRITE-1 P6：数据能力端点（插件不直接开库，C8/C18；方案 §9.1）。
 			// 键空间 = (插件 id, work_dir, user)；跨用户默认拒绝；审计落 `<pluginDataDir>/_audit/audit.jsonl`。
@@ -599,7 +632,7 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 				SandboxResolve: srv.SandboxPolicyForWorkDir,
 				// SANDBOX-WRITE-1 P3：`plugin/v1/workdir.ensure` 宿主实现（隐藏打开，C13/C17）。
 				WorkdirEnsure: func(workDir string, hidden bool) (pluginbridge.WorkdirEnsureResult, error) {
-					id, opened, eerr := ensurer.ensure(workDir, hidden)
+					id, opened, eerr := ensurer.ensure(context.Background(), workDir, hidden)
 					if eerr != nil {
 						return pluginbridge.WorkdirEnsureResult{}, eerr
 					}
@@ -697,7 +730,12 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 	})
 	if trayErr != nil {
 		slog.Warn("tray start failed（无托盘：所有主窗口关闭即退出）", "err", trayErr)
-		waitAllProjectsClosed(env, exitCh)
+		// 事件驱动：项目主窗口 Done → projectClosed 广播；不再 500ms 轮询项目数。
+		waitAllProjectsClosed(
+			func() int { return len(env.Projects()) },
+			projectClosed.changed,
+			exitCh,
+		)
 		return nil
 	}
 	defer trayStop()
@@ -709,21 +747,7 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 	return nil
 }
 
-// waitAllProjectsClosed 是无托盘时的退回路径：轮询到所有项目主窗口关闭（或退出信号）后返回。
-func waitAllProjectsClosed(env *gui.Env, exitCh <-chan struct{}) {
-	tick := time.NewTicker(500 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		select {
-		case <-exitCh:
-			return
-		case <-tick.C:
-			if len(env.Projects()) == 0 {
-				return
-			}
-		}
-	}
-}
+// waitAllProjectsClosed 见 projectclosed.go：事件驱动（窗口 Done → 广播 → 重查项目数）。
 
 // activationEnv 是 handleActivation 依赖的最小窗口面（测试可替身）。
 type activationEnv interface {

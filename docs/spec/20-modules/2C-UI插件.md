@@ -52,7 +52,7 @@
 > `plugin.json` 只保留启动信息（`id/cmd/enabled/name/icon`）；完整 manifest（含本节的 `ui` 段）
 > 在 `manifest.json`，由插件进程在 `plugin.hello` 上报给宿主。
 
-> 校验实现：`chonkpilot-framework/plugin/src/mgr/manifest.go`（发现期只校验 ID；上报 manifest 只合并、不拒绝）；运行时增补：UDS `plugin.ui.register`（`mgr.registerUI` → 覆盖 `p.ui` 并重播 `plugin-registered`）。
+> 校验实现：`chonkpilot-framework/plugin/src/mgr/manifest.go`（发现期只校验 ID；上报 manifest 的 `id` 必须严格等于插件 id，为空/不等即拒绝——2026-11-05 收紧，其余字段只合并不校验）；运行时增补：UDS `plugin.ui.register`（`mgr.registerUI` → 覆盖 `p.ui` 并重播 `plugin-registered`）。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -61,7 +61,7 @@
 | `ui.statusbar[]` | array | `{id, zone: left\|center\|right, icon?, tooltip?, view?, command?}`。**`view` 非空 → 栏内嵌该插件视图**（PLUGIN-UI-2，`command` 不再使用）；否则按 `command` 渲染按钮 |
 | `ui.menus[]` | array | `{location, label, icon?, view}`。**当前仅透传**（`pluginView.menus`），前端**无消费方**（见 §6 遗留） |
 | `ui.actions[]` | array | 插件维护卡片上的动作按钮：`{id, label, icon, tooltip?, style?, view?, container?, command?}`。`style ∈ {icon, icon-text, text}`（缺省 `icon-text`）；`container ∈ {preview, tab, drawer, dialog}`（缺省 = 该 view 的 `containers[0]`）。**无注册期校验**：后端仅补缺省 `label`（空 → `id`）与 `style`（空 → `icon-text`）（2026-11-04 核对，`mgr/manifest.go:256-264`）；`view` 未注册、或 `view`/`command` 皆缺时，前端静默跳过该按钮（`PluginManagerPage.vue:160-170`），**不会导致注册失败** |
-| `ui.rpc` | array | 插件 `plugin/v1/ui.rpc` 可调用的动作名声明（约定，宿主不强制）；当前**不进入 `pluginView`**（前端不消费） |
+| `ui.rpc` | array | 插件 `plugin/v1/ui.rpc` 可调用的动作名声明。**2026-11-05 起为强制白名单**：`plugin-call{method:"rpc"}` 的方法名不在本数组 → 宿主拒绝（`mgr/api.go` `rpcDeclared`）；当前**不进入 `pluginView`**（前端不消费） |
 | `permissions` | object | 实际类型为 `map[string]any`（`mgr/manifest.go:80-86`；`manager.go:840`）。原稿的 `permissions.ui.containers` 数组**不存在**；`permissions` 仅评审/透传，宿主不做容器白名单或技术拦截（2026-11-04 核对） |
 
 **缺省**：`ui.views[].containers` 缺省 = `["preview","tab","drawer"]`；`containers` 含 `preview` 时该视图可进预览区页签（`commands.tabsRoute` 分流）。
@@ -121,7 +121,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | method | 通道 |
 |---|---|
 | `config.get` / `config.set` | 既有 `plugin-config-get` / `plugin-config-set`（后端 `pluginmgr`；`config.fields` 已从 manifest 退场 → 主要留给旧插件兼容） |
-| `config.reset` / `data.read` / `data.write` / `rpc` / `log` | `plugin-call{id, method, params}`（UDS `plugin/v1/ui.rpc`，方法名须在 `ui.rpc` 声明） |
+| `config.reset` / `data.read` / `data.write` / `rpc` / `log` | `plugin-call{id, method, params}`（UDS `plugin/v1/ui.rpc`，方法名须在 `ui.rpc` 声明；未声明 → 宿主拒绝，2026-11-05） |
 | `action` | `pluginAction(id, action, payload)` → `POST /plugins/<id>/api/<action>`（带 `X-CK-Plugin-Id`） |
 | `open-url` / `close` | `window.open(..., 'noopener')` / `preview-tab-close-this` |
 
@@ -149,7 +149,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 | 打开 view（`layout/openView.js#openView(viewKey)`） | 按**视图注册表声明**的承载方式分发，不另设「viewKey → 具体 Vue」翻译表：`host:'preview'` → `preview-tab-open{kind:viewKey}`；插件 view 的 `containers` 含 `preview` → `preview-tab-open{kind:'plugin-page', plugin, page}`；`host:'layout'`（布局区）/ `'bar'`（栏内嵌）/ `'dialog'` 不在此打开（由各自容器承载） |
 | 项目配置页（codegraph 配置） | `project-config-open{tab:'codegraph'}` | `ProjectConfig` 内直接复用 `PluginPageHost`（`pluginView('codegraph','config')`），**不新造容器** |
 
-**动作按钮（`ui.actions[]`）**：`PluginManagerPage` 渲染 → 便捷式 `view`+`container` 按容器打开本插件视图；命令式 `command` 由 `PluginManagerPage.vue:158-210` 包内自建的 `dispatchCommand` 全部经 MQ 派发（`lf-layout-*` / `publish-mq`），**未调用** `utils/commands.js#runCommand`，也没有「G-89 内部命令直调域动作」路径（2026-11-04 核对）。
+**动作按钮（`ui.actions[]`）**：`PluginManagerPage` 渲染 → 便捷式 `view`+`container` 按容器打开本插件视图；命令式 `command` 由 `PluginManagerPage.vue` 包内自建的 `dispatchCommand` 执行。**🔁 订正（2026-11-07）**：G-89（2026-10-31）删除 `lf-*` MQ 主题后，原实现仍发 `lf-layout-*`（宿主零订阅者 → 动作按钮的抽屉/页签/弹框落点全部失效）。现改为经宿主注入端口 `PluginHostPort.layout`（`src/pluginHost.js` 注入 `layout-free/stores/actions.js` 的 `openTabs/openDrawer/openDialog/toggleDrawer/closeActiveTabs`）**直调域动作**；`publish-mq` 仍发既有宿主主题。
 
 **栏条目（`ui.statusbar[]`）**：`pluginBarItems(zone)` → 带 `view` 的条目产 `{kind:'view', viewKey:'plugin:<id>:<view>', width/height ← default_size}`（复用布局 `LfBarItem` view 分支 → `PluginPageHost` iframe）；否则按 `command`（`target:plugin` → `plugin-command`；`open-view` → 预览/页签）产按钮。**不写入布局文档**（插件禁用即消失）。
 
@@ -203,7 +203,7 @@ props：`pluginId` / `pageId`（view id）/ `entry` / `title`。
 原设计稿的 `ui-plugin-{list,register,unregister,activate,set-enabled,set-visible,status,activated,context-*,call,fetch,message,close,deactivated}` 与「`PluginSlot` 插入点 / 12 种内容形态 / JSON 装配 / bundle 沙箱」**本期均未实现**，属**预留族**：
 
 - 全仓**无生产 / 消费代码**可驱动（已核实）；前端插件入口的开关 = `plugin-set-enabled`（插件级），**没有**入口级 `visible` / 运行时 `status` 三态。
-- 已在 [61](../60-reference/61-消息一览.md) §0 与 §8 末条 + `61-messages.schema.json` `coverage.planned` 中登记为**声明未实现**，**不进消息准则/对账**。
+- 未进入 [61](../60-reference/61-消息一览.md) 准则，也**未进入** `61-messages.schema.json` 的 `coverage.planned`（2026-11-05 订正：`planned` 过去只登记 `plugin-*` 族，现 `plugin-*` 已并入 `included`，`planned` 为空）；**不进消息准则/对账**。
 - 若将来要做「宿主主页面插入插件入口」，须按 [61 §9](../60-reference/61-消息一览.md) 变更口径（主题增删须用户授权）重新立项，**不得**直接复用本节的规划表当准则。
 
 ### 4.3 iframe 内协议（`ckPlugin` 信封）

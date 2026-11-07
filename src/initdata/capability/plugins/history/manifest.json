@@ -8,7 +8,6 @@
   "publisher": "chonkpilot",
   "product": true,
   "runtime": {
-    "mode": "managed",
     "exe": "chonkpilot-history.exe",
     "args": [],
     "autostart": true,

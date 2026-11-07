@@ -9,15 +9,15 @@ import (
 	"github.com/chonkpilot/chonkpilot-assembly"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
+	"github.com/lsong98sh/chonkpilot-agent/chat"
 	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
-	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
-	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 	"github.com/lsong98sh/chonkpilot-agent/router"
 	"github.com/lsong98sh/chonkpilot-agent/session/runner"
-	"github.com/lsong98sh/chonkpilot-agent/chat"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/instance"
 )
 
 // New 构建会话服务（v2：双参，不再接收数据层 cfg——会话持久化经总线 persist，
@@ -47,19 +47,32 @@ func New(bus mq.Bus, opts Options) *Server {
 		turns:           runner.NewRegistry[turnSession](),
 		busy:            runner.NewRegistry[string](),
 		asks:            runner.NewRegistry[*askWaiter](),
+		askExpireCh:     make(chan string, 64),
+		askExpireStop:   make(chan struct{}),
 		askCenterSubs:   make(map[string]askCenterSub),
 		askSeq:          make(map[string]int64),
+		askBatches:      make(map[string]*askBatch),
 		groupRuns:       make(map[string]*groupSched),
 		taskExecCancels: make(map[string]context.CancelFunc),
 		cleaned:         make(map[string]bool),
 		dirNodes:        make(map[string][]string),
+		dirSigs:         make(map[string]map[string]string),
 		appTools:        make(map[string]bool),
 		agents:          make(map[string]AgentDef),
 		continuePending: make(map[string]bool),
 		taskTurnIndex:   make(map[string]*turnCtx),
 		inboxIndex:      make(map[string]facade.InboxItem),
+		inboxConsuming:  make(map[string]bool),
 		compressRunning: make(map[string]bool),
 		compressPending: make(map[string]compressJob),
+		// 后台任务完成通知挂账（§5.3）
+		notifyQueues:   make(map[string][]completionNotice),
+		notifyHandled:  make(map[string]bool),
+		notifyConsumed: make(map[string]bool),
+		notifyOrigin:   make(map[string]bool),
+		notifyTurns:    make(map[string]string),
+
+		notifyProcessing: make(map[string]bool),
 	}
 	// instance.Manager 告警接入宿主日志（F-10）：GUI/分离形态下超限告警不再只落 stderr。
 	s.im.SetLogf(logf)
@@ -231,6 +244,13 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Stop 退订 + 取消全部 running turn。
 func (s *Server) Stop() {
+	// 关停闸门：此后拒绝新建轮次 / inbox 兜底消费；turnWG 收口后不再有后台写库。
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
+	// 后台 capability dir 接入可能正在 spawn/连接下游：先等其收口，再停 gateway/capWatch
+	// （否则 connect 与 provider.Close 并发读写连接态）。
+	s.capRegisterWG.Wait()
 	// 内嵌插件 teardown（按 Start 的逆序；仅实现 hook.Stopper 的插件有资源可关——
 	// 停后台循环/关引擎子进程/退订订阅/停实例视图）。
 	for i := len(s.plugins) - 1; i >= 0; i-- {
@@ -257,17 +277,9 @@ func (s *Server) Stop() {
 		_ = sub.Unsubscribe()
 	}
 	s.subs = nil
-	if s.tasks != nil {
-		s.tasks.stop()
-	}
-	// 任务层退订（P1：只订阅既有事件 + 写影子域，无自有 goroutine）
-	if s.taskLayer != nil {
-		s.taskLayer.Stop()
-	}
-	if s.data != nil {
-		s.data.Stop()
-	}
-	flushSessionIndexes(s.bus) // 清本总线备忘（防总线指针复用导致跨宿主串味）
+	// 先关闭 running turns 并**等待其 loop 收尾**：收尾仍需写库（CompleteTurnTokens / SetSnapshot /
+	// 快照等），必须早于 `s.data.Stop()`；否则关停后仍有后台写库、库句柄晚释放
+	//（Windows 上表现为测试 TempDir 清理失败）。
 	// 锁内仅收集待关闭轮次，Close（含 session 锁释放 = 文件解锁 IO）在锁外逐个执行——
 	// 避免持 s.mu 做 IO 阻塞其他 s.mu 访问（stop 期仍需幂等：turnCtx.Close 自身 once 守卫）。
 	s.mu.Lock()
@@ -282,4 +294,30 @@ func (s *Server) Stop() {
 	// 群聊调度（Stop 兜底）：turns 只覆盖单轮，群聊 run 由 groupRuns 自持 ctx → 必须显式取消，
 	// 否则停机后仍会继续发起 LLM 调用。
 	s.stopAllGroupRuns()
+	waitTurns := make(chan struct{})
+	go func() {
+		s.turnWG.Wait()
+		close(waitTurns)
+	}()
+	select {
+	case <-waitTurns:
+	case <-time.After(drainTurnsTimeout):
+		logf("[chonkpilot-server] Stop: 等待轮次收尾超时（仍有 loop 未退出）\n")
+	}
+	if s.tasks != nil {
+		s.tasks.stop()
+	}
+	// ask 超时 worker：定时器只投消息，worker 串行结算（统一异步 §10.4）。
+	s.askExpireStopOnce.Do(func() { close(s.askExpireStop) })
+	// 任务层退订（P1：只订阅既有事件 + 写影子域，无自有 goroutine）
+	if s.taskLayer != nil {
+		s.taskLayer.Stop()
+	}
+	if s.data != nil {
+		s.data.Stop()
+	}
+	flushSessionIndexes(s.bus) // 清本总线备忘（防总线指针复用导致跨宿主串味）
 }
+
+// drainTurnsTimeout 是 Stop 等待轮次 loop 收尾的上限（超时只留痕，不阻断关停）。
+const drainTurnsTimeout = 10 * time.Second

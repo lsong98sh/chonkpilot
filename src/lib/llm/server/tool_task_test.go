@@ -1,6 +1,6 @@
-// task 型域工具（tool_stop / tool_result）单测
-// （对齐 21-llm-server 任务编排 + 域工具契约 llm/contracts/tools/{tool_stop,tool_result}.tool.md）：
-// tool_stop 级联取消、tool_result 返回转后台结果。
+// task 型域工具（tool_result）单测
+// （对齐 21-llm-server 任务编排 + 域工具契约 llm/contracts/tools/tool_result.tool.md）：
+// tool_result 返回转后台结果。tool_stop 已于 2026-11-04 删除（task_stop 为唯一停止入口）。
 package server
 
 import (
@@ -10,62 +10,6 @@ import (
 	"testing"
 	"time"
 )
-
-// TestTaskToolStopCascade：tool_stop（LLM 工具）→ 级联定位任务子树 → 节点标 cancelled
-// 广播 tasks.done → 异步子任务经**进程内 sink** 下发执行取消 → 回填父轮次 complete。
-func TestTaskToolStopCascade(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := newTestServer(t, llm)
-	te := watchTasks(t, s.bus)
-	resetExecControl()
-	startTurn(t, s, "s-tk-stp", "t-tk-stp")
-
-	// 预建任务树：父（异步 gw-1）→ 子（异步 gw-2）
-	parent, _ := s.tasks.start(&TaskNode{
-		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-tk-stp", TurnID: "t-tk-stp",
-		InstanceID: "ins-test", TopSession: "s-tk-stp", Name: "parent", Purpose: "p",
-	})
-	s.tasks.setGwTask(parent.TaskID, "gw-1")
-	child, _ := s.tasks.start(&TaskNode{
-		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-tk-stp", TurnID: "t-tk-stp",
-		InstanceID: "ins-test", TopSession: "s-tk-stp", ParentID: parent.TaskID, Name: "child",
-	})
-	s.tasks.setGwTask(child.TaskID, "gw-2")
-	fakeStopTaskID = parent.TaskID
-	te.wait(t, "2 started", func() bool {
-		te.mu.Lock()
-		defer te.mu.Unlock()
-		return len(te.started) == 2
-	})
-
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
-		"instance_id": "ins-test", "session": "s-tk-stp", "turn": "t-tk-stp",
-		"type": "text-user", "content": "stop please",
-	}))
-	evs := collectTurn(t, s.bus, "t-tk-stp", 10*time.Second)
-	c := lastComplete(evs)
-	if c == nil || c["status"] != "complete" {
-		t.Fatalf("no complete: %+v", evs)
-	}
-	// 子树 2 节点全部 cancelled（tasks.done 终态；tool_stop 自身节点 done 不算）
-	te.wait(t, "2 cancelled", func() bool {
-		te.mu.Lock()
-		defer te.mu.Unlock()
-		cancelled := 0
-		for id, d := range te.done {
-			if (id == parent.TaskID || id == child.TaskID) && d["state"] == TaskStateCancelled && d["success"] == false {
-				cancelled++
-			}
-		}
-		return cancelled == 2
-	})
-	// 执行侧取消级联下发（含 gateway 任务的父/子）
-	got := execCancelledRefs()
-	if len(got) != 2 || !containsStr(got, "gw-1") || !containsStr(got, "gw-2") {
-		t.Fatalf("exec cancels=%v want [gw-1 gw-2]", got)
-	}
-}
 
 // TestTaskToolResultFromMessage：tool_result → **读 message 表**（按 tool_call_id 定位 role=tool
 // 消息 → 解析 {call,result,async} 的 result 段）→ 返回异步结果回填父轮次 complete。
@@ -262,5 +206,41 @@ func TestTaskExecCancelRegistrySemantics(t *testing.T) {
 	s.cancelTaskExec("tc-2")
 	if err := ctx2.Err(); err == nil {
 		t.Fatal("ctx2 should be cancelled beforehand")
+	}
+}
+
+// TestTaskToolResultWakesOnTaskDone（异步改造 §10.1）：runToolResult 不再 500ms 轮询，
+// 而是订阅既有 `task-done` 终态广播；任务 done 后立即返回（timeout 30s 不触发）。
+func TestTaskToolResultWakesOnTaskDone(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	node, err := s.tasks.start(&TaskNode{
+		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-wake", TurnID: "t-wake",
+		InstanceID: "ins-test", TopSession: "s-wake", Name: "inflight",
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	tc := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-wake", Turn: "t-wake"},
+		ctx: context.Background()}
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		s.tasks.done(node.TaskID, TaskStateDone, "async result done", "")
+	}()
+
+	start := time.Now()
+	text, isErr := s.runToolResult(tc, nil, map[string]any{"id": node.TaskID, "timeout": 30.0}, context.Background())
+	elapsed := time.Since(start)
+	if isErr {
+		t.Fatalf("runToolResult 不应为工具级失败: %q", text)
+	}
+	if text != "async result done" {
+		t.Fatalf("结果 = %q, want async result done", text)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("应由 task-done 事件唤醒（非轮询超时），耗时 %v", elapsed)
 	}
 }

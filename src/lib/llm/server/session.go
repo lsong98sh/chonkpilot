@@ -11,13 +11,18 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
-// sessionStore 封装会话数据读写（总线 persist 面）。
+// sessionStore 封装会话数据读写。
+//
+// 有门面（生产）→ 直调 data 门面（本地有界单事务，§2.4 白名单）；无门面（仅测试构造）→
+// 回退总线 persist 面，行为与改前一致。
 type sessionStore struct {
 	bus        mq.Bus
+	api        facade.API
 	instanceID string
 	idx        *sessionIndex
 }
@@ -83,6 +88,16 @@ func flushInstanceIndex(bus mq.Bus, instanceID string) {
 // 都不会经过 `llm-start` 的 EnsureSession → 索引长期缺失 → 这些入口拿不到 dialog_id。
 // 实例注册后后台预热一次（61 会话列表已回带 dialog_id，零新增主题）。
 func (st *sessionStore) Prewarm() {
+	if st.api != nil {
+		res, err := st.api.SessionList(facade.SessionListRequest{InstanceID: st.instanceID})
+		if err != nil {
+			return
+		}
+		for _, s := range res.List {
+			st.idx.setDialog(s.ID, s.DialogID)
+		}
+		return
+	}
 	res, err := dataRequest(st.bus, msgkeys.TopicDataSessionList, map[string]any{
 		"instance_id": st.instanceID, "data": map[string]any{},
 	})
@@ -107,7 +122,7 @@ func (s *Server) ensureDialogIndex(instanceID, sessionID string) string {
 	if s == nil || s.bus == nil || sessionID == "" {
 		return ""
 	}
-	newSessionStore(s.bus, instanceID).Prewarm()
+	s.newSessionStore(instanceID).Prewarm()
 	return s.dialogOf(instanceID, sessionID)
 }
 
@@ -120,7 +135,7 @@ func (s *Server) dialogForWrite(instanceID, sessionID string) string {
 	if s == nil || s.bus == nil || sessionID == "" {
 		return ""
 	}
-	if err := newSessionStore(s.bus, instanceID).EnsureSession(sessionID); err != nil {
+	if err := s.newSessionStore(instanceID).EnsureSession(sessionID); err != nil {
 		return ""
 	}
 	return s.ensureDialogIndex(instanceID, sessionID)
@@ -157,18 +172,213 @@ func (x *sessionIndex) sessionOfTurn(turnID string) string {
 }
 
 // newSessionStore 构造会话数据客户端（bus 由宿主注入；persist 应答 data-* 面）。
+// 仅测试 / 无门面场景使用；生产路径走 Server.newSessionStore（门面直调）。
 func newSessionStore(bus mq.Bus, instanceID string) *sessionStore {
 	return &sessionStore{bus: bus, instanceID: instanceID, idx: sharedIndex(bus, instanceID)}
+}
+
+// newSessionStoreWithFacade 构造门面直调版本（生产）。
+func newSessionStoreWithFacade(api facade.API, bus mq.Bus, instanceID string) *sessionStore {
+	return &sessionStore{bus: bus, api: api, instanceID: instanceID, idx: sharedIndex(bus, instanceID)}
+}
+
+// newSessionStore 构造本实例的会话数据客户端（生产：门面直调，避免会话循环内 Emit().Wait()）。
+func (s *Server) newSessionStore(instanceID string) *sessionStore {
+	return newSessionStoreWithFacade(s.cfg, s.bus, instanceID)
 }
 
 // req 发 data-session-<action> 请求（带 instance_id），返回 result。
 //
 // 一树一库（P3-4b）：已知该会话/轮次的 `dialog_id` 时**自动补齐**（载荷本就显式带值时以显式为准）。
+// 有门面 → 本地有界单事务直调（应答形状与 persist 消息面逐键一致）；无门面 → 回退总线。
 func (st *sessionStore) req(action string, data map[string]any) (map[string]any, error) {
 	st.injectDialog(data)
+	if st.api != nil {
+		return st.facadeReq(action, data)
+	}
 	return dataRequest(st.bus, "data-session-"+action, map[string]any{
 		"instance_id": st.instanceID, "data": data,
 	})
+}
+
+// facadeReq 是 data-session-* 消息面在会话域内的等价直调（信封翻译收在此处）。
+//
+// 结果统一经 JSON 往返归一为 map，保证与 `dataRequest` 的 `result` 同形（调用方解析零变更）。
+func (st *sessionStore) facadeReq(action string, data map[string]any) (map[string]any, error) {
+	api := st.api
+	sid := str(data["session_id"])
+	if sid == "" {
+		sid = str(data["id"])
+	}
+	switch action {
+	case "ensure-session":
+		resp, err := api.SessionEnsure(facade.SessionEnsureRequest{
+			InstanceID:      st.instanceID,
+			SessionID:       sid,
+			DialogID:        str(data["dialog_id"]),
+			ParentSessionID: str(data["parent_session_id"]),
+			Kind:            str(data["kind"]),
+			Title:           str(data["title"]),
+			Origin:          str(data["origin"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := wire.OKPayload{OK: true}
+		if resp.DialogID != "" {
+			out.DialogID = resp.DialogID
+		}
+		return jsonMap(out)
+	case "ensure-turn":
+		_, err := api.TurnEnsure(facade.TurnEnsureRequest{
+			InstanceID: st.instanceID,
+			TurnID:     str(data["turn_id"]),
+			SessionID:  sid,
+			DialogID:   str(data["dialog_id"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(wire.OKResult())
+	case "history":
+		resp, err := api.TurnHistory(facade.TurnHistoryRequest{
+			InstanceID: st.instanceID, SessionID: sid, DialogID: str(data["dialog_id"]),
+			BeforeTurnID:   str(data["before_turn_id"]),
+			TargetMessages: intValue(data["target_messages"]), TargetBytes: intValue(data["target_bytes"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(wire.TurnHistoryResult(resp))
+	case "content":
+		resp, err := api.MessageContent(facade.MessageContentRequest{
+			InstanceID: st.instanceID, SessionID: sid, DialogID: str(data["dialog_id"]),
+			Keys: strList(data["keys"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(wire.MessageContentResult(resp.Contents))
+	case "append-message":
+		raw := map[string]any{"instance_id": st.instanceID}
+		for k, v := range data {
+			raw[k] = v
+		}
+		r := wire.MessageAppendFromWire(raw)
+		r.InstanceID = st.instanceID
+		if r.SessionID == "" {
+			r.SessionID = sid
+		}
+		resp, err := api.MessageAppend(r)
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(wire.OKIDPayload{OK: true, ID: resp.ID})
+	case "complete-turn":
+		req := facade.TurnCompleteRequest{
+			InstanceID: st.instanceID, TurnID: str(data["turn_id"]), DialogID: str(data["dialog_id"]),
+			Status: str(data["status"]), FinishReason: str(data["finish_reason"]),
+		}
+		req.FullTokens = intPtr(data["full_tokens"])
+		req.BriefTokens = intPtr(data["brief_tokens"])
+		if _, err := api.TurnComplete(req); err != nil {
+			return nil, err
+		}
+		return jsonMap(wire.OKResult())
+	case "cleanup-stale":
+		resp, err := api.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: st.instanceID})
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(wire.CleanupResult(resp.Count))
+	case "load-messages":
+		resp, err := api.MessageLoad(facade.MessageLoadRequest{
+			InstanceID: st.instanceID, TurnID: str(data["turn_id"]), DialogID: str(data["dialog_id"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(wire.MessageLoadResult(resp.Messages))
+	case "context":
+		resp, err := api.MessageContext(facade.MessageContextRequest{
+			InstanceID: st.instanceID, SessionID: sid, DialogID: str(data["dialog_id"]),
+			ExcludeTurn: str(data["exclude_turn"]), IncludeSnapshot: boolValue(data["include_snapshot"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return jsonMap(wire.ContextResult(resp.Messages, resp.TurnTokens))
+	default:
+		return dataRequest(st.bus, "data-session-"+action, map[string]any{
+			"instance_id": st.instanceID, "data": data,
+		})
+	}
+}
+
+// jsonMap 把应答结构体归一为消息面 result 的 map 形态（与 JSON 编解码路径逐字节一致）。
+func jsonMap(v any) (map[string]any, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// intValue 读可选整数（缺省 / null → 0）。
+func intValue(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	}
+	return 0
+}
+
+// intPtr 读可选整数指针（缺省 / null → nil，用于「不写该键」语义）。
+func intPtr(v any) *int {
+	if v == nil {
+		return nil
+	}
+	n := intValue(v)
+	return &n
+}
+
+// boolValue 读可选布尔（兼容字符串 "true"）。
+func boolValue(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		return strings.EqualFold(strings.TrimSpace(b), "true")
+	}
+	return false
+}
+
+// strList 读字符串数组（缺省 / 非数组 → nil）。
+func strList(v any) []string {
+	switch arr := v.(type) {
+	case []string:
+		return arr
+	case []any:
+		out := make([]string, 0, len(arr))
+		for _, it := range arr {
+			if s := str(it); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // injectDialog 按 session_id / turn_id 补 `dialog_id`（两者都缺 / 未知 → 不写键；一树一库下由调用方显式带或走自举）。
@@ -185,6 +395,7 @@ func (st *sessionStore) injectDialog(data map[string]any) {
 	}
 	if dlg := st.idx.dialogOf(sessionID); dlg != "" {
 		data["dialog_id"] = dlg
+		return
 	}
 }
 
@@ -481,6 +692,12 @@ func (st *sessionStore) CleanupStaleTurns() error {
 // CleanupTurnEvents 清理终态 turn 的事件日志（MOD-1 M3；retentionDays=0 = 永久，<0 = 不清理）。
 // 仅删除终态且超过保留期的 turn；running 的事件永不按时间删。失败由调用方告警、不阻断。
 func (st *sessionStore) CleanupTurnEvents(retentionDays int) error {
+	if st.api != nil {
+		_, err := st.api.TurnEventCleanup(facade.TurnEventCleanupRequest{
+			InstanceID: st.instanceID, RetentionDays: retentionDays,
+		})
+		return err
+	}
 	_, err := dataRequest(st.bus, msgkeys.TopicDataTurnEventCleanup, map[string]any{
 		"instance_id": st.instanceID,
 		"data":        map[string]any{"retention_days": retentionDays},
@@ -491,11 +708,21 @@ func (st *sessionStore) CleanupTurnEvents(retentionDays int) error {
 // SetSnapshot 写会话历史快照（data-snapshot-set，§3.2b；唯一终态 llm-complete 写，
 // snapshot_turn = 覆盖到最后一条 turn）。
 func (st *sessionStore) SetSnapshot(sessionID string, history []ChatMsg, snapshotTurn string) error {
-	payload := map[string]any{
-		"session_id": sessionID,
-		"snapshot":   map[string]any{"history": dataMessagesFromChat(history), "snapshot_turn": snapshotTurn},
-	}
+	payload := map[string]any{"session_id": sessionID}
 	st.injectDialog(payload) // 一树一库：快照与轮次/消息同库
+	if st.api != nil {
+		snap := data.SnapshotToFacade(sessionID, data.Snapshot{
+			History:      dataMessagesFromChat(history),
+			SnapshotTurn: snapshotTurn,
+		})
+		_, err := st.api.SnapshotSet(facade.SnapshotSetRequest{
+			InstanceID: st.instanceID,
+			DialogID:   str(payload["dialog_id"]),
+			Snapshot:   snap,
+		})
+		return err
+	}
+	payload["snapshot"] = map[string]any{"history": dataMessagesFromChat(history), "snapshot_turn": snapshotTurn}
 	_, err := dataRequest(st.bus, msgkeys.TopicDataSnapshotSet, map[string]any{
 		"instance_id": st.instanceID,
 		"data":        payload,

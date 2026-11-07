@@ -3,23 +3,27 @@ package server
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-assembly"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 )
 
 // capNodeSpec 是要接入的一级 capability 根（节点名后缀 + 契约根目录）。
 type capNodeSpec struct {
 	suffix string // 节点名后缀：user / project / prjusr（节点名 = instanceID + "-" + suffix）
 	root   string // 契约根（含 tools/skills/prompts/resources 四类子目录）
+	// sig 是契约根签名（根路径 + 契约文件相对路径/大小/修改时间）：热重扫只重建变化节点。
+	sig string
 }
 
 // capNodeSpecs 解析实例可见的用户级/项目级/项目私有级 capability 根（仅返回存在的目录）。
@@ -34,17 +38,56 @@ type capNodeSpec struct {
 func (s *Server) capNodeSpecs(instanceID, workDir string) []capNodeSpec {
 	specs := []capNodeSpec{}
 	if root := persist.CapUserRoot(s.opts.UsrPath); dirExists(root) {
-		specs = append(specs, capNodeSpec{suffix: "user", root: root})
+		specs = append(specs, capNodeSpec{suffix: "user", root: root, sig: capRootSignature(root)})
 	}
 	if workDir != "" {
 		if root := persist.CapProjectRoot(workDir); dirExists(root) {
-			specs = append(specs, capNodeSpec{suffix: "project", root: root})
+			specs = append(specs, capNodeSpec{suffix: "project", root: root, sig: capRootSignature(root)})
 		}
 	}
 	if root := s.prjUsrCapRoot(instanceID); dirExists(root) {
-		specs = append(specs, capNodeSpec{suffix: "prjusr", root: root})
+		specs = append(specs, capNodeSpec{suffix: "prjusr", root: root, sig: capRootSignature(root)})
 	}
 	return specs
+}
+
+// capRootSignature 计算 capability 根签名（根路径 + 契约文件相对路径/大小/修改时间，字典序拼接）：
+// 热重扫据此判断某节点是否需要重建（根消失/新增后缀/契约文件改动）；未变化节点不注销不注册。
+//
+// 只读本地小目录（capability 根），由 capWatcher 去抖后调用，不在会话循环内。
+func capRootSignature(root string) string {
+	var b strings.Builder
+	b.WriteString(root)
+	type entry struct {
+		rel  string
+		size int64
+		mod  int64
+	}
+	var files []entry
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		// 契约文件后缀固定四类（*.tool.md / *.prompt.md / *.skill.md / *.resource.md）。
+		if filepath.Ext(path) != ".md" {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return nil
+		}
+		files = append(files, entry{rel: filepath.ToSlash(rel), size: info.Size(), mod: info.ModTime().UnixNano()})
+		return nil
+	})
+	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
+	for _, f := range files {
+		fmt.Fprintf(&b, "|%s:%d:%d", f.rel, f.size, f.mod)
+	}
+	return b.String()
 }
 
 // prjUsrCapRoot 解析实例的**项目私有级 capability 根**（<prjusr 数据根>/capability）。
@@ -112,6 +155,13 @@ func (s *Server) registerCapNodesLocked(instanceID, workDir string) (ops []capDi
 		}
 		if !dup {
 			s.dirNodes[instanceID] = append(s.dirNodes[instanceID], nodeName)
+			if s.dirSigs == nil {
+				s.dirSigs = map[string]map[string]string{}
+			}
+			if s.dirSigs[instanceID] == nil {
+				s.dirSigs[instanceID] = map[string]string{}
+			}
+			s.dirSigs[instanceID][nodeName] = spec.sig
 		}
 		s.mu.Unlock()
 		if dup {
@@ -151,6 +201,7 @@ func (s *Server) unregisterCapabilityNodes(instanceID string) {
 	s.mu.Lock()
 	names := s.dirNodes[instanceID]
 	delete(s.dirNodes, instanceID)
+	delete(s.dirSigs, instanceID)
 	s.mu.Unlock()
 	for _, nodeName := range names {
 		s.unregisterDirNode(instanceID, nodeName)
@@ -160,13 +211,16 @@ func (s *Server) unregisterCapabilityNodes(instanceID string) {
 	}
 }
 
-// reconcileCapabilityNodes 重扫全部在用 capability 根并重建 dir 节点（T-21：原语保存后热生效）。
-// 复用既有消息面 servers/unregister + servers/register（零新增主题）：逐实例先拆除全部已登记
-// 节点（含根已消失者），再按当前文件树（capNodeSpecs）重新扫描注册并刷新工具缓存。
-// 由 capWatcher 去抖后调用；网关 unregister/register 亦广播 mcp-gateway-changed，工具缓存同步刷新。
-func (s *Server) reconcileCapabilityNodes() {
+// reconcileCapabilityNodes 重扫全部在用 capability 根并**只重建变化节点**（T-21：原语保存后热生效）。
+//
+// 判据 = capRootSignature（根路径 + 契约文件清单）；未变化节点**不动**（不注销不注册）→
+// 热重扫不再出现「先拆全部再重建」的毫秒级工具面缺口。变化节点（根消失/新增/契约文件改动）
+// 走既有 servers/unregister + servers/register；顺序 = 先注册新增 → 再注销+重建变更 → 最后注销废弃。
+// 由 capWatcher 去抖/周期兜底重扫后调用；网关 unregister/register 亦广播 mcp-gateway-changed，
+// 工具缓存同步刷新。返回本次产生的 dir 节点操作数（0 = 未变更；周期重扫据此断无重复注册）。
+func (s *Server) reconcileCapabilityNodes() int {
 	if s.gw == nil {
-		return
+		return 0
 	}
 	// 实例 → work_dir 的权威映射 = 共通实例视图 `s.im`（instance.Manager，见 49 §2.4
 	// 「映射表只有一份」）：本层不另存副本，按 Manager 快照逐实例重建 dir 节点。
@@ -177,32 +231,112 @@ func (s *Server) reconcileCapabilityNodes() {
 		}
 		insts[info.ID] = info.WorkDir
 	}
-	s.capMu.Lock()
 	// 锁内只维护内存态 + 收集待发送 ops（B-35）：unregister/register 与 refreshTools 等
-	// 总线往返一律挪到解锁后执行；逐实例保序（先注销旧节点、再重建）。
-	var ops []capDirOp
-	removed, hadSpecs := false, false
+	// 总线往返一律挪到解锁后执行。
+	specsByInst := make(map[string][]capNodeSpec, len(insts))
 	for inst, wd := range insts {
+		specsByInst[inst] = s.capNodeSpecs(inst, wd)
+	}
+	s.capMu.Lock()
+	s.mu.Lock()
+	existing := make(map[string][]string, len(s.dirNodes))
+	oldSigs := make(map[string]map[string]string, len(s.dirSigs))
+	for inst := range insts {
+		existing[inst] = append([]string(nil), s.dirNodes[inst]...)
+		if sigs := s.dirSigs[inst]; len(sigs) > 0 {
+			cp := make(map[string]string, len(sigs))
+			for k, v := range sigs {
+				cp[k] = v
+			}
+			oldSigs[inst] = cp
+		}
+	}
+	s.mu.Unlock()
+	plan := planCapabilityNodes(insts, specsByInst, existing, oldSigs)
+	for inst, nodes := range plan.nodes {
+		if len(nodes) == 0 {
+			delete(s.dirNodes, inst)
+			delete(s.dirSigs, inst)
+			continue
+		}
 		s.mu.Lock()
-		names := append([]string(nil), s.dirNodes[inst]...)
-		delete(s.dirNodes, inst)
+		s.dirNodes[inst] = nodes
+		s.dirSigs[inst] = plan.sigs[inst]
 		s.mu.Unlock()
-		if len(names) > 0 {
-			removed = true
-		}
-		for _, nodeName := range names {
-			ops = append(ops, capDirOp{instanceID: inst, nodeName: nodeName})
-		}
-		regs, spec := s.registerCapNodesLocked(inst, wd) // 按当前根重建（根不存在 → 自动跳过）
-		ops = append(ops, regs...)
-		hadSpecs = hadSpecs || spec
 	}
 	s.capMu.Unlock()
-	s.applyCapDirOps(ops)
-	if removed || hadSpecs {
-		// registerCapNodesLocked 在无根时提前返回、不刷新缓存；此处兜底确保被移除的工具退出工具面。
+	ops := len(plan.adds) + len(plan.changes) + len(plan.removes)
+	s.applyCapDirOps(plan.ops())
+	if ops > 0 {
 		s.refreshTools()
 	}
+	return ops
+}
+
+// capPlan 是热重扫的待发送操作与收敛后的内存态。
+type capPlan struct {
+	adds    []capDirOp                   // 新增节点：先注册
+	changes []capDirOp                   // 变更节点：注销 + 重建成对
+	removes []capDirOp                   // 废弃节点：最后注销
+	nodes   map[string][]string          // instanceID → 收敛后的节点名（capNodeSpecs 顺序）
+	sigs    map[string]map[string]string // instanceID → 节点名 → 根签名
+}
+
+// ops 按「先注册新增 → 再注销+重建变更 → 最后注销废弃」排序。
+func (p capPlan) ops() []capDirOp {
+	out := make([]capDirOp, 0, len(p.adds)+len(p.changes)+len(p.removes))
+	out = append(out, p.adds...)
+	out = append(out, p.changes...)
+	out = append(out, p.removes...)
+	return out
+}
+
+// planCapabilityNodes 是热重扫的**纯决策**（无 IO、无锁）：给定实例、当前根清单与已登记态，
+// 产出最小操作集与收敛后的内存态。判据 = 根签名不变即不动（避免工具面窗口）。
+func planCapabilityNodes(insts map[string]string, specsByInst map[string][]capNodeSpec,
+	existing map[string][]string, oldSigs map[string]map[string]string,
+) capPlan {
+	plan := capPlan{
+		nodes: make(map[string][]string, len(insts)),
+		sigs:  make(map[string]map[string]string, len(insts)),
+	}
+	for inst := range insts {
+		specs := specsByInst[inst]
+		order := make([]string, 0, len(specs))
+		desired := make(map[string]capDirOp, len(specs))
+		sigs := make(map[string]string, len(specs))
+		for _, spec := range specs {
+			nodeName := inst + "-" + spec.suffix
+			order = append(order, nodeName)
+			desired[nodeName] = capDirOp{register: true, instanceID: inst, nodeName: nodeName, root: spec.root}
+			sigs[nodeName] = spec.sig
+		}
+		have := make(map[string]bool, len(existing[inst]))
+		for _, n := range existing[inst] {
+			have[n] = true
+		}
+		// ① 新增：根刚出现 → 先注册（不影响既有节点）。
+		for _, name := range order {
+			if !have[name] {
+				plan.adds = append(plan.adds, desired[name])
+				continue
+			}
+			// ② 变更：同名节点契约根有改动 → 注销后重建（网关拒绝重复注册同名 connected 节点）。
+			if oldSigs[inst][name] != sigs[name] {
+				plan.changes = append(plan.changes, capDirOp{instanceID: inst, nodeName: name})
+				plan.changes = append(plan.changes, desired[name])
+			}
+		}
+		// ③ 废弃：根消失 / 后缀不再需要 → 最后注销。
+		for _, name := range existing[inst] {
+			if _, ok := desired[name]; !ok {
+				plan.removes = append(plan.removes, capDirOp{instanceID: inst, nodeName: name})
+			}
+		}
+		plan.nodes[inst] = order
+		plan.sigs[inst] = sigs
+	}
+	return plan
 }
 
 // reloadAppContracts 重扫系统级 app capability 根（T-21②：三级根中 <exeDir>/capability 由本层
@@ -274,11 +408,16 @@ func (s *Server) registerDirNode(instanceID, nodeName, folder string) error {
 	return err
 }
 
-// coreMCPPath 定位 chonkpilot-core-mcp-server 可执行文件（与 coretools 监管器同一口径：
-// `<exe目录>/<name>` 或 `<exe目录>/mcps/core-mcp/<name>`）。
+// coreMCPPath 定位 chonkpilot-core-mcp-server 可执行文件（dir 节点 = 每节点一个
+// `core-mcp-server --stdio --root <folder>` 普通 stdio 下游，见 26-mcp-gateway「不做进程收敛」）。
 //
 // 覆盖：环境变量 `CHONKPILOT_CORE_MCP`（显式可执行文件路径）——供测试/便携部署指定非
 // exe 目录下的实现（测试环境为 go test 临时目录，产物内无该 exe）。
+//
+// 未设 env 时由 coreMCPPathIn 按**实际部署布局**定位：桌面构建把 core-mcp-server 与
+// 独立 MCP 部署同置于 `dist/other/`（03-构建与部署 · build-mcp-server.ps1），仅认
+// `<exeDir>/<name>` 会让全部用户/项目/项目私有级 dir 节点注册失败（capability 原语永不
+// 进入工具面，且看起来像"热生效失效"——实测 2026-11-07）。
 func coreMCPPath() (string, error) {
 	if p := strings.TrimSpace(os.Getenv("CHONKPILOT_CORE_MCP")); p != "" {
 		if _, err := os.Stat(p); err == nil {
@@ -290,19 +429,34 @@ func coreMCPPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("core-mcp: exe 目录: %w", err)
 	}
+	return coreMCPPathIn(dir)
+}
+
+// coreMCPPathIn 在给定 exe 目录下按部署布局候选定位 core-mcp-server（纯路径探测、无全局态，
+// 便于单测）。候选顺序 = 现行部署优先，历史/兼容布局兜底：
+//  1. `<exeDir>/<name>`                         —— 扁平产物（03-构建与部署 §1 根目录）
+//  2. `<exeDir>/mcps/core-mcp/<name>`           —— 62-命令行与参数 §6 文档口径
+//  3. `<exeDir>/other/<name>`                   —— build-mcp-server.ps1 部署区（03 §1 表格）
+//  4. `<exeDir>/capability/executors/<name>`    —— 历史便携布局（build-desktop 注释口径）
+//  5. `<exeDir>/../other/<name>`                —— 旧二元布局 dist/desktop → dist/other
+func coreMCPPathIn(exeDir string) (string, error) {
 	name := "chonkpilot-core-mcp-server"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	for _, p := range []string{
-		filepath.Join(dir, name),
-		filepath.Join(dir, "mcps", "core-mcp", name),
-	} {
-		if _, err := os.Stat(p); err == nil {
+	candidates := []string{
+		filepath.Join(exeDir, name),
+		filepath.Join(exeDir, "mcps", "core-mcp", name),
+		filepath.Join(exeDir, "other", name),
+		filepath.Join(exeDir, "capability", "executors", name),
+		filepath.Join(filepath.Dir(exeDir), "other", name),
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("core-mcp: 未找到 %s（查找 %s 与 %s）", name, dir, filepath.Join(dir, "mcps", "core-mcp"))
+	return "", fmt.Errorf("core-mcp: 未找到 %s（已查找 %s）", name, strings.Join(candidates, "、"))
 }
 
 // unregisterDirNode 经 gateway 方法面注销 dir 类型节点（servers/unregister → 拆除）。

@@ -169,6 +169,7 @@ export const MsgTopics = {
   llmInboxRevert: 'llm-inbox-revert',
   llmCancel: 'llm-cancel',
   askUserReply: 'ask-user-reply',
+  askResolve: 'ask-resolve',
   toolRetry: 'tool-retry',
   taskStop: 'task-stop',
   taskBackground: 'task-background',
@@ -224,8 +225,18 @@ export const MsgTopics = {
   mcpToolsProgress: 'mcp-tools-progress',
   mcpGatewayChanged: 'mcp-gateway-changed',
   historyPreToolHook: 'history-pre-tool-hook',
-  codegraphToolCall: 'codegraph-tool-call',
-  vftsToolCall: 'vfts-tool-call',
+  pluginList: 'plugin-list',
+  pluginRefresh: 'plugin-refresh',
+  pluginSetEnabled: 'plugin-set-enabled',
+  pluginConfigGet: 'plugin-config-get',
+  pluginConfigSet: 'plugin-config-set',
+  pluginCommand: 'plugin-command',
+  pluginCall: 'plugin-call',
+  pluginRegistered: 'plugin-registered',
+  pluginUnregistered: 'plugin-unregistered',
+  pluginStatus: 'plugin-status',
+  pluginConfigChanged: 'plugin-config-changed',
+  pluginEvent: 'plugin-event',
   vftsDictGet: 'vfts.dict.get',
   vftsDictSet: 'vfts.dict.set',
   vftsReindex: 'vfts.reindex',
@@ -300,6 +311,7 @@ export const FieldKeys = {
   deleted_at: 'deleted_at',
   description: 'description',
   dest_dir: 'dest_dir',
+  detail: 'detail',
   dialog_id: 'dialog_id',
   dict_dir: 'dict_dir',
   diffs: 'diffs',
@@ -308,6 +320,7 @@ export const FieldKeys = {
   doc: 'doc',
   done_at: 'done_at',
   effort: 'effort',
+  enabled: 'enabled',
   error: 'error',
   errors: 'errors',
   exclude_turn: 'exclude_turn',
@@ -362,6 +375,7 @@ export const FieldKeys = {
   message: 'message',
   message_id: 'message_id',
   messages: 'messages',
+  method: 'method',
   mimetype: 'mimetype',
   minimized: 'minimized',
   mode: 'mode',
@@ -391,6 +405,7 @@ export const FieldKeys = {
   overwrite: 'overwrite',
   owner: 'owner',
   owner_instance: 'owner_instance',
+  params: 'params',
   parent: 'parent',
   parent_id: 'parent_id',
   parent_instance: 'parent_instance',
@@ -403,6 +418,7 @@ export const FieldKeys = {
   pending_only: 'pending_only',
   playbook: 'playbook',
   plugin: 'plugin',
+  plugins: 'plugins',
   pre_hook_subject: 'pre_hook_subject',
   probe: 'probe',
   progress: 'progress',
@@ -424,6 +440,7 @@ export const FieldKeys = {
   removed_tools: 'removed_tools',
   resource: 'resource',
   resources: 'resources',
+  result: 'result',
   resultType: 'resultType',
   result_digest: 'result_digest',
   result_summary: 'result_summary',
@@ -475,6 +492,7 @@ export const FieldKeys = {
   tool_call_status: 'tool_call_status',
   tools: 'tools',
   top_session: 'top_session',
+  topic: 'topic',
   total: 'total',
   touch_files: 'touch_files',
   transport: 'transport',
@@ -493,6 +511,7 @@ export const FieldKeys = {
   user: 'user',
   user_dict: 'user_dict',
   user_dict_path: 'user_dict_path',
+  values: 'values',
   waiting: 'waiting',
   widget_id: 'widget_id',
   window: 'window',
@@ -563,6 +582,7 @@ export const FieldDict = {
   deleted_at: 'deleted_at',
   description: 'description',
   dest_dir: 'dest_dir',
+  detail: 'detail',
   dialog_id: 'dialog_id',
   dict_dir: 'dict_dir',
   diffs: 'diffs',
@@ -643,6 +663,7 @@ export const FieldDict = {
   message: 'message',
   message_id: 'message_id',
   messages: 'messages',
+  method: 'method',
   mimetype: 'mimetype',
   minimized: 'minimized',
   mode: 'mode',
@@ -672,6 +693,7 @@ export const FieldDict = {
   overwrite: 'overwrite',
   owner: 'owner',
   owner_instance: 'owner_instance',
+  params: 'params',
   parent: 'parent',
   parent_id: 'parent_id',
   parent_instance: 'parent_instance',
@@ -686,6 +708,7 @@ export const FieldDict = {
   pending_only: 'pending_only',
   playbook: 'playbook',
   plugin: 'plugin',
+  plugins: 'plugins',
   pre_hook_subject: 'pre_hook_subject',
   prefix: 'prefix',
   probe: 'probe',
@@ -710,6 +733,7 @@ export const FieldDict = {
   removed_tools: 'removed_tools',
   resource: 'resource',
   resources: 'resources',
+  result: 'result',
   result_digest: 'result_digest',
   result_summary: 'result_summary',
   results: 'results',
@@ -762,6 +786,7 @@ export const FieldDict = {
   tool_call_status: 'tool_call_status',
   tools: 'tools',
   top_session: 'top_session',
+  topic: 'topic',
   total: 'total',
   touch_files: 'touch_files',
   transport: 'transport',
@@ -778,6 +803,7 @@ export const FieldDict = {
   user_dict: 'user_dict',
   user_dict_path: 'user_dict_path',
   username: 'username',
+  values: 'values',
   'vcs-git-installed': 'gitInstalled',
   vfts: 'vfts',
   waiting: 'waiting',
@@ -1640,6 +1666,7 @@ export const DataSessionCleanupStaleKeys = {
 /** data-inbox-append 字段键（payload/result/event 合并去重）。 */
 export const DataInboxAppendKeys = {
   content: 'content',
+  dialog_id: 'dialog_id',
   effort: 'effort',
   id: 'id',
   idempotency_key: 'idempotency_key',
@@ -1656,6 +1683,7 @@ export const DataInboxAppendKeys = {
 
 /** data-inbox-list 字段键（payload/result/event 合并去重）。 */
 export const DataInboxListKeys = {
+  dialog_id: 'dialog_id',
   instance_id: 'instance_id',
   items: 'items',
   ok: 'ok',
@@ -1666,6 +1694,7 @@ export const DataInboxListKeys = {
 /** data-inbox-update 字段键（payload/result/event 合并去重）。 */
 export const DataInboxUpdateKeys = {
   content: 'content',
+  dialog_id: 'dialog_id',
   id: 'id',
   instance_id: 'instance_id',
   ok: 'ok',
@@ -1677,6 +1706,7 @@ export const DataInboxUpdateKeys = {
 /** data-inbox-commit 字段键（payload/result/event 合并去重）。 */
 export const DataInboxCommitKeys = {
   brief: 'brief',
+  dialog_id: 'dialog_id',
   id: 'id',
   inbox_id: 'inbox_id',
   instance_id: 'instance_id',
@@ -1765,12 +1795,14 @@ export const DataSessionGroupRoundTargetsSaveKeys = {
 
 /** data-snapshot-get 字段键（payload/result/event 合并去重）。 */
 export const DataSnapshotGetKeys = {
+  dialog_id: 'dialog_id',
   session_id: 'session_id',
   snapshot: 'snapshot',
 }
 
 /** data-snapshot-set 字段键（payload/result/event 合并去重）。 */
 export const DataSnapshotSetKeys = {
+  dialog_id: 'dialog_id',
   ok: 'ok',
   session_id: 'session_id',
   snapshot: 'snapshot',
@@ -1857,6 +1889,7 @@ export const DataKnowledgeImportKeys = {
 
 /** data-tasktree-list 字段键（payload/result/event 合并去重）。 */
 export const DataTasktreeListKeys = {
+  dialog_id: 'dialog_id',
   include_closed: 'include_closed',
   mode: 'mode',
   nodes: 'nodes',
@@ -1865,6 +1898,7 @@ export const DataTasktreeListKeys = {
 
 /** data-tasktree-tasks 字段键（payload/result/event 合并去重）。 */
 export const DataTasktreeTasksKeys = {
+  dialog_id: 'dialog_id',
   include_closed: 'include_closed',
   list: 'list',
   session_id: 'session_id',
@@ -1873,6 +1907,7 @@ export const DataTasktreeTasksKeys = {
 
 /** data-tasktree-delete 字段键（payload/result/event 合并去重）。 */
 export const DataTasktreeDeleteKeys = {
+  dialog_id: 'dialog_id',
   node_id: 'node_id',
   ok: 'ok',
 }
@@ -1884,6 +1919,7 @@ export const DataTasktreeUpsertKeys = {
   content: 'content',
   created_at: 'created_at',
   deleted_at: 'deleted_at',
+  dialog_id: 'dialog_id',
   done_at: 'done_at',
   exec_json: 'exec_json',
   finished_at: 'finished_at',
@@ -2044,6 +2080,13 @@ export const AskUserReplyKeys = {
   custom: 'custom',
   dialog_id: 'dialog_id',
   owner_instance: 'owner_instance',
+}
+
+/** ask-resolve 字段键（payload/result/event 合并去重）。 */
+export const AskResolveKeys = {
+  ask_id: 'ask_id',
+  ok: 'ok',
+  reason: 'reason',
 }
 
 /** tool-retry 字段键（payload/result/event 合并去重）。 */
@@ -2566,24 +2609,82 @@ export const HistoryPreToolHookKeys = {
   touch_files: 'touch_files',
 }
 
-/** codegraph-tool-call 字段键（payload/result/event 合并去重）。 */
-export const CodegraphToolCallKeys = {
-  args: 'args',
-  content: 'content',
-  context: 'context',
-  isError: 'isError',
-  resultType: 'resultType',
-  tool: 'tool',
+/** plugin-list 字段键（payload/result/event 合并去重）。 */
+export const PluginListKeys = {
+  plugins: 'plugins',
 }
 
-/** vfts-tool-call 字段键（payload/result/event 合并去重）。 */
-export const VftsToolCallKeys = {
-  args: 'args',
-  content: 'content',
-  context: 'context',
-  isError: 'isError',
-  resultType: 'resultType',
-  tool: 'tool',
+/** plugin-refresh 字段键（payload/result/event 合并去重）。 */
+export const PluginRefreshKeys = {
+  plugins: 'plugins',
+}
+
+/** plugin-set-enabled 字段键（payload/result/event 合并去重）。 */
+export const PluginSetEnabledKeys = {
+  enabled: 'enabled',
+  id: 'id',
+  ok: 'ok',
+}
+
+/** plugin-config-get 字段键（payload/result/event 合并去重）。 */
+export const PluginConfigGetKeys = {
+  fields: 'fields',
+  id: 'id',
+  values: 'values',
+}
+
+/** plugin-config-set 字段键（payload/result/event 合并去重）。 */
+export const PluginConfigSetKeys = {
+  id: 'id',
+  ok: 'ok',
+  values: 'values',
+}
+
+/** plugin-command 字段键（payload/result/event 合并去重）。 */
+export const PluginCommandKeys = {
+  id: 'id',
+  name: 'name',
+  ok: 'ok',
+  params: 'params',
+  result: 'result',
+}
+
+/** plugin-call 字段键（payload/result/event 合并去重）。 */
+export const PluginCallKeys = {
+  id: 'id',
+  method: 'method',
+  params: 'params',
+}
+
+/** plugin-registered 字段键（payload/result/event 合并去重）。 */
+export const PluginRegisteredKeys = {
+  plugin: 'plugin',
+}
+
+/** plugin-unregistered 字段键（payload/result/event 合并去重）。 */
+export const PluginUnregisteredKeys = {
+  id: 'id',
+}
+
+/** plugin-status 字段键（payload/result/event 合并去重）。 */
+export const PluginStatusKeys = {
+  detail: 'detail',
+  id: 'id',
+  status: 'status',
+}
+
+/** plugin-config-changed 字段键（payload/result/event 合并去重）。 */
+export const PluginConfigChangedKeys = {
+  id: 'id',
+  keys: 'keys',
+}
+
+/** plugin-event 字段键（payload/result/event 合并去重）。 */
+export const PluginEventKeys = {
+  id: 'id',
+  instance_id: 'instance_id',
+  payload: 'payload',
+  topic: 'topic',
 }
 
 /** vfts.dict.get 字段键（payload/result/event 合并去重）。 */
