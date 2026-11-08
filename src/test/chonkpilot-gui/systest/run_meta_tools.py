@@ -90,7 +90,9 @@ def main():
         # 时序：插件 MCP（manifest `mcp.mode=http`）由插件宿主在 GUI ready **之后**异步登记到
         # gateway（实测：tools-list 6 → 48 → 55 项，约 2s 收敛）→ 本断言须轮询到工具面收敛，
         # 而不是拿到首次快照就判缺失（旧版固定 sleep 0.4s → 误报"外部注册未生效"）。
-        deadline = time.time() + 30
+        # 批跑负载下插件登记可远超 2s（2026-11-08 实测：90s 窗口内才收敛）→ 窗口放宽到 90s，
+        # 断言不变（三个元工具仍须全部可见）。
+        deadline = time.time() + 90
         names = set()
         while time.time() < deadline:
             res = (c.req("tools-list", {}) or {})
@@ -102,7 +104,7 @@ def main():
                 return "n=%d" % len(names)
             time.sleep(0.3)
         missing = [w for w in ("mcp_find", "mcp_load", "mcp_invoke") if w not in names]
-        raise TestError("工具面缺 %s（外部元工具注册未生效，30s 内未收敛）：%s"
+        raise TestError("工具面缺 %s（外部元工具注册未生效，90s 内未收敛）：%s"
                         % (missing, sorted(names)))
 
     def case_m2_find():
