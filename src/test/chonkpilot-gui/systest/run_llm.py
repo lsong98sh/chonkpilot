@@ -263,7 +263,8 @@ def case_plain_chat():
 def case_tool_call():
     """五.3 工具调用：q 含 'call tool' → mock 返回 tool_calls(file_read) → tool-pair/tool-result。
 
-    口径变更（GATEWAY-2 L2）：文件域已拆为 11 个独立工具（`{purpose, targets[]}` 统一形状），
+    口径变更（GATEWAY-2 L2 / 2026-11-08）：文件域已拆为 11 个独立工具（`{targets[]}` 统一形状；
+    调用展示名用 gateway 注入的 `tool_call_display_name`，契约已移除 `purpose`），
     原 `dsl_run FILE_READ` 已随 DSL 删除 → 改为直接调 `file_read`。
     """
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')

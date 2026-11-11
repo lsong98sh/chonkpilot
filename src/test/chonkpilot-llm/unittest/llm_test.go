@@ -388,7 +388,8 @@ func TestDomainToolsListFields(t *testing.T) {
 	defer llm.Close()
 	bus := newBus(t)
 	registerInstance(t, bus, "ins-llm")
-	startLLM(t, bus, llm.URL, false) // DisableMCP=false：内嵌 gateway + 域工具/agent 注册
+	srv := startLLM(t, bus, llm.URL, false) // DisableMCP=false：内嵌 gateway + 域工具/agent 注册
+	startMovedDomainPlugin(t, bus, srv)     // ask_user/next_run/subchat_* 已迁 task 插件：测试适配
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -413,7 +414,7 @@ func TestDomainToolsListFields(t *testing.T) {
 	t.Fatalf("ask_user not in tools list within 10s (tools=%+v)", tools)
 found:
 	// 条目 payload 字段断言
-	for _, name := range []string{"ask_user", "tool_result", "subchat_open", "subchat_finish"} {
+	for _, name := range []string{"ask_user", "next_run", "subchat_open", "subchat_finish"} {
 		foundTool := false
 		for _, it := range tools {
 			m, _ := it.(map[string]any)

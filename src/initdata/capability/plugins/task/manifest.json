@@ -3,7 +3,7 @@
   "id": "task",
   "name": "任务工具",
   "version": "1.0.0",
-  "description": "任务系列工具：执行（task_run）/ LLM（task_llm）/ 状态（task_status）/ 终止（task_stop）",
+  "description": "任务与会话编排工具：执行（task_run）/ 委派（task_llm）/ 状态（task_status）/ 终止（task_stop）/ 提问（ask_user）/ 续跑（next_run）/ 子聊天（subchat_open·subchat_finish）",
   "icon": "play",
   "publisher": "chonkpilot",
   "product": true,
@@ -18,7 +18,7 @@
   "mcp": {
     "mode": "http",
     "namespace": "-",
-    "hot_tools": ["task_run", "task_llm", "task_status", "task_stop"],
+    "hot_tools": ["task_run", "task_llm", "task_status", "task_stop", "ask_user", "next_run", "subchat_open", "subchat_finish"],
     "timeout_sec": 600,
     "category": "task",
     "origin": "builtin"
@@ -46,7 +46,7 @@
     "data": ["task.tree", "task.tasks", "task.stop"],
     "hooks": [],
     "llm": { "step": true },
-    "session": [],
+    "session": ["ask.user", "next.run", "subchat.open", "subchat.finish"],
     "ui": { "containers": ["preview", "tab", "drawer", "dialog"] },
     "network": []
   }

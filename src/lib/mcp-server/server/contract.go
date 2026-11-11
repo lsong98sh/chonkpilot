@@ -55,16 +55,19 @@ func parseSchemaJSON(s string) (map[string]any, error) {
 // ToolDoc 是 *.tool.md 契约（25-mcp-server；要素对齐 dist/scripts/markitdown.json）。
 // 注意：category 由 meta 声明（缺省无分类）；分类目录归属不影响原语名（原语名 = 文件名）。
 type ToolDoc struct {
-	Name       string // 原语名 = 文件名（不含 .tool.md）
-	Title      string // H1 可读标题
-	Dir        string // 契约文件所在目录（entry 相对解析基准）
-	Runtime    string // meta: runtime（executor exe/PATH 名、解释器如 python/node，或 "builtin" = 进程内执行）
-	Entry      string // meta: entry（已废弃；兼容读取，解释器类遗留）
-	Hot        bool   // meta: hot（吸收原 llm；固定暴露标志）
-	Category   string // meta: category（分类声明；缺省 = 契约根目录名派生）
-	Async      string // meta: async（auto|always|never|manual，缺省 auto）
-	AsyncTh    int    // meta: async-threshold（秒；async=auto 下超时自动转后台）
-	Idempotent bool   // meta: idempotent（可重试性；缺省 false = 安全默认，见 G-20）
+	Name         string // 原语名 = 文件名（不含 .tool.md）
+	Title        string // H1 可读标题
+	Dir          string // 契约文件所在目录（entry 相对解析基准）
+	Runtime      string // meta: runtime（executor exe/PATH 名、解释器如 python/node，或 "builtin" = 进程内执行）
+	Entry        string // meta: entry（已废弃；兼容读取，解释器类遗留）
+	Hot          bool   // meta: hot（吸收原 llm；固定暴露标志）
+	Category     string // meta: category（分类声明；缺省 = 契约根目录名派生）
+	Async        string // meta: async（auto|always|never|manual，缺省 auto）
+	AsyncTh      int    // meta: async-threshold（秒；async=auto 下超时自动转后台）
+	OnTimeout    string // meta: on_timeout（fail|background，缺省 background）
+	OnTimeoutSet bool   // meta: on_timeout 键是否显式声明
+	PolicyLock   bool   // meta: policy_lock（true = 界面不可覆盖）
+	Idempotent   bool   // meta: idempotent（可重试性；缺省 false = 安全默认，见 G-20）
 	// Internal=true（meta: internal）：仅作为 core-mcp-server 的**内部执行器**（/internal/exec），
 	// 不进入 MCP tools/list（插件查询工具：由插件按启用状态注册给 gateway，执行经 core）。
 	Internal bool
@@ -86,7 +89,7 @@ type ToolDoc struct {
 const categoryServer = "server"
 
 // isServerTool 判定工具契约是否由 gateway/域自持（category=server **且无 runtime**）。
-// 有 runtime 的 category=server 契约（ask_user/tool_result/… 的 core-only 版本）仍是外部执行器，
+// 有 runtime 的 category=server 契约（如插件工具的 core-only 版本）仍是外部执行器，
 // 归属 core-mcp-server 注册（见 ToolDoc.CoreOnly）。
 func isServerTool(d *ToolDoc) bool {
 	return strings.EqualFold(strings.TrimSpace(d.Category), categoryServer) && strings.TrimSpace(d.Runtime) == ""
@@ -161,20 +164,23 @@ func parseToolDoc(f *ContractFile) (*ToolDoc, error) {
 	meta := c.Meta
 
 	doc := &ToolDoc{
-		Name:        f.Name,
-		Title:       c.Title,
-		Dir:         f.Dir,
-		Runtime:     meta["runtime"],
-		Entry:       meta["entry"],
-		Hot:         isTruthy(meta["hot"]) || isTruthy(meta["llm"]), // llm 已并入 hot（兼容旧契约）
-		Category:    meta["category"],
-		Async:       firstNonEmpty(meta["async"], "auto"),
-		AsyncTh:     atoiSafe(meta["async-threshold"]),
-		Idempotent:  isTruthy(meta["idempotent"]),
-		Internal:    isTruthy(meta["internal"]),
-		CoreOnly:    isTruthy(meta["core-only"]),
-		Args:        meta["args"],
-		Description: c.Description,
+		Name:         f.Name,
+		Title:        c.Title,
+		Dir:          f.Dir,
+		Runtime:      meta["runtime"],
+		Entry:        meta["entry"],
+		Hot:          isTruthy(meta["hot"]) || isTruthy(meta["llm"]), // llm 已并入 hot（兼容旧契约）
+		Category:     meta["category"],
+		Async:        firstNonEmpty(meta["async"], "auto"),
+		AsyncTh:      atoiSafe(meta["async-threshold"]),
+		OnTimeout:    firstNonEmpty(meta["on_timeout"], "background"),
+		OnTimeoutSet: meta["on_timeout"] != "",
+		PolicyLock:   isTruthy(meta["policy_lock"]),
+		Idempotent:   isTruthy(meta["idempotent"]),
+		Internal:     isTruthy(meta["internal"]),
+		CoreOnly:     isTruthy(meta["core-only"]),
+		Args:         meta["args"],
+		Description:  c.Description,
 	}
 	if v, ok := meta["timeout"]; ok && v != "" {
 		if _, err := fmt.Sscanf(v, "%d", &doc.Timeout); err != nil {
@@ -230,6 +236,7 @@ func buildTool(d *ToolDoc, cfg *Config) (*mcp.Tool, error) {
 	}
 	// ChonkPilot 扩展 meta（不进 LLM schema；_meta 透出供 gateway/server 消费，72-工具开发规范）
 	ext := map[string]any{}
+	ext["source"] = "md"
 	if d.Hot {
 		ext["hot"] = true
 	}
@@ -242,10 +249,15 @@ func buildTool(d *ToolDoc, cfg *Config) (*mcp.Tool, error) {
 	if d.AsyncTh > 0 {
 		ext["async-threshold"] = d.AsyncTh
 	}
-	// 执行硬上限：键显式声明即透出（含 **0/-1 = 无上限**）；键缺失 = 不写（回落全局）。
-	// 注意：此处 >0 之外的 0/-1 亦透出，供 UI/gateway 区分「未设置」与「无上限」。
+	// 执行硬上限：键显式声明即透出（含 **0/-1 = 无上限**）；键缺失 = 不写（gateway 按默认 30s）。
 	if d.TimeoutSet {
 		ext["timeout"] = d.Timeout
+	}
+	if d.OnTimeoutSet {
+		ext["on_timeout"] = d.OnTimeout
+	}
+	if d.PolicyLock {
+		ext["policy_lock"] = true
 	}
 	// 可重试性（G-20，缺省 false = 安全默认）：仅**声明为 true** 时透出；
 	// 缺失 = false（不可安全自动重试）——将来若要加重试，判据 = `_meta.idempotent == true`。
@@ -277,16 +289,23 @@ func buildTool(d *ToolDoc, cfg *Config) (*mcp.Tool, error) {
 func applyToolAsyncOverride(ext map[string]any, d *ToolDoc, ov ToolAsyncOverride) {
 	switch {
 	case ov.Mode == "auto":
-		if d.Async != "" && d.Async != "auto" {
+		if _, ok := ext["async"]; ok {
 			ext["async"] = "auto"
 		} else {
-			delete(ext, "async") // 契约本身即 auto/未声明 → 维持「auto 不显式透出」
+			delete(ext, "async")
 		}
 	case ov.Mode != "":
 		ext["async"] = ov.Mode
 	}
 	if ov.Threshold > 0 {
 		ext["async-threshold"] = ov.Threshold
+	}
+	if ov.OnTimeoutSet && ov.OnTimeout != "" {
+		ext["on_timeout"] = ov.OnTimeout
+	}
+	// 旧配置兼容：cancel_on_timeout > 0 = 到点失败（取消）。
+	if ov.CancelOnTimeoutSet && ov.CancelOnTimeout > 0 {
+		ext["on_timeout"] = "fail"
 	}
 }
 

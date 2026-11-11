@@ -115,11 +115,15 @@ export function useToolSandbox() {
     for (const k of Object.keys(mc)) names.add(k)
     for (const name of [...names].sort()) {
       const v = mc[name]
+      const listed = Object.prototype.hasOwnProperty.call(applicableByName, name)
+      const stdio = listed && applicableByName[name] !== false
       out.push({
         kind: 'mcp', key: name, unit: name, category: '',
         tools: toolsByServer.value[name] || [],
-        applicable: applicableByName[name] !== false, // 未在清单（旧配置残留）→ 仍可操作
-        userSet: isSet(v), on: v === true,
+        applicable: listed ? applicableByName[name] !== false : true, // 未在清单（旧配置残留）→ 仍可操作
+        userSet: isSet(v),
+        // stdio 默认隔离（未配置 = 开）；http/插件默认不注入（未配置 = 关）；显式值优先。
+        on: isSet(v) ? v === true : stdio,
       })
     }
     return out

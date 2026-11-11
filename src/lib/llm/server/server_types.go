@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"io"
 	"sync"
 	"time"
@@ -168,13 +167,7 @@ type Server struct {
 	groupMu   sync.Mutex
 	groupRuns map[string]*groupSched
 	tasks     *taskManager // 任务编排（任务树/级联/批量/状态事件，§6.6）
-	// taskExecCancels：task 型域工具「执行中取消」登记表（I-83 收尾，18 §3.4）：tool_call_id →
-	// 执行 ctx cancelFunc。domainExecute task 分支登记、结束注销；gateway 取消（tm.cancel 补发
-	// mcp-tasks-report{state:cancelled}）→ onGatewayTaskDone 查表 cancel 真停执行体
-	// （tool_result 轮询等）。独立小锁：回报到达时域工具可能正执行中，避免卷入 s.mu 嵌套。
-	taskExecCancelMu sync.Mutex
-	taskExecCancels  map[string]context.CancelFunc
-	cleaned          map[string]bool     // instanceID → 已做过遗留 running 清理
+	cleaned   map[string]bool     // instanceID → 已做过遗留 running 清理
 	dirNodes         map[string][]string // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
 	// dirSigs 是 dirNodes 的**契约根签名**（instanceID → 节点名 → 根签名）：热重扫据此只重建
 	// 真正变化的节点（根集合/契约文件变化），未变化节点不动 → 工具面无「先注销再注册」窗口。

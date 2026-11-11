@@ -37,6 +37,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -674,31 +675,56 @@ func isGroupConverged(text string) bool { return component.GroupConverged(text) 
 // ── 发起（扩展 `subchat_open`）与「继续」────────────────────────────────
 
 // groupParticipantsArg 解析 `subchat_open` 的可选 `participants` 入参（元素 `{agent, role}`）。
-// 返回 (名册, 是否走群聊)。**≥ 2 项才判群聊**（1 项或省略 = 单聊，走既有路径；D39）。
-// 无 agent 名的项被丢弃；重复 agent 按首现保留。
-func groupParticipantsArg(args map[string]any) ([]facade.GroupParticipant, bool) {
-	raw, ok := args["participants"].([]any)
-	if !ok || len(raw) < 2 {
-		return nil, false
+// 返回 (名册, 是否走群聊, 参数错误消息)。
+//
+// 判定（2026-11-08 P0）：
+//   - 省略 / 空数组 / **1 个有效项** → 单聊（D39，行为不变）；
+//   - 任一项缺 agent、非对象、或 agent 重复 → **明确报错**（不再静默丢弃后降级单聊）；
+//   - 有效项 < 2（且原始 ≥2）→ 明确报错。
+func groupParticipantsArg(args map[string]any) ([]facade.GroupParticipant, bool, string) {
+	rawAny, present := args["participants"]
+	if !present || rawAny == nil {
+		return nil, false, ""
+	}
+	raw, ok := rawAny.([]any)
+	if !ok {
+		return nil, false, "participants 必须是数组，元素为 {agent, role}"
+	}
+	if len(raw) == 0 {
+		return nil, false, ""
 	}
 	out := make([]facade.GroupParticipant, 0, len(raw))
 	seen := map[string]bool{}
-	for _, e := range raw {
+	var dropped []string
+	for i, e := range raw {
 		m, ok := e.(map[string]any)
 		if !ok {
+			dropped = append(dropped, fmt.Sprintf("第 %d 项不是对象", i+1))
 			continue
 		}
 		agent := strings.TrimSpace(str(m["agent"]))
-		if agent == "" || seen[agent] {
+		if agent == "" {
+			dropped = append(dropped, fmt.Sprintf("第 %d 项缺少 agent", i+1))
+			continue
+		}
+		if seen[agent] {
+			dropped = append(dropped, fmt.Sprintf("第 %d 项重复 agent %q", i+1, agent))
 			continue
 		}
 		seen[agent] = true
 		out = append(out, facade.GroupParticipant{Agent: agent, Role: strings.TrimSpace(str(m["role"]))})
 	}
-	if len(out) < 2 {
-		return nil, false
+	// D39：只给 1 个有效项 = 单聊（保持既有语义）。
+	if len(raw) == 1 && len(out) == 1 {
+		return out, false, ""
 	}
-	return out, true
+	if len(dropped) > 0 {
+		return nil, false, "participants 含无效/重复项（" + strings.Join(dropped, "；") + "）；请修正后重试（至少 2 个不同 agent 才是群聊）"
+	}
+	if len(out) < 2 {
+		return nil, false, "participants 有效项不足 2（群聊至少需要 2 个不同 agent）；如只想单聊请省略 participants"
+	}
+	return out, true, ""
 }
 
 // ensureMainParticipant 保证主 agent 在名册内（D46）：不在 → 置首位（角色标注「发起者 / 兜底裁判」）。
@@ -776,7 +802,7 @@ func (s *Server) runGroupChatOpen(tc *turnCtx, mainAgent, scenarioID, llmRef, pr
 	// ⑤ 异步起「依次认领」调度器（主轮不挂起）。
 	go s.startGroupChat(instanceID, groupID)
 
-	return subchatToolOK(groupID), false
+	return subchatToolOK(groupID, "group"), false
 }
 
 // onSubchatContinue 处理 `subchat-continue`（61 §4.2）：用户点「继续」→ 群聊 `lifecycle` 回

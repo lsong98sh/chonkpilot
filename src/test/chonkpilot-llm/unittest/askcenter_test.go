@@ -208,7 +208,8 @@ func TestAskCenterSubscribeResolveUnsubscribe(t *testing.T) {
 	llm := askCenterMockLLM()
 	defer llm.Close()
 	bus := newBus(t)
-	startLLM(t, bus, llm.URL, false) // 真实内嵌 gateway（域工具 ask_user 已注册）
+	srv := startLLM(t, bus, llm.URL, false) // 真实内嵌 gateway
+	startMovedDomainPlugin(t, bus, srv)     // ask_user 已迁 task 插件：测试适配
 	t.Cleanup(data.Reset)            // 晚于 startLLM 的 TempDir 注册 → LIFO 先关库连接再删目录（Windows 句柄）
 	const inst = "ins-askc"
 	workDir := t.TempDir()

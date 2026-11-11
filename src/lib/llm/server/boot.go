@@ -53,7 +53,6 @@ func New(bus mq.Bus, opts Options) *Server {
 		askSeq:          make(map[string]int64),
 		askBatches:      make(map[string]*askBatch),
 		groupRuns:       make(map[string]*groupSched),
-		taskExecCancels: make(map[string]context.CancelFunc),
 		cleaned:         make(map[string]bool),
 		dirNodes:        make(map[string][]string),
 		dirSigs:         make(map[string]map[string]string),
@@ -204,17 +203,10 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	logStartupStage("方法面/事件订阅")
-	// 域工具注册（gateway 分组注册面：tools/register → mcp-tools-register，61-消息一览 §5.1.1）；
-	// 内置 agent 集（**app 级场景** `<exeDir>/scenarios/*/`）**只登记到内存表**（25 §5 / T2：agent
-	// 不注册资产；25 §8.1 #8 / T6：来源 = app 级场景，非代码 embed）。
-	// 注册失败不致命（宿主 DisableMCP/无下游时跳过），hot/目录后续刷新仍可用。
-	// 一工具一 exe：进程外模式 = 域/元工具全部由 core-mcp-server 注册执行（server 零域工具）。
-	if s.gw != nil && !externalToolsEnabled() {
-		if err := s.registerDomainTools(ctx); err != nil {
-			return fmt.Errorf("registerDomainTools: %w", err)
-		}
-	}
-	logStartupStage("域工具注册（进程外模式 = 跳过）")
+	// 2026-11-08：core 不再注册任何域工具（ask_user / next_run / subchat_open / subchat_finish
+// 已迁 task 插件；tool_result 删除，结果读取统一走 task_status）。此处只登记**app 级场景**
+// agent（`<exeDir>/scenarios/*/`，内存表；25 §5 / T2：agent 不注册资产；25 §8.1 #8）。
+	// 注册失败不致命（宿主 DisableMCP/无下游时跳过）。
 	if s.gw != nil {
 		if err := s.registerDomainAgents(ctx); err != nil {
 			return fmt.Errorf("registerDomainAgents: %w", err)

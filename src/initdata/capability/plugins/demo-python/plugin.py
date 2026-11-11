@@ -5,7 +5,8 @@
 演示覆盖面（对照《插件与MCP-Server开发指南》）：
   1. 通道        AF_UNIX + 行分隔 JSON 帧（k/id/name/payload）→ plugin.hello / plugin.register
   2. MCP         Streamable HTTP（POST /mcp，JSON-RPC，Bearer）→ plugin.mcp.register
-  3. 工具        demo_echo / demo_time / demo_counter（tools/list + tools/call）
+  3. 工具        demo_echo / demo_time / demo_counter / demo_llm（tools/list + tools/call；
+                 demo_echo 的 name/描述/schema/策略来自 tools/demo_echo.tool.md）
   4. 配置        CHONKPILOT_PLUGIN_CONFIG / SECRETS 读取；plugin.config.changed 热重载
   5. UI RPC      plugin.ui.rpc（echo / stats / llm / counter.reset）供 iframe 调用
   6. 事件订阅    plugin.register.subscriptions（session-complete）
@@ -35,6 +36,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PLUGIN_ID = "demo-python"
 PLUGIN_VERSION = "1.0.0"
+
+# 工具契约（*.tool.md）目录：与 plugin.py 同级的 tools/。
+TOOL_MD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
 
 _lock = threading.Lock()
 _cfg = {}
@@ -73,9 +77,119 @@ def log(msg):
     sys.stdout.flush()
 
 
+# ── 工具契约（.tool.md）────────────────────────────────────────────
+
+class ToolError(ValueError):
+    """工具参数/业务错误：tools/call 以 isError=true 返回（区别于内部异常）。"""
+
+
+def _block_after(text, lang):
+    """取第一个 ```<lang> 到下一个 ``` 之间的内容（与 framework contract.blockAfter 一致）。"""
+    i = text.find(lang)
+    if i < 0:
+        return ""
+    rest = text[i + len(lang):]
+    j = rest.find("```")
+    return rest[:j].strip() if j >= 0 else ""
+
+
+def _normalize_async(value):
+    v = str(value).strip().lower()
+    if v in ("auto", "manual"):
+        return "auto"
+    if v in ("sync", "never"):
+        return "sync"
+    if v in ("async", "always"):
+        return "async"
+    return "auto"
+
+
+def _normalize_on_timeout(value):
+    v = str(value).strip().lower()
+    if v == "fail":
+        return "fail"
+    if v in ("background", "async", "detach"):
+        return "background"
+    return "background"
+
+
+def parse_tool_md(raw):
+    """解析单个 .tool.md：YAML 头（简单 key:value）+ `# 摘要` + ```json 参数 schema。
+
+    不引入 PyYAML：格式与 framework contract.Parse 用的子集保持一致。
+    """
+    meta = {}
+    for line in _block_after(raw, "```yaml").splitlines():
+        k, sep, v = line.strip().partition(":")
+        if not sep:
+            continue
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if k:
+            meta[k] = v
+
+    name = meta.get("name", "")
+    if not name:
+        raise ValueError("契约缺少 name")
+
+    js = _block_after(raw, "```json")
+    schema = json.loads(js) if js else {"type": "object", "properties": {}}
+
+    # 描述 = `# 摘要` 到下一个一级标题；与 framework contract.describe 一致。
+    desc = meta.get("title") or name
+    i = raw.find("# 摘要")
+    if i >= 0:
+        rest = raw[i + len("# 摘要"):]
+        j = rest.find("\n# ")
+        if j >= 0:
+            rest = rest[:j]
+        body = rest.strip()
+        if body:
+            desc = body
+
+    try:
+        timeout = int(meta.get("timeout", "30"))
+        if timeout < 0:
+            timeout = 0
+    except ValueError:
+        timeout = 30
+
+    return {
+        "name": name,
+        "title": meta.get("title", ""),
+        "description": desc,
+        "async": _normalize_async(meta.get("async", "auto")),
+        "timeout": timeout,
+        "on_timeout": _normalize_on_timeout(meta.get("on_timeout", "background")),
+        "category": meta.get("category", ""),
+        "hot": str(meta.get("hot", "false")).strip().lower() in ("true", "yes", "1"),
+        "schema": schema,
+    }
+
+
+def load_tool_contracts(directory=TOOL_MD_DIR):
+    """读取目录下所有 *.tool.md，按 name 建索引；单个文件损坏只记日志、不拖垮插件。"""
+    out = {}
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return out
+    for fn in names:
+        if not fn.endswith(".tool.md"):
+            continue
+        path = os.path.join(directory, fn)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                tool = parse_tool_md(f.read())
+            out[tool["name"]] = tool
+        except Exception as e:
+            log("tool contract load failed: %s: %s" % (fn, e))
+    return out
+
+
 # ── MCP（Streamable HTTP，JSON-RPC over POST /mcp）───────────────────
 
-TOOLS = [
+FALLBACK_TOOLS = [
     {
         "name": "demo_echo",
         "description": "回显文本（演示 MCP 工具与配置读取）。",
@@ -114,6 +228,64 @@ TOOLS = [
         },
     },
 ]
+
+
+def build_tools(fallback=FALLBACK_TOOLS, contracts=None):
+    """用 .tool.md 覆盖代码里的工具定义；没有 md 的工具保留代码 schema。
+
+    返回值即 tools/list 的返回体：md 工具额外带 `_meta`
+    （hot/async/timeout/on_timeout/category/source），gateway 会合并该字段。
+    """
+    contracts = load_tool_contracts() if contracts is None else contracts
+    tools = []
+    known = set()
+    for base in fallback:
+        c = contracts.get(base["name"])
+        if not c:
+            tools.append({
+                "name": base["name"],
+                "description": base["description"],
+                "inputSchema": base["inputSchema"],
+            })
+            continue
+        tool = {
+            "name": c["name"],
+            "description": c["description"],
+            "inputSchema": c["schema"],
+            "_meta": {
+                "hot": c["hot"],
+                "async": c["async"],
+                "timeout": c["timeout"],
+                "on_timeout": c["on_timeout"],
+                "category": c["category"],
+                "source": "md",
+            },
+        }
+        tools.append(tool)
+        known.add(c["name"])
+    # 只存在于 md 的工具也注册（schema/策略完全来自契约）。
+    for name in sorted(set(contracts) - known):
+        c = contracts[name]
+        tools.append({
+            "name": c["name"],
+            "description": c["description"],
+            "inputSchema": c["schema"],
+            "_meta": {
+                "hot": c["hot"],
+                "async": c["async"],
+                "timeout": c["timeout"],
+                "on_timeout": c["on_timeout"],
+                "category": c["category"],
+                "source": "md",
+            },
+        })
+    return tools
+
+
+TOOLS = build_tools()
+
+# hot 工具由契约 `_meta.hot` 汇总（manifest mcp.hot_tools 需与之一致）。
+HOT_TOOLS = [t["name"] for t in TOOLS if (t.get("_meta") or {}).get("hot")]
 
 
 class MCPHandler(BaseHTTPRequestHandler):
@@ -179,6 +351,9 @@ class MCPHandler(BaseHTTPRequestHandler):
                 with _lock:
                     _counters["tools"] += 1
                 return self._ok(rid, {"content": [{"type": "text", "text": text}], "isError": False})
+            except ToolError as e:
+                # 参数/业务错误：文案本身就是给模型看的，不再加“错误:”前缀。
+                return self._ok(rid, {"content": [{"type": "text", "text": str(e)}], "isError": True})
             except Exception as e:
                 return self._ok(rid, {"content": [{"type": "text", "text": "错误: %s" % e}], "isError": True})
         return {"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method: " + method}}
@@ -189,8 +364,19 @@ class MCPHandler(BaseHTTPRequestHandler):
 
 
 def call_tool(name, args):
+    if not isinstance(args, dict):
+        raise ToolError("参数错误: arguments 必须是 JSON 对象")
     if name == "demo_echo":
-        text = str(args.get("text", ""))
+        # schema 的 required:["text"] 在这里真正生效：缺失/null/空串/非字符串都是参数错误。
+        if "text" not in args:
+            raise ToolError("参数错误: 缺少必填参数 text（非空字符串）")
+        text = args.get("text")
+        if text is None:
+            raise ToolError("参数错误: text 不能为 null（需要非空字符串）")
+        if not isinstance(text, str):
+            raise ToolError("参数错误: text 必须是字符串（收到 %s）" % type(text).__name__)
+        if not text.strip():
+            raise ToolError("参数错误: text 不能为空字符串")
         limit = int(cfg("echoLimit", 200) or 200)
         if len(text) > limit:
             text = text[:limit] + "…(truncated)"
@@ -460,7 +646,17 @@ def main():
     })
 
     url, token = start_mcp()
-    _bridge.call("plugin.mcp.register", {"url": url, "token": token, "hot_tools": ["demo_echo"]})
+    # 工具策略（async/timeout/on_timeout）随 tools/list 的 `_meta` 下发，gateway 会合并透出，
+    # 这是当前协议下唯一被消费的契约面。`plugin.mcp.register` 协议虽声明 tools 字段，但宿主
+    # mgr.registerMCP 只消费 url/token/hot_tools/namespace/category/timeout，tools 不参与注册；
+    # 这里仍一并上报（便于宿主后续支持），hot_tools 由 md 的 `_meta.hot` 汇总，与 manifest 一致。
+    register_req = {"url": url, "token": token}
+    if HOT_TOOLS:
+        register_req["hot_tools"] = HOT_TOOLS
+    register_req["tools"] = [
+        {"name": t["name"], "_meta": t["_meta"]} for t in TOOLS if t.get("_meta")
+    ]
+    _bridge.call("plugin.mcp.register", register_req)
     _bridge.call("plugin.status.report", {"state": "running", "detail": "python demo ready"})
     log("ready: mcp=%s" % url)
     publish("demo-event", {"kind": "started", "at": int(time.time())})

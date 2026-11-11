@@ -180,6 +180,7 @@ func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]m
 	for k, v := range in {
 		out[k] = mcpgateway.ToolAsyncOverride{
 			Mode: v.Mode, Threshold: v.Threshold, ThresholdSet: v.ThresholdSet,
+			OnTimeout: v.OnTimeout, OnTimeoutSet: v.OnTimeoutSet,
 			TouchFiles: v.TouchFiles, TouchFilesSet: v.TouchFilesSet,
 			CancelOnTimeout: v.CancelOnTimeout, CancelOnTimeoutSet: v.CancelOnTimeoutSet,
 		}

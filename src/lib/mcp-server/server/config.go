@@ -42,10 +42,12 @@ type ToolAsyncOverride struct {
 	Mode               string `json:"mode"`
 	Threshold          int    `json:"threshold"`
 	HardTimeout        int    `json:"hard_timeout"`
+	OnTimeout          string `json:"on_timeout"`
 	TouchFiles         bool   `json:"touch_files"`
 	CancelOnTimeout    int    `json:"cancel_on_timeout"`
 	ThresholdSet       bool   `json:"-"` // threshold 是否显式设置（0/-1 = 无上限）
 	HardTimeoutSet     bool   `json:"-"` // hard_timeout 是否显式设置（0/-1 = 无上限）
+	OnTimeoutSet       bool   `json:"-"` // on_timeout 是否显式设置（fail/background）
 	TouchFilesSet      bool   `json:"-"` // touch_files 是否显式设置（区分 false 与「未设置」）
 	CancelOnTimeoutSet bool   `json:"-"` // cancel_on_timeout 是否显式设置
 }
@@ -68,6 +70,13 @@ func (o *ToolAsyncOverride) UnmarshalJSON(data []byte) error {
 	o.HardTimeout, o.HardTimeoutSet = optIntField(raw["hard_timeout"])
 	o.CancelOnTimeout, o.CancelOnTimeoutSet = optIntField(raw["cancel_on_timeout"])
 	o.TouchFiles, o.TouchFilesSet = optBoolField(raw["touch_files"])
+	if v, ok := raw["on_timeout"]; ok {
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil && strings.TrimSpace(s) != "" {
+			o.OnTimeout = strings.ToLower(strings.TrimSpace(s))
+			o.OnTimeoutSet = true
+		}
+	}
 	return nil
 }
 
@@ -115,8 +124,8 @@ func optIntField(raw json.RawMessage) (int, bool) {
 	return 0, false
 }
 
-// toolAsyncModes 是合法 mode 取值（四档；其它值 = 非法 → 丢字段）。
-var toolAsyncModes = map[string]bool{"always": true, "never": true, "auto": true, "manual": true}
+// toolAsyncModes 是合法 mode 取值（auto/sync/async；兼容旧 always/never/manual；其它值 = 非法 → 丢字段）。
+var toolAsyncModes = map[string]bool{"always": true, "never": true, "auto": true, "manual": true, "sync": true, "async": true}
 
 // Defaults 是注入 tools/call 的默认参数（server 级配置，不依赖 NATS）。
 // 客户端显式传入的同名参数优先（覆盖默认）。
@@ -135,10 +144,10 @@ type Defaults struct {
 // 2026-10-28（P2-3）：`Interpreters` 字段与 `CHONKPILOT_INTERPRETERS` 注入链已删除 ——
 // 脚本执行（`task_run`）随 task 插件，解释器配置归插件（`plugins.task.interpreter-*`）。
 type Config struct {
-	Root           string            `json:"root"`            // 契约扫描根
-	TimeoutSec     int               `json:"timeout_sec"`     // tools/call 执行超时（秒）
-	MaxConcurrency int               `json:"max_concurrency"` // 并发执行上限
-	ChromePath     string            `json:"chrome_path"`     // 浏览器可执行文件路径（spawn 子进程注入环境变量 CHONK_CHROME）
+	Root           string `json:"root"`            // 契约扫描根
+	TimeoutSec     int    `json:"timeout_sec"`     // tools/call 执行超时（秒）
+	MaxConcurrency int    `json:"max_concurrency"` // 并发执行上限
+	ChromePath     string `json:"chrome_path"`     // 浏览器可执行文件路径（spawn 子进程注入环境变量 CHONK_CHROME）
 	// Toolchain 是能力原语 prompt/skill 文本里 {{toolchain.<key>}} 的取值表（key 见
 	// ToolchainKeys；装配层 instance-register 后由 usr 配置注入，见 chonkpilot-server
 	// loadExecConfig）。空 = 全部按未配置处理（已知 key 替换为空串）。
@@ -345,6 +354,18 @@ func NormalizeToolAsync(raw map[string]ToolAsyncOverride) map[string]ToolAsyncOv
 			eff.Threshold = ov.Threshold
 			eff.ThresholdSet = true
 		}
+		if ov.OnTimeoutSet && ov.OnTimeout != "" {
+			switch strings.ToLower(strings.TrimSpace(ov.OnTimeout)) {
+			case "fail", "cancel":
+				eff.OnTimeout = "fail"
+				eff.OnTimeoutSet = true
+			case "background", "async", "detach":
+				eff.OnTimeout = "background"
+				eff.OnTimeoutSet = true
+			default:
+				log.Printf("[mcp-server] tool_async[%s]: 非法 on_timeout=%q（取值 fail/background），忽略该字段", name, ov.OnTimeout)
+			}
+		}
 		if ov.HardTimeoutSet || ov.HardTimeout != 0 {
 			eff.HardTimeout = ov.HardTimeout
 			eff.HardTimeoutSet = true
@@ -357,7 +378,7 @@ func NormalizeToolAsync(raw map[string]ToolAsyncOverride) map[string]ToolAsyncOv
 			eff.CancelOnTimeout = ov.CancelOnTimeout
 			eff.CancelOnTimeoutSet = true
 		}
-		if eff.Mode == "" && !eff.ThresholdSet && !eff.HardTimeoutSet && !eff.TouchFilesSet && !eff.CancelOnTimeoutSet {
+		if eff.Mode == "" && !eff.ThresholdSet && !eff.HardTimeoutSet && !eff.OnTimeoutSet && !eff.TouchFilesSet && !eff.CancelOnTimeoutSet {
 			continue // 无有效覆盖 → 不登记（等价未配置）
 		}
 		out[name] = eff

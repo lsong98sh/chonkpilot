@@ -1,6 +1,7 @@
-// task 型域工具（tool_result）单测
-// （对齐 21-llm-server 任务编排 + 域工具契约 llm/contracts/tools/tool_result.tool.md）：
-// tool_result 返回转后台结果。tool_stop 已于 2026-11-04 删除（task_stop 为唯一停止入口）。
+// 任务结果读取能力单测（`plugin/v1/task.result` / `plugin/v1/task.wait` 的宿主实现）。
+//
+// 2026-11-08：`tool_result` 工具已删除（结果读取统一走 task 插件 `task_status`）；本文件保留
+// 宿主侧读取/等待能力（`taskResult` / `waitTaskResult`）的语义覆盖，不再有工具执行/取消表。
 package server
 
 import (
@@ -11,40 +12,45 @@ import (
 	"time"
 )
 
-// TestTaskToolResultFromMessage：tool_result → **读 message 表**（按 tool_call_id 定位 role=tool
-// 消息 → 解析 {call,result,async} 的 result 段）→ 返回异步结果回填父轮次 complete。
+// TestTaskResultFromMessage：结果读取优先读 message 表（按 tool_call_id 定位 role=tool
+// 消息 → 解析 {call,result,async} 的 result 段）。
 // 2026-09-18（用户决定）：不再经 gateway `tasks/status|result` 方法面。
-func TestTaskToolResultFromMessage(t *testing.T) {
+func TestTaskResultFromMessage(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
-	fakeGetResultID = "gw-async"
-	startTurn(t, s, "s-tk-gr", "t-tk-gr")
+	registerTestInstance(t, s)
+	store := s.newSessionStore("ins-test")
+	if err := store.EnsureSession("s-tk-gr"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+	if err := store.EnsureTurn("t-tk-gr", "s-tk-gr"); err != nil {
+		t.Fatalf("EnsureTurn: %v", err)
+	}
+	tc := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-tk-gr", Turn: "t-tk-gr"},
+		ctx: context.Background()}
 	// 预置该调用的异步结果记录（role=tool，content = {call,result,async}；交付 1 的读取源）。
 	persistAsyncToolRow(t, s, "t-tk-gr", "gw-async", "async file content", "completed")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
-		"instance_id": "ins-test", "session": "s-tk-gr", "turn": "t-tk-gr",
-		"type": "text-user", "content": "get result please",
-	}))
-	evs := collectTurn(t, s.bus, "t-tk-gr", 10*time.Second)
-	c := lastComplete(evs)
-	if c == nil || c["status"] != "complete" {
-		t.Fatalf("no complete: %+v", evs)
+	text, state, found := s.taskResult(tc, "gw-async")
+	if !found || state != "done" {
+		t.Fatalf("taskResult: found=%v state=%q", found, state)
 	}
-	text, _ := c["text"].(string)
 	if !strings.Contains(text, "async file content") {
-		t.Fatalf("tool_result missing async result: %q", text)
+		t.Fatalf("结果缺少 message 表内容: %q", text)
 	}
 }
 
-// TestTaskToolResultNodeTerminalUnavailable：任务节点已终态但 message 表无结果行 →
+// TestTaskResultNodeTerminalUnavailable：任务节点已终态但 message 表无结果行 →
 // 明确文案「异步结果已不可用」（**不得静默返回空**）。
-func TestTaskToolResultNodeTerminalUnavailable(t *testing.T) {
+func TestTaskResultNodeTerminalUnavailable(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
-	startTurn(t, s, "s-tk-grv", "t-tk-grv")
+	registerTestInstance(t, s)
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-tk-grv"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
 
 	// 建一个非终态节点（层判终态而 message 表无结果行 → 命中「不可用」分支）
 	node, err := s.tasks.start(&TaskNode{
@@ -63,16 +69,12 @@ func TestTaskToolResultNodeTerminalUnavailable(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("层推进终态: %v", err)
 	}
-	fakeGetResultID = node.TaskID
+	tc := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-tk-grv", Turn: "t-tk-grv"},
+		ctx: context.Background()}
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
-		"instance_id": "ins-test", "session": "s-tk-grv", "turn": "t-tk-grv",
-		"type": "text-user", "content": "get result please",
-	}))
-	evs := collectTurn(t, s.bus, "t-tk-grv", 10*time.Second)
-	text := ""
-	if c := lastComplete(evs); c != nil {
-		text, _ = c["text"].(string)
+	text, state, found := s.taskResult(tc, node.TaskID)
+	if !found || state != "error" {
+		t.Fatalf("层终态应给 error 状态: found=%v state=%q text=%q", found, state, text)
 	}
 	if !strings.Contains(text, "异步结果已不可用") {
 		t.Fatalf("层终态但结果行缺失应给明确文案: %q", text)
@@ -95,126 +97,33 @@ func persistAsyncToolRow(t *testing.T, s *Server, turnID, toolCallID, result, st
 	}
 }
 
-// TestTaskToolResultUnknown：tool_result 查询不存在的任务 → 错误文本回填（不崩溃）。
-func TestTaskToolResultUnknown(t *testing.T) {
+// TestTaskResultUnknown：查询不存在的任务 → found=false（插件据此给「未找到任务」文案，不崩溃）。
+func TestTaskResultUnknown(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
-	fakeGetResultID = "no-such-task"
-	startTurn(t, s, "s-tk-gru", "t-tk-gru")
-
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
-		"instance_id": "ins-test", "session": "s-tk-gru", "turn": "t-tk-gru",
-		"type": "text-user", "content": "get result please",
-	}))
-	evs := collectTurn(t, s.bus, "t-tk-gru", 10*time.Second)
-	c := lastComplete(evs)
-	if c == nil || c["status"] != "complete" {
-		t.Fatalf("no complete: %+v", evs)
+	registerTestInstance(t, s)
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-tk-gru"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
 	}
-	text, _ := c["text"].(string)
-	if !strings.Contains(text, "未找到任务") {
-		t.Fatalf("unknown id should report not found: %q", text)
-	}
-}
-
-// TestTaskExecCancelViaGatewayReport（I-83 收尾，18 §3.4）：task 型域工具（tool_result 轮询）
-// 执行中，gateway 取消链补发 mcp-tasks-report{state:cancelled, tool_call_id} →
-// onGatewayTaskDone 查「工具执行取消表」cancel → 执行体**及时**退出（不空耗到 timeout）；
-// tool_result 自身节点终态由回报链推进为 cancelled；被查询任务本身不受影响（仍 running）。
-// 背景：域工具回调经 mq 内存总线 Emit **同步派发**（执行体跑在 gateway 执行 goroutine 里，
-// t.cancel 无法中断 handler）→ 取消经回报通道反向通知。
-func TestTaskExecCancelViaGatewayReport(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := newTestServer(t, llm)
-
-	// 预建一个 running 的被查询任务（tool_result 的轮询对象；ToolCallID 与本次调用无关）
-	node, err := s.tasks.start(&TaskNode{
-		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-cxl", TurnID: "t-cxl",
-		InstanceID: "ins-test", TopSession: "s-cxl", Name: "inflight",
-	})
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	tc := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-cxl", Turn: "t-cxl"},
+	tc := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-tk-gru", Turn: "t-tk-gru"},
 		ctx: context.Background()}
-	// 模拟 gateway 取消链的回报（tm.cancel 补发；tool_call_id = tool_result 本次调用）
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		s.onGatewayTaskDone("", []byte(`{"task_id":"tk-gw","tool_call_id":"tc-cxl-exec","state":"cancelled","result_summary":"user cancelled"}`))
-	}()
 
-	start := time.Now()
-	text, isErr := s.domainExecute(tc, "tc-cxl-exec", "tool_result",
-		map[string]any{"id": node.TaskID, "timeout": 30.0}, "")
-	elapsed := time.Since(start)
-	if isErr {
-		t.Fatalf("cancelled exec should not be tool-level error: %q", text)
-	}
-	if !strings.Contains(text, "已取消") {
-		t.Fatalf("exec should report cancelled, got: %q", text)
-	}
-	if elapsed > 5*time.Second {
-		t.Fatalf("cancel should stop polling promptly, took %v", elapsed)
-	}
-	// tool_result 自身节点（domainNode 按 callID 建）→ 回报链推进 cancelled
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if n := s.tasks.findByToolCall("ins-test", "tc-cxl-exec"); n != nil && n.State == TaskStateCancelled {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("tool_result own node not advanced to cancelled by report chain")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	// 被查询任务本身未受影响（仍 running；取消只作用于查询执行体）
-	if n := s.tasks.get(node.TaskID); n == nil || n.State != TaskStateRunning {
-		t.Fatalf("queried task should stay running, got %+v", n)
+	if text, state, found := s.taskResult(tc, "no-such-task"); found || text != "" || state != "" {
+		t.Fatalf("未知 id 应 found=false，got text=%q state=%q found=%v", text, state, found)
 	}
 }
 
-// TestTaskExecCancelRegistrySemantics：工具执行取消表语义——空 callID / 未命中 no-op；
-// 命中即注销（重复回报 no-op）；执行结束注销后回报晚到 no-op。
-func TestTaskExecCancelRegistrySemantics(t *testing.T) {
+// TestTaskResultWakesOnTaskDone（异步改造 §10.1）：结果等待不再固定轮询，而是订阅既有
+// `task-done` 终态广播；任务 done 后立即返回（timeout 30s 不触发）。
+func TestTaskResultWakesOnTaskDone(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
-
-	// 空 callID 与未命中均 no-op（不 panic）
-	s.registerTaskExecCancel("", func() { t.Error("empty callID must not be registered") })
-	s.cancelTaskExec("")
-	s.cancelTaskExec("tc-absent")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	s.registerTaskExecCancel("tc-1", cancel)
-	s.cancelTaskExec("tc-1") // 命中 → cancel + 注销
-	select {
-	case <-ctx.Done():
-	default:
-		t.Fatal("registered exec should be cancelled")
+	registerTestInstance(t, s)
+	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-wake"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
 	}
-	s.cancelTaskExec("tc-1") // 命中即注销 → 重复回报 no-op（cancel 幂等）
-
-	// 执行结束注销 → 回报晚到 no-op
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	cancel2() // 执行体自然结束的等价形态（ctx 已 done）
-	s.registerTaskExecCancel("tc-2", cancel2)
-	s.unregisterTaskExecCancel("tc-2")
-	s.cancelTaskExec("tc-2")
-	if err := ctx2.Err(); err == nil {
-		t.Fatal("ctx2 should be cancelled beforehand")
-	}
-}
-
-// TestTaskToolResultWakesOnTaskDone（异步改造 §10.1）：runToolResult 不再 500ms 轮询，
-// 而是订阅既有 `task-done` 终态广播；任务 done 后立即返回（timeout 30s 不触发）。
-func TestTaskToolResultWakesOnTaskDone(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := newTestServer(t, llm)
 
 	node, err := s.tasks.start(&TaskNode{
 		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-wake", TurnID: "t-wake",
@@ -232,10 +141,10 @@ func TestTaskToolResultWakesOnTaskDone(t *testing.T) {
 	}()
 
 	start := time.Now()
-	text, isErr := s.runToolResult(tc, nil, map[string]any{"id": node.TaskID, "timeout": 30.0}, context.Background())
+	text, state, _, found := s.waitTaskResult(context.Background(), tc, node.TaskID, 30*time.Second)
 	elapsed := time.Since(start)
-	if isErr {
-		t.Fatalf("runToolResult 不应为工具级失败: %q", text)
+	if !found || state != "done" {
+		t.Fatalf("waitTaskResult: found=%v state=%q text=%q", found, state, text)
 	}
 	if text != "async result done" {
 		t.Fatalf("结果 = %q, want async result done", text)

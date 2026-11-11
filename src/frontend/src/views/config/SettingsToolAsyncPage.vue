@@ -76,6 +76,7 @@
                 :model-value="row.mode"
                 :options="modeOptions"
                 :aria-label="$t('config.toolAsync.mode') + ': ' + row.name"
+                :disabled="row.policyLock"
                 @update:model-value="(v) => onModeChange(row, v)"
               />
             </div>
@@ -94,6 +95,17 @@
               />
               <span v-else class="cell-dash">—</span>
             </div>
+          </template>
+
+          <!-- 超时动作：留空 = 继承契约；fail = 失败；background = 转异步 -->
+          <template #onTimeout="{ row }">
+            <Select
+              :model-value="row.onTimeout"
+              :options="onTimeoutOptions"
+              :aria-label="$t('config.toolAsync.onTimeout') + ': ' + row.name"
+              :disabled="row.policyLock"
+              @update:model-value="(v) => onOnTimeoutChange(row, v)"
+            />
           </template>
 
           <!-- 执行硬上限 hard_timeout：常显（原「高级」折叠已去掉）。
@@ -214,8 +226,16 @@ const { t } = useI18n()
 const CFG_KEY = 'tool_async'
 // 契约默认异步阈值兜底（spec 72 参考值；契约 `async-threshold` 缺省 = 契约 `timeout`）
 const FALLBACK_THRESHOLD = 30
-// 四档模式（顺序即选择器顺序）
-const MODES = ['always', 'never', 'auto', 'manual']
+// 三档模式（新模型：sync/async/auto；旧值 never→sync / always→async / manual→auto）
+const MODES = ['sync', 'async', 'auto']
+
+function normalizeUiMode(m) {
+  const v = String(m || '').toLowerCase()
+  if (v === 'never') return 'sync'
+  if (v === 'always') return 'async'
+  if (v === 'manual') return 'auto'
+  return MODES.includes(v) ? v : 'auto'
+}
 
 const loading = ref(false)
 const saving = ref(false)
@@ -224,16 +244,22 @@ const savedMap = ref({}) // 上次落库态（usr `tool_async`）
 const workMap = ref({}) // 本地待保存态（改模式/数值只动它；点【保存】才落库）
 
 const modeOptions = computed(() => [
-  { label: t('config.toolAsync.modeAlways'), value: 'always' },
-  { label: t('config.toolAsync.modeNever'), value: 'never' },
+  { label: t('config.toolAsync.modeNever'), value: 'sync' },
+  { label: t('config.toolAsync.modeAlways'), value: 'async' },
   { label: t('config.toolAsync.modeAuto'), value: 'auto' },
-  { label: t('config.toolAsync.modeManual'), value: 'manual' },
+])
+
+const onTimeoutOptions = computed(() => [
+  { label: t('config.toolAsync.onTimeoutInherit'), value: '' },
+  { label: t('config.toolAsync.onTimeoutFail'), value: 'fail' },
+  { label: t('config.toolAsync.onTimeoutBackground'), value: 'background' },
 ])
 
 const columns = computed(() => [
   { label: t('config.toolAsync.tool'), prop: 'name', minWidth: 200 },
   { label: t('config.toolAsync.mode'), prop: 'mode', width: 150 },
   { label: t('config.toolAsync.threshold'), prop: 'threshold', width: 120 },
+  { label: t('config.toolAsync.onTimeout'), prop: 'onTimeout', width: 140 },
   { label: t('config.toolAsync.hardTimeout'), prop: 'timeout', width: 140 },
   { label: t('config.toolAsync.cancelOnTimeout'), prop: 'cancelTimeout', width: 160 },
   { label: t('config.toolAsync.touchFiles'), prop: 'touch', width: 150 },
@@ -263,7 +289,7 @@ function isCancelOnTimeout(v) {
 }
 
 function isThresholdMode(row) {
-  return row.mode === 'auto' || row.mode === 'manual'
+  return row.mode === 'auto'
 }
 
 // 配置键（P0a 2026-10-29）：网关暴露名 = 原名（内置 self 节点不再加 `self_` 前缀）；
@@ -284,7 +310,7 @@ function defaultThreshold(row) {
 }
 
 function modeLabel(m) {
-  const key = { always: 'modeAlways', never: 'modeNever', auto: 'modeAuto', manual: 'modeManual' }[m]
+  const key = { sync: 'modeNever', async: 'modeAlways', auto: 'modeAuto' }[normalizeUiMode(m)]
   return key ? t('config.toolAsync.' + key) : m
 }
 
@@ -308,7 +334,8 @@ function parseToolAsync(v) {
 
 // 生效项是否等于契约现值（等于 → 视为未改动，不进库）
 function sameAsContract(row, e) {
-  if (e.mode !== row.cMode) return false
+  if (normalizeUiMode(e.mode) !== normalizeUiMode(row.cMode)) return false
+  if (e.on_timeout !== undefined) return false
   const cur = row.cThreshold === '' ? '' : String(row.cThreshold)
   const t0 = e.threshold === undefined ? '' : String(e.threshold)
   if (t0 !== cur) return false
@@ -329,6 +356,7 @@ function buildEntry(row) {
     const n = Number(row.threshold)
     e.threshold = isLimitValue(row.threshold) ? n : defaultThreshold(row)
   }
+  if (row.onTimeout === 'fail' || row.onTimeout === 'background') e.on_timeout = row.onTimeout
   // I-109：dir 节点工具的 hard_timeout 不生效 → 不写库（避免「配了不生效」的误导）
   if (!row.dirNode && row.hardTimeout !== '' && row.hardTimeout !== null) {
     if (isLimitValue(row.hardTimeout)) e.hard_timeout = Number(row.hardTimeout)
@@ -347,8 +375,9 @@ function resetRowFromMaps(row) {
   row.cfgKey = cfgKeyOf(row.name) // 配置键：原名优先，存量历史 `self_<原名>` 兼容
   const u = workMap.value[row.cfgKey] || savedMap.value[row.cfgKey]
   if (u && typeof u === 'object') {
-    row.mode = MODES.includes(u.mode) ? u.mode : row.cMode
+    row.mode = MODES.includes(normalizeUiMode(u.mode)) ? normalizeUiMode(u.mode) : row.cMode
     row.threshold = u.threshold !== undefined && u.threshold !== null ? String(u.threshold) : String(defaultThreshold(row))
+    row.onTimeout = u.on_timeout === 'fail' || u.on_timeout === 'background' ? u.on_timeout : ''
     row.hardTimeout = u.hard_timeout !== undefined && u.hard_timeout !== null ? String(u.hard_timeout) : ''
     // 超时自动取消：仅 > 0 落库（0 / 留空 = 关闭）→ 显示空即「关闭」
     row.cancelOnTimeout = u.cancel_on_timeout !== undefined && u.cancel_on_timeout !== null && Number(u.cancel_on_timeout) > 0
@@ -357,6 +386,7 @@ function resetRowFromMaps(row) {
   } else {
     row.mode = row.cMode
     row.threshold = String(defaultThreshold(row))
+    row.onTimeout = ''
     row.hardTimeout = ''
     row.cancelOnTimeout = ''
     row.touch = defaultTouchFiles(row.name, row.server)
@@ -383,8 +413,8 @@ function isUserSet(row) {
 // 待保存态是否与已落库态不同（无改动 → 保存按钮禁用）
 function canon(e) {
   if (!e || typeof e !== 'object') return ''
-  return JSON.stringify({ mode: e.mode, threshold: e.threshold, hard_timeout: e.hard_timeout,
-    cancel_on_timeout: e.cancel_on_timeout, touch_files: e.touch_files })
+  return JSON.stringify({ mode: e.mode, threshold: e.threshold, on_timeout: e.on_timeout,
+    hard_timeout: e.hard_timeout, cancel_on_timeout: e.cancel_on_timeout, touch_files: e.touch_files })
 }
 const dirty = computed(() => {
   const a = workMap.value
@@ -419,11 +449,14 @@ async function loadTools() {
         // I-109 边界：dir 节点工具的 hard_timeout 未接线（gateway 下发暴露名、mcp-server 按契约名
         // 查 → 不达）；mode/threshold 对全部工具均适用。无 `_meta.server` → false（不标注）。
         dirNode: isDirNode(meta),
-        cMode: meta.async || 'auto',
+        cMode: normalizeUiMode(meta.async || 'auto'),
+        cOnTimeout: meta.on_timeout === 'fail' || meta.on_timeout === 'background' ? meta.on_timeout : '',
+        policyLock: meta.policy_lock === true,
         cThreshold: metaNum(meta['async-threshold']),
         cTimeout: metaNum(meta.timeout),
-        mode: meta.async || 'auto',
+        mode: normalizeUiMode(meta.async || 'auto'),
         threshold: '',
+        onTimeout: '',
         hardTimeout: '',
         // 超时自动取消（配置⑤）：无契约 _meta 载体 → 初值恒「关闭」（''）；
         // 已落库/待保存值由 applyRows → resetRowFromMaps 覆盖。
@@ -486,8 +519,16 @@ async function onSave() {
 
 function onModeChange(row, v) {
   if (!v || v === row.mode) return
-  row.mode = v
+  row.mode = normalizeUiMode(v)
   if (isThresholdMode(row) && !row.threshold) row.threshold = String(defaultThreshold(row))
+  syncRow(row)
+}
+
+// 超时动作：留空 = 继承契约；fail = 失败；background = 转异步。
+function onOnTimeoutChange(row, v) {
+  const next = v === 'fail' || v === 'background' ? v : ''
+  if (next === row.onTimeout) return
+  row.onTimeout = next
   syncRow(row)
 }
 

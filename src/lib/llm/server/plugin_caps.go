@@ -66,12 +66,12 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 	// task.node.start / done：外部工具创建 / 收尾任务节点（任务树唯一写者仍是 server）。
 	reg.Register("plugin/v1/task.node.start", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
 		var in struct {
-			InstanceID string         `json:"instance_id"`
-			Turn       string         `json:"turn"`
-			Tool       string         `json:"tool"`
-			ToolCallID string         `json:"tool_call_id"`
-			Purpose    string         `json:"purpose"`
-			Args       map[string]any `json:"args"`
+			InstanceID  string         `json:"instance_id"`
+			Turn        string         `json:"turn"`
+			Tool        string         `json:"tool"`
+			ToolCallID  string         `json:"tool_call_id"`
+			DisplayName string         `json:"display_name"`
+			Args        map[string]any `json:"args"`
 		}
 		if err := json.Unmarshal(args, &in); err != nil {
 			return nil, err
@@ -80,7 +80,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if tc == nil {
 			return nil, &pluginbridge.Error{Code: "turn_not_found", Msg: "turn 不存在或已结束"}
 		}
-		node, err := s.domainNode(tc, in.ToolCallID, in.Tool, in.Args, in.Purpose)
+		node, err := s.domainNode(tc, in.ToolCallID, in.Tool, in.Args, in.DisplayName)
 		if err != nil {
 			return nil, err
 		}
@@ -104,7 +104,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		return map[string]any{"ok": true}, nil
 	})
 
-	// task.cancel / task.result：task_stop / tool_result 的原子能力。
+	// task.cancel / task.result：task_stop / task_status 的原子能力。
 	reg.Register("plugin/v1/task.cancel", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
 		var in struct {
 			InstanceID string `json:"instance_id"`
@@ -136,7 +136,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		text, state, partial, found := s.taskResultDetail(tc, in.ID)
 		return map[string]any{"text": text, "state": state, "found": found, "partial": partial}, nil
 	})
-	// task.wait：跨进程 tool_result 的**终态事件等待**（2026-11-06，统一异步 §10.1 P2）。
+	// task.wait：跨进程任务结果读取的**终态事件等待**（2026-11-06，统一异步 §10.1 P2）。
 	// 插件桥能力面（非 MQ 话题）：复用 task-done / mcp-tasks-report / session-complete 三个既有事件，
 	// 到点或终态即返；调用方据此循环，不再 500ms→2s 退避轮询。timeout<=0 = 只查询一次。
 	reg.Register("plugin/v1/task.wait", func(ctx context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
@@ -171,17 +171,17 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 	// 子轮次内的工具节点再挂在该节点下（多层工具调用可见、可级联取消）。
 	reg.Register("plugin/v1/agent.delegate", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
 		var in struct {
-			InstanceID string  `json:"instance_id"`
-			Turn       string  `json:"turn"`
-			Session    string  `json:"session"`
-			ToolCallID string  `json:"tool_call_id"`
-			Prompt     string  `json:"prompt"`
-			Agent      string  `json:"agent"`
-			SessionID  string  `json:"session_id"`
-			Title      string  `json:"title"`
-			Purpose    string  `json:"purpose"`
-			WaitSec    float64 `json:"wait_sec"`
-			Detach     bool    `json:"detach"`
+			InstanceID  string  `json:"instance_id"`
+			Turn        string  `json:"turn"`
+			Session     string  `json:"session"`
+			ToolCallID  string  `json:"tool_call_id"`
+			Prompt      string  `json:"prompt"`
+			Agent       string  `json:"agent"`
+			SessionID   string  `json:"session_id"`
+			Title       string  `json:"title"`
+			DisplayName string  `json:"display_name"`
+			WaitSec     float64 `json:"wait_sec"`
+			Detach      bool    `json:"detach"`
 		}
 		if err := json.Unmarshal(args, &in); err != nil {
 			return nil, err
@@ -218,7 +218,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		node, nerr := s.tasks.start(&TaskNode{
 			Tool: "task_llm", ToolCallID: in.ToolCallID, ParentID: parentID,
 			TopSession: topSession, Kind: TaskKindLLM, SessionID: h.Session, TurnID: h.Turn,
-			InstanceID: tc.req.InstanceID, Name: title, Purpose: strings.TrimSpace(in.Purpose),
+			InstanceID: tc.req.InstanceID, Name: title, Purpose: strings.TrimSpace(in.DisplayName),
 			Simplified: title,
 		})
 		if nerr != nil {
@@ -252,9 +252,128 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		return delegatedWireResult(h, node, out, werr), nil
 	})
 
+	// agent.run：**无父轮次**启动一个完整智能体轮次（定时任务 action.type=agent，
+	// 2026-11-08）。与 agent.delegate 的差异：不依赖调用方已存在的 turn —— 定时任务没有
+	// 父轮次；由本能力确保会话存在并按 timeout_sec 跑完一轮（全工具面，可读项目文件）。
+	//
+	// 入参：instance_id/work_dir（归属）、session_id/dialog_id/kind/title（任务子会话）、
+	// prompt、agent（可选 persona）、timeout_sec（0 = 不额外限时，由调用方 ctx 控制）。
+	// 返回终态快照（state=complete 才算 ok）+ 正文 + turn_id，供 crontab 写入运行记录。
+	reg.Register("plugin/v1/agent.run", func(ctx context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
+		var in struct {
+			InstanceID  string  `json:"instance_id"`
+			WorkDir     string  `json:"work_dir"`
+			SessionID   string  `json:"session_id"`
+			DialogID    string  `json:"dialog_id"`
+			Kind        string  `json:"kind"`
+			Title       string  `json:"title"`
+			DisplayName string  `json:"display_name"`
+			Prompt      string  `json:"prompt"`
+			Agent       string  `json:"agent"`
+			TimeoutSec  float64 `json:"timeout_sec"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, err
+		}
+		prompt := strings.TrimSpace(in.Prompt)
+		if prompt == "" {
+			return nil, &pluginbridge.Error{Code: "args_invalid", Msg: "prompt 必填"}
+		}
+		if s.cfg == nil {
+			return nil, &pluginbridge.Error{Code: "internal", Msg: "数据门面不可用（无法建会话）"}
+		}
+		instanceID := s.resolveInstanceForWorkDir(in.InstanceID, in.WorkDir)
+		if instanceID == "" {
+			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "未找到该项目的主窗口实例（请先 workdir.ensure）"}
+		}
+		rec, ok := s.im.Lookup(instanceID)
+		if !ok {
+			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "实例未登记"}
+		}
+		sessionID := strings.TrimSpace(in.SessionID)
+		if sessionID == "" {
+			sessionID = "sched-agent-" + newID()
+		}
+		kind := strings.TrimSpace(in.Kind)
+		if kind == "" {
+			kind = "scheduled_agent"
+		}
+		// 会话确保（幂等）：crontab 已建好「项目根 → 任务子会话」，此处只补最终一致性；
+		// dialog_id 由服务端回带（首建时自举）。
+		resp, err := s.cfg.SessionEnsure(facade.SessionEnsureRequest{
+			InstanceID: instanceID,
+			Scope:      s.cfgScope(instanceID),
+			DialogID:   strings.TrimSpace(in.DialogID),
+			SessionID:  sessionID,
+			Kind:       kind,
+			Title:      in.Title,
+			Origin:     "scheduler",
+		})
+		if err != nil {
+			return nil, &pluginbridge.Error{Code: "session_ensure_failed", Msg: err.Error()}
+		}
+		s.rememberDialog(instanceID, sessionID, resp.DialogID)
+
+		parent := context.Background()
+		if in.TimeoutSec > 0 {
+			var cancel context.CancelFunc
+			parent, cancel = context.WithTimeout(parent, time.Duration(in.TimeoutSec*float64(time.Second)))
+			defer cancel()
+		}
+		turnID := newID()
+		req := StartReq{
+			InstanceID: instanceID,
+			Session:    sessionID,
+			Turn:       turnID,
+			WorkDir:    rec.WorkDir,
+			DataDir:    rec.DataDir,
+			Agent:      strings.TrimSpace(in.Agent),
+		}
+		start := time.Now()
+		h, err := s.startScheduledTurn(parent, req, prompt)
+		if err != nil {
+			return nil, &pluginbridge.Error{Code: "agent_run_failed", Msg: err.Error()}
+		}
+		select {
+		case <-h.tc.Done():
+		case <-parent.Done():
+			s.closeDelegatedTurn(instanceID, turnID)
+		case <-ctx.Done():
+			// 调用方断开 / 桥调用超时：不把轮次留在后台空跑。
+			s.closeDelegatedTurn(instanceID, turnID)
+		}
+		out := h.outcome()
+		text := out.Text
+		if strings.TrimSpace(text) == "" {
+			text = s.partialTurnText(instanceID, turnID)
+		}
+		errText := ""
+		if out.Status != "complete" {
+			if parent.Err() == context.DeadlineExceeded {
+				errText = "执行超时"
+			} else if h.tc.turnErr != nil {
+				errText = h.tc.turnErr.Error()
+			} else if out.Status != "" {
+				errText = "轮次终态：" + out.Status
+			}
+		}
+		return map[string]any{
+			"ok":         out.Status == "complete",
+			"state":      out.Status,
+			"finish":     out.Finish,
+			"text":       text,
+			"error":      errText,
+			"ms":         time.Since(start).Milliseconds(),
+			"session_id": sessionID,
+			"dialog_id":  resp.DialogID,
+			"turn_id":    turnID,
+		}, nil
+	})
+
 	// ask.user：外部工具把提问交回 server 的 ask 通道（等用户回答 / 回填 turn）。
 	reg.Register("plugin/v1/ask.user", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
 		var in struct {
+			InstanceID string         `json:"instance_id"`
 			Turn       string         `json:"turn"`
 			ToolCallID string         `json:"tool_call_id"`
 			TaskID     string         `json:"task_id"`
@@ -263,7 +382,40 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if err := json.Unmarshal(args, &in); err != nil {
 			return nil, err
 		}
-		return map[string]any{"text": s.ask(in.Turn, in.ToolCallID, in.Args, in.TaskID)}, nil
+		// 2026-11-08：ask_user 工具迁到 task 插件后，插件只带 tool_call_id；此处用与本轮
+		// running 行同一套内存登记回填 task_id（答复到达时 tasks.done）与 ask_id（messages.ask_id
+		// 关联，供失效回执 / 历史回查）。恢复轮次内存表为空时再回落 data-ask-pending 回查。
+		taskID := in.TaskID
+		if taskID == "" {
+			if n := s.tasks.findByToolCall(in.InstanceID, in.ToolCallID); n != nil {
+				taskID = n.TaskID
+			}
+		}
+		askID := ""
+		if tc := s.lookupTurnIn(in.InstanceID, in.Turn); tc != nil {
+			askID = tc.askIDOf(in.ToolCallID)
+		}
+		if askID == "" {
+			if items, err := s.dataAskPending(in.InstanceID, "", true); err == nil {
+				for _, it := range items {
+					if it.ToolCallID == in.ToolCallID && it.AskID != "" {
+						askID = it.AskID
+						break
+					}
+				}
+			}
+		}
+		if askID != "" {
+			// 占位结果必须在 ask 广播**之前**落库：答复（可能立刻到达）会就地更新同一行，
+			// 若之后再回填占位会覆盖答复（2026-11-08 迁插件后由本能力负责，worker 不再重复落库）。
+			if tc := s.lookupTurnIn(in.InstanceID, in.Turn); tc != nil {
+				tc.persistToolResultAsk(in.ToolCallID, askAsyncHandoffResult, "completed", nil, askID)
+			}
+			s.askWithID(in.Turn, in.ToolCallID, in.Args, taskID, askID)
+			return map[string]any{"text": askAsyncHandoffResult, "ask_id": askID}, nil
+		}
+		s.ask(in.Turn, in.ToolCallID, in.Args, taskID)
+		return map[string]any{"text": askAsyncHandoffResult}, nil
 	})
 
 	// next.run（NEXTRUN-1）：进程外 `next_run` executor → server 内登记下一轮排队输入。
@@ -287,10 +439,10 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 	// subchat.open / finish：单聊域工具的原子能力（会话创建 / lifecycle 由 server 落库）。
 	reg.Register("plugin/v1/subchat.open", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
 		var in struct {
-			InstanceID string         `json:"instance_id"`
-			Turn       string         `json:"turn"`
-			Purpose    string         `json:"purpose"`
-			Args       map[string]any `json:"args"`
+			InstanceID  string         `json:"instance_id"`
+			Turn        string         `json:"turn"`
+			DisplayName string         `json:"display_name"`
+			Args        map[string]any `json:"args"`
 		}
 		if err := json.Unmarshal(args, &in); err != nil {
 			return nil, err
@@ -299,7 +451,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if tc == nil {
 			return nil, &pluginbridge.Error{Code: "turn_not_found", Msg: "turn 不存在或已结束"}
 		}
-		text, isErr := s.runSubChatOpen(tc, in.Args, in.Purpose)
+		text, isErr := s.runSubChatOpen(tc, in.Args, in.DisplayName)
 		return map[string]any{"text": text, "is_error": isErr}, nil
 	})
 	reg.Register("plugin/v1/subchat.finish", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {

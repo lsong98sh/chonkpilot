@@ -109,7 +109,7 @@ func TestLoadExecToolsCallErrorPath(t *testing.T) {
 		t.Fatalf("LoadExecTools: %v", err)
 	}
 	res, err := tools[0].Call(context.Background(), map[string]any{"x": 1}, CallContext{
-		InstanceID: "ins-1", WorkDir: `C:\work`, DataDir: `C:\data`, Purpose: "test",
+		InstanceID: "ins-1", WorkDir: `C:\work`, DataDir: `C:\data`, DisplayName: "test",
 	})
 	if err != nil {
 		t.Fatalf("Call 不应返回 transport error: %v", err)

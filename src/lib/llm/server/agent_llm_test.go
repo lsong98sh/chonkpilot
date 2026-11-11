@@ -421,10 +421,11 @@ func TestScenarioAgentToolsWhitelist(t *testing.T) {
 
 	agRunChild(t, s, parentReq, "s-ag-tools-all", "do", "sub-all")
 	allBody, _, _ := rec.first(t, 1)
-	// NEXTRUN-1：子轮次不下发 `next_run`（工具面收敛，denyTools），全量期望需剔除。
+	// NEXTRUN-1 / 2026-11-10：子轮次不下发 `next_run`；非 sub_chat 轮次不下发 `subchat_finish`
+	// （工具面收敛，denyTools），全量期望需剔除。
 	wantAll := make([]string, 0, len(visible))
 	for _, n := range visible {
-		if n != nextRunTool {
+		if n != nextRunTool && n != subchatFinishTool {
 			wantAll = append(wantAll, n)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data/facade"
 	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
 	sessionrunner "github.com/lsong98sh/chonkpilot-agent/session/runner"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
@@ -67,10 +68,10 @@ func (s *Server) onToolRetry(_ context.Context, _ string, v *mq.Value) error {
 	// B-03：gateway 重跑带超时（原来 context.Background() 无界 → 死连接可永久挂住本 handler）。
 	ctx, cancel := context.WithTimeout(context.Background(), retryCallTimeout)
 	defer cancel()
-	// A5：非主会话强制同步（重跑同属"该会话里的工具调用"）——tc 缺失（按库重建失败）时不改参数。
+	// 派发参数只做拷贝；异步/超时策略由 gateway 按界面 > md > 默认裁决。
 	callArgs := args
 	if tc != nil {
-		callArgs = tc.gatewayArgs(node.Tool, args)
+		callArgs = cloneToolArgs(args)
 	}
 	res, gwTaskID, err := s.gc.Call(ctx, node.Tool, callArgs, ctxMsg)
 	if err != nil {
@@ -317,6 +318,29 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 	respTO, streamTO, retryBudget, retryCnt := s.loadLLMRuntimeConfig(instanceID)
 	contCfg, _ := s.loadUserConfig(instanceID)
 	contEnabled, contDelay, contText := llmContinueConfigFrom(contCfg)
+	// 与 newTurnCtx 对齐重建本轮运行态（恢复轮此前漏建 → 重启后 next_run 恒“未启用”，
+	// 且 agent 白名单 / work_session 硬拒集在恢复轮失效）：
+	//   - allowedTools：会话固定 agent 的 tools 白名单 + 场景级别过滤；
+	//   - denyTools：非 sub_chat 会话排除 subchat_finish；next_run 关闭/非主会话时硬拒；
+	//   - nextRunMax：usr `nextRunMax`（默认 30，0 = 关闭）。
+	var allowedTools map[string]struct{}
+	if sc.agentDef != nil {
+		allowedTools = parseToolWhitelist(sc.agentDef.Tools)
+		if allowedTools != nil {
+			allowedTools = s.filterWhitelistByLevel(instanceID, sc.level, allowedTools)
+		}
+	}
+	var denyTools map[string]struct{}
+	if sc.kind != facade.SessionKindSubChat {
+		denyTools = map[string]struct{}{subchatFinishTool: {}}
+	}
+	nextRunMax := llmNextRunMaxFrom(contCfg)
+	if nextRunMax <= 0 || len(req.Parents) > 0 || sc.kind != "" {
+		if denyTools == nil {
+			denyTools = map[string]struct{}{}
+		}
+		denyTools[nextRunTool] = struct{}{}
+	}
 	tc := &turnCtx{
 		server:    s,
 		req:       req,
@@ -332,6 +356,9 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 		retryCount:        retryCnt,
 		retryBudget:       retryBudget,
 		contCfg:           sessionrunner.ContinueConfig{Enabled: contEnabled, Delay: contDelay, Text: contText},
+		nextRunMax:        nextRunMax,
+		allowedTools:      allowedTools,
+		denyTools:         denyTools,
 		maxToolIterations: llmMaxIter,
 		keepFullTurns:     s.loadKeepFullTurns(instanceID),
 		keepFullTokens:    s.loadKeepFullTokens(instanceID),
@@ -346,6 +373,11 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 		engineInbox: newChatInbox(),
 		// 系统提示词层（组装结果 Usage.Fixed 的固定开销来源；与 hist 首位同源）。
 		sysPromptText: sc.sysPrompt,
+	}
+	// 恢复 last-wins 目标：本 turn 已登记的 LLM 排队项（崩溃可能发生在 append 之后、
+	// 记录 nextRunItemID 之前）；不回查会让同 turn 再次调用命中幂等键且不更新 content。
+	if nextRunMax > 0 && len(req.Parents) == 0 && sc.kind == "" {
+		tc.nextRunItemID = s.nextRunItemForTurn(instanceID, session, turn)
 	}
 	// 子轮次（父链非空 / 子会话 / 干活子会话）不做自动续写（见 engineRuntimeConfig）。
 	tc.autoContinueOff = subTurnNoAutoContinue(req, sc)

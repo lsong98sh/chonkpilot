@@ -129,8 +129,6 @@ func execCancelledInstances() []string { return testExecSink.cancelInstances() }
 func execDetachedInstances() []string  { return testExecSink.detachInstances() }
 
 var (
-	// fakeGetResultID：mock LLM 分支注入（tool_result 的 id）。
-	fakeGetResultID string
 	// fakeGWCallCtx 记录 fake gateway 收到的 tools/call 上下文（键 = tool_call_id → {top_session, parent}）：
 	// I-90 断言「llm 确实把任务树归属随调用上下文下发」（gateway 随 mcp-tasks-report 回传 → 层建节点）。
 	fakeGWCallCtxMu sync.Mutex
@@ -171,24 +169,16 @@ func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 		fakeGWCallCtxMu.Lock()
 		fakeGWCallCtx[req.ToolCallID] = [2]string{req.TopSession, req.Parent}
 		fakeGWCallCtxMu.Unlock()
-		// 域工具（task 型）：模拟 gateway 注册回调（21-llm-server）——
-		// server 执行并返回文本，节点由 handler 建/广播；普通工具走下方固定回复。
-		if s != nil && isTaskTool(req.Name) {
-			tc := s.lookupTurn(req.Turn)
-			if tc != nil {
-				// 模拟 doCall：剥离前取出展示名 → 经**注入通道**（payload.context.purpose）送达
-				// handler（C1 / SUBCHAT-2 阶段 A）。
+		// 已迁 task 插件的四个工具：测试侧按宿主能力语义执行（模拟插件适配层；
+		// 见 moved_domain_test.go）。ask 的占位结果 / 任务节点保持 running 与生产一致。
+		if s != nil && isMovedDomainTool(req.Name) {
+			if tc := s.lookupTurnIn(req.InstanceID, req.Turn); tc != nil {
 				purpose := str(req.Arguments["tool_call_display_name"])
-				node, _ := s.domainNode(tc, req.ToolCallID, req.Name, req.Arguments, purpose)
-				text, isErr := s.execTaskTool(tc, req.ToolCallID, node, req.Name, req.Arguments, context.WithoutCancel(tc.ctx))
-				if isErr {
-					s.tasks.done(node.TaskID, TaskStateError, "", text)
-				} else {
-					s.tasks.done(node.TaskID, TaskStateDone, text, "")
-				}
+				text, isErr := execMovedDomainToolForTest(s, tc, req.ToolCallID, req.Name, req.Arguments, purpose)
 				v.Result = map[string]any{
 					"resultType": "complete",
 					"content":    []any{map[string]any{"type": "text", "text": text}},
+					"isError":    isErr,
 				}
 				return nil
 			}
@@ -322,6 +312,15 @@ func mockLLMServer() *httptest.Server {
 					"function": map[string]any{"name": "core_file_read", "arguments": string(args)},
 				}}}, "tool_calls"),
 			})
+		case strings.Contains(lower, "ask error please"):
+			args := jb(map[string]any{"question": ""})
+			llmSSE(w, []string{
+				sseChunk(map[string]any{"content": ""}, ""),
+				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
+					"index": 0, "id": "tc-askerr", "type": "function",
+					"function": map[string]any{"name": "ask_user", "arguments": string(args)},
+				}}}, "tool_calls"),
+			})
 		case strings.Contains(lower, "ask please"):
 			args := jb(map[string]any{
 				"question": "确认继续？",
@@ -337,15 +336,6 @@ func mockLLMServer() *httptest.Server {
 				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "tc-ask", "type": "function",
 					"function": map[string]any{"name": "ask_user", "arguments": string(args)},
-				}}}, "tool_calls"),
-			})
-		case strings.Contains(lower, "get result please"):
-			args := jb(map[string]any{"id": fakeGetResultID, "timeout": 5, "tool_call_display_name": "获取结果"})
-			llmSSE(w, []string{
-				sseChunk(map[string]any{"content": ""}, ""),
-				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
-					"index": 0, "id": "tc-gr", "type": "function",
-					"function": map[string]any{"name": "tool_result", "arguments": string(args)},
 				}}}, "tool_calls"),
 			})
 		default:
@@ -1373,52 +1363,19 @@ func TestResolveTurnScenarioSubChatInjectionLayer(t *testing.T) {
 	}
 }
 
-// TestGatewayArgsForceAsyncAllSessions（INBOX §9 Q5）：工具**全量强制异步** ——
-// gatewayArgs 对主会话 / 子会话 / 群聊一律附调用级 `async=always`（原 A5「非主会话强制同步」
-// 已废止，否则插话不成立），且不就地修改调用方 args（落库/展示仍用原始）。
-func TestGatewayArgsForceAsyncAllSessions(t *testing.T) {
-	llm := httptest.NewServer(http.HandlerFunc((&llmRecorder{}).handler))
-	defer llm.Close()
-	s := newTestServer(t, llm)
-	registerTestInstance(t, s)
-
-	ensureTestSession(t, s, "s-main", facade.SessionEnsureRequest{})
-	ensureTestSession(t, s, "s-subchat", facade.SessionEnsureRequest{
-		ParentSessionID: "s-main", Kind: facade.SessionKindSubChat, Lifecycle: facade.SessionLifecycleChatting,
-	})
-	ensureTestSession(t, s, "s-subsession", facade.SessionEnsureRequest{ParentSessionID: "s-main"})
-
-	for name, tc := range map[string]*turnCtx{
-		"主会话":     {server: s, req: StartReq{InstanceID: "ins-test", Session: "s-main"}},
-		"子聊天":     {server: s, req: StartReq{InstanceID: "ins-test", Session: "s-subchat"}},
-		"子会话":     {server: s, req: StartReq{InstanceID: "ins-test", Session: "s-subsession"}},
-		"Parents": {server: s, req: StartReq{InstanceID: "ins-test", Session: "s-unknown", Parents: []string{"s-main"}}},
-	} {
-		in := map[string]any{"path": "a.txt"}
-		got := tc.gatewayArgs("ext_tool", in)
-		if got["async"] != "always" {
-			t.Fatalf("%s 应附调用级 async=always：%v", name, got)
-		}
-		if _, mutated := in["async"]; mutated {
-			t.Fatalf("%s 不得就地修改调用方 args：%v", name, in)
-		}
+// TestCloneToolArgsNoAsyncInjection：派发层不再注入 `async`（策略由 gateway 按界面 > md > 默认
+// auto/30s/background 裁决），只做参数拷贝、不修改调用方 map。
+func TestCloneToolArgsNoAsyncInjection(t *testing.T) {
+	in := map[string]any{"path": "a.txt"}
+	got := cloneToolArgs(in)
+	if _, has := got["async"]; has {
+		t.Fatalf("派发层不得注入 async：%v", got)
 	}
-
-	// 本进程域工具（llm-server 同步编排）不得被强制异步：返回体契约不可改为 pending。
-	for _, name := range []string{"subchat_open", "self_subchat_finish", "ask_user", "tool_result"} {
-		if _, has := (&turnCtx{}).gatewayArgs(name, map[string]any{})["async"]; has {
-			t.Fatalf("%s 为进程内工具，不得注入 async 覆盖", name)
-		}
+	if _, has := in["async"]; has {
+		t.Fatalf("不得就地修改调用方 args：%v", in)
 	}
-
-	// 调用级显式 async / _async（超时裁决 / cancel_on_timeout 依赖同步等待）→ 尊重原值，不覆盖。
-	for _, k := range []string{"async", "_async"} {
-		got := (&turnCtx{}).gatewayArgs("ext_tool", map[string]any{k: "never"})
-		if got[k] != "never" {
-			t.Fatalf("调用级 %s=never 不得被覆盖：%v", k, got)
-		}
-		if _, has := got["async"]; has && k != "async" {
-			t.Fatalf("调用级 %s 已显式给出，不得再注入 async：%v", k, got)
-		}
+	got["path"] = "b.txt"
+	if in["path"] != "a.txt" {
+		t.Fatalf("cloneToolArgs 必须是浅拷贝：%v", in)
 	}
 }

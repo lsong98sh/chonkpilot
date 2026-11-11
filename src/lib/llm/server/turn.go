@@ -275,6 +275,16 @@ type turnCtx struct {
 type toolCallMeta struct {
 	name string
 	args map[string]any
+	// askID 仅 ask_user 行有值（MOD-1 M6b）：与 messages.ask_id 同一标识，供
+	// `plugin/v1/ask.user` 回填（工具已迁 task 插件，插件只带 tool_call_id）。
+	askID string
+}
+
+// askIDOf 返回该 tool_call_id 的 ask 关联 id（非 ask / 未登记 → 空）。
+func (tc *turnCtx) askIDOf(toolCallID string) string {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	return tc.toolCallMeta[toolCallID].askID
 }
 
 // loadSessionInfo 懒加载本 turn 的会话行信息（**只读一次**，isSubsession 使用）：
@@ -313,67 +323,15 @@ func (tc *turnCtx) isSubsession() bool {
 	return tc.subsession
 }
 
-// gatewayArgs 返回本次工具调用**下发给 gateway 的参数**：INBOX（2026-10-17）起**一律强制异步**
-// （`async=always`）——派发即返回 task_id，主循环立即让出，插话才可能被消费。
-// gateway `doCall` 读取后即剥离、不传下游，故不改 `mcp-tools-call` 载荷形状与工具入参。
-// **落库 / 前端展示仍用原始 args**（调用方传原参）。
-//
-// 例外：**本进程域工具**（ask_user / llm_run / subchat_* / tool_*）不注入——它们是 llm-server
-// 自己同步处理的编排工具（毫秒级、非阻塞），异步化会把返回体变成 `任务已转后台执行`、
-// 改变其契约语义（如 subchat_open 必须返回 {ok,session_id}），且对插话没有收益。
-//
-// 历史：原 A5「非主会话强制同步」（`async=never`）已按 INBOX 设计废止（§9 Q5）——否则子会话 /
-// 群聊的工具永远同步，插话不成立；「收口点亮 / 本轮屏障」改判 `pending` 清空 + turn 终态。
-// 例外 ②：**契约显式声明了超时裁决点**（`_meta.timeout > 0`）的工具保留原异步档位
-// （`never` / `manual` 的 `mcp-tools-timeout` 裁决 UI 仍可达）；这类工具的语义就是"等用户裁决"，
-// 强制异步会让该能力不可达。其余工具（绝大多数）全量强制异步。
-// 例外 ③：**调用级显式声明了 `async` / `_async`**（LLM 或测试夹具明确要求 never/manual）时
-// 尊重原值——超时裁决 `/ cancel_on_timeout` 链路依赖同步等待语义，覆盖会让既有能力不可达。
-func (tc *turnCtx) gatewayArgs(name string, args map[string]any) map[string]any {
-	out := make(map[string]any, len(args)+1)
+// cloneToolArgs 复制一次工具调用参数（不改调用方 map）。
+// 自 2026-11-08 起 llm-server **不再**向 gateway 注入 `async`：异步/超时/超时动作全部由
+// gateway 按「界面 > .tool.md > 默认 auto/30s/background」裁决，禁止在派发层强制 always。
+func cloneToolArgs(args map[string]any) map[string]any {
+	out := make(map[string]any, len(args))
 	for k, v := range args {
 		out[k] = v
 	}
-	if inProcessTool(name) || tc.arbitratedTool(name) {
-		return out
-	}
-	if _, has := out["async"]; has {
-		return out
-	}
-	if _, has := out["_async"]; has {
-		return out
-	}
-	out["async"] = "always"
 	return out
-}
-
-// arbitratedTool 判定工具契约是否显式声明了超时裁决点（`_meta.timeout > 0`）。
-func (tc *turnCtx) arbitratedTool(name string) bool {
-	if tc.server == nil || tc.server.gc == nil {
-		return false
-	}
-	meta := tc.server.gc.ToolMeta(name)
-	if meta == nil {
-		return false
-	}
-	switch v := meta["timeout"].(type) {
-	case float64:
-		return v > 0
-	case int:
-		return v > 0
-	}
-	return false
-}
-
-// inProcessTool 判定工具是否由 llm-server 进程内同步处理（见 gatewayArgs 例外说明）。
-// P0a（2026-10-29）后网关暴露名 = 原名（不再产生 `self_` 前缀）；剥前缀仅为**兼容存量**
-// 会话 / 历史任务节点里的旧暴露名，不新增语义。
-func inProcessTool(name string) bool {
-	switch strings.TrimPrefix(name, "self_") {
-	case "ask_user", "subchat_open", "subchat_finish", "tool_result":
-		return true
-	}
-	return false
 }
 
 // subsessionHint 为「子会话压缩关闭」时的上下文超限失败补一句可诊断说明（42 §2 (253) DSL-4 ⑤）：
@@ -458,12 +416,12 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	if autoMode {
 		llmName = resolveAutoLLMName(usrCfg, llmName)
 	}
-	// 工具面**硬拒**集（SUBCHAT-3 阶段 F-2）：`work_session`（群聊参与者干活子会话）排除
-	// `subchat_finish` —— 群聊收敛以主 agent「【已收敛】」标记 + 用户拍板为准（§7 / D10 / D12）；
-	// **单聊（sub_chat）不受影响**（其收口仍靠 subchat_finish）。其余会话（kind 空 / 主会话 /
-	// sub_session）→ 空集，零开销、行为逐字节不变。
+	// 工具面**硬拒**集（SUBCHAT-3 阶段 F-2，2026-11-10 扩展）：
+	// `subchat_finish` 仅在 `kind=sub_chat` 会话内有意义（契约）→ 主会话 / 群聊 /
+	// `work_session` / `sub_session` 一律从下发面与调用面移除，避免模型误用把无关会话
+	// lifecycle 置 ready。单聊（sub_chat）不受影响（其收口仍靠它）。
 	var denyTools map[string]struct{}
-	if sc.kind == facade.SessionKindWorkSession {
+	if sc.kind != facade.SessionKindSubChat {
 		denyTools = map[string]struct{}{subchatFinishTool: {}}
 	}
 	// usr 配置一次读取共用（B-37）：provider 解析 + 运行时超时/重试解析共用同一次 UserConfigGet，
@@ -1413,7 +1371,7 @@ func toolNodeLevel(t ToolDef) string {
 //
 // 引擎的 ToolInvoker 端口直连本函数——逐字搬迁自原内联块，
 // 文案 / 顺序 / 通知 / 任务节点字段 / `tasks.start|complete` / `taskTurnIndex` / `markInflight` /
-// `gatewayArgs` / task·dsl 特判一律未改。
+// task·dsl 特判一律未改；异步/超时策略由 gateway 按界面 > md > 默认裁决。
 //
 // 2026-11-04：**不再在 turn 协调线程上执行 `gc.Call`**——同步 / 异步 / 裁决工具统一交
 // `dispatchToolWorker`（独立 goroutine），本函数恒在毫秒级返回；结果经引擎 Inbox 回喂。
@@ -1430,6 +1388,12 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 	toolMeta := tc.server.gc.ToolMeta(name)
 	notifyPayload := map[string]any{
 		"tool_call_id": call.ID, "tool": name, "arguments": args,
+	}
+	// 调用展示名（gateway 注入的 `tool_call_display_name`）随 live 事件下发：chat 窗口
+	// 工具卡标题与历史 `brief`（kernel.ToolBrief）同源，避免流式中显示工具名/参数、
+	// 重载后才变成展示名。
+	if display := strings.TrimSpace(str(args["tool_call_display_name"])); display != "" {
+		notifyPayload["display_name"] = display
 	}
 	if len(toolMeta) > 0 {
 		notifyPayload["_meta"] = toolMeta
@@ -1472,30 +1436,6 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 	}
 	tc.persistToolRunning(call.ID, name, args, askID)
 
-	if isTaskTool(canon) {
-		// task 型域工具（tool_result）：经 gateway 唯一执行入口
-		// （21-llm-server）——内嵌 mcp-server 的域工具 handler 执行并返回文本，
-		// 任务节点由 handler 建/广播（对齐 21-llm-server 任务树）。
-		//
-		// 2026-11-04（工具派发去阻塞）：执行体在**独立 worker** 中跑（`toolWorker`），本函数
-		// 立即返回 pending —— turn 协调器（LLM 循环）不再阻塞在 `gc.Call` 上；结果经引擎
-		// Inbox 回喂（与异步回执 / ask 同一通道），同一 turn id 续轮。`tool_result` 的轮询
-		// 等待因此不再冻结插话 / 取消 / 后续工具派发。
-		topSession, _ := tc.server.taskNodeBase(tc) // 树归属随调用上下文下发（I-90）
-		ctxMsg := mcpgateway.Context{
-			WorkDir:    tc.req.WorkDir,
-			DataDir:    tc.req.DataDir,
-			Session:    tc.req.Session,
-			Turn:       tc.req.Turn,
-			InstanceID: tc.req.InstanceID,
-			ToolCallID: call.ID,
-			TopSession: topSession,
-		}
-		// A5：非主会话强制同步（gatewayArgs 附调用级 async=never；主会话原样）。
-		tc.dispatchToolWorker(call, name, args, nil, ctxMsg)
-		return ChatMsg{}, true, nil
-	}
-
 	// 树归属：子会话内节点挂该子会话的 kind=llm 节点之下（top_session 归主会话聚合根）；
 	// 主会话节点仍为顶层（parent_id 空）。见 taskNodeBase。
 	topSession, parentID := tc.server.taskNodeBase(tc)
@@ -1530,15 +1470,6 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 		tc.server.markTaskNotifyOrigin(node.InstanceID, node.TaskID)
 	}
 
-	if isAskTool(canon) {
-		// ask_user → server ask 通道（广播 ask-user → 等 ask-user-reply → 答复后续投递）。
-		// AskUser S4：**非阻塞（快速转异步）**——登记提问后立即回一条占位 tool result，
-		// 本轮继续（LLM 可做其他事或直接收尾）；不 markInflight，引擎不进入 PendingWait。
-		// 任务节点保持 running（"回复并不代表完成"），答复到达后才 tasks.done。
-		tc.server.askWithID(tc.req.Turn, call.ID, args, node.TaskID, askID)
-		tc.persistToolResultAsk(call.ID, askAsyncHandoffResult, "completed", nil, askID)
-		return ChatMsg{Role: "tool", ToolCallID: call.ID, Content: askAsyncHandoffResult}, false, nil
-	}
 	parentTask := parentID
 	if node != nil {
 		parentTask = node.TaskID
@@ -1564,7 +1495,7 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 	//     协调器不阻塞（2026-11-04 去阻塞）；加硬上限会**误杀**长时工具（破坏功能），故不加；
 	//   - 收敛途径：用户停止（llm-cancel → tc.Close 取消 ctx）或实例退出（exitInstance → tc.Close →
 	//     cancel）会取消 tc.ctx，Call 随 ctx 取消返回；上游 gateway 自身的执行超时策略另行兜底。
-	// A5：非主会话强制同步（gatewayArgs 附调用级 async=never → 工具不得转后台；主会话原样）。
+	// 异步/超时策略由 gateway 按界面 > md > 默认 auto/30s/background 裁决；派发层不再改参数。
 	tc.dispatchToolWorker(call, name, args, node, ctxMsg)
 	return ChatMsg{}, true, nil
 }
@@ -1580,8 +1511,12 @@ func (tc *turnCtx) dispatchToolWorker(call ToolCall, name string, args map[strin
 	tc.markInflight(call.ID)
 	// 工具进入在飞 = 可插入窗口打开（流式期登记为 pending 的插话意向在此时投递）。
 	tc.server.flushInsertIntents(tc)
+	// ask_user（2026-11-08 迁 task 插件后仍由本 turn 先落 ask_id）：终态回填同一 running 行时
+	// 必须保留 messages.ask_id（AskUser S4 / 失效回执回查）。
+	askID := tc.askIDOf(call.ID)
+	canon := strings.TrimPrefix(name, "self_")
 	go func() {
-		res, taskID, cerr := tc.server.gc.Call(tc.ctx, name, tc.gatewayArgs(name, args), ctxMsg)
+		res, taskID, cerr := tc.server.gc.Call(tc.ctx, name, cloneToolArgs(args), ctxMsg)
 		if cerr != nil {
 			if tc.ctx.Err() != nil {
 				// 轮次已取消：终态由取消路径统一推进（不落伪失败、不续轮）。
@@ -1589,7 +1524,7 @@ func (tc *turnCtx) dispatchToolWorker(call ToolCall, name string, args map[strin
 				return
 			}
 			errText := "错误: " + cerr.Error()
-			tc.persistToolResult(call.ID, errText, "failed", nil)
+			tc.persistToolResultAsk(call.ID, errText, "failed", nil, askID)
 			if node != nil {
 				tc.server.tasks.done(node.TaskID, TaskStateError, "", cerr.Error())
 			}
@@ -1609,22 +1544,41 @@ func (tc *turnCtx) dispatchToolWorker(call ToolCall, name string, args map[strin
 			return
 		}
 		text := resultTextFromMap(res)
+		// 工具级错误（MCP CallToolResult.IsError → gateway result.isError）：
+		// ask_user 的参数校验失败走这里。异步/同步模式都把工具行落 failed、任务节点置 error，
+		// 并让引擎看到 isError=true；不能沿用「占位成功」分支，否则行/节点永久停在 running。
+		toolErr, _ := res["isError"].(bool)
 		if resultStatus(res) == "cancelled" {
 			// 超时裁决「取消」的同步返回（gateway 结构化标记）：任务节点落 cancelled（而非 done，
 			// I-62）；结果照常喂回续轮（LLM 需感知该工具已取消）。done 幂等：若回报路径已先落终态，
 			// 此处不重复广播、也不把 cancelled 覆盖成 done。
-			tc.persistToolResult(call.ID, text, "cancelled", nil)
+			tc.persistToolResultAsk(call.ID, text, "cancelled", nil, askID)
 			if node != nil {
 				tc.server.tasks.done(node.TaskID, TaskStateCancelled, "", text)
 			}
 			tc.finishBackgroundTool(call.ID, text, "cancelled")
 			return
 		}
-		tc.persistToolResult(call.ID, text, "completed", nil)
-		if node != nil {
-			tc.server.tasks.done(node.TaskID, TaskStateDone, text, "")
+		// ask_user：占位结果已由 ask 能力在广播前落库（答复可能已就地更新同一行）；worker
+		// 不再重复写，避免把答复覆盖回占位文本。其余工具照常落终态。
+		// 例外：IsError=true 时提问并未登记（参数校验失败等），必须落 failed + 任务节点 error。
+		status := "completed"
+		if toolErr {
+			status = "failed"
 		}
-		tc.finishBackgroundTool(call.ID, text, "completed")
+		if !isAskTool(canon) || toolErr {
+			tc.persistToolResultAsk(call.ID, text, status, nil, askID)
+		}
+		// ask_user：占位结果返回 ≠ 提问完成（AskUser S4）——任务节点保持 running，答复到达后
+		// 由 onAskUserReply / onAskResolve 收尾；其余工具正常落 done。工具级错误除外（见上）。
+		if node != nil && (!isAskTool(canon) || toolErr) {
+			if toolErr {
+				tc.server.tasks.done(node.TaskID, TaskStateError, "", text)
+			} else {
+				tc.server.tasks.done(node.TaskID, TaskStateDone, text, "")
+			}
+		}
+		tc.finishBackgroundTool(call.ID, text, status)
 	}()
 }
 
@@ -1720,7 +1674,7 @@ func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]a
 		tc.toolCallMeta = map[string]toolCallMeta{}
 	}
 	tc.toolMsgKeys[toolCallID] = id
-	tc.toolCallMeta[toolCallID] = toolCallMeta{name: name, args: args}
+	tc.toolCallMeta[toolCallID] = toolCallMeta{name: name, args: args, askID: askID}
 	tc.mu.Unlock()
 }
 

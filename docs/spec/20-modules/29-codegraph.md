@@ -39,18 +39,18 @@
 | `codegraph_initialize` | ✗ | 全量建索引（同步，落盘 `<workDir>/.chonkpilot/codegraph/`） |
 | `codegraph_index_paths` | ✗ | **按路径增量**（resident indexer 用）：`{workdir, files:[], remove:[]}` → `{ok,indexed,removed,skipped}`；不可索引/忽略/解析失败 → 从索引删除并计 skipped |
 | `codegraph_status` | ✗ | 状态：`disabled/未初始化/indexing/ready/error` + 进度 + 规模 |
-| `codegraph_symbol_search` | ✓ | 符号搜索（name 子串/前缀，kind/file 过滤，limit） |
-| `codegraph_get_symbol_info` | ✓ | 单符号详情（id 或 file+name）：kind/行号/复杂度/签名 |
-| `codegraph_callers` | ✓ | **谁调用了它**：按被调名（`name` 或 `id` 定位目标；`file` 过滤调用方）返回调用方符号（含其 `calls`） |
-| `codegraph_callees` | ✓ | **它调用了谁**：按 `id` 或 `file+name` 定位符号，返回其直接调用目标（含 `resolved` 与回填的 file/line） |
-| `codegraph_get_dependency_graph` | ✓ | 文件级依赖（原始 import 串） |
-| `codegraph_find_circular_deps` | ✓ | 循环依赖（DFS 找环） |
-| `codegraph_analyze_complexity` | ✓ | 圈复杂度 topN（决策点启发式） |
-| `codegraph_get_module_summary` | ✓ | 目录/项目摘要（文件数/语言分布/符号数/最高复杂度） |
+| `codegraph_symbol_search` | ✓ | 符号搜索（name 子串，kind/file 过滤；真实 `total` + `limit/offset` 分页；空结果 `note`） |
+| `codegraph_get_symbol_info` | ✓ | 单符号详情（id 优先，或 file+name）：kind/行号/复杂度/签名；多命中返回候选 `symbols` |
+| `codegraph_callers` | ✓ | **谁调用了它**：按被调名（`name` 或 `id` 定位目标，id 优先；`file` 过滤调用方）返回调用方符号；真实 `total` + `limit/offset` 分页 |
+| `codegraph_callees` | ✓ | **它调用了谁**：按 `id` 或 `file+name` 定位目标（id 优先，多命中返回候选），返回直接调用目标（`resolved` + `candidates` 0/1/>1；真实 `total` + `limit/offset` 分页；非函数 `not_callable`） |
+| `codegraph_get_dependency_graph` | ✓ | 文件级依赖（`import`/`use` 原始串）：默认只返回有导入的文件，`file` 精确/路径段后缀匹配（大小写不敏感），真实 `total` + `limit/offset` 分页 + `include_empty`；未命中/无导入带 `note` |
+| `codegraph_find_circular_deps` | ✓ | 循环依赖（简单环 DFS；workdir 相对路径、确定性枚举、默认含自环；`limit/offset` 分页 + `truncated`） |
+| `codegraph_analyze_complexity` | ✓ | 圈复杂度 topN（默认只含 func/method/constructor，`kind=all` 可看全部；topN 上限 200 + `total`/`truncated`；嵌套闭包剪枝；稳定排序；`coverage` 文件数/解析错误数） |
+| `codegraph_get_module_summary` | ✓ | 目录/项目摘要（已索引文件数/符号数/语言分布/最高复杂度函数 top5/解析错误文件数/最近索引时间；`path` 路径段边界 + 大小写不敏感） |
 
-- 查询工具必填 `workdir`；`readyGate` 未就绪 → 结构化应答（`pending/indexing/error/not_initialized`，**不算协议错误**）。
+- 查询工具 `workdir` 可选：缺省取 `_meta.chonkpilot.work_dir`，显式传入时必须为当前项目内绝对路径；`readyGate` 未就绪 → 结构化应答（`pending/indexing/error/not_initialized`，**不算协议错误**）。
 - **完整性门（2026-10-19 P5）**：`readyGate` 先读 `<workDir>/.chonkpilot/codegraph/status.json`（`{state,pending,message,updated_at}`）：`error` → 结构化 error；`indexing`/`pending>0` → 5s 有界等待（100ms 轮询）→ `pending`；`ready && pending==0` 或文件不存在 → 回落 `EnsureReady`。
-- 插件侧：8 个查询工具**按引擎 schema 原样**注册进插件自带 MCP server（hot=true，**保留必填 `workdir`**）；manifest `mcp.category=codegraph`、`origin=builtin`，**无 `handler_subject`**。`vfts_query` 另由插件注册并去掉 `workdir`（见 [2B §3.2](2B-vfts.md)）。**（2026-11-04 核对）**
+- 插件侧：8 个查询工具注册进插件自带 MCP server（hot=true，schema/description/`_meta` 来自 `src/tools/codegraph/*.tool.md`，`workdir` 可选 + `_meta` 注入）；manifest `mcp.category=codegraph`、`origin=builtin`，**无 `handler_subject`**。`vfts_query` 另由插件注册并去掉 `workdir`（见 [2B §3.2](2B-vfts.md)）。**（2026-11-10 核对）**
 - **调用图语义与限制（重要，工具 description 同步声明）**：`calls` 存的是**调用点文本的最后一段名**（如 `a.b.Foo()` → `Foo`、`fmt.Println` → `Println`、`new Widget()` → `Widget`、`println!` → `println`），查询匹配 = 忽略大小写的**全等** 或 **后缀 `.name`**（故 `pkg.Foo` 与 `Foo` 视为同一目标）。这是**名字级启发式**：**无类型解析、无重载/接收者区分、无跨包唯一性判定**——`Callees` 的 `resolved=true` 仅表示该名在索引内**唯一命中**一个符号，非真实绑定；`Callers` 同理（同名不同定义会一并列出）。仅覆盖**已索引文件**内的**直接**调用；动态派发（`a["x"]()`、反射、`eval`）与未索引符号不参与。
 
 ### 3.2 支持语言（7）
@@ -105,6 +105,8 @@ IndexPaths：按绝对路径增量（files 替换 / remove 删除 / 不可索引
 ### 4.2 解析（`server/extract.go`）
 
 tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nameKinds` · `decisionKinds`（复杂度分支节点）· `importKinds`（导入）→ 收集 symbols/imports/复杂度/签名。
+
+**导入提取（`importKinds` + `extractImports`）**：go `import_declaration`（含分组 `import_spec_list`，2026-11-10 修复）、JS/TS/TSX 静态 `import_statement`/`export_statement`、python import 语句、rust `use`（含 `pub use` / `pub(crate) use`）、java `import`。JS/TS 的 `require()` 与动态 `import()` **不提取**（工具 description/契约已同步声明）。
 
 **调用边提取（`callKinds` + `callsWithin`）**：
 

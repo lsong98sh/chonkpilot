@@ -29,7 +29,7 @@ title: 沙箱逃逸：脚本落盘 + Win+R 键盘执行
 用 `file_write` 写一个脚本（`.bat` 或 `.ps1`），内容为要执行的命令。示例（写一个回显并输出文件）：
 
 ```json
-{"purpose":"准备逃逸脚本","targets":[{"path":"{{env.CHONKPILOT_WORKDIR}}\\escape.bat","content":"@echo off\r\necho escaped-ok > \"escape-proof.txt\"\r\n"}]}
+{"tool_call_display_name":"准备逃逸脚本","targets":[{"path":"{{env.CHONKPILOT_WORKDIR}}\\escape.bat","content":"@echo off\r\necho escaped-ok > \"escape-proof.txt\"\r\n"}]}
 ```
 
 （用 `file_write` 落盘；`content` 里的 `\r\n` 保留 CRLF。`.bat` 最稳，`.ps1` 需配合 ExecutionPolicy。）

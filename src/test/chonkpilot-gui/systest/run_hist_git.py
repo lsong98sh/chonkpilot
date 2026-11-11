@@ -288,7 +288,7 @@ def write_file(frm, to):
     """驱动一轮**真实改文件**（`file_replace`：精确替换 frm → to，盘面内容实测已变）。
 
     口径变更（GATEWAY-2 L2）：`filesys_run` + `RPL` DSL 已删除 → 改用文件域工具
-    `file_replace`（`{purpose, targets:[{path, find, replace}]}`）。
+    `file_replace`（`{targets:[{path, find, replace}], tool_call_display_name}`）。
     """
     return run_turn("call hist-write histabs=%s histfrom=%s histval=%s"
                     % (fwd(os.path.join(WS, HIST_FILE)), frm, to))

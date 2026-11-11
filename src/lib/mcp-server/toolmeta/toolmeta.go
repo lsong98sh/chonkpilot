@@ -1,6 +1,7 @@
 // Package toolmeta 是 meta（mcp_find / mcp_load / mcp_invoke）与 domain（ask_user /
-// next_run / tool_result / subchat_open / subchat_finish）控制面工具的
-// **进程内**实现（GATEWAY-2 / L3）。
+// next_run / subchat_open / subchat_finish）控制面工具的
+// **进程内**实现（GATEWAY-2 / L3）。2026-11-08：`tool_result` 已删除（结果读取统一走
+// task 插件 `task_status`）。
 //
 // 2026-10-19 这些工具曾是「一工具一 exe」（src/lib/llm/cmd/*-exec + servertools/exec），
 // 由 core-mcp-server 每次 spawn；L3 起契约 runtime = builtin，由内置 mcp-server 进程内调用，
@@ -32,17 +33,17 @@ type Group string
 const (
 	// GroupMeta 是 meta 组（mcp_find / mcp_load / mcp_invoke）。
 	GroupMeta Group = "meta"
-	// GroupDomain 是 domain 组（ask_user / tool_result / next_run / subchat_*）。
+	// GroupDomain 是 domain 组（ask_user / next_run / subchat_*；tool_result 已删除）。
 	GroupDomain Group = "domain"
 )
 
 // Context 是本次工具调用的上下文字段（来自协议 _meta.chonkpilot）。
 type Context struct {
-	InstanceID string
-	Session    string
-	Turn       string
-	ToolCallID string
-	Purpose    string
+	InstanceID  string
+	Session     string
+	Turn        string
+	ToolCallID  string
+	DisplayName string
 	// WorkDir 是承载窗口的会话工作目录（宿主准入 49 §2.19：插件调工具必须带，
 	// 否则会被判 not_a_chonkpilot_project）。
 	WorkDir string
@@ -111,7 +112,7 @@ func runMeta(ctx context.Context, tool string, args map[string]any, cx Context, 
 func runDomain(ctx context.Context, tool string, args map[string]any, cx Context, bridge Bridge) (string, bool) {
 	in := call{tool: tool, args: args, cx: cx}
 	switch tool {
-	case "tool_result", "ask_user", "next_run", "subchat_open", "subchat_finish":
+	case "ask_user", "next_run", "subchat_open", "subchat_finish":
 	default:
 		return "错误: 未知 server 工具 " + tool, true
 	}
@@ -121,13 +122,13 @@ func runDomain(ctx context.Context, tool string, args map[string]any, cx Context
 	}
 	defer cli.Close()
 
-	// 任务节点（对齐进程内 domainExecute）：先建节点再执行；ask_user 的节点由回答回填收尾。
+	// 任务节点（对齐进程内任务节点构建语义）：先建节点再执行；ask_user 的节点由回答回填收尾。
 	nodeOut, err := callPlugin(ctx, cli, "plugin/v1/task.node.start", map[string]any{
 		"instance_id":  in.cx.InstanceID,
 		"turn":         in.cx.Turn,
 		"tool":         in.tool,
 		"tool_call_id": in.cx.ToolCallID,
-		"purpose":      in.cx.Purpose,
+		"display_name": in.cx.DisplayName,
 		"args":         in.args,
 	})
 	if err != nil {
@@ -148,9 +149,6 @@ func runDomain(ctx context.Context, tool string, args map[string]any, cx Context
 		}
 		return "已向用户提问，等待回答", false
 
-	case "tool_result":
-		return toolResult(ctx, cli, in.cx, in.args, taskID), false
-
 	case "next_run":
 		// NEXTRUN-1：登记下一轮排队输入（同步快操作；结果即终态）。
 		out, err := callPlugin(ctx, cli, "plugin/v1/next.run", map[string]any{
@@ -169,10 +167,10 @@ func runDomain(ctx context.Context, tool string, args map[string]any, cx Context
 
 	case "subchat_open":
 		out, err := callPlugin(ctx, cli, "plugin/v1/subchat.open", map[string]any{
-			"instance_id": in.cx.InstanceID,
-			"turn":        in.cx.Turn,
-			"purpose":     in.cx.Purpose,
-			"args":        in.args,
+			"instance_id":  in.cx.InstanceID,
+			"turn":         in.cx.Turn,
+			"display_name": in.cx.DisplayName,
+			"args":         in.args,
 		})
 		if err != nil {
 			finishNode(ctx, cli, taskID, true, err.Error())
@@ -202,7 +200,7 @@ func runDomain(ctx context.Context, tool string, args map[string]any, cx Context
 func metaFind(ctx context.Context, cli transport.Conn, in call) (string, bool) {
 	inst := in.cx.InstanceID
 	query := strArg(in.args, "query")
-	purpose := strArg(in.args, "purpose")
+	match := strArg(in.args, "match")
 	typ := strArg(in.args, "type")
 	if typ == "" {
 		typ = "all"
@@ -215,11 +213,11 @@ func metaFind(ctx context.Context, cli transport.Conn, in call) (string, bool) {
 	if l, ok := in.args["limit"].(float64); ok && l > 0 {
 		limit = int(l)
 	}
-	if purpose != "" {
-		if res, ok := metaLLMPick(ctx, cli, inst, purpose, typ, limit); ok {
+	if match != "" {
+		if res, ok := metaLLMPick(ctx, cli, inst, match, typ, limit); ok {
 			return res, false
 		}
-		query = purpose
+		query = match
 	}
 	q := strings.ToLower(query)
 
@@ -388,7 +386,7 @@ func metaInvoke(ctx context.Context, cli transport.Conn, in call) (string, bool)
 		"session":      in.cx.Session,
 		"turn":         in.cx.Turn,
 		"tool_call_id": in.cx.ToolCallID,
-		"purpose":      in.cx.Purpose,
+		"display_name": in.cx.DisplayName,
 		"request_id":   reqID,
 	})
 	if err != nil {
@@ -491,7 +489,7 @@ func findAsset(ctx context.Context, cli transport.Conn, inst, kind, name, uri st
 	return fallback
 }
 
-func metaLLMPick(ctx context.Context, cli transport.Conn, inst, purpose, typ string, limit int) (string, bool) {
+func metaLLMPick(ctx context.Context, cli transport.Conn, inst, match, typ string, limit int) (string, bool) {
 	kinds, includeTools, ok := findTypeScope(typ)
 	if !ok {
 		return "", false
@@ -527,7 +525,7 @@ func metaLLMPick(ctx context.Context, cli transport.Conn, inst, purpose, typ str
 		appendLine(fmt.Sprintf("- %s(%s): %s\n", strArg(a, "name"), strArg(a, "kind"), desc))
 	}
 	prompt := fmt.Sprintf("任务目标：%s\n请从候选条目中选择完成该任务最相关者（可多个/组合，按相关性排序，至多 %d 个，条目可为工具或资产），"+
-		"输出 JSON {\"tools\":[{\"name\":\"\",\"reason\":\"\"}]}（无匹配输出 {\"tools\":[]}），仅输出 JSON。", purpose, limit)
+		"输出 JSON {\"tools\":[{\"name\":\"\",\"reason\":\"\"}]}（无匹配输出 {\"tools\":[]}），仅输出 JSON。", match, limit)
 	lctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	out, err := callPlugin(lctx, cli, "plugin/v1/llm.step", map[string]any{
@@ -544,126 +542,6 @@ func metaLLMPick(ctx context.Context, cli transport.Conn, inst, purpose, typ str
 
 // ── 域工具辅助 ──────────────────────────────────────────────
 
-// taskResultPollInitial / taskResultPollMax 是 `tool_result` 轮询跨进程任务状态的退避区间
-// （异步改造 §10.1 白名单：插件桥**无任务终态事件面**，只能 RPC 探测；本函数在工具 handler
-// 的独立执行 goroutine 内，允许后台等待，但不再固定 500ms、也不用 `time.After`）。
-// 退避 500ms → 1s → 2s → 2s…；每次等待受剩余 timeout 截断。
-var (
-	taskResultPollInitial = 500 * time.Millisecond
-	taskResultPollMax     = 2 * time.Second
-)
-
-// nextTaskResultPoll 计算下一轮轮询间隔（指数退避，封顶 max）。
-func nextTaskResultPoll(d time.Duration) time.Duration {
-	if d <= 0 {
-		return taskResultPollInitial
-	}
-	d *= 2
-	if d > taskResultPollMax {
-		d = taskResultPollMax
-	}
-	return d
-}
-
-// stopTimer 停止计时器并丢弃已入队的触发（避免 Stop 竞态下的伪唤醒）。
-func stopTimer(t *time.Timer) {
-	if t == nil {
-		return
-	}
-	if !t.Stop() {
-		select {
-		case <-t.C:
-		default:
-		}
-	}
-}
-
-// toolResult 对齐进程内 runToolResult：id 支持 server 任务节点 / gateway 异步任务 /
-// 子会话 turn id；timeout 秒内轮询至终态（0 = 立即查询一次），超时返回「任务尚未结束」。
-func toolResult(ctx context.Context, cli transport.Conn, cx Context, args map[string]any, taskID string) string {
-	id, _ := args["id"].(string)
-	if id == "" {
-		finishNode(ctx, cli, taskID, true, "错误: id 必填")
-		return "错误: id 必填"
-	}
-	timeout := 30.0
-	if v, ok := args["timeout"].(float64); ok {
-		timeout = v
-	}
-	if timeout < 0 {
-		timeout = 0
-	}
-	deadline := time.Now().Add(time.Duration(timeout * float64(time.Second)))
-	poll := taskResultPollInitial
-	for {
-		if ctx.Err() != nil {
-			msg := fmt.Sprintf("已取消: 任务 %s 查询中止（gateway 执行侧取消；被查询任务本身未受影响，可重新调用 tool_result）", id)
-			finishNode(ctx, cli, taskID, false, msg)
-			return msg
-		}
-		out, err := callPlugin(ctx, cli, "plugin/v1/task.result", map[string]any{
-			"instance_id": cx.InstanceID, "turn": cx.Turn, "id": id,
-		})
-		if err != nil {
-			finishNode(ctx, cli, taskID, true, err.Error())
-			return "错误: " + err.Error()
-		}
-		text := strArg(out, "text")
-		state := strArg(out, "state")
-		found, _ := out["found"].(bool)
-		if !found {
-			msg := "错误: 未找到任务 " + id
-			finishNode(ctx, cli, taskID, true, msg)
-			return msg
-		}
-		if state == "running" {
-			if time.Now().After(deadline) {
-				msg := fmt.Sprintf("任务尚未结束：%s 仍在运行（已等待 %.0fs）。可再次调用 tool_result(id=%q, timeout=更长秒数) 继续等待", id, timeout, id)
-				finishNode(ctx, cli, taskID, false, msg)
-				return msg
-			}
-			remain := time.Until(deadline)
-			// 事件驱动等待（2026-11-06，统一异步 §10.1 P2）：宿主侧 `plugin/v1/task.wait` 订阅既有
-			// 任务终态事件（task-done / mcp-tasks-report / session-complete），到点或终态即返；
-			// 不再由本进程轮询探测。旧宿主无该方法 → 回落指数退避（行为兼容）。
-			waitOut, werr := callPlugin(ctx, cli, "plugin/v1/task.wait", map[string]any{
-				"instance_id": cx.InstanceID, "turn": cx.Turn, "id": id,
-				"timeout": remain.Seconds(),
-			})
-			if werr == nil {
-				text = strArg(waitOut, "text")
-				state = strArg(waitOut, "state")
-				found, _ = waitOut["found"].(bool)
-				if !found {
-					msg := "错误: 未找到任务 " + id
-					finishNode(ctx, cli, taskID, true, msg)
-					return msg
-				}
-				if state != "running" {
-					finishNode(ctx, cli, taskID, false, text)
-					return text
-				}
-				continue // 仍 running（其他事件唤醒 / 等待到点）→ 顶层复核 deadline
-			}
-			// 回落：指数退避等待；剩余超时更短时按剩余截断（到点由下一轮 deadline 判定收口）。
-			wait := poll
-			if remain > 0 && wait > remain {
-				wait = remain
-			}
-			timer := time.NewTimer(wait)
-			select {
-			case <-ctx.Done():
-				stopTimer(timer)
-			case <-timer.C:
-			}
-			poll = nextTaskResultPoll(poll)
-			continue
-		}
-		finishNode(ctx, cli, taskID, false, text)
-		return text
-	}
-}
-
 // finishNode 收尾任务节点（对齐进程内 tasks.done：error 态写 error 文本，done 态写 result）。
 func finishNode(ctx context.Context, cli transport.Conn, taskID string, isErr bool, text string) {
 	if taskID == "" {
@@ -673,7 +551,7 @@ func finishNode(ctx context.Context, cli transport.Conn, taskID string, isErr bo
 	if isErr {
 		state, result, errText = "error", "", text
 	}
-	// 收尾不随执行 ctx 取消（tool_result 被取消时仍需落终态）。
+	// 收尾不随执行 ctx 取消（工具被取消时仍需落终态）。
 	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	_, _ = callPlugin(callCtx, cli, "plugin/v1/task.node.done", map[string]any{

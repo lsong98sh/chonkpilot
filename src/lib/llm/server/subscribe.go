@@ -14,7 +14,6 @@ func (s *Server) subscribeAll() error {
 		subject string
 		h       mq.VHandler
 	}{
-		{SubjectDomainToolCall, s.onDomainToolCall},
 		{SubjectLLMSimple, s.onLLMSimple},
 		{SubjectInstanceClaim, s.onInstanceClaim},         // 实例认领（请求-响应；61 §4.1 ①，阶段 2a）
 		{SubjectLLMTestConnection, s.onLLMTestConnection}, // 设置→LLM「测试连接」只读探活（点分主题直通总线）

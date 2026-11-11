@@ -1,4 +1,4 @@
-// `plugin/v1/task.wait`（P2）：跨进程 tool_result 的终态事件等待——宿主侧订阅既有任务终态
+// `plugin/v1/task.wait`（P2）：跨进程任务结果读取的终态事件等待——宿主侧订阅既有任务终态
 // 主题，到点或终态即返；调用方不再轮询探测。
 package server
 
@@ -52,7 +52,7 @@ func callTaskWait(t *testing.T, reg *pluginbridge.Registry, turn string, timeout
 
 func TestPluginTaskWaitReturnsOnTerminalEvent(t *testing.T) {
 	s, tc, reg := newTaskWaitFixture(t, "s-wait", "t-wait")
-	node, err := s.domainNode(tc, "tc-wait", "tool_result", map[string]any{"id": "x"}, "")
+	node, err := s.domainNode(tc, "tc-wait", "task_run", map[string]any{"prompt": "x"}, "")
 	if err != nil {
 		t.Fatalf("domainNode: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestPluginTaskWaitReturnsOnTerminalEvent(t *testing.T) {
 
 func TestPluginTaskWaitTimesOutWhileRunning(t *testing.T) {
 	s, tc, reg := newTaskWaitFixture(t, "s-wait2", "t-wait2")
-	node, err := s.domainNode(tc, "tc-wait2", "tool_result", map[string]any{"id": "x"}, "")
+	node, err := s.domainNode(tc, "tc-wait2", "task_run", map[string]any{"prompt": "x"}, "")
 	if err != nil {
 		t.Fatalf("domainNode: %v", err)
 	}

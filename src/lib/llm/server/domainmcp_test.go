@@ -1,14 +1,14 @@
 // 真实内嵌 MCP 链路集成测试（21-llm-server，v2 分组注册面）：
 // server lib 内嵌 mcp-server + gateway（DisableMCP=false，无 fakeGateway）——
-// 域工具/域 agent 经 tools/register / prompts/register（mcp-* 主题）注入 registered provider
-// （handler_subject=domain-tool-call，hot=true）；LLM 工具列表 = gateway tools/list 过滤 hot；
-// turn 内 task 型经 gateway 唯一执行入口 → 注册回调（domain-tool-call）→ execTaskTool。
+// 域 agent 经场景注册；已迁 task 插件的四个会话编排工具由**测试适配**注册
+// （见 moved_domain_test.go，模拟插件 tools/register + 宿主 plugin/v1/* 能力）；
+// LLM 工具列表 = gateway tools/list 过滤 hot。
+// 2026-11-08：core 已无域工具（`tool_result` 删除、四工具迁插件），故不再断言 core 契约 _meta。
 package server
 
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -38,6 +38,9 @@ func newTestServerMCP(t *testing.T, llmSrv *httptest.Server) *Server {
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// 2026-11-08：ask_user / next_run / subchat_* 已迁 task 插件；L1 用测试适配模拟插件
+	// （见 moved_domain_test.go），保持 turn/gateway 链路覆盖。
+	registerMigratedDomainTools(t, s)
 	// data 层共享连接关闭须在 s.Stop 之后、TempDir 清理之前（LIFO；Windows 库句柄）。
 	t.Cleanup(closeTestDataStore)
 	t.Cleanup(s.Stop)
@@ -65,13 +68,13 @@ func newTestServerMCPAppRoot(t *testing.T, llmSrv *httptest.Server, appRoot stri
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	registerMigratedDomainTools(t, s)
 	t.Cleanup(closeTestDataStore)
 	t.Cleanup(s.Stop)
 	return s
 }
 
-// TestEmbeddedGatewayDomainToolsHot：tools/list 应含全部注册域工具且 hot=true
-// （tools/register hot=true，契约见 llm/contracts/tools/*.tool.md）。
+// TestEmbeddedGatewayDomainToolsHot：tools/list 应含全部已迁工具（测试适配注册）且 hot=true。
 func TestEmbeddedGatewayDomainToolsHot(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
@@ -89,137 +92,11 @@ func TestEmbeddedGatewayDomainToolsHot(t *testing.T) {
 			want[strings.TrimPrefix(d.Name, "self_")] = true
 		}
 	}
-	for _, n := range []string{"ask_user", "tool_result"} {
+	for _, n := range []string{"ask_user", "next_run", "subchat_open", "subchat_finish"} {
 		if !want[n] {
-			t.Fatalf("域工具 %s 未在 tools/list 中（hot got %v）", n, want)
+			t.Fatalf("已迁工具 %s 未在 tools/list 中（hot got %v）", n, want)
 		}
 	}
-}
-
-// TestEmbeddedGatewaySystemToolsMeta：系统工具（域工具 category=server）经 tools/list 透出的
-// `_meta` 应含**正确的 async 模式**；契约注入时**显式声明 timeout=0**（= 无上限）者透出
-// `_meta.timeout=0`，未声明者不含 timeout（回落全局）。
-// 用户口径 2026-09-27：`tool_*`/`ask_user` 契约声明 timeout=0 = 执行硬上限无（永远等，可取消）。
-// （GATEWAY-2 L5：meta 工具 mcp_find/mcp_load/mcp_invoke 已随 self 节点整体移除。）
-func TestEmbeddedGatewaySystemToolsMeta(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := newTestServerMCP(t, llm)
-
-	defs, err := s.gc.ListTools(context.Background())
-	if err != nil {
-		t.Fatalf("ListTools: %v", err)
-	}
-	byName := map[string]ToolDef{}
-	for _, d := range defs {
-		byName[strings.TrimPrefix(d.Name, "self_")] = d
-	}
-	check := func(name, wantAsync, wantCat string, wantTimeout any) {
-		t.Helper()
-		d, ok := byName[name]
-		if !ok {
-			t.Errorf("tools/list 缺少 %s（got %v）", name, keysOf(byName))
-			return
-		}
-		if got := str(d.Meta["async"]); got != wantAsync {
-			t.Errorf("%s: _meta.async = %q, 期望 %q", name, got, wantAsync)
-		}
-		if got := str(d.Meta["category"]); got != wantCat {
-			t.Errorf("%s: _meta.category = %q, 期望 %q", name, got, wantCat)
-		}
-		if wantTimeout == nil {
-			if v, has := d.Meta["timeout"]; has {
-				t.Errorf("%s: _meta 不应含 timeout（契约未声明 → 回落全局），got %v", name, v)
-			}
-		} else if v, has := d.Meta["timeout"]; !has || v != wantTimeout {
-			t.Errorf("%s: _meta.timeout = %v（has=%v），期望 %v（0 = 无上限）", name, v, has, wantTimeout)
-		}
-		t.Logf("%s: _meta = %v", name, d.Meta)
-	}
-	zero := float64(0)
-	check("tool_result", "never", "server", zero)
-	check("ask_user", "never", "server", zero)
-}
-
-func keysOf(m map[string]ToolDef) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
-// TestEmbeddedGatewayTaskToolTurn：完整 turn 内 task 型工具（tool_result）经 gateway 唯一入口执行
-// → 注册回调（domain-tool-call）→ execTaskTool → 结果回填 → complete。
-func TestEmbeddedGatewayTaskToolTurn(t *testing.T) {
-	// 预建一个已 done 的 server 任务节点（tool_result 按其 id 取结果文本）。
-	var taskID string
-	// 自建 responder：第一回合 tool_call 用内嵌 gateway 暴露名（tool_result，P0a 2026-10-29 起 =
-	// 契约名；LLM 只见提交 defs 的暴露名）；
-	// 第二回合（含工具结果）返回含节点结果摘要的文本（complete 文本断言）。
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Messages []ChatMsg `json:"messages"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		hasToolResult := false
-		for _, m := range body.Messages {
-			if m.Role == "tool" {
-				hasToolResult = true
-			}
-		}
-		if !hasToolResult {
-			args := jb(map[string]any{"id": taskID, "timeout": 0})
-			llmSSE(w, []string{
-				sseChunk(map[string]any{"content": ""}, ""),
-				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
-					"index": 0, "id": "tc-tr", "type": "function",
-					"function": map[string]any{"name": "tool_result", "arguments": string(args)},
-				}}}, "tool_calls"),
-			})
-			return
-		}
-		llmSSE(w, []string{
-			sseChunk(map[string]any{"content": "结果: 预建任务完成"}, ""),
-			sseChunk(map[string]any{}, "stop"),
-		})
-	}))
-	defer llm.Close()
-	s := newTestServerMCP(t, llm)
-	te := watchTasks(t, s.bus)
-	startTurn(t, s, "s-emb-tr", "t-emb-tr")
-
-	pre, _ := s.tasks.start(&TaskNode{
-		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-emb-tr", TurnID: "t-emb-tr",
-		InstanceID: "ins-test", TopSession: "s-emb-tr", Name: "pre", Purpose: "p",
-	})
-	taskID = pre.TaskID
-	s.tasks.done(pre.TaskID, TaskStateDone, "预建任务完成", "")
-
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
-		"instance_id": "ins-test", "session": "s-emb-tr", "turn": "t-emb-tr",
-		"type": "text-user", "content": "tool result please",
-	}))
-	evs := collectTurn(t, s.bus, "t-emb-tr", 15*time.Second)
-	c := lastComplete(evs)
-	if c == nil || c["status"] != "complete" {
-		t.Fatalf("no complete: %+v", evs)
-	}
-	text, _ := c["text"].(string)
-	if !strings.Contains(text, "预建任务完成") {
-		t.Fatalf("tool_result 结果异常: %q", text)
-	}
-	// tool_result 任务节点由注册回调建/广播并收尾 done
-	te.wait(t, "tool_result node done", func() bool {
-		te.mu.Lock()
-		defer te.mu.Unlock()
-		for _, m := range te.started {
-			if m["tool"] == "tool_result" {
-				return true
-			}
-		}
-		return false
-	})
 }
 
 // TestPrjExecConfigHotApply：prj 执行配置 timeout_sec / max_concurrency / skip_dirs **保存即生效**
@@ -302,38 +179,33 @@ func TestPrjExecConfigHotApply(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 }
 
-// TestDomainToolPurposeInjection（A4 · C1 / SUBCHAT-2 阶段 A）：域工具 handler 经**注入通道**取本次
-// 调用的 purpose（`payload["context"]["purpose"]`）——args 里的 `tool_call_display_name` 已被
-// gateway `doCall` 剥离，handler 只能从这里读。
-//
-//	① 回调载荷（`registered_provider.turnContextPayload` 形状）解析入 `domainToolMsg.Context.Purpose`；
-//	② `domainExecute` 把注入值送达节点构建 → 域工具任务节 purpose 以注入值兜底。
-func TestDomainToolPurposeInjection(t *testing.T) {
+// TestDomainNodePurposeInjection（A4 · C1 / SUBCHAT-2 阶段 A）：外部工具的任务节点经**注入通道**
+// 取本次调用的 purpose（`payload["context"]["purpose"]`，`plugin/v1/task.node.start` 载荷同源）——
+// args 里的 `tool_call_display_name` 已被 gateway `doCall` 剥离，节点只能从这里兜底。
+func TestDomainNodePurposeInjection(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServerMCP(t, llm)
 
-	// ① 载荷解析
+	// ① 载荷解析（registered_provider.turnContextPayload 形状）
 	const purpose = "整理当日要点汇总"
-	payload := `{"tool":"tool_result","args":{"id":"missing-task","timeout":0},` +
-		`"context":{"instance_id":"ins-test","turn":"t-purpose","session":"s-purpose","tool_call_id":"tc-purpose","purpose":"` + purpose + `"}}`
-	var msg domainToolMsg
+	payload := `{"tool":"subchat_open","args":{},` +
+		`"context":{"instance_id":"ins-test","turn":"t-purpose","session":"s-purpose","tool_call_id":"tc-purpose","display_name":"` + purpose + `"}}`
+	var msg movedDomainMsg
 	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
 		t.Fatalf("unmarshal domain-tool-call: %v", err)
 	}
-	if msg.Context == nil || msg.Context.Purpose != purpose {
-		t.Fatalf("context.purpose 未解析：%+v", msg.Context)
+	if msg.Context == nil || msg.Context.DisplayName != purpose {
+		t.Fatalf("context.display_name 未解析：%+v", msg.Context)
 	}
 
-	// ② 注入值经 domainExecute → domainNode 兜底任务节 purpose
+	// ② 注入值经 domainNode 兜底任务节 purpose（args 无展示名 → purpose 取注入值）
 	tc := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-purpose", Turn: "t-purpose"},
 		ctx: context.Background()}
-	text, _ := s.domainExecute(tc, "tc-purpose", "tool_result",
-		map[string]any{"id": "missing-task", "timeout": 0.0}, msg.Context.Purpose)
-	if !strings.Contains(text, "未找到任务") {
-		t.Fatalf("查询不存在的任务应返回明确失败文本：%q", text)
+	if _, err := s.domainNode(tc, "tc-purpose", "subchat_open", map[string]any{}, msg.Context.DisplayName); err != nil {
+		t.Fatalf("domainNode: %v", err)
 	}
 	if n := s.tasks.findByToolCall("ins-test", "tc-purpose"); n == nil || n.Purpose != purpose {
-		t.Fatalf("域工具任务节 purpose 应由注入通道兜底：%+v", n)
+		t.Fatalf("任务节 purpose 应由注入通道兜底：%+v", n)
 	}
 }

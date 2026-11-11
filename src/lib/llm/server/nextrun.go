@@ -40,6 +40,12 @@ func llmNextRunMaxFrom(d map[string]any) int {
 	return max
 }
 
+// nextRunOKText 是成功登记 / 覆盖的可读文案（模型据此得知本次是第几次、上限多少；
+// 裸 `OK` 无法判断剩余配额，模型只能靠猜）。
+func nextRunOKText(count, max int) string {
+	return fmt.Sprintf("已登记下一轮（第 %d 次，上限 %d）", count, max)
+}
+
 // runNextRun 实现 `next_run`（返回文本唯一准则见设计方案 §3.1）。
 func (s *Server) runNextRun(tc *turnCtx, args map[string]any) (string, bool) {
 	if tc == nil {
@@ -87,7 +93,7 @@ func (s *Server) runNextRun(tc *turnCtx, args map[string]any) (string, bool) {
 			it.Content = prompt
 			s.inboxRemember(it)
 		}
-		return "OK", false
+		return nextRunOKText(res.Count, max), false
 	}
 	id, err := s.inboxAppend(tc.req.InstanceID, facade.InboxAppendRequest{
 		SessionID: tc.req.Session, TurnID: tc.req.Turn, Type: "next_turn",
@@ -99,14 +105,44 @@ func (s *Server) runNextRun(tc *turnCtx, args map[string]any) (string, bool) {
 		s.nextRunCompensate(tc.req.InstanceID, tc.req.Session)
 		return "错误: 登记下一轮失败（" + err.Error() + "）", true
 	}
-	tc.nextRunMu.Lock()
-	tc.nextRunItemID = id
-	tc.nextRunMu.Unlock()
+	// append 命中数据层幂等键时只回旧 id、**不更新 content**（恢复回查失败 → nextRunItemID 为空，
+	// 同 turn 再次调用即命中）。故无论回查是否命中，append 后都先回填内存索引（inboxUpdate 需按
+	// id 反查 session → dialog_id），再强制覆盖 content = 本次 prompt，避免新提示词被静默丢弃。
 	s.inboxRemember(facade.InboxItem{
 		ID: id, SessionID: tc.req.Session, TurnID: tc.req.Turn, Type: "next_turn",
 		Content: prompt, Status: "pending", Source: nextRunSourceLLM,
 	})
-	return "OK", false
+	if err := s.inboxUpdate(tc.req.InstanceID, id, "", "", prompt); err != nil {
+		// append 已成功但 content 未落地：按既有口径回滚本次自增（只补一次）。
+		s.nextRunCompensate(tc.req.InstanceID, tc.req.Session)
+		return "错误: 登记下一轮失败（" + err.Error() + "）", true
+	}
+	tc.nextRunMu.Lock()
+	tc.nextRunItemID = id
+	tc.nextRunMu.Unlock()
+	return nextRunOKText(res.Count, max), false
+}
+
+// nextRunItemForTurn 回查本 turn 已登记的 pending LLM 排队项（恢复轮重建 last-wins 目标）。
+// 正常轮由 tc.nextRunItemID 直接持有；进程重启后内存丢失，必须回查，否则同 turn 再次调用
+// 会命中数据层幂等键并**不更新 content**（新 prompt 静默丢失）。
+func (s *Server) nextRunItemForTurn(instanceID, sessionID, turnID string) string {
+	if instanceID == "" || sessionID == "" || turnID == "" {
+		return ""
+	}
+	items, err := s.inboxList(instanceID, sessionID, sessioninbox.StatusPending)
+	if err != nil {
+		logf("[chonkpilot-server] next_run 恢复回查失败（session=%s）: %v\n", sessionID, err)
+		return ""
+	}
+	for _, it := range items {
+		if it.Source == nextRunSourceLLM && it.TurnID == turnID && it.Type == "next_turn" {
+			// 回填内存索引：后续 last-wins 走 inboxUpdate，需要由 id 反查 session → dialog_id。
+			s.inboxRemember(it)
+			return it.ID
+		}
+	}
+	return ""
 }
 
 // nextRunCompensate 回滚本次自增（inbox 落库 / 覆盖失败）。

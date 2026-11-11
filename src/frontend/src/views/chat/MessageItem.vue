@@ -76,6 +76,15 @@
       <div class="section-header" v-mq:[EventNames.msgToggleCollapse].click="{ id: message.id }">
         <Icon :name="collapsed ? 'arrow-right' : 'arrow-down'" :size="12" />
         <span class="section-label tool-name-label" :title="toolPairTitle">{{ toolPairTitle }}</span>
+        <!-- 状态图标：执行中 / 转异步 / 等待裁决 / 完成 / 失败 / 终止 / 中断（与任务树同源） -->
+        <span v-if="toolStatusMeta.icon" class="tool-status-icon" :title="toolStatusMeta.label ? $t(toolStatusMeta.label) : ''">
+          <Icon
+            :name="toolStatusMeta.icon"
+            :size="12"
+            :color="toolStatusMeta.color"
+            :class="{ spinning: toolStatusMeta.spin, pulsing: toolStatusMeta.pulse }"
+          />
+        </span>
         <span v-if="message.status === 'pending'" class="status-badge pending">{{ $t('chat.status_pending') }}</span>
         <span v-else-if="message.status === 'failed'" class="status-badge failed">{{ $t('chat.status_failed') }}</span>
         <span v-else-if="message.status === 'done'" class="status-badge done">{{ $t('chat.status_done') }}</span>
@@ -221,6 +230,7 @@ import { MsgTopics, FieldKeys } from '../../events/msgkeys'
 import { useToolAsyncMode } from '../../composables/useToolAsyncMode'
 import { useToolProgress } from '../../composables/useToolProgress'
 import { useTaskView } from '../../composables/useTaskView'
+import { stateMetaFor } from '../../composables/useTaskStatus'
 import { getFileUrl } from '../../api/file'
 import { classifyError } from '../../utils/errorMessage'
 
@@ -345,12 +355,26 @@ const localContent = computed({
 
 const showMore = computed(() => props.message.has_more && !contentComplete.value)
 
-// tool_pair 标题：优先显示 LLM 必填的 purpose 调用理由（附工具名），历史消息无 purpose 时回退工具名。
+// tool_pair 标题：优先显示 LLM 必填的调用展示名（display_name；历史消息兼容 purpose），
+// 无展示名时回退工具名。
 const toolPairTitle = computed(() => {
-  const p = props.message.purpose || ''
+  const p = props.message.display_name || props.message.purpose || ''
   const tool = props.message.tool || 'tool'
   return p ? t('chat.tool_pair_title', { purpose: p, tool }) : tool
 })
+
+// chat tool-call 状态图标：与任务树共用 TASK_STATE_META；执行中/转异步/等待/完成/失败/终止
+// 全部用图标 + title，文字 badge 保留作可读性。
+const toolStatusKey = computed(() => {
+  const s = String(props.message.status || '').toLowerCase()
+  if (props.message.arbitration) return 'awaiting'
+  if (s === 'detached' || props.message.state === 'detached') return 'detached'
+  if (props.message.state === 'awaiting') return 'awaiting'
+  if (s === 'failed' || s === 'error') return 'error'
+  if (s === 'pending' || s === 'running' || s === 'done' || s === 'cancelled' || s === 'interrupted') return s
+  return 'running'
+})
+const toolStatusMeta = computed(() => stateMetaFor(toolStatusKey.value))
 
 // 工具进度 title（GATEWAY-2 L8）：下行事件 `mcp-tools-progress` → `进度 N%`。
 // 无事件 / 无 `total` → 空串（模板按 `progressTitle || null` 绑定 → **不渲染 title**，不显示 0%）。
@@ -1044,6 +1068,22 @@ const formattedTime = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex-shrink: 1;
+}
+
+.tool-status-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.tool-status-icon .spinning {
+  animation: pending-spin 1s linear infinite;
+}
+.tool-status-icon .pulsing {
+  animation: tool-status-pulse 1s ease-in-out infinite;
+}
+@keyframes tool-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 .status-badge {

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-data/persist"
 )
 
 // TestTaskPoolIsolationAcrossInstances：两个 instance 使用**同名** turn / tool_call_id / gw_task_id
@@ -366,11 +365,11 @@ func TestAskClearedOnInstanceExit(t *testing.T) {
 }
 
 // TestLLMCancelClearsAsksAndBatches 走**真实方法面** `session-cancel`（onLLMCancel，而非直调
-// clearAsksByTurnLocked）：挂起一轮 + 同会话两条未答 ask + 其中一条已答（批次只齐一半）→
-//   - asks / askBatches 全部为空（批次内已收答复一并丢弃）；
-//   - 不向 LLM 投递后续用户消息（不新起轮）；
-//   - ask-center-remove 不重复：已答那条在作答时摘除（answered），另一条在取消时摘除（turn_closed），
-//     每个 ask_id 恰好一条（AskUser §6.1「轮次被取消」/ §4.8 S4-3）。
+// clearAsksByTurnLocked）：挂起一轮 + 同会话两条未答 ask；Q1 先答（立即投递，不再等待 Q2），
+// 随后取消 → 未答 Q2 / 批次被清理，Q1 答复不重复投递：
+//   - asks / askBatches 全部为空；
+//   - ask-center-remove 不重复：Q1 作答时摘除（answered），Q2 取消时摘除（turn_closed）；
+//   - Q1 的 A1 只投递一次（取消不重发）。
 func TestLLMCancelClearsAsksAndBatches(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
@@ -391,11 +390,15 @@ func TestLLMCancelClearsAsksAndBatches(t *testing.T) {
 		t.Fatal("ask 应返回 askID")
 	}
 
-	// 部分批次答复：Q1 答复先暂存（同批仍有未答 Q2 → 不投递）。
+	// Q1 作答：立即投递到持久化 inbox（本轮仍在跑 → 等本轮结束消费），批次只剩 Q2 未答。
 	if v := s.bus.Emit(context.Background(), "session-ask-reply", jb(map[string]any{
 		"instance_id": "ins-test", "ask_id": a1, "answer": "A1",
 	})).Wait(); v.Err() != nil {
 		t.Fatalf("ask-user-reply 失败: %v", v.Err())
+	}
+	items, err := s.inboxList("ins-test", session, "pending")
+	if err != nil || len(items) != 1 || !strings.Contains(items[0].Content, "A1") {
+		t.Fatalf("Q1 答复应进入持久化 inbox：items=%+v err=%v", items, err)
 	}
 	s.mu.Lock()
 	nAsks, nBatches, open, answered := len(s.asks), len(s.askBatches), 0, 0
@@ -404,8 +407,8 @@ func TestLLMCancelClearsAsksAndBatches(t *testing.T) {
 		answered += len(b.answered)
 	}
 	s.mu.Unlock()
-	if nAsks != 1 || nBatches != 1 || open != 1 || answered != 1 {
-		t.Fatalf("部分答复后状态不符：asks=%d batches=%d open=%d answered=%d",
+	if nAsks != 1 || nBatches != 1 || open != 1 || answered != 0 {
+		t.Fatalf("Q1 答后状态不符：asks=%d batches=%d open=%d answered=%d",
 			nAsks, nBatches, open, answered)
 	}
 	if n := rec.countRemovesFor(a1); n != 1 {
@@ -446,16 +449,9 @@ func TestLLMCancelClearsAsksAndBatches(t *testing.T) {
 		t.Fatalf("Q2 remove.reason 应为 turn_closed，got=%v", reasons)
 	}
 
-	// 无后续用户消息投递：不新起轮，且本轮没有任何 user 行携带暂存答复 A1。
-	if got := newSessionStore(s.bus, "ins-test").LatestTurnID(session); got != turn {
-		t.Fatalf("取消后不应起新轮：latest=%s want=%s", got, turn)
-	}
-	if recs := sessionTurnRecords(t, s, session); len(recs) != 1 {
-		t.Fatalf("取消后该会话应仍只有 1 轮：%+v", recs)
-	}
-	for _, m := range msgsOfTurn(t, turn) {
-		if persist.Sval(m["role"]) == "user" && strings.Contains(persist.Sval(m["content"]), "A1") {
-			t.Fatalf("批次内已收答复应随取消丢弃（不得作为用户消息投递）：%+v", m)
-		}
+	// 取消不丢已入队的 Q1 答复：inbox 仍保留 A1（下一轮消费）。
+	items, err = s.inboxList("ins-test", session, "pending")
+	if err != nil || len(items) != 1 || !strings.Contains(items[0].Content, "A1") {
+		t.Fatalf("取消后 Q1 答复仍应在 inbox：items=%+v err=%v", items, err)
 	}
 }

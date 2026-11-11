@@ -394,8 +394,8 @@ def walk_chat_messages(ctx):
         ("reason", {"text": "先检查标题 / 列表 / 代码块 / 表格的底色与前景。"}),
         ("text", {"text": CHAT_MD}),
         ("tool-call", {"tool_call_id": "css-tc-1", "tool": "file_read",
-                       "arguments": "{\"purpose\":\"读取\",\"targets\":[{\"path\":\"README.md\"}]}",
-                       "simplified": "file_read"}),
+                       "arguments": "{\"targets\":[{\"path\":\"README.md\"}],\"tool_call_display_name\":\"读取\"}",
+                       "simplified": "file_read", "purpose": "读取"}),
     ):
         d = {"session": sid, "session_id": sid, "type": typ}
         d.update(payload)

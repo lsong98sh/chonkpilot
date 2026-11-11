@@ -2,6 +2,7 @@
 
 > 状态：✅ 已实现（2026-10-31；**2026-11-04 核对**）：代码 = `chonkpilot-plugins/crontab/src`；`plugin.json`（极简启动信息）+ `manifest.json`（完整 manifest，插件自读并由 `plugin.hello` 上报）= `src/initdata/capability/plugins/crontab/`；构建 = `build-plugins.ps1`。
 > 2026-11-04 核对结论：六工具 / 调度 / 通知 / 零轮询 / L2+L4 均已落地；`plugin.json` 已按 PLUGIN-LOAD-1 拆为极简五字段；任务级沙箱（SANDBOX-WRITE-1）已实现；`running` 标记已落库。本文旧口径（整份 manifest 写 `plugin.json`、沙箱不做、running 仅内存）已按代码修正。
+> 2026-11-10：`crontab_enable` / `crontab_disable` 合并为 `crontab_toggle{task_id,enabled}`，工具面变为五个；本文仅同步工具清单，动作/调度细节以插件契约与 28-plugins 为准。
 > 关联：[28-plugins](../spec/20-modules/28-plugins.md)（插件体系，权威）· [61-消息一览](../spec/60-reference/61-消息一览.md) · [2C-UI插件](../spec/20-modules/2C-UI插件.md) · [49-待实现项](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04) · [41-未决项登记](../spec/40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)
 > 代码落点：`chonkpilot-plugins/crontab/{src,doc}`（新）· `src/initdata/capability/plugins/crontab/{plugin.json,manifest.json}`（新）· `build-plugins.ps1`（增一步）· 前端/主仓/框架**零改动**
 
@@ -11,7 +12,7 @@
 
 ### 1.1 目标
 
-1. 新增进程外插件 **`crontab`**（exe = `chonkpilot-plugin-crontab.exe`），向 LLM 暴露**六个工具**：`crontab_add` / `crontab_update` / `crontab_list` / `crontab_enable` / `crontab_disable` / `crontab_delete`。
+1. 新增进程外插件 **`crontab`**（exe = `chonkpilot-plugin-crontab.exe`），向 LLM 暴露**五个工具**：`crontab_add` / `crontab_update` / `crontab_list` / `crontab_toggle` / `crontab_delete`。
 2. 状态栏常驻**小徽标**：显示当前定时任务数；点击 → 预览区打开任务页（同时声明 `drawer` 容器，可被拉到左/右抽屉）；数字变化由插件**主动推事件**刷新，不做轮询。
 3. 任务页：列出 `简要描述 / cron 字符串 / 下次执行时间 / 状态`，并支持 **启用 / 停用 / 删除**。
 4. 任务是**全局的**（不分项目），`action = {type, param}`：`type` 只有 `run`（执行命令，可选完成通知）与 `notify`（系统通知，param = HTML）两种；**没有第三个顶层参数**。
@@ -98,7 +99,7 @@ chonkpilot-plugins/crontab/
 
 ---
 
-## 4. 工具契约（六个工具）
+## 4. 工具契约（五个工具）
 
 ### 4.0 工具清单
 
@@ -107,8 +108,7 @@ chonkpilot-plugins/crontab/
 | `crontab_add` | 新建任务（默认立即生效，无需确认） | `cron` + (`action` \| `notify`) |
 | `crontab_update` | 修改任务 | `task_id` + (`cron`? / `action`? / `notify`?) |
 | `crontab_list` | 列出任务 | `enabled`? |
-| `crontab_enable` | 启用 | `task_id` |
-| `crontab_disable` | 停用 | `task_id` |
+| `crontab_toggle` | 启用 / 停用 | `task_id` + `enabled` |
 | `crontab_delete` | 删除 | `task_id` |
 
 ```text
@@ -116,8 +116,7 @@ tools/crontab/
 ├── crontab_add.tool.md
 ├── crontab_update.tool.md
 ├── crontab_list.tool.md
-├── crontab_enable.tool.md
-├── crontab_disable.tool.md
+├── crontab_toggle.tool.md
 └── crontab_delete.tool.md
 ```
 
@@ -163,7 +162,10 @@ tools/crontab/
 { "enabled": true }
 { }
 
-// crontab_enable / crontab_disable / crontab_delete
+// crontab_toggle
+{ "task_id": "ct_7f3a91c2", "enabled": false }
+
+// crontab_delete
 { "task_id": "ct_7f3a91c2" }
 ```
 
@@ -390,7 +392,7 @@ tools/crontab/
 
 | # | 结论 |
 |---|------|
-| 1 | 六个工具：`crontab_add` / `crontab_update` / `crontab_list` / `crontab_enable` / `crontab_disable` / `crontab_delete` |
+| 1 | 五个工具：`crontab_add` / `crontab_update` / `crontab_list` / `crontab_toggle` / `crontab_delete`（enable/disable 于 2026-11-10 合并） |
 | 2 | 工具参数只有 `cron` + `action`；`action = {type, param}`，`type ∈ {run, notify}`，**没有第三个顶层参数** |
 | 3 | `run.param = {command, notify?}`（命令 + 是否完成通知）；`notify.param` = HTML（可选 `click_url`） |
 | 4 | 任务**全局**，不分项目；`work_dir` 只作 `run` 的 cwd |

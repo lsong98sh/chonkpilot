@@ -45,7 +45,7 @@
 | `vfts_session_index` | ✗ | 写入/删除**会话内容索引**：`docs[{session_id,dialog_id?,turn_id?,message_id,role,ts?,text}]` / `remove[...]`；按 `message_id` 先删后插（幂等）→ `{added,removed,total}` |
 | `vfts_session_clear` | ✗ | 清空会话索引：给 `session_id` 只清该会话，缺省清空整个集合（含落盘目录）→ `{ok,removed}` |
 | `vfts_session_status` | ✗ | 会话索引状态：`state`（`""` / `ready` / `error`）、`sessions`、`docs`、`lastIndexedAt` |
-| `vfts_query` | ✓ | 检索：`match`（自然语言匹配串）/ `query`（布尔表达式，**不支持 `content:` 字段前缀**）至少其一；`topK`（默认 20，文件级去重）；`path` 子串过滤；`scope=file\|session`。返回命中文件 + `snippet`/`line`/`score`/`loc`（会话范围返回消息级命中）。 |
+| `vfts_query` | ✓ | 检索：`match`（自然语言匹配串）/ `query`（布尔表达式，**不支持 `content:` 字段前缀**）**互斥、至少其一**；`topK`（默认 20，上限 100）；`path` 子串过滤；`scope=file\|session`。返回 `total/returned/truncated` + 命中文件（`snippet`/`line`/`score`/`loc`）或会话消息级命中。 |
 
 - 查询必备 `workdir`（引擎 schema）；`readyGate` 未就绪 → 结构化应答（`not_initialized`/`pending`(indexing)/`error`，**不算协议错误**）。`vfts_dict_get`/`vfts_dict_set` 为**系统级**（无 `workdir`）。**（2026-11-04 核对）插件侧没有 `vfts.dict.*` 动作/订阅/配置页入口**（宿主 `bridge/capabilities.go` 仍有 `plugin/v1/vfts.dict.set → vfts.dict.set` 映射，但无消费者，属死能力）。
 - ~~**resident indexer 完整性门（2026-10-19）**：`<workdir>/.chonkpilot/vfts/status.json` …~~ **〔2026-10-25 退场，D-71〕**：`status.json` / `readyGate` / `indexer.lock` / `manifest-indexer.json` 随 resident indexer 一并删除；状态面曾只剩 `vfts.status`（prjusr 派生键，插件回写），**该键也已于 2026-10-28（PLUGIN-UI-2）退场**，状态经插件动作 `engine-status` / `badge` 现取；清单 = `<workdir>/.chonkpilot/vfts/file_list.json`（插件自持）。**（2026-11-04 核对）**
@@ -100,7 +100,7 @@
   - **失败与重启**：失败只记日志 + 进度 `error`（沿用 `sessionProgress`），不阻断增量、不 disable；`state.json` 的游标 / 指纹是唯一权威，插件重启后首轮对账自然覆盖（重建幂等，至多重复一次）。
   - **通知**：有差异修复时发既有 `tool-notify`（`notice=session-index-reconciled`，非新主题）。
 - **进度与通知**：进度为**插件内存态**（全量重建期间 `state=indexing`），插件动作 `engine-status` / `badge` 的 vfts 段新增 `session{state,doneSessions,totalSessions,doneTurns,totalTurns}`；设置页画进度条；完成/失败发 `tool-notify`（`notice=session-index-done` / `session-index-failed`）。`state.json` 只记 `""/ready/error` + 逐会话游标（`indexed_until_turn` / `fingerprint` / `indexedAt`，后两者供后台对账）。
-- **查询工具**：`vfts_query` 新增可选 `scope`（`file` 默认 \| `session`）+ `session_id?`（缺省 = `_meta.chonkpilot.session`，回退 `top_session`）+ `role?`；`scope=session` 返回 `hits[{session_id, dialog_id, turn_id, message_id, role, ts, snippet, score}]`（**必须带 `snippet` 正文片段**，只回 id 不可用）。
+- **查询工具**：`vfts_query` 新增可选 `scope`（`file` 默认 \| `session`）+ `session_id?`（缺省 = `_meta.chonkpilot.session`，回退 `top_session`，仍空 = 全部会话）+ `role?`；`scope=session` 返回 `hits[{session_id, dialog_id, turn_id, message_id, role, ts, snippet, score}]`（**必须带 `snippet` 正文片段**，只回 id 不可用）。`topK` 硬上限 100；`match`/`query` 互斥；结果带 `scope`/`total`/`returned`/`truncated`；会话命中先按相关度取 topK 再按 ts 升序展示。
 - **工具表面不带 `workdir`**（修正历史偏差）：`vfts_query` 的 `workdir` 由插件从 `_meta.chonkpilot.work_dir` 注入（gateway `contextmeta.go` 已透传），缺失回退「当前唯一实例」，仍缺失则明确失败；管理工具（`vfts_configure`/`vfts_index`/`vfts_status`）仍带 `workdir`（LLM 不可见）。
 - **配置键**：`plugins.codegraph.vfts.sessions`（`"true"`/`"false"`，缺省关闭）。
 - **UI 入口通道（2026-11-01 E2E 订正）**：会话内查找（`vfts.session.query`）与全量重建（`vfts.session.reindex`）在 codegraph 插件里以 `OnRequest` 注册 → 实际走**插件 UI 动作面**（前端 `mq.emit('plugin-call',{id:'codegraph',method:'rpc',params:{method,params}})` → 宿主 `plugin.ui.rpc` → 插件 `OnRequest` 同名方法）。**总线无同名订阅**（原「点分主题」写法会得到 `null` 应答）。`vfts.reindex` 语义不变（仅文件索引）。**2026-11-05**：两个方法已补进 codegraph `manifest.json` 的 `ui.rpc` 白名单（`plugin-call` 未声明即拒绝）。
@@ -145,7 +145,8 @@ Initialize：
 ### 4.3 引擎：查询与就绪门控
 
 - `EnsureReady` 单飞：内存无集合 → 盘上有则打开 → 回 `ready`/`indexing`/`error`/`not_initialized`；`ErrNotInitialized` 供 `readyGate` 结构化应答。`EnsureReady` 持 `recMu`（与 `Initialize`/`Incremental` 单飞）；**载入态读 `coll` 单原子指针（不取 `zmu`）**——已载入则免锁返回，避免与 `Initialize` 的整段长 `zmu` 临界区耦合而阻塞查询门（仅在未载入时用短 `zmu` 懒加载/校验落盘集合；`coll` 由 `zmu` 临界区内的 `setColl` 唯一写入，「是否已载入」= `coll.Load() != nil`（`isLoaded()`）——单原子写入消除「先改句柄再改标志」两段式瞬时误报）。
-- `Query`：多取文档块（`topK×5`，上限 500）→ 文件级去重 → 取前 `topK` 个文件；`path` 子串过滤；返回命中拼回绝对路径。
+- `Query`：多取文档块（`topK×5`，上限 500）→ 文件级去重 → 取前 `topK` 个文件；`path` 子串过滤；返回命中拼回绝对路径；`QueryPage` 另给出候选内唯一文件数（`matched`）与 `truncated`。
+- `QuerySessions`：`topK×20`（上限 1000）候选 → 本地 session_id/role 过滤 → **按相关度取 topK** → 再按 `ts` 升序展示；`QuerySessionsPage` 给出过滤后命中数（`matched`）、`truncated` 与服务端 filter 是否生效（`filterApplied`，false 时响应带 `session_filter_applied:false` + hint）。
 - 片段定位 `snippetOf`：块内首个含检索词的行 → 返回（截断 240 字符, 行偏移）。
 
 ### 4.4 引擎：文档转换接入（`server/docs.go`）

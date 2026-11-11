@@ -3,7 +3,7 @@
 > 状态：🗄 **已退场（2026-10-31，D-72）** —— `src/lib/mcp-tools` 整体删除（无出厂契约绑定）；
 > 本章保留**历史口径**与已迁出能力的索引，现行实现见各插件（`file` / `task` / `web` / `mcp`）。
 > 关联：[10-分层与依赖](../10-architecture/10-分层与依赖.md) · [25-mcp-server](25-mcp-server.md) · [28-plugins](28-plugins.md) · [14-安全域](../10-architecture/14-安全域-agentbox.md)
-> 代码目录：**已删除**（原 `src/lib/mcp-tools/` = `cmd/{filesys-exec,script-exec,web-exec}` + `internal/{cli,contracts,fetch,fileops,pluginadapter,scriptrun}`；**2026-11-04 核对**：文件数为 0，但上述**空目录树仍留在盘上**且未被 git 跟踪）。工具契约源（**有契约文件者**）= **`src/lib/llm/contracts/tools/`**（server 域）与各插件 **`chonkpilot-plugins/<plugin>/src/tools/<cat>/`**（**载体不一**：task 为 `//go:embed`，file 运行时 `contract.LoadDir` 磁盘读；web/codegraph 无契约文件、程序化注册）。
+> 代码目录：**已删除**（原 `src/lib/mcp-tools/` = `cmd/{filesys-exec,script-exec,web-exec}` + `internal/{cli,contracts,fetch,fileops,pluginadapter,scriptrun}`；**2026-11-04 核对**：文件数为 0，但上述**空目录树仍留在盘上**且未被 git 跟踪）。工具契约源（**有契约文件者**）= 各插件 **`chonkpilot-plugins/<plugin>/src/tools/<cat>/`**（**载体不一**：task 为 `//go:embed`，file 运行时 `contract.LoadDir` 磁盘读；web/codegraph 无契约文件、程序化注册）。
 
 ---
 
@@ -14,7 +14,7 @@
   - **`script_run` → `task_run`（2026-10-28 P2-3）**：多 runtime 脚本执行器整包迁出。**〔2026-11-04 核对〕实现位于同级仓 `chonkpilot-util/scriptrun/`**（`exec.go` + `exec_test.go`），**不是** `chonkpilot-plugins/task/src/lib/scriptrun`（该路径不存在）；task 插件引用该包。`chonkpilot-script-executor.exe` 不再产出；解释器配置归 task 插件（`plugins.task.interpreter-*`），主仓不再注入 `CHONKPILOT_INTERPRETERS`。见 [49 §2.21](../40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)。
   - **file 域 11 工具**（2026-10-25）随 `file` 插件迁出主仓 → 执行体 = 插件自带 MCP server，契约 = `chonkpilot-plugins/file/src/tools/file/*.tool.md`；
   - **browser / desktop** 为常驻插件（UDS，不接 gateway、不注册 MCP 工具）；
-  - **meta / server 域**（`meta_*` 3 + `ask_user` / `tool_result` / `next_run` / `subchat_open` / `subchat_finish` 5）由 `core-mcp-server` **进程内**执行，无独立 exe。**〔2026-11-04 核对〕** 该能力仍在 `cmd/core-mcp-server` + `runtime: builtin`；但**桌面单体已不拉起 core**（`src/lib/llm/server/boot.go:216`），domain 5 改由 llm server `tools/register` 进程内执行，meta 3 由 `mcp` 插件注册；core 仅用于独立 gateway / capability 目录节点。**`tool_stop` 已删除（2026-11-04，`task_stop` 为唯一停止入口）。**
+  - **meta / server 域**（`meta_*` 3 + `tool_result` 1）由 `core-mcp-server` **进程内**执行，无独立 exe。**〔2026-11-04 核对〕** 该能力仍在 `cmd/core-mcp-server` + `runtime: builtin`；但**桌面单体已不拉起 core**（`src/lib/llm/server/boot.go:216`），domain 工具改由 llm server `tools/register` 进程内执行，meta 3 由 `mcp` 插件注册；core 仅用于独立 gateway / capability 目录节点。**`tool_stop` 已删除（2026-11-04，`task_stop` 为唯一停止入口）。** **〔2026-11-08〕** `ask_user` / `next_run` / `subchat_open` / `subchat_finish` 已迁 `chonkpilot-plugins/task`（插件自持契约 + 宿主 `plugin/v1/*` 能力）；`tool_result` 删除（结果读取统一走 `task_status`），server 域契约收敛为 **0**。
   - `filesys_run` / `browser_run` / `desktop_run` / `dsl_run` 与 `chonkpilot-dsl-executor.exe` **已全部删除**（GATEWAY-2 L1 / PLUGIN-SPLIT-1）。
 - **做**：脚本执行（多 runtime）、HTTP 抓取；统一输出层（`Ok`/`Err` + 200KB 落文件）。
 - **不做（历史）**：**零主仓库依赖**（仅 `src/lib/paths`）；无 DB/NATS；**无路径白名单**（越界读写成败由沙箱承担，见 [14-安全域](../10-architecture/14-安全域-agentbox.md)）；零持久状态。**〔2026-11-04 核对〕** `agentbox` 已删除，现行写隔离 = `chonkpilot-util/sandbox`（gateway spawn stdio 下游时实施）与 `chonkpilot-util/scriptrun` 自带 Low IL/Job 约束。
@@ -39,16 +39,16 @@
 
 ### 3.1 工具清单（本层已无出厂工具，2026-11-04 核对）
 
-> **〔2026-10-31 现状；2026-11-04 核对〕** `script_run` 已迁为 task 插件 `task_run`（2026-10-28 P2-3）；`web_search` / `web_fetch` / `web_download` 随 `web` 插件迁出（2026-10-31）→ **本层无出厂工具契约**，**且 `src/lib/mcp-tools` 与 `chonkpilot-web-executor.exe` 已于 2026-10-31 整体删除**（D-72，见 [10-分层与依赖](../10-architecture/10-分层与依赖.md)）。**修正**：全新构建的 core 工具面**不是 0**——`build-mcp-server.ps1:116-122` 会把 `src/lib/llm/contracts/tools/` 的 **6 个 server 域契约**拷进 `capability/tools/server` 并由 core 暴露 6 个工具；「0 工具」只适用于**旧 mcp-tools 层**。file 域 11 工具随 `file` 插件（契约 `chonkpilot-plugins/file/src/tools/file/`，**运行时磁盘加载**）、task 4 随 `task` 插件（`src/tools/task/`，**go:embed**）、web 3 随 `web` 插件（**程序化注册，无 `.tool.md`**）、codegraph 8 / vfts 1 随各自插件（程序化注册）。
+> **〔2026-10-31 现状；2026-11-04 核对〕** `script_run` 已迁为 task 插件 `task_run`（2026-10-28 P2-3）；`web_search` / `web_fetch` / `web_download` 随 `web` 插件迁出（2026-10-31）→ **本层无出厂工具契约**，**且 `src/lib/mcp-tools` 与 `chonkpilot-web-executor.exe` 已于 2026-10-31 整体删除**（D-72，见 [10-分层与依赖](../10-architecture/10-分层与依赖.md)）。**〔2026-11-08〕** 全新构建的 core 工具面 = **0**（`build-mcp-server.ps1` / `build-desktop.ps1` 已停止投放 `capability/tools/server/` 并清理旧产物；`src/lib/llm/contracts/` 包删除）。file 域 11 工具随 `file` 插件（契约 `chonkpilot-plugins/file/src/tools/file/`，**运行时磁盘加载**）、task 4 随 `task` 插件（`src/tools/task/`，**go:embed**）、web 3 随 `web` 插件（**程序化注册，无 `.tool.md`**）、codegraph 8 / vfts 1 随各自插件（程序化注册）。
 
 | 分类 | 工具 | meta 要点 |
 |------|------|-----------|
 | core | （无出厂契约） | web 工具随 `web` 插件（web_search / web_fetch / web_download） |
 
 公共「基本信息」键：`args=<tool> --input={RAW-INPUT-FILE}`、`output=stdout`、`async=auto`、`async-threshold=30`。
-其余工具：server 域 6（契约 `src/lib/llm/contracts/tools/`，core 进程内执行）· **task 插件 4（`task_run` / `task_llm` / `task_status` / `task_stop`；契约 `chonkpilot-plugins/task/src/tools/task/`）** · **web 域 3（`web` 插件：web_search / web_fetch / web_download）** · file 域 11（`file` 插件）· meta 3（`mcp_find` / `mcp_load` / `mcp_invoke`，由 `mcp` 插件 MCP server 暴露）。契约同步规则见 [03-构建与部署](../00-overview/03-构建与部署.md) §7。
+其余工具：~~server 域 1~~ → **0**（2026-11-08 迁出/删除）· **task 插件 8（`task_run` / `task_llm` / `task_status` / `task_stop` / `ask_user` / `next_run` / `subchat_open` / `subchat_finish`；契约 `chonkpilot-plugins/task/src/tools/task/`）** · **web 域 3（`web` 插件：web_search / web_fetch / web_download）** · file 域 11（`file` 插件）· meta 3（`mcp_find` / `mcp_load` / `mcp_invoke`，由 `mcp` 插件 MCP server 暴露）。契约同步规则见 [03-构建与部署](../00-overview/03-构建与部署.md) §7。
 
-> **task 插件口径（2026-11-04）**：`task_llm` = **全能力委派子代理**（独立子会话/子轮次 + 全工具面，可多层；宿主能力 `plugin/v1/agent.delegate`），不再是「单次 LLM 调用」；`task_status` 支持 `task_id` 单任务查询 + `waitSec` + 运行中返回**已产出的部分输出**（与 `tool_result` 同口径）；`task_stop` 经数据面 `task.stop` → 层级联取消并关闭委派子轮次。
+> **task 插件口径（2026-11-04）**：`task_llm` = **全能力委派子代理**（独立子会话/子轮次 + 全工具面，可多层；宿主能力 `plugin/v1/agent.delegate`），不再是「单次 LLM 调用」；`task_status` 支持 `task_id` 单任务查询 + `waitSec` + 运行中返回**已产出的部分输出**（沿用原 `tool_result` 的读取口径；该工具已删除）；`task_stop` 经数据面 `task.stop` → 层级联取消并关闭委派子轮次。
 > **完成语义（2026-11-06）**：委派链**先子后父** —— 子轮次全部终态后才判定父轮次终态；`task_llm` 只有 `state=done` + `text` 表示完整结果，`incomplete` → `error/LLM_INCOMPLETE`（`partial` 非终态），`interrupted/cancelled` → `state=cancelled`；`running` 不返回正文，须经 `task_status` 取终态。
 
 ### 3.2 各工具能力

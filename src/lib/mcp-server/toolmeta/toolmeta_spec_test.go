@@ -84,7 +84,7 @@ func TestRunDomainAskUserOrderAndText(t *testing.T) {
 	args := map[string]any{"question": "继续吗？", "options": []any{"是", "否"}}
 	cx := Context{
 		InstanceID: "ins-1", Session: "s-1", Turn: "turn-1",
-		ToolCallID: "call-1", Purpose: "确认继续", WorkDir: `C:\w`,
+		ToolCallID: "call-1", DisplayName: "确认继续", WorkDir: `C:\w`,
 	}
 	res := Run(context.Background(), GroupDomain, "ask_user", args, cx, Bridge{Addr: "fake"})
 
@@ -106,7 +106,7 @@ func TestRunDomainAskUserOrderAndText(t *testing.T) {
 		"turn":         "turn-1",
 		"tool":         "ask_user",
 		"tool_call_id": "call-1",
-		"purpose":      "确认继续",
+		"display_name":      "确认继续",
 		"args":         args,
 	}
 	if !reflect.DeepEqual(start, wantStart) {
@@ -514,7 +514,7 @@ func TestRunMetaInvoke(t *testing.T) {
 		"session":      "s-1",
 		"turn":         "turn-1",
 		"tool_call_id": "call-1",
-		"purpose":      "",
+		"display_name":      "",
 		"request_id":   "meta-invoke-call-1",
 	}
 	if !reflect.DeepEqual(call, want) {

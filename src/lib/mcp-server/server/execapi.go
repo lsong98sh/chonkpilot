@@ -68,9 +68,9 @@ func LoadExecTools(root string, cfg *Config) ([]*ExecTool, error) {
 				// 调用上下文经 _meta 透传；全空 → 不带 _meta（与 memnode.callContextMeta 的
 				// 「无上下文字段 → nil」口径一致，避免 Present=true 但 instance 空触发 ErrNoInstance）。
 				var meta mcp.Meta
-				if cx.Present || cx.InstanceID != "" || cx.WorkDir != "" || cx.DataDir != "" || cx.Purpose != "" ||
+				if cx.Present || cx.InstanceID != "" || cx.WorkDir != "" || cx.DataDir != "" || cx.DisplayName != "" ||
 					cx.SessionID != "" || cx.TurnID != "" || cx.ToolCallID != "" || cx.TopSession != "" || cx.Parent != "" {
-					meta = CallContextMetaTree(cx.InstanceID, cx.WorkDir, cx.DataDir, cx.Purpose,
+					meta = CallContextMetaTree(cx.InstanceID, cx.WorkDir, cx.DataDir, cx.DisplayName,
 						cx.SessionID, cx.TurnID, cx.ToolCallID, cx.TopSession, cx.Parent)
 				}
 				req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{

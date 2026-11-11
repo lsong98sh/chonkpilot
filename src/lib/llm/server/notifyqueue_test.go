@@ -202,7 +202,7 @@ func TestNotifyCompletionBusyFlushesAtTurnEnd(t *testing.T) {
 	}
 }
 
-// TestNotifyCompletionSkippedWhenResultConsumed：tool_result 已取走结果 → 不再发通知。
+// TestNotifyCompletionSkippedWhenResultConsumed：结果已被读取（task_status → task.result）→ 不再发通知。
 func TestNotifyCompletionSkippedWhenResultConsumed(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
@@ -212,9 +212,9 @@ func TestNotifyCompletionSkippedWhenResultConsumed(t *testing.T) {
 	const sess, turn = "s-nc-used", "t-nc-used"
 	node := newNotifyNode(t, s, sess, turn, "script_run", "tc-nc-used")
 	s.tasks.done(node.TaskID, TaskStateDone, "result-body", "")
-	// 模拟 tool_result 成功取回（生产路径：runToolResult → markTaskResultConsumed）。
-	if text, isErr := s.runToolResult(nil, node, map[string]any{"id": node.TaskID, "timeout": 1}, context.Background()); isErr || text != "result-body" {
-		t.Fatalf("runToolResult: text=%q isErr=%v", text, isErr)
+	// 模拟结果被取走（生产路径：task_status → plugin/v1/task.result → taskResultDetail 登记 consumed）。
+	if text, state, found := s.taskResult(nil, node.TaskID); !found || state != "done" || text != "result-body" {
+		t.Fatalf("taskResult: text=%q state=%q found=%v", text, state, found)
 	}
 
 	notify := newToolNotifyRec(t, s.bus)

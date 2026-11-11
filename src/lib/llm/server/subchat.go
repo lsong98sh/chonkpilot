@@ -25,6 +25,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
@@ -57,6 +58,40 @@ func (s *Server) execSubChatTool(tc *turnCtx, tool string, args map[string]any, 
 	}
 }
 
+// validateSubChatRefs 校验子聊天固定参数的存在性（2026-11-10）：
+//   - llm：usr `llms` 已配置（非空）时，非 auto / 非内置 echo 的 provider 必须命中；
+//   - agent / participants：能力注册表（s.agents）非空时，按场景团队 + 全局注册表校验；
+//   - 注册表 / llms 为空（未注册能力、测试环境）→ 无法判定，保持既有宽松语义。
+//
+// 目的：固定参数写错时在**父轮次**就返回明确错误，而不是建出一个“人格/模型不对”的子聊天。
+func (s *Server) validateSubChatRefs(instanceID, scenarioID, mainAgent, llmRef string, parts []facade.GroupParticipant) error {
+	if cfg, err := s.loadUserConfig(instanceID); err == nil && len(asAnySlice(cfg["llms"])) > 0 {
+		name := resolveAutoLLMName(cfg, llmRef)
+		if name != "" && name != builtinFallbackName && providerFromLLMs(cfg, name) == nil {
+			return fmt.Errorf("llm %q 未配置（请选择设置中已配置的 LLM provider）", llmRef)
+		}
+	}
+	s.mu.Lock()
+	haveAgents := len(s.agents) > 0
+	s.mu.Unlock()
+	if !haveAgents {
+		return nil
+	}
+	_, _, agents := s.loadScenario(instanceID, scenarioID)
+	if len(agents) == 0 {
+		return fmt.Errorf("scenario_id %q 不存在或没有可用 agent", scenarioID)
+	}
+	if a, _ := s.resolveAgentDef(scenarioID, agents, mainAgent); a == nil {
+		return fmt.Errorf("agent %q 不在场景 %q 的团队成员中", mainAgent, scenarioID)
+	}
+	for i, p := range parts {
+		if a, _ := s.resolveAgentDef(scenarioID, agents, p.Agent); a == nil {
+			return fmt.Errorf("participants[%d] agent %q 不在场景 %q 的团队成员中", i+1, p.Agent, scenarioID)
+		}
+	}
+	return nil
+}
+
 // runSubChatOpen 实现 `subchat_open`（§3.4.1 / §2 / §10 Q2）。返回 {ok, session_id}（失败 →
 // {ok:false, error}，**必须明确回给 LLM**）。
 //
@@ -77,13 +112,26 @@ func (s *Server) runSubChatOpen(tc *turnCtx, args map[string]any, purpose string
 	case prompt == "":
 		return subchatToolErr("prompt 必填（交接内容，以用户口吻撰写）"), true
 	}
+	if n := len([]rune(prompt)); n > maxChatInputChars {
+		return subchatToolErr(fmt.Sprintf("prompt 超长（%d 字符，上限 %d）", n, maxChatInputChars)), true
+	}
 	if s.cfg == nil {
 		return subchatToolErr("数据门面不可用（无法建子聊天会话）"), true
 	}
 	// **群聊分支**（SUBCHAT-3 阶段 F · 群聊方案 §5 / D39）：参与者 ≥ 2 → 建 `kind=group_chat`
 	// 会话 + 写名册 + 目标/剧本/收敛条件 + 布置首条消息 → 起「依次认领」调度器。**1 个参与者
 	// （或省略 `participants`）= 单聊**，走下方既有路径（行为逐字节不变）。
-	if parts, ok := groupParticipantsArg(args); ok {
+	// 2026-11-08 P0：坏项/重复项不再静默丢弃并降级单聊 —— 明确返回参数错误。
+	parts, isGroup, perr := groupParticipantsArg(args)
+	if perr != "" {
+		return subchatToolErr(perr), true
+	}
+	// 固定参数存在性（2026-11-10）：能力注册表 / usr llms 可用时校验；为空（未注册 / 测试）
+	// 时保持既有宽松语义（无法判定 → 放行，由子首轮自行回落）。
+	if err := s.validateSubChatRefs(tc.req.InstanceID, scenarioID, agent, llmRef, parts); err != nil {
+		return subchatToolErr(err.Error()), true
+	}
+	if isGroup {
 		return s.runGroupChatOpen(tc, agent, scenarioID, llmRef, prompt, purpose, parts,
 			str(args["goal"]), str(args["playbook"]), str(args["convergence"]))
 	}
@@ -140,7 +188,7 @@ func (s *Server) runSubChatOpen(tc *turnCtx, args map[string]any, purpose string
 	go s.startSubChatFirstTurn(instanceID, sessionID, turnID)
 
 	// ⑤ 工具结果即终态（§3.4.3）：返回 {ok, session_id}，返回后不再改写。
-	return subchatToolOK(sessionID), false
+	return subchatToolOK(sessionID, "single"), false
 }
 
 // runSubChatFinish 实现 `subchat_finish`（§3.4.2）：把**本 turn 所属子聊天会话**的 lifecycle
@@ -150,6 +198,19 @@ func (s *Server) runSubChatFinish(tc *turnCtx) (string, bool) {
 	if sessionID == "" || s.cfg == nil {
 		return subchatToolErr("子聊天会话不可用"), true
 	}
+	// 2026-11-08 P0：会话类型守卫 —— 只有 `kind=sub_chat` 可自报完成；主会话 / sub_session /
+	// 群聊调用一律明确失败，避免把无关会话的 lifecycle 写成 ready（并广播 subchat-state）。
+	resp, err := s.cfg.SessionGet(facade.SessionGetRequest{
+		InstanceID: tc.req.InstanceID, SessionID: sessionID,
+		DialogID: s.dialogOf(tc.req.InstanceID, sessionID), Scope: s.cfgScope(tc.req.InstanceID),
+	})
+	if err != nil {
+		return subchatToolErr("读取会话失败: " + err.Error()), true
+	}
+	if resp.Found && resp.Session.Kind != facade.SessionKindSubChat {
+		return subchatToolErr("subchat_finish 仅可在子聊天（sub_chat）会话内调用；当前会话类型: " +
+			resp.Session.Kind), true
+	}
 	if _, err := s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: tc.req.InstanceID, SessionID: sessionID,
 		DialogID:  s.dialogOf(tc.req.InstanceID, sessionID),
@@ -158,7 +219,8 @@ func (s *Server) runSubChatFinish(tc *turnCtx) (string, bool) {
 		return subchatToolErr("置 ready 失败: " + err.Error()), true
 	}
 	s.emitSubchatState(tc.req.InstanceID, sessionID)
-	return `{"ok":true}`, false
+	b, _ := json.Marshal(map[string]any{"ok": true, "session_id": sessionID, "lifecycle": "ready"})
+	return string(b), false
 }
 
 // startSubChatFirstTurn 异步发起子聊天首轮（D30：主轮不挂起；复用 `runChildTurn` 同族路径 ——
@@ -384,8 +446,8 @@ func subchatUnfinished(lifecycle string) bool {
 
 // subchatToolOK / subchatToolErr 构造工具结果 JSON 文本（终态；`{ok, session_id}` /
 // `{ok:false, error}`）。
-func subchatToolOK(sessionID string) string {
-	b, _ := json.Marshal(map[string]any{"ok": true, "session_id": sessionID})
+func subchatToolOK(sessionID, mode string) string {
+	b, _ := json.Marshal(map[string]any{"ok": true, "session_id": sessionID, "mode": mode})
 	return string(b)
 }
 

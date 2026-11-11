@@ -1,4 +1,5 @@
-// ask 批次聚合（AskUser S4 · 要求 5）：同一会话的多个提问，全部回答后一次性投递。
+// ask 答复投递（AskUser S4 → 2026-11-10 调整）：同会话多问不再要求全部作答；
+// 每条答复到达即投递，未答问题不阻塞已答内容。
 package server
 
 import (
@@ -13,8 +14,9 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 )
 
-// TestAskBatchAllAnswersOnce：同会话两问 —— 第一条答复先收着，第二条到达才合并投递。
-func TestAskBatchAllAnswersOnce(t *testing.T) {
+// TestAskBatchDeliveryDoesNotWaitAll：同会话两问 —— 第一条答复立即投递，不等待第二条；
+// 第二条到达时再投递，批次清空。
+func TestAskBatchDeliveryDoesNotWaitAll(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
@@ -40,33 +42,31 @@ func TestAskBatchAllAnswersOnce(t *testing.T) {
 	}
 
 	text, ready := s.recordAskAnswer(take(a1), "A1")
-	if ready || text != "" {
-		t.Fatalf("首条答复应暂存不投递：ready=%v text=%q", ready, text)
+	if !ready || !strings.Contains(text, "A1") {
+		t.Fatalf("首条答复应立即投递（不等 Q2）：ready=%v text=%q", ready, text)
+	}
+	if strings.Contains(text, "Q2") {
+		t.Fatalf("首条投递不应包含未答问题：%q", text)
 	}
 	s.mu.Lock()
-	nBatch := len(s.askBatches)
+	nBatch, open := len(s.askBatches), 0
+	for _, b := range s.askBatches {
+		open += len(b.open)
+	}
 	s.mu.Unlock()
-	if nBatch != 1 {
-		t.Fatalf("应保留 1 个待齐批次：%d", nBatch)
+	if nBatch != 1 || open != 1 {
+		t.Fatalf("首条投递后应保留 Q2 未答批次：batches=%d open=%d", nBatch, open)
 	}
 
 	text, ready = s.recordAskAnswer(take(a2), "A2")
-	if !ready {
-		t.Fatal("最后一条答复应触发一次性投递")
-	}
-	for _, want := range []string{"Q1", "A1", "Q2", "A2"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("合并消息缺 %q：%q", want, text)
-		}
-	}
-	if strings.Index(text, "Q1") > strings.Index(text, "Q2") {
-		t.Fatalf("合并消息应按提问顺序：%q", text)
+	if !ready || !strings.Contains(text, "A2") {
+		t.Fatalf("第二条答复应立即投递：ready=%v text=%q", ready, text)
 	}
 	s.mu.Lock()
 	nBatch = len(s.askBatches)
 	s.mu.Unlock()
 	if nBatch != 0 {
-		t.Fatalf("投递后批次应删除：%d", nBatch)
+		t.Fatalf("全部投递后批次应删除：%d", nBatch)
 	}
 }
 
@@ -102,9 +102,9 @@ func TestAskBatchIsolatedPerSession(t *testing.T) {
 	}
 }
 
-// TestAskResolveBatchFlushesRealAnswers：同会话两问 —— Q1 已真实回答（暂存）、Q2 走「完成」。
-// 完成本身不进入答复集合；但批次已无未答项 → 把 Q1 的真实答复一次性投递。
-func TestAskResolveBatchFlushesRealAnswers(t *testing.T) {
+// TestAskResolveAfterAnsweredDoesNotRedeliver：同会话两问 —— Q1 已答（立即投递），Q2 走「完成」。
+// 「完成」不进入答复集合，也不得重复投递 Q1。
+func TestAskResolveAfterAnsweredDoesNotRedeliver(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
@@ -128,8 +128,8 @@ func TestAskResolveBatchFlushesRealAnswers(t *testing.T) {
 		}
 		return w
 	}
-	if text, ready := s.recordAskAnswer(take(a1), "A1"); ready || text != "" {
-		t.Fatalf("Q1 答复应暂存：ready=%v text=%q", ready, text)
+	if text, ready := s.recordAskAnswer(take(a1), "A1"); !ready || !strings.Contains(text, "A1") {
+		t.Fatalf("Q1 答复应立即投递：ready=%v text=%q", ready, text)
 	}
 
 	w2 := take(a2)
@@ -137,17 +137,38 @@ func TestAskResolveBatchFlushesRealAnswers(t *testing.T) {
 	text, ready := s.resolveAskBatchLocked(w2)
 	nBatch := len(s.askBatches)
 	s.mu.Unlock()
-	if !ready {
-		t.Fatal("最后一问走完成时应投递已暂存的真实答复")
-	}
-	if !strings.Contains(text, "A1") || !strings.Contains(text, "Q1") {
-		t.Fatalf("应投递 Q1 的真实答复：%q", text)
-	}
-	if strings.Contains(text, askChatResolvedResult) {
-		t.Fatalf("「完成」文案不应进入答复集合：%q", text)
+	if ready || text != "" {
+		t.Fatalf("Q1 已投递，「完成」不应重复投递：ready=%v text=%q", ready, text)
 	}
 	if nBatch != 0 {
 		t.Fatalf("批次应删除：%d", nBatch)
+	}
+}
+
+// TestPersistUndeliveredAskAnswer：投递失败兜底 —— 答复作为 user 消息落到原轮次，
+// 重载/历史可见（不重试、不新起轮）。
+func TestPersistUndeliveredAskAnswer(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	const session, turn = "s-fallback", "t-fallback"
+	startTurn(t, s, session, turn)
+	w := &askWaiter{
+		askID: "ask-fallback", instanceID: "ins-test", turnID: turn,
+		sessionID: session, toolID: "tc-fallback", question: "Q",
+	}
+	s.persistUndeliveredAskAnswer(w, "【用户回答】\n问：Q\n答：A")
+
+	msgs := newSessionStore(s.bus, "ins-test").LoadMessages(turn)
+	found := false
+	for _, m := range msgs {
+		if m.Role == "user" && strings.Contains(m.Content, "答：A") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("投递失败兜底应把答复写入原轮次：%+v", msgs)
 	}
 }
 
@@ -186,8 +207,8 @@ func askTimeoutLLM() *httptest.Server {
 
 // TestAskTimeoutAutoReplyFullChain 超时到点自动回复全链（AskUser §4.3 / §4.8；61 §4.2）：
 // `timeout=1` + `recommended:["B"]` → 到期后：
-//   - 原 ask_user tool-result 就地更新为 `B`（仍是一行，不再是占位文案）；
-//   - 自动答复作为**同批用户消息**投递，且只投递一次；
+//   - 原 ask_user tool-result 就地写「已超时」标记（答案正文只在后续用户消息里）；
+//   - 自动答复作为**用户消息**投递，且只投递一次；
 //   - 收到 `ask-center-remove{reason:"timeout"}`，且不重复；
 //   - asks / askBatches 全部结算清空。
 func TestAskTimeoutAutoReplyFullChain(t *testing.T) {
@@ -265,14 +286,17 @@ func TestAskTimeoutAutoReplyFullChain(t *testing.T) {
 		t.Fatalf("超时结算后 ask/批次应清空：asks=%d batches=%d", nAsks, nBatches)
 	}
 
-	// tool-result 就地更新为 B（同一行；不再是「等待回复」占位）。
+	// tool-result 就地写超时标记（同一行；不再是「等待回复」占位，也不复制答案正文）。
 	rows := toolRowsOf(t, turn)
 	if len(rows) != 1 {
 		t.Fatalf("ask 应恰一行 tool 记录：%d", len(rows))
 	}
 	content := persist.Sval(rows[0]["content"])
-	if !strings.Contains(content, `"content":"B"`) {
-		t.Fatalf("超时应把 tool-result 就地更新为推荐值 B：%s", content)
+	if !strings.Contains(content, askTimeoutHistoryResult) {
+		t.Fatalf("超时应把 tool-result 写为超时标记：%s", content)
+	}
+	if strings.Contains(content, `"content":"B"`) {
+		t.Fatalf("超时答案不应复制进 tool-result（避免历史双份）：%s", content)
 	}
 	if strings.Contains(content, "已向用户提问，正在等待回复") {
 		t.Fatalf("超时后 tool-result 不应保留占位文案：%s", content)

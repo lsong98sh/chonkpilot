@@ -126,13 +126,14 @@ export function createSessionMessages() {
         return
       }
       const callSimplified = data.simplified || (data.tool + '(...)')
-      const purpose = data.purpose || ''
+      const displayName = data.display_name || data.purpose || ''
       const msg = {
         role: 'assistant',
         type: 'tool_pair',
         tool_call_id: data.tool_call_id,
         tool: data.tool,
-        purpose: purpose,
+        display_name: displayName,
+        purpose: displayName, // 兼容旧字段（历史消息/旧事件）
         simplified: callSimplified,
         result_simplified: null,
         status: 'pending',
@@ -147,7 +148,7 @@ export function createSessionMessages() {
         createdAt: new Date().toISOString(),
         localOnly: true, // 本地流式新增（loadMessages 竞态保护用；DB 回填条目无此标记）
       }
-      msg.brief = computeBrief(msg.tool, msg.simplified, null, 'pending', purpose)
+      msg.brief = computeBrief(msg.tool, msg.simplified, null, 'pending', displayName)
       msg.content_size = computeContentSize(data.arguments, null)
       messages.value.push(msg)
       currentSection = null
@@ -214,7 +215,8 @@ export function createSessionMessages() {
         tool: p.tool,
         arguments: p.arguments || '',
         simplified: p.simplified,
-        purpose: p.purpose,
+        purpose: p.display_name || p.purpose,
+        display_name: p.display_name || p.purpose,
         notify: p.notify,
         notify_turn: p.notify_turn,
         _meta: p._meta, // 该工具自身的 meta 子集（I-60；server 随 tool-call 推送）

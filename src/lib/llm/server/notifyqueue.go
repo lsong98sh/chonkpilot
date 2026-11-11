@@ -4,7 +4,7 @@
 //	② 挂账/轮末冲刷：会话有运行轮次 → 先入队（不落库、不显示），轮末按完成顺序落库 + 广播；
 //	   会话 idle → 立即落库 + 广播；
 //	③ text-notify 续轮：idle 落库后起一个内部通知轮（llm-start + llm-send{type:text-notify}）；
-//	④ 结果已被 tool_result 取走 → 不发通知；通知轮内派生的任务完成 → 只落库/广播，不再级联。
+//	④ 结果已被结果读取（task_status）取走 → 不发通知；通知轮内派生的任务完成 → 只落库/广播，不再级联。
 //
 // 状态与锁：
 //   - 全部字段由 `notifyMu` 保护；需要在锁内读运行轮时按固定锁序 notifyMu → s.mu；
@@ -135,7 +135,7 @@ func (s *Server) markTaskNotifyOrigin(instanceID, taskID string) {
 	s.notifyMu.Unlock()
 }
 
-// markTaskResultConsumed 登记「任务结果已被取走」（§5.3 第 4 条；tool_result / 异步回执消费时调用）。
+// markTaskResultConsumed 登记「任务结果已被取走」（§5.3 第 4 条；task.result 读取成功时调用）。
 func (s *Server) markTaskResultConsumed(instanceID string, ids ...string) {
 	if instanceID == "" {
 		return
@@ -246,7 +246,7 @@ func (s *Server) flushNoticeQueue(instanceID, sessionID string, allowAuto bool) 
 }
 
 // noticeConsumed 判定该任务结果是否已被取走（§5.3 第 4 条）：
-//  1. 进程内 consumed 集合（runToolResult 成功取回 / handleAsyncDone 回填时登记）；
+//  1. 进程内 consumed 集合（task.result 读取成功 / handleAsyncDone 回填时登记）；
 //  2. message 表已有该 tool_call 的**终态结果行**（进程重启后集合丢失时的可靠兜底）。
 func (s *Server) noticeConsumed(n completionNotice) bool {
 	s.notifyMu.Lock()

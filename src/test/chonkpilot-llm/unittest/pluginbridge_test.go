@@ -87,8 +87,8 @@ func TestPluginBridgeEndToEnd(t *testing.T) {
 
 	// T7 原子能力：task.node.start / task.result / task.node.done
 	resNode, err := cli.Call(ctx, "plugin/v1/task.node.start", map[string]any{
-		"instance_id": "inst-pb", "turn": "t0", "tool": "tool_result",
-		"tool_call_id": "call-1", "args": map[string]any{"id": "x"},
+		"instance_id": "inst-pb", "turn": "t0", "tool": "task_run",
+		"tool_call_id": "call-1", "args": map[string]any{"prompt": "x"},
 	})
 	if err != nil || !resNode.OK {
 		t.Fatalf("task.node.start: %+v %v", resNode, err)

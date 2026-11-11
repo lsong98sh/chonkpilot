@@ -254,8 +254,89 @@ func waitAskPlaceholder(t *testing.T, turn string) {
 	t.Fatalf("ask 占位 tool-result 未落库：%v", toolRowsOf(t, turn))
 }
 
+// TestEngineTurnAskArgError：ask_user 参数错误（空 question）必须落 failed + 任务节点 error，
+// 不能因为「ask 占位跳过落库/done」而永久停在 running（MCP isError 路径）。
+func TestEngineTurnAskArgError(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	const session, turn = "s-et-askerr", "t-et-askerr"
+	rec := runEngineTurnCase(t, s, session, turn,
+		func(session, turn string, _ *eventLog) { engineTextTurn(s, session, turn, "ask error please") })
+
+	if len(rec.toolRows) != 1 || rec.toolRows[0] != "tc-askerr|failed" {
+		t.Fatalf("参数错误应恰一行且终态 failed：%v", rec.toolRows)
+	}
+	if len(rec.tasks) != 2 ||
+		rec.tasks[0] != "done|ask_user|error" || rec.tasks[1] != "started|ask_user|ask_user" {
+		t.Fatalf("参数错误任务树事件不符：%v", rec.tasks)
+	}
+	s.mu.Lock()
+	nAsks := len(s.asks)
+	s.mu.Unlock()
+	if nAsks != 0 {
+		t.Fatalf("参数错误不应登记 ask：asks=%d", nAsks)
+	}
+	if !strings.Contains(rec.complete, "status=complete") {
+		t.Fatalf("参数错误后本轮应继续收尾：%s", rec.complete)
+	}
+}
+
+// TestEngineTurnAskTaskStop：task_stop 命中 ask_user 任务节点 → 撤销提问（LLM 是 task_stop 的
+// 调用方）：tool 行 cancelled + 任务节点 cancelled + 摘除 ask/批次，且不向 LLM 投递答复消息。
+func TestEngineTurnAskTaskStop(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	const session, turn = "s-et-askstop", "t-et-askstop"
+	drive := func(session, turn string, log *eventLog) {
+		engineTextTurn(s, session, turn, "ask please")
+		engineWaitEvent(t, log, "ask-user", func(ev map[string]any) bool {
+			return str(ev["ask_id"]) != ""
+		})
+		waitAskPlaceholder(t, turn)
+		node := s.tasks.findByToolCall("ins-test", "tc-ask")
+		if node == nil {
+			t.Fatalf("未找到 ask 任务节点")
+		}
+		v := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
+			"instance_id": "ins-test", "task_id": node.TaskID,
+		})).Wait()
+		if err := v.Err(); err != nil {
+			t.Fatalf("task-stop(ask): %v", err)
+		}
+	}
+	rec := runEngineTurnCase(t, s, session, turn, drive)
+
+	if len(rec.toolRows) != 1 || rec.toolRows[0] != "tc-ask|cancelled" {
+		t.Fatalf("task-stop 后 ask tool 行应为 cancelled：%v", rec.toolRows)
+	}
+	if len(rec.tasks) != 2 ||
+		rec.tasks[0] != "done|ask_user|cancelled" || rec.tasks[1] != "started|ask_user|ask_user" {
+		t.Fatalf("task-stop 后 ask 任务树事件不符：%v", rec.tasks)
+	}
+	s.mu.Lock()
+	nAsks, nBatches := len(s.asks), len(s.askBatches)
+	s.mu.Unlock()
+	if nAsks != 0 || nBatches != 0 {
+		t.Fatalf("task-stop 应摘除 ask 与批次：asks=%d batches=%d", nAsks, nBatches)
+	}
+	if strings.Contains(strings.Join(rec.msgs, "\n"), "【用户回答】") {
+		t.Fatalf("task-stop 不应投递答复消息：%v", rec.msgs)
+	}
+	rows := toolRowsOf(t, turn)
+	if len(rows) != 1 || !strings.Contains(persist.Sval(rows[0]["content"]), askTaskStoppedResult) {
+		t.Fatalf("tool 行应改写为提问终止文案：%v", rows)
+	}
+	if persist.Sval(rows[0]["ask_id"]) == "" {
+		t.Fatalf("tool 行应保留 ask_id：%v", rows[0])
+	}
+}
+
 // TestEngineTurnAsk：ask 轮（AskUser S4：ask_user 立即返回占位结果，本轮不阻塞；
-// 答复在轮后作为用户消息投递；任务节点在答复到达时 done；tool-result 就地更新为答案）。
+// 答复在轮后作为用户消息投递；任务节点在答复到达时 done；tool-result 只写“已回复”标记）。
 func TestEngineTurnAsk(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
@@ -281,14 +362,14 @@ func TestEngineTurnAsk(t *testing.T) {
 	if len(rec.tasks) != 2 || rec.tasks[0] != "done|ask_user|done" || rec.tasks[1] != "started|ask_user|ask_user" {
 		t.Fatalf("ask 任务树事件不符：%v", rec.tasks)
 	}
-	// 直接回答后：同一行就地更新为答案（历史/重载可见），ask_id 保留。
+	// 直接回答后：同一行写“已回复”标记（答案只在后续用户消息里，避免历史重复），ask_id 保留。
 	rows := toolRowsOf(t, turn)
 	if len(rows) != 1 {
 		t.Fatalf("ask 应恰一行 tool 记录：%d", len(rows))
 	}
 	content := persist.Sval(rows[0]["content"])
-	if !strings.Contains(content, `"content":"y"`) || strings.Contains(content, askAsyncHandoffResult) {
-		t.Fatalf("直接回答应把 tool-result 更新为答案：%s", content)
+	if !strings.Contains(content, askAnsweredHistoryResult) || strings.Contains(content, `"content":"y"`) {
+		t.Fatalf("工具行应写已回复标记、不写答案正文：%s", content)
 	}
 	if persist.Sval(rows[0]["ask_id"]) == "" {
 		t.Fatalf("tool 行应保留 ask_id：%v", rows[0])

@@ -43,8 +43,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 )
 
 const (
@@ -54,7 +54,7 @@ const (
 	headerCall     = "X-Chonk-Call-Id"
 	headerWorkDir  = "X-Chonk-Work-Dir"
 	headerDataDir  = "X-Chonk-Data-Dir"
-	headerPurpose  = "X-Chonk-Purpose"
+	headerPurpose  = "X-Chonk-DisplayName"
 	headerScope    = "X-Chonk-Scope"
 	headerDeadline = "X-Chonk-Deadline-Ms"
 	headerNoLimit  = "X-Chonk-No-Timeout"
@@ -73,13 +73,13 @@ type internalExecReq struct {
 	// Context 与协议 _meta.chonkpilot 同字段名（instance/session/turn/tool_call_id/
 	// work_dir/data_dir/purpose），便于两条链路共用解析口径。
 	Context struct {
-		InstanceID string `json:"instance_id"`
-		Session    string `json:"session"`
-		Turn       string `json:"turn"`
-		ToolCallID string `json:"tool_call_id"`
-		WorkDir    string `json:"work_dir"`
-		DataDir    string `json:"data_dir"`
-		Purpose    string `json:"purpose"`
+		InstanceID  string `json:"instance_id"`
+		Session     string `json:"session"`
+		Turn        string `json:"turn"`
+		ToolCallID  string `json:"tool_call_id"`
+		WorkDir     string `json:"work_dir"`
+		DataDir     string `json:"data_dir"`
+		DisplayName string `json:"display_name"`
 	} `json:"context"`
 	DeadlineMS int64 `json:"deadline_ms"`
 	NoTimeout  bool  `json:"no_timeout"`
@@ -241,15 +241,15 @@ func main() {
 			return
 		}
 		cx := mcpms.CallContext{
-			InstanceID: req.Context.InstanceID,
-			SessionID:  req.Context.Session,
-			TurnID:     req.Context.Turn,
-			ToolCallID: req.Context.ToolCallID,
-			WorkDir:    req.Context.WorkDir,
-			DataDir:    req.Context.DataDir,
-			Purpose:    req.Context.Purpose,
+			InstanceID:  req.Context.InstanceID,
+			SessionID:   req.Context.Session,
+			TurnID:      req.Context.Turn,
+			ToolCallID:  req.Context.ToolCallID,
+			WorkDir:     req.Context.WorkDir,
+			DataDir:     req.Context.DataDir,
+			DisplayName: req.Context.DisplayName,
 			Present: req.Context.InstanceID != "" || req.Context.WorkDir != "" ||
-				req.Context.DataDir != "" || req.Context.Purpose != "" ||
+				req.Context.DataDir != "" || req.Context.DisplayName != "" ||
 				req.Context.Session != "" || req.Context.Turn != "" || req.Context.ToolCallID != "",
 		}
 		if err := mcpms.ValidateCallContext(cx); err != nil {
@@ -359,16 +359,16 @@ func withAuth(token string, next http.Handler) http.Handler {
 func withHeaders(next http.Handler, workDir, dataDir string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := mcpms.HTTPCallContext{
-			InstanceID: r.Header.Get(headerInstance),
-			SessionID:  r.Header.Get(headerSession),
-			TurnID:     r.Header.Get(headerTurn),
-			CallID:     r.Header.Get(headerCall),
-			WorkDir:    firstNonEmpty(r.Header.Get(headerWorkDir), workDir),
-			DataDir:    firstNonEmpty(r.Header.Get(headerDataDir), dataDir),
-			Purpose:    r.Header.Get(headerPurpose),
-			Scope:      r.Header.Get(headerScope),
-			DeadlineMS: mcpms.DeadlineFromHeader(r.Header.Get(headerDeadline)),
-			NoTimeout:  headerTruthy(r.Header.Get(headerNoLimit)),
+			InstanceID:  r.Header.Get(headerInstance),
+			SessionID:   r.Header.Get(headerSession),
+			TurnID:      r.Header.Get(headerTurn),
+			CallID:      r.Header.Get(headerCall),
+			WorkDir:     firstNonEmpty(r.Header.Get(headerWorkDir), workDir),
+			DataDir:     firstNonEmpty(r.Header.Get(headerDataDir), dataDir),
+			DisplayName: r.Header.Get(headerPurpose),
+			Scope:       r.Header.Get(headerScope),
+			DeadlineMS:  mcpms.DeadlineFromHeader(r.Header.Get(headerDeadline)),
+			NoTimeout:   headerTruthy(r.Header.Get(headerNoLimit)),
 		}
 		next.ServeHTTP(w, r.WithContext(mcpms.WithHTTPCallContext(r.Context(), h)))
 	})

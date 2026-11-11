@@ -54,9 +54,11 @@ func toolResultText(t *testing.T, s *Server, session, toolCallID string) string 
 
 // TestToolWhitelistHardReject（③）：白名单外工具在**调用处**被拒（不落 gateway、不建任务节点）；
 // 白名单内放行；`[]` 与主 agent（未配 tools）= 不限制。
+//
+// 2026-11-08：`tool_result` 已删除，探针改用已迁 task 插件的 `subchat_open`（缺必填参数 →
+// 固定失败文本「agent 必填」，无副作用；白名单拒 → 文本含「白名单」）。
 func TestToolWhitelistHardReject(t *testing.T) {
-	// mock LLM：首回合发 `tool_result` 工具调用（预建节点 id；P0a 起暴露名 = 原名）；拿到 tool 结果后收尾。
-	var preNodeID string
+	// mock LLM：首回合发 `subchat_open` 工具调用；拿到 tool 结果后收尾。
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Messages []ChatMsg `json:"messages"`
@@ -69,12 +71,12 @@ func TestToolWhitelistHardReject(t *testing.T) {
 			}
 		}
 		if !hasToolResult {
-			args := jb(map[string]any{"id": preNodeID, "timeout": 0})
+			args := jb(map[string]any{})
 			llmSSE(w, []string{
 				sseChunk(map[string]any{"content": ""}, ""),
 				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "tc-wl", "type": "function",
-					"function": map[string]any{"name": "tool_result", "arguments": string(args)},
+					"function": map[string]any{"name": "subchat_open", "arguments": string(args)},
 				}}}, "tool_calls"),
 			})
 			return
@@ -88,23 +90,13 @@ func TestToolWhitelistHardReject(t *testing.T) {
 
 	s := newTestServerMCP(t, llm)
 	registerTestInstance(t, s)
-	// 预建已终态任务节点：白名单放行时 tool_result 取回其摘要（= 「真正执行」的可观测证据）。
-	pre, err := s.tasks.start(&TaskNode{
-		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-wl", TurnID: "t-wl",
-		InstanceID: "ins-test", TopSession: "s-wl", Name: "pre", Purpose: "p",
-	})
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	preNodeID = pre.TaskID
-	s.tasks.done(pre.TaskID, TaskStateDone, "白名单放行结果", "")
 
 	agSaveScenario(t, s, "ag-wl", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
 		// 白名单两种写法都认（P0a 2026-10-29：暴露名 = 原名；历史 `self_<原名>` 存量配置兼容）：
 		// sub-deny 用历史写法（本工具不在白名单 → 拒绝），sub-allow 亦用历史写法（放行 = 兼容生效）。
 		agSubAgent("sub-deny", "子", map[string]any{"tools": []string{"self_next_run"}}),
-		agSubAgent("sub-allow", "子", map[string]any{"tools": []string{"self_tool_result"}}),
+		agSubAgent("sub-allow", "子", map[string]any{"tools": []string{"self_subchat_open"}}),
 		agSubAgent("sub-free", "子", map[string]any{"tools": []string{}}), // `[]` = 不限制
 	})
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-wl", Turn: "t-wl", ScenarioID: "ag-wl"}
@@ -118,22 +110,22 @@ func TestToolWhitelistHardReject(t *testing.T) {
 	if got := toolResultText(t, s, "s-wl-deny", "tc-wl"); !strings.Contains(got, "白名单") {
 		t.Fatalf("白名单外调用应被拒（结果 = %q）", got)
 	}
-	if got := toolResultText(t, s, "s-wl-deny", "tc-wl"); strings.Contains(got, "白名单放行结果") {
+	if got := toolResultText(t, s, "s-wl-deny", "tc-wl"); strings.Contains(got, "agent 必填") {
 		t.Fatalf("白名单外工具被真正执行：%q", got)
 	}
 	if n := s.tasks.findByToolCall("ins-test", "tc-wl"); n != nil {
 		t.Fatalf("白名单外调用不应建任务节点（未执行），实得 %+v", n)
 	}
 
-	// ② 白名单内 → 放行执行（取回预建节点摘要）
+	// ② 白名单内 → 放行执行（缺必填参数 → 固定失败文本，证明已进入工具本体）
 	agRunChild(t, s, parentReq, "s-wl-allow", "do", "sub-allow")
-	if got := toolResultText(t, s, "s-wl-allow", "tc-wl"); !strings.Contains(got, "白名单放行结果") {
+	if got := toolResultText(t, s, "s-wl-allow", "tc-wl"); !strings.Contains(got, "agent 必填") {
 		t.Fatalf("白名单内工具应放行执行（结果 = %q）", got)
 	}
 
 	// ③ `[]` = 不限制
 	agRunChild(t, s, parentReq, "s-wl-free", "do", "sub-free")
-	if got := toolResultText(t, s, "s-wl-free", "tc-wl"); !strings.Contains(got, "白名单放行结果") {
+	if got := toolResultText(t, s, "s-wl-free", "tc-wl"); !strings.Contains(got, "agent 必填") {
 		t.Fatalf("空白名单应不限制（结果 = %q）", got)
 	}
 
@@ -143,7 +135,7 @@ func TestToolWhitelistHardReject(t *testing.T) {
 	})
 	agStartTurn(t, s, "s-wl-main", "t-wl-main", "", "ag-wl-main")
 	sendAndWait(t, s, "s-wl-main", "t-wl-main", "do")
-	if got := toolResultText(t, s, "s-wl-main", "tc-wl"); !strings.Contains(got, "白名单放行结果") {
+	if got := toolResultText(t, s, "s-wl-main", "tc-wl"); !strings.Contains(got, "agent 必填") {
 		t.Fatalf("主 agent（无白名单）应放行（结果 = %q）", got)
 	}
 }
@@ -164,7 +156,7 @@ func TestToolWhitelistIncludesNonHotTool(t *testing.T) {
 	// 注册**非 hot** 工具（hot 缺省 false）→ gateway self 节点暴露名 = 原名（P0a 2026-10-29）
 	if _, err := s.emitGateway(context.Background(), "tools/register", map[string]any{
 		"name": "probe_nonhot", "description": "非 hot 探针工具",
-		"handler_subject": SubjectDomainToolCall, "owner": "server",
+		"handler_subject": movedDomainTestSubject, "owner": "server",
 	}); err != nil {
 		t.Fatalf("tools/register(非 hot): %v", err)
 	}
@@ -214,7 +206,7 @@ func TestToolWhitelistLevelMatrix(t *testing.T) {
 
 	// app 级：注册 self（系统）域工具 → 暴露名 = 原名（P0a 2026-10-29）
 	if _, err := s.emitGateway(context.Background(), "tools/register", map[string]any{
-		"name": "lv_app", "description": "app 级探针", "handler_subject": SubjectDomainToolCall, "owner": "server",
+		"name": "lv_app", "description": "app 级探针", "handler_subject": movedDomainTestSubject, "owner": "server",
 	}); err != nil {
 		t.Fatalf("tools/register(lv_app): %v", err)
 	}

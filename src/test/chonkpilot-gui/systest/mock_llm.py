@@ -9,7 +9,7 @@
       has_tool_result/n_requests）· GET /lastbody（请求体多模态摘要）。
 行为：把最后一个 user 消息回显为回复；根据文本关键词返回 tool_calls 以驱动
       testplan 相关场景（工具调用 / cancel）：
-        "call tool"   → file_read（{purpose, targets:[{path}]}；工具调用链路，testplan 五.3）
+        "call tool"   → file_read（{targets:[{path}], tool_call_display_name}；工具调用链路，testplan 五.3）
         "call retry-twice"   → 前两次 429（Retry-After: 2）→ 第三次正常回复（RETRY-1 重试后成功）
         "call retry-exhaust" → 每次 500（RETRY-1 重试耗尽 → 终态错误）
         "call cancel" → task_run 长命令（Start-Sleep；testplan 五.8）
@@ -412,7 +412,7 @@ def route_tool_calls(text):
     # 路由移除，run_paths.py 的 B 组改为「明示不可覆盖」，见 41 D-67。
     # ── 文件历史检查点链（run_hist_git.py；2026-09-27 批次③语义）──
     # ① 真实改文件（口径变更：`filesys_run` + RPL DSL 已删除 → 改用文件插件 `file_replace`
-    #    `{purpose, targets:[{path, find, replace}]}`，`histfrom=旧` → `histval=新`，
+    #    `{targets:[{path, find, replace}], tool_call_display_name}`，`histfrom=旧` → `histval=新`，
     #    `histabs=<绝对路径>`）→ 触发 filesys.changed → 插件置脏 → 前置钩子 / 轮末补点打点。
     # ② history_restore 单文件回滚：`histrel=<workdir 相对路径>` + 可选 `histto=<负整数|commit id>`。
     # ③ 空 path → 拒绝；④ 目录 path（`histrel=<相对目录>`）→ 拒绝（单文件、禁止批量）。
@@ -443,8 +443,7 @@ def route_tool_calls(text):
         frm = _prompt_arg(text, "histfrom")
         to = _prompt_arg(text, "histval")
         # 口径变更（2026-10-23）：file 域工具由 file 插件提供、暴露名**无 self_ 前缀**。
-        return [("file_replace", {"purpose": "历史打点（真实改文件）",
-                                  "targets": [{"path": p, "find": frm, "replace": to}],
+        return [("file_replace", {"targets": [{"path": p, "find": frm, "replace": to}],
                                   "tool_call_display_name": "历史打点"})]
     if "call hist-restore-nopath" in t:
         return [("history_restore", {"tool_call_display_name": "历史回滚"})]
@@ -460,13 +459,14 @@ def route_tool_calls(text):
     # 普通工具场景
     # R-11：文件操作参数须为绝对路径或以 ~/ 开头（相对路径会被执行器拒绝），
     # 故用 ws 绝对路径（与 run_llm.py 期望的 "hello from a.txt" 对应）。
-    # 口径变更（GATEWAY-2 L2）：文件域已拆为 11 个独立工具，统一参数 `{purpose, targets[]}`
-    # （单文件也写成 1 元素数组）→ 直接调 `file_read`（file 插件工具，无 `self_` 前缀），
+    # 口径变更（GATEWAY-2 L2 / 2026-11-08）：文件域已拆为 11 个独立工具，统一参数 `{targets[]}`
+    # （单文件也写成 1 元素数组）；调用展示名由 gateway 注入的 `tool_call_display_name` 承担
+    # （契约已移除 `purpose`）→ 直接调 `file_read`（file 插件工具，无 `self_` 前缀），
     # 读取结果（含 content）随工具结果回填，供 mock 回显断言。
     if "call tool" in t and "without" not in t:
         a_abs = os.path.join(SCRIPTS_WS, "a.txt").replace("\\", "/")
-        return [("file_read", {"purpose": "读取 a.txt（工具调用链路）",
-                               "targets": [{"path": a_abs}]})]
+        return [("file_read", {"targets": [{"path": a_abs}],
+                               "tool_call_display_name": "读取 a.txt（工具调用链路）"})]
     if "call async-cmd" in t:
         # C13/C18：子会话命令转后台（_async=true）→ 长运行，使 batch 根任务保持运行中
         #（验证 task-stop 级联 / 任务树实时状态；task_run = 产品命令执行工具）

@@ -17,7 +17,7 @@ title: core-tools-overview
 
 | 工具 | 用途 | 何时用 |
 |---|---|---|
-| file_read / file_write | 读取 / 写入文件 | 单文件或批量；统一 `{purpose, targets[]}`，支持区间读取、BOM 与编码控制 |
+| file_read / file_write | 读取 / 写入文件 | 单文件或批量；统一 `{targets[]}`，支持区间读取、BOM 与编码控制 |
 | file_replace / file_patch | 精确文本替换 / 应用 unified diff | 改代码、打补丁；可带 `expectMd5` 防并发覆盖 |
 | file_diff | 比较两个文件 | 确认改动、生成补丁 |
 | file_delete / file_move / file_copy | 删除 / 移动改名 / 复制 | 批量整理文件（删目录须显式 `recursive`） |
@@ -28,4 +28,4 @@ title: core-tools-overview
 
 > **浏览器 / 桌面自动化不再是工具**：在 `task_run`（python 等）里经 UDS 直连常驻插件 ——
 > `%LOCALAPPDATA%\chonkpilot\plugins\browser.sock` / `desktop.sock`，端点 `start` / `stop` / `operation`（一行一 JSON）。
-> 文件域工具**全部支持批量**：`{purpose, targets[]}`，单文件也写成 1 个元素的数组。
+> 文件域工具**全部支持批量**：`{targets[]}`，单文件也写成 1 个元素的数组。

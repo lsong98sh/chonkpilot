@@ -49,10 +49,10 @@ func assertKeys(t *testing.T, name string, got, want []string) {
 func TestContractJSONContextKeys(t *testing.T) {
 	ctx := mcpgateway.Context{
 		WorkDir: "w", DataDir: "d", Session: "s", Turn: "t", InstanceID: "i",
-		ToolCallID: "c", TopSession: "ts", Parent: "p", Purpose: "pu",
+		ToolCallID: "c", TopSession: "ts", Parent: "p", DisplayName: "pu",
 	}
 	assertKeys(t, "gateway.Context", jsonKeys(t, ctx), []string{
-		"data_dir", "instance_id", "parent", "purpose", "session",
+		"data_dir", "display_name", "instance_id", "parent", "session",
 		"tool_call_id", "top_session", "turn", "work_dir",
 	})
 }

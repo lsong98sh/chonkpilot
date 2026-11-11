@@ -216,11 +216,12 @@ def case_tool_call():
     sid = new_sid()
     activate(sid)
     send_turn(sid, "工具测试")
-    # 口径变更（2026-10-22）：`filesys_run` + READ DSL 已删除 → 用现行文件域工具 `file_read`
-    # 的暴露名/参数形状（`{purpose, targets:[{path}]}`）作为 tool-call 事件载荷。
+    # 口径变更（2026-11-08）：`filesys_run` + READ DSL 已删除 → 用现行文件域工具 `file_read`
+    # 的暴露名/参数形状（`{targets:[{path}], tool_call_display_name}`）作为 tool-call 事件载荷；
+    # `purpose` 是 server 下发的事件字段（= 注入的展示名），与历史 `brief` 同源。
     llm(sid, "tool-call", {"tool_call_id": "tc-e2e-1", "tool": "file_read",
-                           "arguments": "{\"purpose\":\"读取\",\"targets\":[{\"path\":\"C:/work/proj/a.txt\"}]}",
-                           "simplified": "file_read"})
+                           "arguments": "{\"targets\":[{\"path\":\"C:/work/proj/a.txt\"}],\"tool_call_display_name\":\"读取\"}",
+                           "simplified": "file_read", "purpose": "读取"})
     # handleToken 把 tool-call 渲染为 tool_pair 消息
     if not wait_el(".toolpair-section"):
         raise TestError("工具调用记录未渲染")

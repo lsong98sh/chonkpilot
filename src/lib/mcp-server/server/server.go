@@ -34,11 +34,11 @@ type CallContext struct {
 	InstanceID string
 	WorkDir    string
 	DataDir    string
-	// Purpose 是本次调用的运行目的（C1 2026-10-15）：= gateway 展示名参数 tool_call_display_name，
-	// 由 doCall 剥离前取出、随调用上下文透传 → spawn executor 时落 CHONKPILOT_PURPOSE。
-	Purpose string
+	// DisplayName 是本次调用的展示名（= gateway 注入的 tool_call_display_name，gateway 剥离前取出、
+	// 随调用上下文透传）。旧 purpose 已作废；spawn executor 时落 CHONKPILOT_DISPLAY_NAME。
+	DisplayName string
 	// 会话/轮次/调用 id（2026-10-19，core-mcp-server 域工具 executor）：meta/domain 控制面
-	// 执行器经 plugin/v1/* 恢复 turn（ask_user / tool_result / subchat_*）。落 CHONKPILOT_*。
+	// 执行器经 plugin/v1/* 恢复 turn（ask_user / subchat_* 等）。落 CHONKPILOT_*。
 	SessionID  string
 	TurnID     string
 	ToolCallID string
@@ -62,7 +62,10 @@ func callContextFromMeta(meta mcp.Meta) CallContext {
 	cx.InstanceID, _ = raw["instance_id"].(string)
 	cx.WorkDir, _ = raw["work_dir"].(string)
 	cx.DataDir, _ = raw["data_dir"].(string)
-	cx.Purpose, _ = raw["purpose"].(string)
+	cx.DisplayName, _ = raw["display_name"].(string)
+	if cx.DisplayName == "" { // 兼容旧调用：仍接受 purpose 键
+		cx.DisplayName, _ = raw["purpose"].(string)
+	}
 	cx.SessionID, _ = raw["session"].(string)
 	cx.TurnID, _ = raw["turn"].(string)
 	cx.ToolCallID, _ = raw["tool_call_id"].(string)
@@ -95,7 +98,7 @@ func CallContextMetaFull(instanceID, workDir, dataDir, purpose, session, turn, t
 		"data_dir":    dataDir,
 	}
 	if purpose != "" {
-		ns["purpose"] = purpose
+		ns["display_name"] = purpose
 	}
 	if session != "" {
 		ns["session"] = session

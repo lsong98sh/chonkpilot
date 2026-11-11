@@ -158,9 +158,9 @@ func (s *Server) assetGuide(instanceID string) string {
 		return "" // 知识库未启用 / 无资产 → 不注入（避免误导）
 	}
 	var b strings.Builder
-	b.WriteString("【知识库资产】本实例已接入知识库（用户级/项目级能力原语），可检索的资产含工具（tool）、技能（skill）、资源（resource）：\n")
-	b.WriteString("- 检索：工具 mcp_find（type=tool|skill|resource|all；可给 query 关键词或 purpose 任务目标）。\n")
-	b.WriteString("- 取内容：工具 mcp_load（name=资产名，kind=资产类型；内容实时读取）。\n")
+	b.WriteString("【知识库资产】本实例已接入知识库（用户级/项目级能力原语），可检索的资产含工具（tool）、技能（skill）、提示（prompt）、资源（resource）：\n")
+	b.WriteString("- 检索：工具 mcp_find（type=tool|skill|prompt|resource|all；可给 query 关键词或 match 匹配意图）。\n")
+	b.WriteString("- 取内容：工具 mcp_load（name=资产名，名称精确匹配；内容实时读取）。\n")
 	b.WriteString("与【记忆库】的区别：记忆 = 本机沉淀的工作/对话记录（用文件工具按绝对路径读文件）；资产 = 知识库原语（用 mcp_find 检索、mcp_load 读取内容）。")
 	return s.replaceToolchain(instanceID, b.String())
 }

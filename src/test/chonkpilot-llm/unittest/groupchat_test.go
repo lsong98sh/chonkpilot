@@ -202,7 +202,8 @@ func TestGroupChatEndToEndBlackBox(t *testing.T) {
 	defer llm.Close()
 
 	bus := newBus(t)
-	startLLM(t, bus, llm.URL, false) // DisableMCP=false：真实内嵌 gateway + 域工具注册
+	srv := startLLM(t, bus, llm.URL, false) // DisableMCP=false：真实内嵌 gateway + 域工具注册
+	startMovedDomainPlugin(t, bus, srv)     // ask_user/next_run/subchat_* 已迁 task 插件：测试适配
 	registerInstance(t, bus, "ins-bb")
 	time.Sleep(500 * time.Millisecond) // 实例注册 / 域工具注册异步生效
 

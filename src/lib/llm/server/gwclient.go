@@ -28,7 +28,7 @@ type ToolDef struct {
 	// 下游下发链（ToolCatalog → Step → router.ToolDef）直接用本字段，避免每 step 的
 	// 「map → JSON → map → JSON」往返；空 = 未预序列化（按 Parameters 现算）。
 	ParamJSON []byte `json:"-"`
-	// 域工具契约 [meta]（loadDomainTools 填充；registerDomainTools 经 tools/register 透出为 gateway `_meta`）
+	// 工具契约 [meta]（gateway `tools/list` 透出：category / async-threshold / timeout；核心已无域工具契约）
 	Category   string `json:"-"` // 契约 meta.category（如 server）
 	AsyncTh    int    `json:"-"` // 契约 meta.async-threshold（秒；0 = 未声明）
 	Timeout    int    `json:"-"` // 契约 meta.timeout（秒；0 = 未声明）

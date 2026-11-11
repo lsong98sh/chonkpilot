@@ -286,12 +286,12 @@ foreach ($dst in @((Join-Path $capDst "tools\file"), (Join-Path $root "src\lib\m
 # 未发布草稿剔除：skills/se/（源留在 src/initdata，不随产物投放）。
 $seDraft = Join-Path $capDst "skills\se"
 if (Test-Path $seDraft) { Remove-SafeItem -LiteralPath $seDraft -Recurse }
-# 域工具契约（ask_user / tool_result / tool_stop / subchat_open / subchat_finish）：唯一源 = src/lib/llm/contracts/tools。
-$domainToolsSrc = Join-Path $root "src\lib\llm\contracts\tools"
-$serverToolsDst = Join-Path $capDst "tools\server"
-New-Item -ItemType Directory -Force -Path $serverToolsDst | Out-Null
-Copy-Item (Join-Path $domainToolsSrc "*.tool.md") $serverToolsDst -Force
-Write-Host "    ok: capability/ ($((Get-ChildItem $capDst -Recurse -File | Measure-Object).Count) files)"
+# 2026-11-08：core 域工具契约已全部迁出/删除（ask_user / next_run / subchat_open /
+# subchat_finish → chonkpilot-plugins/task；tool_result 删除，结果读取走 task_status）→
+# 不再投放 capability/tools/server；清理旧产物。
+$serverToolsLegacy = Join-Path $capDst "tools\server"
+if (Test-Path $serverToolsLegacy) { Remove-SafeItem -LiteralPath $serverToolsLegacy -Recurse }
+Write-Host "    ok: capability/tools/server 已移除（core 无域工具契约）"
 
 # -- 4.5) manifest 插件（PLUGIN-1）：manifest 来自 src/initdata，exe 由 build-plugins.ps1 产出 --
 #   插件目录 = dist/capability/plugins/<id>/（plugin.json + exe 同目录；

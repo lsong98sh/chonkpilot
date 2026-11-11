@@ -72,14 +72,14 @@ func TestCallContextFromMeta(t *testing.T) {
 			t.Fatalf("上下文解析不符: %+v", cx)
 		}
 		// C1：purpose（本次调用运行目的）随 _meta 往返
-		if cx.Purpose != "审查这次改动" {
-			t.Fatalf("purpose 解析不符: %q", cx.Purpose)
+		if cx.DisplayName != "审查这次改动" {
+			t.Fatalf("purpose 解析不符: %q", cx.DisplayName)
 		}
 	})
 	t.Run("无 purpose 不写键", func(t *testing.T) {
 		meta := CallContextMeta("ins-1", `C:\w`, `C:\d`, "")
 		if ns, ok := meta[metaNamespace].(map[string]any); ok {
-			if _, exists := ns["purpose"]; exists {
+			if _, exists := ns["display_name"]; exists {
 				t.Fatal("purpose 为空时不应写入 _meta 键")
 			}
 		}
@@ -113,7 +113,7 @@ func TestExecutorEnv(t *testing.T) {
 	cfg.SetRuntime(0, 0, `C:\Chrome\chrome.exe`, nil)
 	t.Setenv("CHONKPILOT_INSTANCE", "stale-should-be-stripped")
 	t.Setenv("CHONKPILOT_SANDBOX", `[{"dir":"C:\\stale","writable":true}]`) // 残留策略也须被剥离
-	env := cfg.executorEnv(CallContext{InstanceID: "ins-1", WorkDir: `C:\w`, DataDir: `C:\d`, Purpose: "审查这次改动",
+	env := cfg.executorEnv(CallContext{InstanceID: "ins-1", WorkDir: `C:\w`, DataDir: `C:\d`, DisplayName: "审查这次改动",
 		TopSession: "top-1", Parent: "parent-1"})
 	got := envMap(env)
 	if got["CHONKPILOT_INSTANCE"] != "ins-1" || got["CHONKPILOT_WORKDIR"] != `C:\w` || got["CHONKPILOT_DATADIR"] != `C:\d` {

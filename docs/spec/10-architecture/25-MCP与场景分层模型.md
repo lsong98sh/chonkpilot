@@ -173,7 +173,7 @@ agent **只"注入"不"注册"**：
 > - `mcp_load` 参数只有 `name`（**无 `kind`**），返回 `{entry}` 不含完整 `content`/`inputSchema`；
 > - `prompts/list` 已不列 agent（✅ 已落地）。
 >
-> 仓内 `src/lib/mcp-server/toolmeta/toolmeta.go` 已有正确实现（`findTypeScope` 返回 skill/resource、无 prompt；`metaLoad` 支持 kind），但**没有 meta 契约/执行入口**（`src/lib/llm/contracts/tools/` 仅 6 个 server 域契约）→ **不能视为已生效**。契约切换前，3/4/6 条与 §9 测点 5 按 🔵 待实现处理（测点 4 已满足：插件 type 白名单不含 agent）。
+> 仓内 `src/lib/mcp-server/toolmeta/toolmeta.go` 已有正确实现（`findTypeScope` 返回 skill/resource、无 prompt；`metaLoad` 支持 kind），但**没有 meta 契约/执行入口**（core 侧 `src/lib/llm/contracts/` 已于 2026-11-08 删除，server 域契约 = **0**）→ **不能视为已生效**。契约切换前，3/4/6 条与 §9 测点 5 按 🔵 待实现处理（测点 4 已满足：插件 type 白名单不含 agent）。
 
 **附带结论**：「`mcp_find` 同名去重非确定」问题**随之作废**（无 agent 类目后不再成立）。
 

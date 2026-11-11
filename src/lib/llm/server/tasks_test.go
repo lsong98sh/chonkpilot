@@ -405,6 +405,59 @@ func TestTaskStopCascadeCancel(t *testing.T) {
 	}
 }
 
+// TestTaskStopCascadeFalseOnlyTarget（P0 2026-11-08）：cascade=false → 只停目标任务，
+// 子任务保持运行、执行侧只取消目标节点。
+func TestTaskStopCascadeFalseOnlyTarget(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	te := watchTasks(t, s.bus)
+	resetExecControl()
+
+	parent, _ := s.tasks.start(&TaskNode{
+		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-tk-nc", TurnID: "t-tk-nc",
+		InstanceID: "ins-test", TopSession: "s-tk-nc", Name: "parent",
+	})
+	s.tasks.setGwTask(parent.TaskID, "gw-nc-1")
+	child, _ := s.tasks.start(&TaskNode{
+		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-tk-nc", TurnID: "t-tk-nc",
+		InstanceID: "ins-test", TopSession: "s-tk-nc", ParentID: parent.TaskID, Name: "child",
+	})
+	s.tasks.setGwTask(child.TaskID, "gw-nc-2")
+	te.wait(t, "2 started", func() bool {
+		te.mu.Lock()
+		defer te.mu.Unlock()
+		return len(te.started) == 2
+	})
+
+	v := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
+		"req_id": "r-stop-nc", "task_id": parent.TaskID, "cascade": false,
+	})).Wait()
+	if err := v.Err(); err != nil {
+		t.Fatalf("task-stop(cascade=false): %v", err)
+	}
+	res, _ := v.Result.(map[string]any)
+	if ok, _ := res["cancelled"].(bool); !ok {
+		t.Fatalf("task-stop ack wrong: %+v", res)
+	}
+	te.wait(t, "parent cancelled", func() bool {
+		te.mu.Lock()
+		defer te.mu.Unlock()
+		d := te.done[parent.TaskID]
+		return d != nil && d["state"] == TaskStateCancelled
+	})
+	te.mu.Lock()
+	childDone := te.done[child.TaskID]
+	te.mu.Unlock()
+	if childDone != nil {
+		t.Fatalf("cascade=false 不应取消子任务: %+v", childDone)
+	}
+	got := execCancelledRefs()
+	if len(got) != 1 || got[0] != "gw-nc-1" {
+		t.Fatalf("exec cancels=%v want [gw-nc-1]", got)
+	}
+}
+
 func containsStr(s []string, v string) bool {
 	for _, x := range s {
 		if x == v {
@@ -632,15 +685,15 @@ func TestTaskTreeMainSessionTopLevel(t *testing.T) {
 // （llm 型显式 title 分支已随 `llm_run` 工具下线移除；DSL 作业展示名由 gateway `dsl_run` 侧承担。）
 func TestTaskDisplayTitlePriority(t *testing.T) {
 	// ① 有注入（普通工具节点）→ title = 注入值
-	name, purpose, simp := taskDisplay("tool_result", map[string]any{
-		"id": "x", "tool_call_display_name": "派活说明",
+	name, purpose, simp := taskDisplay("subchat_open", map[string]any{
+		"agent": "x", "tool_call_display_name": "派活说明",
 	})
 	if name != "派活说明" || purpose != "派活说明" || simp != "派活说明" {
 		t.Fatalf("①注入优先失败: name=%q purpose=%q simplified=%q", name, purpose, simp)
 	}
 	// ② 无注入 → 回退工具契约名（purpose 空）
-	name, purpose, simp = taskDisplay("tool_result", map[string]any{"id": "x"})
-	if name != "tool_result" || simp != "tool_result" || purpose != "" {
+	name, purpose, simp = taskDisplay("subchat_open", map[string]any{"agent": "x"})
+	if name != "subchat_open" || simp != "subchat_open" || purpose != "" {
 		t.Fatalf("②回退契约名失败: name=%q purpose=%q simplified=%q", name, purpose, simp)
 	}
 	// 普通工具同优先级：注入优先 / 缺省回退契约名

@@ -62,12 +62,12 @@ func dispatchBuiltin(ctx context.Context, cfg *Config, td *ToolDoc, args map[str
 
 	addr, token := cfg.bridge()
 	r := toolmeta.Run(ctx, group, td.Name, args, toolmeta.Context{
-		InstanceID: cx.InstanceID,
-		Session:    cx.SessionID,
-		Turn:       cx.TurnID,
-		ToolCallID: cx.ToolCallID,
-		Purpose:    cx.Purpose,
-		WorkDir:    cx.WorkDir,
+		InstanceID:  cx.InstanceID,
+		Session:     cx.SessionID,
+		Turn:        cx.TurnID,
+		ToolCallID:  cx.ToolCallID,
+		DisplayName: cx.DisplayName,
+		WorkDir:     cx.WorkDir,
 	}, toolmeta.Bridge{Addr: addr, Token: token})
 	return &builtinResult{Text: r.Text, IsError: r.IsError}
 }

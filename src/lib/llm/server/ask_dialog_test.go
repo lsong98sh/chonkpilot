@@ -86,14 +86,14 @@ func TestAskDialogIDBothDirections(t *testing.T) {
 	if v := f.Wait(); v.Err() != nil {
 		t.Fatalf("ask-user-reply（带 dialog_id）应被受理: %v", v.Err())
 	}
-	// S4：答复就地更新原 tool-result，并作为后续用户消息投递给 LLM（原轮已收尾 → 新轮）。
+	// S4：答复后 tool-result 写“已回复”标记（答案只在后续用户消息里），并作为后续消息投递。
 	delivered := waitAskAnswerDelivered(t, s, "s-ask-dlg", "t-ask-dlg", "答：y")
 	if !strings.Contains(delivered, "确认继续？") {
 		t.Fatalf("答复应携带原问题：%q", delivered)
 	}
 	rows := toolRowsOf(t, "t-ask-dlg")
-	if len(rows) != 1 || !strings.Contains(persist.Sval(rows[0]["content"]), `"content":"y"`) {
-		t.Fatalf("答复应就地更新 tool-result：%v", rows)
+	if len(rows) != 1 || !strings.Contains(persist.Sval(rows[0]["content"]), askAnsweredHistoryResult) {
+		t.Fatalf("答复应就地写已回复标记：%v", rows)
 	}
 }
 

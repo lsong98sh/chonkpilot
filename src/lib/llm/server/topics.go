@@ -12,9 +12,6 @@ import (
 const (
 	// SubjectExit 实例退出（取消名下 running turn + 释放锁；注册表移除由 instanceManager 负责）。
 	SubjectExit = instance.SubjectExit
-	// SubjectDomainToolCall 是域工具执行回调主题（相对主题，chonk. 前缀由总线注入）：
-	// gateway 命中注册域工具 → Emit {tool, args, context?} → 本模块订阅者执行后写回 v.Result。
-	SubjectDomainToolCall = "domain-tool-call"
 	// SubjectLLMSimple 无上下文单轮 LLM 方法面（相对主题 llm-simple；chonk. 前缀注入）。
 	// 请求 {prompt[, system]} → 应答 {text}；无 session/turn 上下文（compress 摘要 / 网关
 	// mcp_find 语义检索等"简单 prompt→结果"场景，61-消息一览 2026-09-08 需求更新）。

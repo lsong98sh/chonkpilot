@@ -1,6 +1,7 @@
 # next_run 自动续跑设计方案（独立稿）
 
 > 状态：✅ **已实施（2026-10-21；2026-11-04 核对：功能仍完整，仅「执行体路径」已由进程外 executor 改为 builtin 控制面工具）** —— 落地清单与验证记录见 [49-待实现项 `NEXTRUN-1`](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)
+> **2026-11-10 更新**：工具契约已迁 `chonkpilot-plugins/task/src/tools/task/next_run.tool.md`（插件 MCP + 宿主 `plugin/v1/next.run`）；恢复轮已重建 `nextRunMax` / agent 白名单 / deny 集，并回查本 turn 已登记 inbox 项（last-wins 不再因幂等键丢新 prompt）；契约补 16384 上限、返回值与异常终态丢弃说明。
 > 日期：2026-10-20（2026-11-04 核对修订）
 > 关联（spec）：[49-待实现项 §2](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)（登记项 `NEXTRUN-1`）· [21-llm-server](../spec/20-modules/21-llm-server.md) · [22-data-persist](../spec/20-modules/22-data-persist.md) · [3A-工具与编排](../spec/30-function-points/3A-工具与编排.md) · [61-消息一览](../spec/60-reference/61-消息一览.md) · [64-配置项一览](../spec/60-reference/64-配置项一览.md) · [71-编程规范 §3.3](../spec/70-conventions/71-编程规范.md) · [中途插话设计方案](../agent-chat/中途插话设计方案.md)
 > 代码目录（2026-11-04 订正）：`src/lib/llm/contracts/tools/next_run.tool.md`（`runtime: builtin`）· `src/lib/llm/server/nextrun.go` · `src/lib/llm/server/{turn,inbox,server,domainmcp,plugin_caps}.go` · `src/lib/mcp-server/toolmeta/toolmeta.go`（builtin 分支 → `plugin/v1/next.run`）· `src/lib/data/{facade/api.go, internal/session/session_nextrun.go}` · `src/lib/data/internal/config/userconfig.go` · `src/frontend/src/views/config/SettingsParamsPage.vue`。**已删除的过时路径**：`src/lib/llm/cmd/next-run-exec/`、`chonkpilot-next-run-executor.exe`、`src/lib/llm/servertools/exec/exec.go`、`build-mcp-server.ps1` 中的 executor 产物步骤。

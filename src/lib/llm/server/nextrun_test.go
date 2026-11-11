@@ -1,7 +1,8 @@
 // NEXTRUN-1 `next_run` 自动续跑（L1，mq 驱动 + mq / 数据面断言）。
 //
 // 覆盖：正常登记 → 本轮结束后自动起新轮（消息 kind=next_run）· 上限文案 · 用户发送重置 ·
-// last-wins（同轮多次只留最后一条）· 非主会话拒绝 · 关闭（nextRunMax=0）· 终态丢弃。
+// last-wins（同轮多次只留最后一条）· 恢复回查失败时 append 幂等命中仍强制覆盖 content ·
+// 非主会话拒绝 · 关闭（nextRunMax=0）· 终态丢弃 · 成功文案含第几次/上限。
 package server
 
 import (
@@ -56,7 +57,7 @@ func TestNextRunRegistersAndStartsNewTurn(t *testing.T) {
 	if tc.nextRunMax != nextRunDefaultMax {
 		t.Fatalf("nextRunMax 默认应为 %d：got=%d", nextRunDefaultMax, tc.nextRunMax)
 	}
-	if text, isErr := s.runNextRun(tc, map[string]any{"prompt": "第二阶段：汇总结果"}); isErr || text != "OK" {
+	if text, isErr := s.runNextRun(tc, map[string]any{"prompt": "第二阶段：汇总结果"}); isErr || text != nextRunOKText(1, nextRunDefaultMax) {
 		t.Fatalf("next_run 应受理：text=%q isErr=%v", text, isErr)
 	}
 	items := nextRunItems(t, s, "s-nr1")
@@ -96,6 +97,98 @@ func TestNextRunRegistersAndStartsNewTurn(t *testing.T) {
 	}
 }
 
+// TestNextRunRecoveryRestoresState：恢复轮重建 nextRunMax / 工具面，并回查本 turn 已登记的
+// last-wins 目标；同 turn 再次登记必须覆盖 content（不能因幂等键静默保留旧 prompt）。
+func TestNextRunRecoveryRestoresState(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+	const session, turn = "s-nr-rec", "t-nr-rec"
+	// 先建一次真实轮次，落会话 → dialog 映射（next_run 计数/ inbox 都要 dialog_id）。
+	startTurn(t, s, session, "t-nr-rec-boot")
+	boot := s.lookupTurnIn("ins-test", "t-nr-rec-boot")
+	if boot == nil {
+		t.Fatalf("boot turn 未登记")
+	}
+	s.complete(boot, "complete", "stop", "")
+	boot.Close()
+
+	tc := s.recoverTurnCtx("ins-test", session, turn)
+	if tc.nextRunMax != nextRunDefaultMax {
+		t.Fatalf("恢复轮 nextRunMax 应为默认 %d：got=%d", nextRunDefaultMax, tc.nextRunMax)
+	}
+	if tc.toolDenied(nextRunTool) {
+		t.Fatalf("主会话恢复轮不应 deny next_run")
+	}
+	tc.Close()
+
+	id, err := s.inboxAppend("ins-test", facade.InboxAppendRequest{
+		SessionID: session, TurnID: turn, Type: "next_turn", Content: "旧提示词",
+		Source: nextRunSourceLLM, IdempotencyKey: "next-run:" + turn,
+	})
+	if err != nil {
+		t.Fatalf("inboxAppend: %v", err)
+	}
+	if got := s.nextRunItemForTurn("ins-test", session, turn); got != id {
+		t.Fatalf("恢复回查应命中本轮 next_run 项：got=%q want=%q", got, id)
+	}
+
+	tc2 := &turnCtx{
+		server: s, req: StartReq{InstanceID: "ins-test", Session: session, Turn: turn},
+		nextRunMax: nextRunDefaultMax, nextRunItemID: id,
+	}
+	if text, isErr := s.runNextRun(tc2, map[string]any{"prompt": "新提示词"}); isErr || text != nextRunOKText(1, nextRunDefaultMax) {
+		t.Fatalf("恢复轮再次登记应覆盖：text=%q isErr=%v", text, isErr)
+	}
+	items := nextRunItems(t, s, session)
+	if len(items) != 1 || str(items[0]["content"]) != "新提示词" {
+		t.Fatalf("同 turn 再次登记应 last-wins：%+v", items)
+	}
+	if got := nextRunCount(t, s, session); got != 1 {
+		t.Fatalf("计数应为 1：got=%d", got)
+	}
+}
+
+// TestNextRunAppendOverwritesOnIdempotencyHit：模拟「恢复回查失败 → nextRunItemID 为空」后
+// 同 turn 再次登记。append 会命中数据层幂等键（`next-run:<turn>`）返回**旧 id 且不更新 content**，
+// 此时必须强制覆盖 content，否则新 prompt 被静默丢弃。
+func TestNextRunAppendOverwritesOnIdempotencyHit(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+	const session, turn = "s-nr-idem", "t-nr-idem"
+	// 先建一次真实轮次，落会话 → dialog 映射（计数 / inbox 都要 dialog_id）。
+	startTurn(t, s, session, "t-nr-idem-boot")
+	boot := s.lookupTurnIn("ins-test", "t-nr-idem-boot")
+	if boot == nil {
+		t.Fatalf("boot turn 未登记")
+	}
+	s.complete(boot, "complete", "stop", "")
+	boot.Close()
+
+	// 上一轮已按幂等键落过一行（模拟恢复回查未命中，内存中无 nextRunItemID）。
+	if _, err := s.inboxAppend("ins-test", facade.InboxAppendRequest{
+		SessionID: session, TurnID: turn, Type: "next_turn", Content: "旧提示词",
+		Source: nextRunSourceLLM, IdempotencyKey: "next-run:" + turn,
+	}); err != nil {
+		t.Fatalf("inboxAppend: %v", err)
+	}
+	tc := &turnCtx{
+		server: s, req: StartReq{InstanceID: "ins-test", Session: session, Turn: turn},
+		nextRunMax: nextRunDefaultMax,
+	}
+	if text, isErr := s.runNextRun(tc, map[string]any{"prompt": "新提示词"}); isErr || text != nextRunOKText(1, nextRunDefaultMax) {
+		t.Fatalf("幂等命中后仍应受理：text=%q isErr=%v", text, isErr)
+	}
+	items := nextRunItems(t, s, session)
+	if len(items) != 1 || str(items[0]["content"]) != "新提示词" {
+		t.Fatalf("幂等命中必须把 content 覆盖为本次 prompt：%+v", items)
+	}
+	if got := nextRunCount(t, s, session); got != 1 {
+		t.Fatalf("计数应为 1：got=%d", got)
+	}
+}
+
 // TestNextRunLimitAndReset：上限文案 + 用户发送重置 → 额度恢复。
 func TestNextRunLimitAndReset(t *testing.T) {
 	llm, _ := newInboxLLM(t)
@@ -104,7 +197,7 @@ func TestNextRunLimitAndReset(t *testing.T) {
 	tc := s.lookupTurnIn("ins-test", "t-nr2")
 	tc.nextRunMax = 2
 
-	for i, want := range []string{"OK", "OK"} {
+	for i, want := range []string{nextRunOKText(1, 2), nextRunOKText(2, 2)} {
 		if text, isErr := s.runNextRun(tc, map[string]any{"prompt": "第" + strconv.Itoa(i+1) + "段"}); isErr || text != want {
 			t.Fatalf("第 %d 次应受理：text=%q", i+1, text)
 		}
@@ -132,7 +225,7 @@ func TestNextRunLimitAndReset(t *testing.T) {
 	}
 	// 新的一轮（重置后 inbox 已登记项仍是上轮 turn_id → 用新 tc 模拟新一轮的同轮登记）
 	tc2 := &turnCtx{server: s, req: StartReq{InstanceID: "ins-test", Session: "s-nr2", Turn: "t-nr2b"}, nextRunMax: 2}
-	if text, isErr := s.runNextRun(tc2, map[string]any{"prompt": "重来"}); isErr || text != "OK" {
+	if text, isErr := s.runNextRun(tc2, map[string]any{"prompt": "重来"}); isErr || text != nextRunOKText(1, 2) {
 		t.Fatalf("重置后应可再受理：text=%q isErr=%v", text, isErr)
 	}
 }
@@ -176,7 +269,7 @@ func TestNextRunDiscardedOnError(t *testing.T) {
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-nr4", "t-nr4")
 	tc := s.lookupTurnIn("ins-test", "t-nr4")
-	if text, isErr := s.runNextRun(tc, map[string]any{"prompt": "下一轮"}); isErr || text != "OK" {
+	if text, isErr := s.runNextRun(tc, map[string]any{"prompt": "下一轮"}); isErr || text != nextRunOKText(1, nextRunDefaultMax) {
 		t.Fatalf("next_run 应受理：text=%q", text)
 	}
 	s.llmError(tc, "LLM_REQUEST_FAILED", "boom")

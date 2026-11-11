@@ -204,6 +204,29 @@ func (s *Server) clearAsksByTurnLocked(instanceID, turnID string) []*askWaiter {
 	return removed
 }
 
+// clearAsksByTaskLocked 摘除指定任务节点的 ask 等待登记（task_stop / 级联停止；
+// **须持 s.mu**）。语义与 clearAsksByTurnLocked 一致：批次内已收答复一并丢弃，
+// 返回被摘除的登记（调用方解锁后发 ask-center-remove）。
+func (s *Server) clearAsksByTaskLocked(instanceID string, taskIDs map[string]bool) []*askWaiter {
+	var removed []*askWaiter
+	if len(taskIDs) == 0 {
+		return removed
+	}
+	for k, w := range s.asks {
+		if w == nil || !taskIDs[w.taskID] {
+			continue
+		}
+		if instanceID != "" && w.instanceID != instanceID {
+			continue
+		}
+		delete(s.asks, k)
+		s.forgetAskLocked(w)
+		stopAskTimerLocked(w)
+		removed = append(removed, w)
+	}
+	return removed
+}
+
 // clearAsksByInstanceLocked 摘除某实例的**全部** ask 等待登记（实例退出；**须持 s.mu**）。
 // 退出清理时该实例的轮次可能已被移出 s.turns，故按 instance 归属整体清（不依赖 turn 存活）。
 // 含**定向投递目标为该实例**的登记（SUBCHAT-3 阶段 F-2：群聊窗口关闭 → 其名下卡片一并失效）。

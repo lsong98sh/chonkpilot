@@ -1,8 +1,9 @@
-// server 域工具经 gateway 分组注册方法面注入（61-消息一览 §5.1.1，2026-09-06）：
-// 域工具 = tools/register（相对主题 mcp-tools-register，payload {name, description, schema,
-// handler_subject, owner, hot, category, async?, async_threshold?, timeout?}）——取代旧
-// mcp.register/unregister 统一 kind 与 server-register 主题。category/async/async-threshold/
-// timeout 取自域工具契约 [meta]（见 loadDomainTools），gateway 据此写入工具 `_meta`。
+// 场景 agent 注册表与 turn 查找（原「server 域工具」模块，2026-11-08 收敛）。
+//
+// 2026-11-08：core 不再注册任何域工具 —— `ask_user` / `next_run` / `subchat_open` /
+// `subchat_finish` 已迁 `chonkpilot-plugins/task`（插件自持契约 + 宿主 `plugin/v1/*` 能力）；
+// `tool_result` 删除（结果读取统一走 task 插件 `task_status`）。故本文件不再有
+// `registerDomainTools` / `onDomainToolCall` / `domainExecute` / `domainNode`。
 //
 // 25 §5/T2（2026-09-25）：agent（场景内 agent）**不再**经 prompts/register asset_kind=agent
 // 注册为资产（agent 只"注入"不"注册"），仅登记到内存表（见 registerDomainAgents /
@@ -10,16 +11,6 @@
 // 统一为 **app 级场景**（`<exeDir>/scenarios/*/`，随发布只读资源），经数据层门面读取（规则单源）；
 // **2026-09-26 收窄**：发布 `scenarios/` 仅出厂场景 `default/`（「开发场景」），原「内置 agent 集」
 // `builtin-agents/` 已删除 → 本内存注册表当前只含该场景的 agent（数量随场景变化，勿硬编码）。
-//
-// 注册：Start 中 gateway 就绪后逐工具 await（同主题 promise）；执行命中时 gateway
-// regProv 向注册声明的回调主题（SubjectDomainToolCall）发 {tool, args, context}，本模块
-// 订阅者据此恢复 server turn 执行（写回 v.Result）。
-//
-// 执行路径：
-//   - task 型（tool_result）：turn 经 gateway tools/call 唯一入口 → regProv 回调
-//     （本文件）→ execTaskTool 同步执行并返回文本（节点建/广播/收尾在此）。
-//   - ask_user / llm 型（llm_run）：异步交互（等用户回答 / 子会话 DSL），turn 内保留内部通道；
-//     本回调提供兜底（外部经 gateway 直接调用时可执行，返回提交提示文本）。
 package server
 
 import (
@@ -30,7 +21,6 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
@@ -157,163 +147,6 @@ func (s *Server) registeredAgentDef(ref string) (AgentDef, bool) {
 	return uniqueAgentByName(s.agents, name)
 }
 
-// registerDomainTools 把全部域工具经 gateway tools/register（mcp-tools-register）注入。
-// schema 为契约 parameters 段 JSON 原文（对齐 regMsg.Schema 语义）；回调主题统一
-// SubjectDomainToolCall；hot=true（对齐原"内嵌 server 整体 hot"，TestEmbeddedGatewayDomainToolsHot）；
-// category/async/async-threshold/timeout 取自契约 [meta]（透出为工具 `_meta`）。
-// 逐工具 await（同主题 promise）：任一失败即中断返回。
-func (s *Server) registerDomainTools(ctx context.Context) error {
-	defs, err := loadDomainTools()
-	if err != nil {
-		return err
-	}
-	for _, d := range defs {
-		body := map[string]any{
-			"name":            d.Name,
-			"description":     d.Description,
-			"handler_subject": SubjectDomainToolCall,
-			"owner":           "server",
-			"hot":             true,
-		}
-		// 契约 [meta] 透出（category/async/async-threshold/timeout；见 loadDomainTools）——
-		// gateway registerTool 据此写入工具 `_meta`（否则域工具在前端/LLM 面回落 auto）。
-		if d.Category != "" {
-			body["category"] = d.Category
-		}
-		if d.Async != "" {
-			body["async"] = d.Async
-		}
-		if d.AsyncTh > 0 {
-			body["async_threshold"] = d.AsyncTh
-		}
-		// timeout 键**显式声明即透出**（含 0/-1 = 无上限；gateway 靠 `*float64` 区分「未设置」）；
-		// 契约未声明 → 不写（gateway 回落全局）。
-		if d.TimeoutSet {
-			body["timeout"] = d.Timeout
-		}
-		if d.Parameters != nil {
-			if sb, err := json.Marshal(d.Parameters); err == nil {
-				body["schema"] = string(sb)
-			}
-		}
-		if _, err := s.emitGateway(ctx, "tools/register", body); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// domainToolMsg 是 domain-tool-call 回调载荷（gateway registered_provider.Call 构造）。
-type domainToolMsg struct {
-	Tool    string         `json:"tool"`
-	Args    map[string]any `json:"args"`
-	Context *struct {
-		Turn       string `json:"turn"`
-		Session    string `json:"session"`
-		InstanceID string `json:"instance_id"`
-		ToolCallID string `json:"tool_call_id"`
-		// Purpose 是本次调用的**运行目的**（C1 注入通道 · SUBCHAT-2 阶段 A）：= gateway 注入的
-		// 展示名参数 `tool_call_display_name`，由 `doCall` 在**剥离该 args 键之前**取出、随
-		// `payload["context"]` 下发（`registered_provider.turnContextPayload`）。handler 只能从这里
-		// 读——args 里该键已被剥离（如未来 `subchat_open` 取作子聊天 purpose）。
-		Purpose string `json:"purpose"`
-	} `json:"context"`
-}
-
-// onDomainToolCall 处理 gateway regProv 回调（域工具执行）：
-// 从回调 context 恢复 server turn（对齐原 inprocess ctx 注入语义），结果写回 v.Result
-// （map{content, isError}，regProv.toolResultFromValue 归一）。
-func (s *Server) onDomainToolCall(_ context.Context, _ string, v *mq.Value) error {
-	var msg domainToolMsg
-	if err := json.Unmarshal(v.Payload, &msg); err != nil {
-		return err
-	}
-	if msg.Tool == "" {
-		return methodErr("tool is required")
-	}
-	tc, callID, purpose := (*turnCtx)(nil), "", ""
-	if msg.Context != nil {
-		tc = s.lookupTurnIn(msg.Context.InstanceID, msg.Context.Turn)
-		callID = msg.Context.ToolCallID
-		purpose = msg.Context.Purpose
-	}
-	text, isErr := s.domainExecute(tc, callID, msg.Tool, msg.Args, purpose)
-	v.Result = map[string]any{
-		"resultType": "complete",
-		"content":    []any{map[string]any{"type": "text", "text": text}},
-		"isError":    isErr,
-	}
-	return nil
-}
-
-// domainExecute 执行域工具并返回结果文本（回调统一路径）：
-//   - ask_user → ask 通道（广播 ask-user → 等 ask-user-reply → 回填 done）；
-//   - task 型 → execTaskTool 同步执行（节点 done 广播在收尾）。
-//
-// purpose = 本次调用的运行目的（C1 注入通道；args 里的展示名已被 gateway 剥离 → 只能经此送达
-// handler）。本阶段用于补全域工具任务节的 purpose/label（见 domainNode）；后续 `subchat_open`
-// 等 handler 直接消费本参数。
-//
-// isErr=true 表示工具级失败（无 turn 兜底 / 节点构建失败）。
-func (s *Server) domainExecute(tc *turnCtx, callID, tool string, args map[string]any, purpose string) (string, bool) {
-	if tc == nil {
-		return "域工具必须经 server turn 调用（turn 上下文缺失）", true
-	}
-	node, derr := s.domainNode(tc, callID, tool, args, purpose)
-	if derr != nil {
-		return derr.Error(), true
-	}
-	switch {
-	case isAskTool(tool):
-		// 异步交互：广播 ask-user 等待回答（结果经 ask-user-reply 回填 turn）
-		s.ask(tc.req.Turn, callID, args, node.TaskID)
-		return "已向用户提问，等待回答", false
-	case tool == nextRunTool:
-		// NEXTRUN-1：`next_run` = 同步快操作（登记下一轮 inbox 项）；结果即终态。
-		text, isErr := s.runNextRun(tc, args)
-		if isErr {
-			s.tasks.done(node.TaskID, TaskStateError, "", text)
-		} else {
-			s.tasks.done(node.TaskID, TaskStateDone, text, "")
-		}
-		// 与 subchat 域工具同口径：工具级失败与否由结果文本表达，isError 位不向 gateway 传递。
-		return text, false
-	case isSubChatTool(tool):
-		// 单聊域工具（subchat_open / subchat_finish，SUBCHAT-2 阶段 B-2）：**同步**执行并返回
-		// 文本（结果即终态，§3.4.3）；子聊天首轮的异步起轮在 handler 内自行派生（不在此挂起主轮）。
-		// 不进 default 的「执行中取消」登记：两者皆毫秒级快操作、无长跑执行体可中断。
-		text, isErr := s.execSubChatTool(tc, tool, args, purpose)
-		if isErr {
-			s.tasks.done(node.TaskID, TaskStateError, "", text)
-		} else {
-			s.tasks.done(node.TaskID, TaskStateDone, text, "")
-		}
-		return text, false
-	default:
-		// task 型：同步执行并返回文本（节点建/广播/收尾在 handler）。
-		// I-83 收尾（18 §3.4）：执行期登记取消柄（taskExecCancels）——gateway 取消
-		// （tm.cancel 补发 mcp-tasks-report{state:cancelled}）→ onGatewayTaskDone 按
-		// tool_call_id 查表 cancel，真停长跑执行体（tool_result 轮询等）；结束后注销。
-		// 被取消时不在此标 done/error——终态已由回报链推进（tasks.done 幂等，不覆盖 cancelled）。
-		execCtx, cancelExec := context.WithCancel(tc.ctx)
-		s.registerTaskExecCancel(callID, cancelExec)
-		text, isErr := s.execTaskTool(tc, callID, node, tool, args, execCtx)
-		cancelled := execCtx.Err() != nil // 先判（cancelExec 会使 Err 恒非 nil）
-		s.unregisterTaskExecCancel(callID)
-		cancelExec() // context 泄漏守卫（已取消则幂等）
-		if cancelled {
-			return "已取消: " + tool + "（gateway 执行侧取消；任务状态以回报为准）", false
-		}
-		// B-17：失败判定用 execTaskTool 返回的**显式 isErr 位**，不再按结果文本前缀猜测。
-		if isErr {
-			s.tasks.done(node.TaskID, TaskStateError, "", text)
-		} else {
-			s.tasks.done(node.TaskID, TaskStateDone, text, "")
-		}
-		return text, false
-	}
-}
-
 // lookupTurnSession 按 (instance, turn) 查运行 turn 的接口句柄（s.mu 保护；A4-P3a-0）。
 // instance 维度缺省（全桶回退），语义与 lookupTurn 一致。
 func (s *Server) lookupTurnSession(instanceID, turn string) turnSession {
@@ -346,11 +179,8 @@ func (s *Server) lookupTurnIn(instanceID, turn string) *turnCtx {
 	return s.lookupTurnLocked(instanceID, turn)
 }
 
-// domainNode 构建并广播域工具任务节点（对齐 turn.go 建 node 逻辑）。
-//
-// purpose = C1 注入通道带来的本次调用运行目的：域工具经 gateway 回调执行时，args 里的
-// `tool_call_display_name` 已被 `doCall` 剥离 → `taskDisplay` 取不到展示名；此处以注入值兜底，
-// 使域工具（ask_user / llm_run / tool_* 及将来的 subchat_*）任务节同样带上 purpose/label。
+// domainNode 构建并广播外部工具的任务节点（`plugin/v1/task.node.start` 的实现；
+// 任务树唯一写者仍是 server）。purpose = C1 注入通道的运行目的，args 内展示名已被剥离时兜底。
 func (s *Server) domainNode(tc *turnCtx, callID, tool string, args map[string]any, purpose string) (*TaskNode, error) {
 	node := &TaskNode{
 		Tool:       tool,
@@ -374,51 +204,6 @@ func (s *Server) domainNode(tc *turnCtx, callID, tool string, args map[string]an
 	return n, err
 }
 
-// ── task 型域工具「执行中取消」登记表（I-83 收尾，18 §3.4）─────────────
-//
-// 背景：域工具远程回调经 mq 内存总线 **Emit 同步派发**——执行体（execTaskTool）跑在
-// gateway 执行 goroutine 里，gateway 侧 `t.cancel()` 只取消发送方等待，无法中断同步
-// handler。故取消经**回报通道反向通知**：gateway tm.cancel 补发 mcp-tasks-report
-// {state:cancelled, tool_call_id} → onGatewayTaskDone → cancelTaskExec 查表 cancel。
-
-// registerTaskExecCancel 登记 tool_call_id → 执行取消柄（callID 空 = 无回报定位维度，不登记）。
-func (s *Server) registerTaskExecCancel(callID string, cancel context.CancelFunc) {
-	if callID == "" {
-		return
-	}
-	s.taskExecCancelMu.Lock()
-	defer s.taskExecCancelMu.Unlock()
-	s.taskExecCancels[callID] = cancel
-}
-
-// unregisterTaskExecCancel 注销（执行结束；回报晚到 → 查表未命中，走既有终态推进）。
-func (s *Server) unregisterTaskExecCancel(callID string) {
-	if callID == "" {
-		return
-	}
-	s.taskExecCancelMu.Lock()
-	defer s.taskExecCancelMu.Unlock()
-	delete(s.taskExecCancels, callID)
-}
-
-// cancelTaskExec 取消回报到达：真停执行中的 task 型域工具执行体（幂等；未命中 = 已结束）。
-// 命中即注销——防执行体收尾窗口内的重复回报后遗留 stale 柄（cancel 幂等，已发生的取消不受影响）。
-func (s *Server) cancelTaskExec(callID string) {
-	if callID == "" {
-		return
-	}
-	s.taskExecCancelMu.Lock()
-	cancel, ok := s.taskExecCancels[callID]
-	if ok {
-		delete(s.taskExecCancels, callID)
-	}
-	s.taskExecCancelMu.Unlock()
-	if ok {
-		cancel()
-	}
-}
-
-// methodErr 构造普通错误（mq 订阅者 error 返回 → 收集进 v.Errors）。
 func methodErr(msg string) error { return &toolError{msg: msg} }
 
 // ── agent 定义读取（AG-1 / AG-2，40-演进计划 §AG，2026-09-25）──────────

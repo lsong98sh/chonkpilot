@@ -3,7 +3,7 @@
   "id": "crontab",
   "name": "定时任务",
   "version": "1.0.0",
-  "description": "本机全局定时任务：执行命令（可选完成通知）/ 系统通知；6 个 crontab_* 工具 + 状态栏徽标 + 任务页",
+  "description": "本机全局定时任务：执行命令（可选完成通知）/ 系统通知；5 个 crontab_* 工具 + 状态栏徽标 + 任务页",
   "icon": "clock",
   "publisher": "chonkpilot",
   "product": true,
@@ -22,8 +22,7 @@
       "crontab_add",
       "crontab_update",
       "crontab_list",
-      "crontab_enable",
-      "crontab_disable",
+      "crontab_toggle",
       "crontab_delete"
     ],
     "timeout_sec": 60,

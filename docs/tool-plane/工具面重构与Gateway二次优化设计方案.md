@@ -142,10 +142,12 @@ LLM turn
 
 ```json
 {
-  "purpose": "说明本次批量意图（给 LLM 自述 + 审计）",
   "targets": [ { "path": "...", "...": "..." } ]
 }
 ```
+
+> 调用展示名（原 `purpose`）已从契约移除：由 gateway 注入 `tool_call_display_name`（LLM 必填），
+> 执行前剥离、仅用于 UI / 任务树展示（2026-11-08）。
 
 - 单文件操作 = `targets` 长度 1 的数组（**不设两套形状**）。
 - `targets` 数组长度**硬上限 2000**（与 `file_find` 的 `limit` 同口径），超出 → 整体失败并提示分批。
@@ -204,7 +206,7 @@ LLM turn
 | **第三方 MCP** | 用户配置 | 共享常驻 | stdio / http / sse |
 
 > **〔2026-11-04 核对 · 现行 server 形态与契约来源〕**
-> - 现行不是“1 个内置 server”：`file` / `task` / `mcp` / `web` / `browser` / `desktop` / `crontab` / `log` 等各自插件 MCP server；server 域 6 工具（`ask_user` / `next_run` / `subchat_finish` / `subchat_open` / `tool_result` / `tool_stop`）经 llm-server 进程内注册；`core-mcp-server` 仅作为 capability 目录节点的 `--stdio --root <folder>` 下游保留，桌面单体 `gui/host` 明确不再拉起它（`gui/host/main.go:224-225,555`）。
+> - 现行不是“1 个内置 server”：`file` / `task` / `mcp` / `web` / `browser` / `desktop` / `crontab` / `log` 等各自插件 MCP server；**2026-11-08 起 llm-server 不再注册任何域工具**（`ask_user` / `next_run` / `subchat_open` / `subchat_finish` 迁 task 插件 8 工具；`tool_result` 删除、`tool_stop` 已于 2026-11-04 删除）；`core-mcp-server` 仅作为 capability 目录节点的 `--stdio --root <folder>` 下游保留，桌面单体 `gui/host` 明确不再拉起它（`gui/host/main.go:224-225,555`）。
 > - **契约分源**：server 域 6 = `src/lib/llm/contracts/tools/*.tool.md`；file 11 = `chonkpilot-plugins/file/src/tools/file/*.tool.md`；task 4 = `chonkpilot-plugins/task/src/tools/task/*.tool.md`；crontab 6 = `chonkpilot-plugins/crontab/src/tools/crontab/*.tool.md`；mcp / web / browser / desktop / codegraph 等由代码 `p.Tool(...)` 注册，**没有 `.tool.md`**。`src/initdata/capability/tools/` 为空。
 > - 因此“契约扫描唯一权威 = 内置 mcp-server”不成立，现行是“每个 server 自报工具、gateway 汇总”。
 

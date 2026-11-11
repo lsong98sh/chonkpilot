@@ -5,24 +5,27 @@
 
 ```text
 capability/plugins/demo-python/
-├── plugin.json          # manifest：runtime / mcp / config / permissions（ui 段仅保留 rpc）
+├── manifest.json        # 完整 manifest（插件自读并在 plugin.hello 上报）：runtime / mcp / config / ui / permissions
+├── plugin.json          # 极简启动文件（宿主据此拉起）：id / cmd / enabled / name / icon
 ├── plugin.py            # 插件本体：通道 + MCP + RPC + 数据面
+├── tools/demo_echo.tool.md  # 工具契约：策略（async/timeout/on_timeout/hot）+ `# 摘要` + `# 参数` schema
 ├── llm_bridge_proxy.py  # LLM 桥接入口的 loopback→UDS 字节代理（demo，与插件运行无关）
 ├── webui/config.html    # iframe 配置页样例（config.get/set + rpc + 事件流）
 └── README.md            # 本文件
 ```
 
-> ⚠️ 本样例**无 exe / 无法 embed**，其 `webui/` 只作为页面写法参考：旧路由
-> `/plugin-ui/<id>/<entry>`（宿主直读磁盘）已下线，插件页面统一由插件进程自持（`/plugins/<id>/…`）。
-> 因此 `plugin.json` **不再声明 `ui.views`**（及其引用的菜单 / 状态栏入口），页面不随运行时提供。
+> `manifest.json` 才是完整 manifest（`ui.views` / `ui.assets` / `permissions` 等都在这里）；
+> `plugin.json` 只是启动参数（`id/cmd/enabled/name/icon`），不是完整 manifest，二者分别维护。
+> 本样例无 exe / 无法 embed，`webui/` 同时作为页面写法参考。
 
 ## 运行前提
 
 - Python 3.9+（**注意**：CPython 在 Windows 上**没有 `socket.AF_UNIX`**；本目录的 `llm_bridge_proxy.py` 已内置 WinSock 兜底，Windows 亦可直接运行）；
-- `python` 在 PATH 上（或把 `plugin.json` 的 `runtime.exe` 改成绝对路径）；
+- `python` 在 PATH 上（或把 `manifest.json` 的 `runtime.exe` 改成绝对路径）；
 - 插件默认 `autostart: false`：在「插件」页启用后由宿主拉起。
 
-启用方式：插件管理页 → `Python 演示插件` → 启用（本样例无配置页；验证走 MCP 工具 `demo_echo` / `demo_time` / `demo_counter`）。
+启用方式：插件管理页 → `Python 演示插件` → 启用。验证走 MCP 工具 `demo_echo`（唯一 hot，默认直接进
+LLM 工具面）/ `demo_time` / `demo_counter` / `demo_llm`；后三个缺省只对 gateway/UI 可见，需显式白名单才会下发给模型。
 
 ## 演示了规范的哪些能力
 
@@ -30,10 +33,11 @@ capability/plugins/demo-python/
 |---|---|---|
 | 通道握手 | `main()` → `plugin.hello` / `plugin.register` | 连 `CHONKPILOT_PLUGIN_ADDR`（AF_UNIX），行分隔 JSON 帧 |
 | MCP 注册 | `start_mcp()` + `plugin.mcp.register` | Streamable HTTP（POST `/mcp`，JSON-RPC，Bearer），空端口自选 |
-| MCP 工具 | `TOOLS` / `MCPHandler._rpc` / `call_tool` | `demo_echo`（hot）/ `demo_time` / `demo_counter` |
+| MCP 工具 | `TOOLS` / `MCPHandler._rpc` / `call_tool` | `demo_echo`（hot）/ `demo_time` / `demo_counter` / `demo_llm` |
+| 工具契约 | `tools/*.tool.md` + `build_tools()` | md 提供 name/描述/schema/hot/async/timeout/on_timeout；无 md 的工具保留代码定义 |
 | 配置读取 | `load_config()` / `cfg()` | 读 `CONFIG`/`SECRETS`；密钥只由宿主掩码回显 |
 | 配置热更新 | `_handle("plugin.config.changed")` | 保存后重读文件并推送 `demo-event` |
-| iframe RPC | `rpc()`（`echo`/`stats`/`counter.reset`） | 来自 `plugin.ui.rpc`，参数在 `payload.params` |
+| iframe RPC | `rpc()`（`echo`/`stats`/`llm`/`bridge`/`counter.reset`） | 来自 `plugin.ui.rpc`，参数在 `payload.params` |
 | 事件订阅 | `plugin.register.subscriptions` + `_dispatch` | 订阅 `session-complete`，计数并推送 |
 | 私有数据面 | `counter_get/counter_add` | `plugin/v1/data.read|write` + `storage.self`（需 manifest 授权） |
 | **LLM 桥** | `llm_call()` / 工具 `demo_llm` / rpc `llm` | `plugin/v1/llm.step`：插件不持有 apiKey，提示词经通道转发 |
@@ -80,10 +84,10 @@ python llm_bridge_proxy.py --listen 127.0.0.1:5669
 
 ## 用这份 demo 写自己的插件
 
-1. 复制本目录 → 改 `plugin.json` 的 `id`/`name`/`runtime.exe`；
-2. `plugin.py` 里替换 `TOOLS` 与 `call_tool`（MCP 工具）以及 `rpc`（配置页方法）；
+1. 复制本目录 → 改 `manifest.json` 的 `id`/`name`/`runtime`（完整 manifest）与 `plugin.json` 的 `id`/`name`/`cmd`（启动参数）；
+2. `plugin.py` 里替换 `call_tool`（MCP 工具执行）以及 `rpc`（配置页方法）；工具契约放 `tools/<name>.tool.md`（`# 基本信息` YAML + `# 摘要` + `# 参数` JSON），`build_tools()` 会用它覆盖代码里的 fallback 定义；
 3. 需要宿主数据时在 `permissions.data` 声明 `resource.op`（如 `session.snapshot.get`）；
-4. 需要密钥时在 `config.fields` 标 `"secret": true`；
+4. 需要密钥时在 `manifest.json` 的 `config.fields` 标 `"secret": true`；
 5. 页面只需要 `webui/` 下的静态文件 + `/plugin-ui/_sdk/plugin.js`，**不要**引外部 CDN。
 
 > 与 Go 插件的差别：Go 用 `pluginsdk` 自动完成握手/MCP 自举；Python 需自己实现（本 demo 即模板）。

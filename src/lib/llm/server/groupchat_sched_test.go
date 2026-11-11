@@ -135,6 +135,9 @@ func openGroup(t *testing.T, s *Server, mainAgent string, participants []any, go
 	if err := json.Unmarshal([]byte(text), &out); err != nil || out["ok"] != true {
 		t.Fatalf("subchat_open 群聊分支应 ok=true：%q err=%v", text, err)
 	}
+	if out["mode"] != "group" {
+		t.Fatalf("subchat_open 群聊应返回 mode=group：%q", text)
+	}
 	gid, _ := out["session_id"].(string)
 	if gid == "" {
 		t.Fatalf("应返回 session_id：%q", text)
@@ -843,9 +846,10 @@ func TestGroupChatTerminateSetsFinished(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 }
 
-// TestWorkSessionToolFaceExcludesSubchatFinish（F2-5 · 群聊 §7 / D12）：`work_session` 工具面**不含**
-// `subchat_finish`（下发面 + 调用处双拦）；**单聊（sub_chat）不受影响**（仍可调用 subchat_finish）。
-func TestWorkSessionToolFaceExcludesSubchatFinish(t *testing.T) {
+// TestNonSubChatToolFaceExcludesSubchatFinish（F2-5 · 群聊 §7 / D12；2026-11-10 扩展）：
+// **非 sub_chat** 会话（work_session / 主会话 / group_chat）工具面均不含 `subchat_finish`
+// （下发面 + 调用处双拦）；**单聊（sub_chat）不受影响**（仍可调用 subchat_finish）。
+func TestNonSubChatToolFaceExcludesSubchatFinish(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
@@ -853,6 +857,7 @@ func TestWorkSessionToolFaceExcludesSubchatFinish(t *testing.T) {
 
 	scope := s.cfgScope("ins-test")
 	for _, req := range []facade.SessionEnsureRequest{
+		{InstanceID: "ins-test", Scope: scope, SessionID: "s-main-ws"},
 		{InstanceID: "ins-test", Scope: scope, SessionID: "g-ws", Kind: facade.SessionKindGroupChat,
 			Lifecycle: facade.SessionLifecycleChatting, Agent: "main"},
 		{InstanceID: "ins-test", Scope: scope, SessionID: "work-ws", ParentSessionID: "g-ws",
@@ -863,20 +868,30 @@ func TestWorkSessionToolFaceExcludesSubchatFinish(t *testing.T) {
 		ensureTestSessionReq(t, s, req.SessionID, req)
 	}
 
-	// work_session：硬拒 subchat_finish（剥 self_ 前缀两种口径均拦），下发面亦不含。
-	tcW := newTurnCtx(context.Background(), s, StartReq{InstanceID: "ins-test", Session: "work-ws", Turn: "t-ws", Agent: "a"})
-	if !tcW.toolDenied(subchatFinishTool) || !tcW.toolDenied("self_"+subchatFinishTool) {
-		t.Fatal("work_session 应硬拒 subchat_finish")
-	}
-	if tcW.toolAllowed("self_" + subchatFinishTool) {
-		t.Fatal("work_session 调用处应拒绝 subchat_finish")
-	}
-	for _, d := range tcW.llmTools() {
-		if strings.TrimPrefix(d.Name, "self_") == subchatFinishTool {
-			t.Fatalf("work_session 下发面不得含 subchat_finish：%s", d.Name)
+	// work_session / 主会话 / group_chat：硬拒 subchat_finish，下发面亦不含。
+	for _, c := range []struct {
+		session, turn, agent string
+	}{
+		{"work-ws", "t-ws", "a"},
+		{"s-main-ws", "t-main-ws", ""},
+		{"g-ws", "t-group-ws", "main"},
+	} {
+		tc := newTurnCtx(context.Background(), s, StartReq{
+			InstanceID: "ins-test", Session: c.session, Turn: c.turn, Agent: c.agent,
+		})
+		if !tc.toolDenied(subchatFinishTool) || !tc.toolDenied("self_"+subchatFinishTool) {
+			t.Fatalf("%s 应硬拒 subchat_finish", c.session)
 		}
+		if tc.toolAllowed("self_" + subchatFinishTool) {
+			t.Fatalf("%s 调用处应拒绝 subchat_finish", c.session)
+		}
+		for _, d := range tc.llmTools() {
+			if strings.TrimPrefix(d.Name, "self_") == subchatFinishTool {
+				t.Fatalf("%s 下发面不得含 subchat_finish：%s", c.session, d.Name)
+			}
+		}
+		tc.Close()
 	}
-	tcW.Close()
 
 	// sub_chat：不受影响（denyTools 空 → 白名单 nil → 放行）。
 	tcS := newTurnCtx(context.Background(), s, StartReq{InstanceID: "ins-test", Session: "sc-ws", Turn: "t-sc", Agent: "sub"})

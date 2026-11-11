@@ -15,16 +15,16 @@ import (
 
 // HTTPCallContext 是 core-mcp-server HTTP 前门解析出的调用上下文。
 type HTTPCallContext struct {
-	InstanceID string
-	SessionID  string
-	TurnID     string
-	CallID     string
-	WorkDir    string
-	DataDir    string
-	Purpose    string
-	Scope      string
-	DeadlineMS int64
-	NoTimeout  bool
+	InstanceID  string
+	SessionID   string
+	TurnID      string
+	CallID      string
+	WorkDir     string
+	DataDir     string
+	DisplayName string
+	Scope       string
+	DeadlineMS  int64
+	NoTimeout   bool
 }
 
 type httpCallContextKey struct{}
@@ -61,8 +61,8 @@ func MergeCallContext(base CallContext, h HTTPCallContext) CallContext {
 	if out.DataDir == "" {
 		out.DataDir = h.DataDir
 	}
-	if out.Purpose == "" {
-		out.Purpose = h.Purpose
+	if out.DisplayName == "" {
+		out.DisplayName = h.DisplayName
 	}
 	if out.SessionID == "" {
 		out.SessionID = h.SessionID
@@ -73,7 +73,7 @@ func MergeCallContext(base CallContext, h HTTPCallContext) CallContext {
 	if out.ToolCallID == "" {
 		out.ToolCallID = h.CallID
 	}
-	out.Present = out.Present || out.InstanceID != "" || out.WorkDir != "" || out.DataDir != "" || out.Purpose != "" ||
+	out.Present = out.Present || out.InstanceID != "" || out.WorkDir != "" || out.DataDir != "" || out.DisplayName != "" ||
 		out.SessionID != "" || out.TurnID != "" || out.ToolCallID != ""
 	return out
 }

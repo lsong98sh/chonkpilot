@@ -7,7 +7,7 @@
 #   ├── config.json                  # 运行配置（首次生成，已有不覆盖；两 exe 同款自动探测）
 #   └── capability/                  # 能力目录（mcp-server 默认 root = exe 目录/capability）
 #       ├── tools/<cat>/     # 工具契约（*.tool.md；file 域 11 工具随 file 插件投放，不在此）
-#       │   └── server/        #   域工具（ask_user/tool_result/tool_stop/subchat_*/next_run）
+#       │   └── server/        #   域工具（2026-11-08 起只剩 tool_result；其余已迁 task 插件）
 #       ├── skills/      # 技能契约（*.skill.md；按 core|ux 分级嵌套，se/ 为未发布草稿，见下不投放）
 #       ├── prompts/     # 提示词契约（*.prompt.md；分级嵌套）
 #       ├── resources/   # 资源契约（*.resource.md；按 core|go|ui 分级嵌套）
@@ -114,15 +114,12 @@ foreach ($dst in @((Join-Path $embedCap "tools\file"), (Join-Path $cap "tools\fi
 $seDraft = Join-Path $cap "skills\se"
 if (Test-Path $seDraft) { [System.IO.Directory]::Delete($seDraft, $true) }
 
-# 域工具契约（ask_user / tool_result / tool_stop / subchat_open / subchat_finish）：
-# 唯一源 = src/lib/llm/contracts/tools（进程内注册与 core executor 共用同一份；
-# 源在 llm 模块内以便 go:embed）。core-only: true → 进程内 mcp-server 不注册，仅 core 执行。
-Write-Host "    -> stage domain tool contracts -> capability/tools/server"
-$domainToolsSrc = Join-Path $root "src\lib\llm\contracts\tools"
-$serverToolsDst = Join-Path $cap "tools\server"
-New-Item -ItemType Directory -Force -Path $serverToolsDst | Out-Null
-Copy-Item (Join-Path $domainToolsSrc "*.tool.md") $serverToolsDst -Force
-Write-Host "    ok: capability/tools/server ($((Get-ChildItem $serverToolsDst -Filter *.tool.md -File | Measure-Object).Count) files)"
+# 2026-11-08：core 域工具契约已全部迁出/删除（ask_user / next_run / subchat_open /
+# subchat_finish → chonkpilot-plugins/task；tool_result 删除，结果读取走 task_status）→
+# **不再投放** capability/tools/server；清理旧产物，避免与插件工具面重复。
+$serverToolsLegacy = Join-Path $cap "tools\server"
+if (Test-Path $serverToolsLegacy) { [System.IO.Directory]::Delete($serverToolsLegacy, $true) }
+Write-Host "    ok: capability/tools/server 已移除（core 无域工具契约）"
 
 Write-Host "==> [3/3] executors 已全部退场（2026-10-31 D-72）：不产出 capability/executors/"
 

@@ -70,10 +70,19 @@ func ParseToolContent(content string) (ToolContent, bool) {
 	return ToolContent{}, false
 }
 
-// ToolBrief 生成工具消息 brief（简化的工具调用内容 = 工具名 + 关键参数摘要）。
+// ToolBrief 生成工具消息 brief（chat 窗口 tool_pair 标题）：
+// 优先使用 gateway 注入的调用展示名 `tool_call_display_name`（与 tasktree 的 TaskDisplay 同源），
+// 缺省回退「工具名 + 关键参数摘要」。
 func ToolBrief(tc ToolContent) string {
 	if tc.Call == nil || tc.Call.Name == "" {
 		return ""
+	}
+	if m, ok := tc.Call.Arguments.(map[string]any); ok {
+		if s, ok := m["tool_call_display_name"].(string); ok {
+			if s = strings.TrimSpace(s); s != "" {
+				return s
+			}
+		}
 	}
 	argsJSON := ""
 	if tc.Call.Arguments != nil {

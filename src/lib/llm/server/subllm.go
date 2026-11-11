@@ -7,7 +7,7 @@
 // 下一级子轮次（多层委派）。
 //
 // 2026-11-04（task_llm 全能力委派）：拆出 `startChildTurn` —— 起轮后立即返回句柄，
-// 调用方可选择等待（默认）或先返回 running（detach），后续经 task_status / tool_result
+// 调用方可选择等待（默认）或先返回 running（detach），后续经 task_status
 // 按 turn id 取结果。委派子轮次使用**独立 ctx**（不随父 turn 收尾而取消），取消走
 // `task_stop` → 关闭子轮次（见 closeDelegatedTurn）。
 package server
@@ -67,6 +67,44 @@ func (s *Server) startChildTurn(parentCtx context.Context, parentReq StartReq, s
 
 	tc.FeedText(prompt)
 	return &childTurn{tc: tc, Session: subSession, Turn: subTurn}, nil
+}
+
+// startScheduledTurn 在**既有会话**里启动一个无父轮次的完整轮次（定时智能体 / agent.run）。
+//
+// 与 startChildTurn 的差异：不建子会话、不挂父链 —— 调用方（crontab）已确保任务子会话存在，
+// 本函数只建 turn、登记运行态、广播 turn-start 并投递 prompt。轮次仍可使用全部工具，
+// 取消由调用方 ctx（超时）或显式 closeDelegatedTurn 下发。
+//
+// 同一会话已有运行轮次 → 返回 session_busy（不覆盖 busy 登记，避免打断用户会话）。
+func (s *Server) startScheduledTurn(parentCtx context.Context, req StartReq, prompt string) (*childTurn, error) {
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	key := instKey(req.InstanceID, req.Session)
+	s.mu.Lock()
+	if cur := s.busy[key]; cur != "" && cur != req.Turn {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("会话正在执行其他轮次（turn=%s）", cur)
+	}
+	s.busy[key] = req.Turn
+	s.mu.Unlock()
+
+	store := s.newSessionStore(req.InstanceID)
+	if err := store.EnsureTurn(req.Turn, req.Session); err != nil {
+		s.mu.Lock()
+		if s.busy[key] == req.Turn {
+			delete(s.busy, key)
+		}
+		s.mu.Unlock()
+		return nil, err
+	}
+	tc := newTurnCtx(parentCtx, s, req)
+	s.mu.Lock()
+	s.registerTurnLocked(instKey(req.InstanceID, req.Turn), tc)
+	s.mu.Unlock()
+	s.emitTurnStart(req)
+	tc.FeedText(prompt)
+	return &childTurn{tc: tc, Session: req.Session, Turn: req.Turn}, nil
 }
 
 // wait 等子轮次收尾（自然完成 / parentCtx 取消），返回**终态快照**与错误。
@@ -259,7 +297,7 @@ func (s *Server) closeDelegatedChildren(instanceID, parentTurn string) {
 }
 
 // partialTurnText 读子轮次当前已产出的 assistant 文本（流式增量回填同一主键 → 最后一条
-// 即累计文本）。running 状态下供 task_status / tool_result 附带「已产出」内容。
+// 即累计文本）。running 状态下供 task_status 附带「已产出」内容。
 func (s *Server) partialTurnText(instanceID, turnID string) string {
 	if turnID == "" {
 		return ""

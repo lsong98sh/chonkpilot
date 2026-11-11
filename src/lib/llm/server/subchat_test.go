@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -93,25 +94,28 @@ func sessionOf(t *testing.T, s *Server, id string) facade.Session {
 	return resp.Session
 }
 
-// emitDomainTool 经域工具回调主题驱动一次域工具调用（gateway registered_provider.Call 同形载荷）。
+// emitDomainTool 驱动一次**已迁 task 插件**的会话编排工具（2026-11-08：subchat_* /
+// ask_user / next_run 不再走 core 的域工具回调；测试按宿主能力语义直接执行并建节点，
+// 与迁移前 domainExecute 的副作用同形）。
 func emitDomainTool(t *testing.T, s *Server, tool string, args map[string]any, turn, session, toolCallID, purpose string) map[string]any {
 	t.Helper()
-	v := s.bus.Emit(context.Background(), SubjectDomainToolCall, jb(map[string]any{
-		"tool": tool,
-		"args": args,
-		"context": map[string]any{
-			"instance_id": "ins-test", "session": session, "turn": turn,
-			"tool_call_id": toolCallID, "purpose": purpose,
-		},
-	})).Wait()
-	if v.Err() != nil {
-		t.Fatalf("domain-tool-call(%s): %v", tool, v.Err())
+	tc := s.lookupTurnIn("ins-test", turn)
+	if tc == nil {
+		t.Fatalf("domain-tool-call(%s): turn 不存在", tool)
 	}
-	res, _ := v.Result.(map[string]any)
-	if res == nil {
-		t.Fatalf("domain-tool-call(%s): 无 result", tool)
+	node, derr := s.domainNode(tc, toolCallID, tool, args, purpose)
+	if derr != nil {
+		t.Fatalf("domain-tool-call(%s): 建节点失败: %v", tool, derr)
 	}
-	return res
+	text, isErr := execMovedDomainToolForTest(s, tc, toolCallID, tool, args, purpose)
+	if !isErr && tool != "ask_user" {
+		s.tasks.done(node.TaskID, TaskStateDone, text, "")
+	}
+	return map[string]any{
+		"resultType": "complete",
+		"content":    []any{map[string]any{"type": "text", "text": text}},
+		"isError":    false, // 迁移前：next_run / subchat_* 的 isErr 不向 gateway 传递
+	}
 }
 
 // domainResultText 取域工具回调结果文本（content[0].text）。
@@ -152,6 +156,9 @@ func TestSubChatOpenTool(t *testing.T) {
 	}
 	if out["ok"] != true {
 		t.Fatalf("subchat_open 应 ok=true：%q", text)
+	}
+	if out["mode"] != "single" {
+		t.Fatalf("subchat_open 单聊应返回 mode=single：%q", text)
 	}
 	sid, _ := out["session_id"].(string)
 	if sid == "" {
@@ -232,7 +239,7 @@ func TestSubChatOpenToolArgsMissing(t *testing.T) {
 }
 
 // TestSubChatFinishTool（B2-3 · §3.4.2）：子聊天会话内调 `subchat_finish` → lifecycle=ready
-// （**建议态**）+ 发 `subchat-state`；返回 `{ok}`；不关窗、不回流。
+// （**建议态**）+ 发 `subchat-state`；返回 {ok,session_id,lifecycle}；不关窗、不回流。
 func TestSubChatFinishTool(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
@@ -250,8 +257,14 @@ func TestSubChatFinishTool(t *testing.T) {
 	if boolOf(res["isError"]) {
 		t.Fatalf("subchat_finish 不应失败：%+v", res)
 	}
-	if text := domainResultText(t, res); !strings.Contains(text, `"ok":true`) {
-		t.Fatalf("subchat_finish 应返回 {ok:true}：%q", text)
+	text := domainResultText(t, res)
+	if !strings.Contains(text, `"ok":true`) {
+		t.Fatalf("subchat_finish 应返回 ok:true：%q", text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil ||
+		str(out["session_id"]) != "sub-fin" || str(out["lifecycle"]) != facade.SessionLifecycleReady {
+		t.Fatalf("subchat_finish 应返回 session_id/lifecycle=ready：%q", text)
 	}
 	if got := sessionOf(t, s, "sub-fin").Lifecycle; got != facade.SessionLifecycleReady {
 		t.Fatalf("subchat_finish 应置 ready，got %q", got)
@@ -494,12 +507,12 @@ func TestSubChatSessionsPurposeKeySubset(t *testing.T) {
 	}
 }
 
-// TestAllSessionsToolCallForceAsyncMQ（INBOX §9 Q5）：**全形态强制异步** —— 主会话 / 子聊天 /
-// 子会话里的工具调用经 mq 均可观测到调用级 `async=always`（主题 `mcp-tools-call` 的
-// `arguments.async`）；原 A5「非主会话强制同步（async=never）」已废止。
+// TestAllSessionsToolCallNoAsyncInjection：主会话 / 子聊天 / 子会话里的工具调用经 mq 均**不得**
+// 注入调用级 `async`（异步/超时策略由 gateway 按界面 > md > 默认 auto/30s/background 裁决）；
+// 但 `tool_call_display_name` 必须保留。
 // 驱动 = `session-send`（text-user → mock LLM 回工具调用）；断言 = 监听 `mcp-tools-call`
 // （MQ 驱动 + MQ 监听，50-测试体系 §1）。
-func TestAllSessionsToolCallForceAsyncMQ(t *testing.T) {
+func TestAllSessionsToolCallNoAsyncInjection(t *testing.T) {
 	llm := mockLLMServer() // "sync tool" 分支 → core_file_read 工具调用（含 tool_call_display_name）
 	defer llm.Close()
 	s := newTestServer(t, llm)
@@ -529,10 +542,109 @@ func TestAllSessionsToolCallForceAsyncMQ(t *testing.T) {
 			return str(m["session"]) == tc.session
 		}, 3*time.Second)
 		args, _ := call["arguments"].(map[string]any)
-		if got, has := args["async"]; !has || got != "always" {
-			t.Fatalf("%s 的工具调用应附调用级 async=always：%+v", tc.session, args)
+		if _, has := args["async"]; has {
+			t.Fatalf("%s 的派发参数不得注入 async（策略由 gateway 裁决）：%+v", tc.session, args)
+		}
+		if got := args["tool_call_display_name"]; got == nil || got == "" {
+			t.Fatalf("%s 的工具调用仍必须带 tool_call_display_name：%+v", tc.session, args)
 		}
 	}
 }
 
 func boolOf(v any) bool { b, _ := v.(bool); return b }
+
+// TestSubChatOpenParticipantsInvalid（P0 2026-11-08）：participants 坏项 / 重复项不得
+// 静默丢弃并降级单聊，必须明确返回参数错误。
+func TestSubChatOpenParticipantsInvalid(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	startTurn(t, s, "s-main-pv", "t-pv")
+	base := func(parts any) map[string]any {
+		return map[string]any{
+			"agent": "main-agent", "scenario_id": "scn-1", "llm": "llm-1", "prompt": "讨论",
+			"participants": parts,
+		}
+	}
+	cases := []struct {
+		name  string
+		parts any
+		want  string
+	}{
+		{"坏项", []any{map[string]any{"agent": "a"}, map[string]any{"role": "x"}}, "缺少 agent"},
+		{"重复", []any{map[string]any{"agent": "a"}, map[string]any{"agent": "a"}}, "重复 agent"},
+		{"非数组", "a,b", "必须是数组"},
+	}
+	for i, c := range cases {
+		res := emitDomainTool(t, s, "subchat_open", base(c.parts), "t-pv", "s-main-pv",
+			"tc-pv-"+strconv.Itoa(i), "群聊")
+		text := domainResultText(t, res)
+		if !strings.Contains(text, `"ok":false`) || !strings.Contains(text, c.want) {
+			t.Fatalf("%s：应明确失败并说明 %s，got %q", c.name, c.want, text)
+		}
+	}
+}
+
+// TestSubChatOpenRejectsUnknownRefs（2026-11-10）：能力注册表 / usr llms 可用时，固定参数
+// 写错必须在父轮次明确失败，而不是建出“人格/模型不对”的子聊天。
+func TestSubChatOpenRejectsUnknownRefs(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	startTurn(t, s, "s-main-ref", "t-ref")
+	saveTestUserConfig(t, s, map[string]any{"llms": []any{
+		map[string]any{"name": "known", "baseUrl": llm.URL, "model": "mock"},
+	}})
+
+	res := emitDomainTool(t, s, "subchat_open", map[string]any{
+		"agent": "known-agent", "scenario_id": "scn-1", "llm": "typo", "prompt": "讨论",
+	}, "t-ref", "s-main-ref", "tc-ref-llm", "x")
+	if text := domainResultText(t, res); !strings.Contains(text, `"ok":false`) || !strings.Contains(text, "未配置") {
+		t.Fatalf("未知 llm 应明确失败：%q", text)
+	}
+
+	// 注册表非空 → 场景/agent 进入严格校验（测试无 scenario 数据）。
+	s.mu.Lock()
+	if s.agents == nil {
+		s.agents = map[string]AgentDef{}
+	}
+	s.agents["known-agent"] = AgentDef{}
+	s.mu.Unlock()
+	res = emitDomainTool(t, s, "subchat_open", map[string]any{
+		"agent": "known-agent", "scenario_id": "no-such", "llm": "known", "prompt": "讨论",
+	}, "t-ref", "s-main-ref", "tc-ref-scn", "x")
+	if text := domainResultText(t, res); !strings.Contains(text, `"ok":false`) || !strings.Contains(text, "scenario_id") {
+		t.Fatalf("未知 scenario_id 应明确失败：%q", text)
+	}
+}
+
+// TestSubChatFinishRejectsNonSubChat（P0 2026-11-08）：subchat_finish 只允许 kind=sub_chat；
+// 主会话 / 群聊调用明确失败且不改写 lifecycle。
+func TestSubChatFinishRejectsNonSubChat(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+	ensureTestSession(t, s, "s-main-fi", facade.SessionEnsureRequest{})
+	ensureTestSession(t, s, "g-fi", facade.SessionEnsureRequest{
+		ParentSessionID: "s-main-fi", Kind: facade.SessionKindGroupChat,
+		Lifecycle: facade.SessionLifecycleChatting, Agent: "a", ScenarioID: "sc", LLM: "l",
+	})
+	startTurn(t, s, "s-main-fi", "t-main-fi")
+	res := emitDomainTool(t, s, "subchat_finish", map[string]any{}, "t-main-fi", "s-main-fi", "tc-fi-main", "x")
+	if text := domainResultText(t, res); !strings.Contains(text, `"ok":false`) || !strings.Contains(text, "仅可在子聊天") {
+		t.Fatalf("主会话调用 subchat_finish 应明确失败：%q", text)
+	}
+	if got := sessionOf(t, s, "s-main-fi").Lifecycle; got != "" {
+		t.Fatalf("主会话 lifecycle 不应被改写：%q", got)
+	}
+
+	startTurn(t, s, "g-fi", "t-g-fi")
+	res = emitDomainTool(t, s, "subchat_finish", map[string]any{}, "t-g-fi", "g-fi", "tc-fi-group", "x")
+	if text := domainResultText(t, res); !strings.Contains(text, `"ok":false`) {
+		t.Fatalf("群聊调用 subchat_finish 应失败：%q", text)
+	}
+	if got := sessionOf(t, s, "g-fi").Lifecycle; got != facade.SessionLifecycleChatting {
+		t.Fatalf("群聊 lifecycle 不应被改写：%q", got)
+	}
+}

@@ -25,6 +25,7 @@ func (s *Server) onTaskStop(_ context.Context, _ string, v *mq.Value) error {
 		TaskID     string `json:"task_id"`
 		ToolCallID string `json:"tool_call_id"`
 		InstanceID string `json:"instance_id"`
+		Cascade    *bool  `json:"cascade"`
 	}
 	_ = json.Unmarshal(v.Payload, &req)
 
@@ -56,16 +57,72 @@ func (s *Server) onTaskStop(_ context.Context, _ string, v *mq.Value) error {
 		}
 	}
 
-	// ④ 层先标终态 + 广播 tasks.done（cascade 沿 parent_id；层内 exec_json 保留）。
+	// ④ 层先标终态 + 广播 tasks.done。cascade=true（缺省）→ 沿 parent_id 级联子树（既有语义）；
+	// cascade=false → **只停目标任务**，不递归子任务/子代理（2026-11-08 P0：真正实现 cascade）。
 	// 2026-09-19：带 instance 归属（缺口 3）→ 只取消该 instance 的节点。
-	cancelled := s.tasks.cancelSubtree(req.InstanceID, taskID)
-	if cancelled == 0 {
+	cascade := req.Cascade == nil || *req.Cascade
+	// task_stop 同时是「撤销提问」：先快照将被取消的非终态节点（含 ask_user 子节点），
+	// 取消成功后按 task_id 摘除 ask 登记（见 ⑤）。快照必须在 cancel 之前（cancel 后状态已终态）。
+	cancelledTasks := map[string]bool{taskID: true}
+	if cascade {
+		for _, n := range s.tasks.subtree(req.InstanceID, taskID) {
+			if !terminalTaskState(n.State) {
+				cancelledTasks[n.TaskID] = true
+			}
+		}
+	}
+	if cascade {
+		cancelled := s.tasks.cancelSubtree(req.InstanceID, taskID)
+		if cancelled == 0 {
+			return methodErr("任务不存在或已结束: " + taskID)
+		}
+		// 委派子代理：任务态已级联取消 → 关闭对应子轮次（递归下一级）。
+		s.closeDelegatedInSubtree(req.InstanceID, taskID)
+		// ⑤ ask_user 任务节点随任务终止 → 撤销提问（不向 LLM 投递消息）。
+		s.cancelAsksForStoppedTasks(req.InstanceID, cancelledTasks)
+		v.Result = map[string]any{"cancelled": true, "task_id": taskID, "cascade": true}
+		return nil
+	}
+	if s.cancelNodeOnly(req.InstanceID, taskID) == 0 {
 		return methodErr("任务不存在或已结束: " + taskID)
 	}
-	// 委派子代理：任务态已级联取消 → 关闭对应子轮次（递归下一级）。
-	s.closeDelegatedInSubtree(req.InstanceID, taskID)
-	v.Result = map[string]any{"cancelled": true, "task_id": taskID}
+	s.cancelAsksForStoppedTasks(req.InstanceID, cancelledTasks)
+	v.Result = map[string]any{"cancelled": true, "task_id": taskID, "cascade": false}
 	return nil
+}
+
+// cancelNodeOnly 只取消目标任务节点（cascade=false）：不递归子树、不关闭子代理。
+// 层为权威（终态拒绝 + 在飞执行经层回调打断），本层只推进该节点终态并广播。
+func (s *Server) cancelNodeOnly(instanceID, taskID string) int {
+	knownExec := false
+	if s.taskLayer != nil {
+		if st, ok := s.taskLayer.State(taskID); ok && terminalTaskState(st) {
+			return 0
+		}
+		if ex, ok := s.taskLayer.ExecOf(taskID); ok {
+			knownExec = true
+			if ex.GWTaskID != "" {
+				s.onTaskLayerCancelExec(taskID, ex)
+			}
+		}
+	}
+	n := s.tasks.nodeIn(instanceID, taskID)
+	if n == nil {
+		// 层持有执行句柄、本层无节点快照（如外部上报的作业根）：取消已下发，终态由 owner 上报。
+		if knownExec {
+			return 1
+		}
+		return 0
+	}
+	if terminalTaskState(n.State) {
+		return 0
+	}
+	s.tasks.done(taskID, TaskStateCancelled, "", "")
+	// 只关自己的委派子轮次（cascade=false 不触碰子树内其它委派）。
+	if n.Kind == TaskKindLLM && n.TurnID != "" {
+		s.closeDelegatedTurn(n.InstanceID, n.TurnID)
+	}
+	return 1
 }
 
 // onTaskBackground 前端「转后台」（61-消息一览 §4）：收到 {tool_call_id} → 经**层 + 进程内 sink**
@@ -137,12 +194,8 @@ func (s *Server) onGatewayTaskDone(_ string, payload []byte) {
 		InstanceID    string `json:"instance_id"`
 	}
 	_ = json.Unmarshal(payload, &ev)
-	// ⓪ I-83 收尾（18 §3.4）：取消回报 → 按工具执行取消表**真停执行体**（task 型域工具
-	// tool_result 轮询等；gateway 侧 Emit 同步派发不中断 handler，故经回报通道反向通知）。
-	// 未命中 = 执行体已结束 / 未登记（无 tool_call_id 或非 task 型）→ 无操作（幂等）。
-	if ev.State == "cancelled" {
-		s.cancelTaskExec(ev.ToolCallID)
-	}
+	// 2026-11-08：tool_result 已删除（结果读取走 task_status）；core 不再持有长跑域工具
+	// 执行体，取消回报无需再反向中断 handler。
 	node := s.tasks.findByGwTask(ev.InstanceID, ev.TaskID)
 	if node == nil && ev.ToolCallID != "" {
 		// 非 detached 任务未登记 gwTaskID → 按 tool_call_id 兜底定位（I-62：超时裁决取消回报）
@@ -253,7 +306,7 @@ func (tc *turnCtx) pendingHas(taskID string) bool {
 
 // notifyTaskCompletion 调用方已离开（无等待 turn）的异步任务完成通知：广播 tool-notify
 // （notice=completion）→ 前端 MessageList.onCompletionNotice 追加 🔔 user-notify 气泡
-// （结果尚未被本轮取走，可再经 tool_result 获取）。用户主动取消（cancelled）不通知。
+// （结果尚未被本轮取走，可再经 task_status 获取）。用户主动取消（cancelled）不通知。
 // instance_id/session_id 由任务节点（session → server 编排映射，TaskNode.InstanceID/SessionID）
 // 取，缺省回落 gateway 完成回报载荷；实例字段必带（61-消息一览 §0.1），缺失不广播。
 func (s *Server) notifyTaskCompletion(node *TaskNode, session, turn, instanceID, tool, taskID, state string) {
@@ -268,7 +321,7 @@ func (s *Server) notifyTaskCompletion(node *TaskNode, session, turn, instanceID,
 			instanceID = node.InstanceID
 		}
 		if node.TaskID != "" {
-			taskID = node.TaskID // 通知/去重以 server 编排节点 id 为准（tool_result 可直接解析）
+			taskID = node.TaskID // 通知/去重以 server 编排节点 id 为准（task_status 可直接解析）
 		}
 		if node.Name != "" {
 			tool = node.Name
@@ -285,7 +338,7 @@ func (s *Server) notifyTaskCompletion(node *TaskNode, session, turn, instanceID,
 	if tool == "" {
 		tool = "任务"
 	}
-	msg := "🔔 异步任务已完成：" + tool + "（task_id=" + taskID + "）。该任务结果尚未获取，可调用 tool_result(id=\"" + taskID + "\") 获取完整结果。"
+	msg := "🔔 异步任务已完成：" + tool + "（task_id=" + taskID + "）。该任务结果尚未获取，可调用 task_status(task_id=\"" + taskID + "\") 获取完整结果。"
 	if state != "done" {
 		msg = "🔔 异步任务执行失败：" + tool + "（task_id=" + taskID + "）。"
 	}

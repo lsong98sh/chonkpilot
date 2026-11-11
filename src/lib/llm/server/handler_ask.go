@@ -31,13 +31,25 @@ const askAsyncHandoffResult = "已向用户提问，正在等待回复。你可�
 // 用户已在会话里讨论过，由用户显式结束该提问；**不**向 LLM 投递消息。
 const askChatResolvedResult = "参考后续的聊天记录"
 
+// askTaskStoppedResult 是 task_stop 命中 ask_user 任务节点时写入 tool-result 的文案：
+// 提问随任务终止而撤销，不向 LLM 投递消息（与 llm-cancel 的 turn_closed 同语义）。
+const askTaskStoppedResult = "提问已终止（任务已停止）"
+
+// askAnsweredHistoryResult 是用户答复到达后写入原 tool-result 的**历史占位文案**：
+// 真实答案只出现在后续用户消息里。旧实现把答案同时写进 tool-result 与用户消息，
+// 历史/重载时同一答案出现两份（2026-11-10 修）。
+const askAnsweredHistoryResult = "用户已回复（答案见后续用户消息）"
+
+// askTimeoutHistoryResult 是超时自动答复到达后的历史占位文案（答案同样只在后续用户消息里）。
+const askTimeoutHistoryResult = "已超时，自动答复见后续用户消息"
+
 // askCenterSub 是 Ask 中心订阅（user 作用域；workDir 非空 = 只订该目录）。
 type askCenterSub struct {
 	instanceID string
 	workDir    string
 }
 
-// askAnswer 是批次内一条已答问题（全部答完后按 seq 顺序一次性投递）。
+// askAnswer 是一条已答问题（同批快照内按 seq 排序后投递）。
 type askAnswer struct {
 	askID    string
 	question string
@@ -45,10 +57,10 @@ type askAnswer struct {
 	seq      int64
 }
 
-// askBatch 是**同一会话**的提问批次（AskUser S4 要求 5：全部回复后一次性发送）。
+// askBatch 是**同一会话**的提问集合（用于 ask-resolve / 取消清理与并发答复合并）。
 //   - open     = 尚未回答的提问（含跳过 / 超时未结算）；
-//   - answered = 已回答但批次尚未齐（先收着，等最后一条答复到达再投递）；
-//   - 最后一条答复到达 → 合并为一条 user 消息投递并删除批次；
+//   - answered = 本次待投递的已答项（recordAskAnswer 取走后立即清空，不等待其它 open）；
+//   - 每条答复到达即投递（不再要求全部作答）；批次在 open 为空时删除；
 //   - 轮次正常结束不删除（非阻塞 ask 允许先收尾）；取消 / 实例退出整批丢弃。
 type askBatch struct {
 	key      string
@@ -198,8 +210,8 @@ func sameWorkDirPath(a, b string) bool {
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
-// onAskUserReply ask 应答 → 记入会话批次；同会话全部答完后作为**用户消息**一次性投递
-// （AskUser S4：提问是快速转异步，答复不占用原 tool-result 配对）+ ask 任务节点 → tasks.done。
+// onAskUserReply ask 应答 → 记入会话批次并**立即投递**（同批已收集的答复合并为一条：
+// AskUser S4 非阻塞；2026-11-10 起不再等待同会话其它未答问题）+ ask 任务节点 → tasks.done。
 func (s *Server) onAskUserReply(_ context.Context, _ string, v *mq.Value) error {
 	// 载荷字段 = ask_id（61 §4.2；I-152 已闭环，旧连字符名不再回落）。
 	var raw map[string]any
@@ -229,18 +241,21 @@ func (s *Server) onAskUserReply(_ context.Context, _ string, v *mq.Value) error 
 	if w.taskID != "" {
 		s.tasks.done(w.taskID, TaskStateDone, answer, "")
 	}
-	// AskUser S4：直接回答同样就地更新 tool-result（历史/重载可见）；答复本身按批次投递。
-	s.updateAskToolResult(w, answer)
+	// AskUser S4：直接回答同样就地更新 tool-result（历史/重载可见）；但**不写答案正文**
+	// （答案只经后续用户消息投递，避免历史里同一答案出现两份）。
+	s.updateAskToolResult(w, askAnsweredHistoryResult)
 	s.notifyAskCenterRemove(w, "answered")
-	// 同会话多问：先收着；最后一条答复到达才一次性投递（要求 5）。
+	// 同会话并发答复：recordAskAnswer 快照当前已答集合并立即投递（不等待其它未答项）。
 	if text, ready := s.recordAskAnswer(w, answer); ready {
 		s.deliverAskAnswers(w, text)
 	}
 	return nil
 }
 
-// recordAskAnswer 把一条答复记入会话批次；返回 (可投递文本, 是否已全部答完)。
-// 批次缺失（旧登记 / 测试直插 s.asks）→ 视为单问批次立即投递。
+// recordAskAnswer 把一条答复记入会话批次，并**立即投递当前已答集合**：
+// 不再要求同会话所有提问都作答（否则任一未答且无 timeout 会永久阻塞已答内容）。
+// 同一次快照里若已有其它已答项（并发答复），合并为一条；投递后清空，避免重复。
+// 批次缺失（旧登记 / 测试直插 s.asks）→ 视为单问立即投递。
 func (s *Server) recordAskAnswer(w *askWaiter, answer string) (string, bool) {
 	if w == nil {
 		return "", false
@@ -257,15 +272,15 @@ func (s *Server) recordAskAnswer(w *askWaiter, answer string) (string, bool) {
 	b.answered[w.askID] = askAnswer{
 		askID: w.askID, question: w.question, answer: answer, seq: w.seq,
 	}
-	if len(b.open) > 0 {
-		s.mu.Unlock()
-		return "", false
-	}
 	answers := make([]askAnswer, 0, len(b.answered))
 	for _, a := range b.answered {
 		answers = append(answers, a)
 	}
-	delete(s.askBatches, b.key)
+	// 已取走 → 清空，防止后续答复重复投递同一批。
+	b.answered = make(map[string]askAnswer)
+	if len(b.open) == 0 {
+		delete(s.askBatches, b.key)
+	}
 	s.mu.Unlock()
 	sort.SliceStable(answers, func(i, j int) bool { return answers[i].seq < answers[j].seq })
 	return formatAskAnswers(answers), true
@@ -292,7 +307,7 @@ func formatAskAnswers(answers []askAnswer) string {
 //
 // 语义（AskUser S4）：
 //   - 只改写历史记录（原 `ask_user` 行的 result 文案），不回填当前 LLM 轮；
-//   - 若该 ask 是同会话批次里最后一个未答项 → 暂存的**真实答复**按原口径一次性投递；
+//   - 若该 ask 的同批 answered 里仍有未取走的真实答复（并发竞态）→ 按原口径一次性投递；
 //     「参考后续的聊天记录」本身不进入答复集合；
 //   - 幂等：已解除 / 不存在的 ask → ok:true。
 func (s *Server) onAskResolve(_ context.Context, _ string, v *mq.Value) error {
@@ -356,14 +371,20 @@ func (s *Server) resolveAskBatchLocked(w *askWaiter) (string, bool) {
 
 // updateAskToolResult 就地更新已收口的 ask_user tool 行 result 文案（AskUser S4）：
 // 同一 turn + tool_call_id 的既有行由 data 面按 `(turn_id, tool_call_id)` 反查复用
-// （不新增行）；`tool_call_status` 恒 completed。**不向 LLM 投递**（仅历史/重载可见）。
+// （不新增行）；默认 `tool_call_status=completed`（task_stop 用 status 变体写 cancelled）。
+// **不向 LLM 投递**（仅历史/重载可见）。
 func (s *Server) updateAskToolResult(w *askWaiter, text string) {
+	s.updateAskToolResultStatus(w, text, persist.ToolStatusCompleted)
+}
+
+// updateAskToolResultStatus 同 updateAskToolResult，但可指定终态（task_stop → cancelled）。
+func (s *Server) updateAskToolResultStatus(w *askWaiter, text, status string) {
 	if w == nil || w.turnID == "" || w.toolID == "" {
 		return
 	}
 	content := persist.ToolContent{
 		Call:   &persist.ToolCallContent{ToolCallID: w.toolID, Name: "ask_user", Arguments: w.args},
-		Result: &persist.ToolResultContent{Content: text, Status: persist.ToolStatusCompleted},
+		Result: &persist.ToolResultContent{Content: text, Status: status},
 	}
 	b, err := json.Marshal(content)
 	if err != nil {
@@ -373,7 +394,7 @@ func (s *Server) updateAskToolResult(w *askWaiter, text string) {
 		"role":             "tool",
 		"content":          string(b),
 		"tool_call_id":     w.toolID,
-		"tool_call_status": persist.ToolStatusCompleted,
+		"tool_call_status": status,
 		"ask_id":           w.askID,
 	}
 	if meta := s.gc.ToolMeta("ask_user"); len(meta) > 0 {
@@ -383,6 +404,25 @@ func (s *Server) updateAskToolResult(w *askWaiter, text string) {
 		logf("[chonkpilot-server] ask tool-result 更新失败（turn=%s tool_call_id=%s）: %v\n",
 			w.turnID, w.toolID, err)
 	}
+}
+
+// cancelAsksForStoppedTasks 在 task_stop 命中 ask 任务节点后**撤销提问**（LLM 发起的停止与
+// llm-cancel 同语义：提问随任务终止，不再等待/收答复）：
+//   - 摘除 s.asks 登记、丢弃批次内已收答复、停超时定时器；
+//   - 历史 tool-result 改为 cancelled + 「提问已终止」；
+//   - Ask 中心摘除（reason=task_stopped）；
+//   - **不**向 LLM 投递任何消息（占位结果已在当前轮消费）。
+//
+// taskIDs 为目标节点（cascade=false）或取消子树中的非终态节点（cascade=true）。
+func (s *Server) cancelAsksForStoppedTasks(instanceID string, taskIDs map[string]bool) int {
+	s.mu.Lock()
+	removed := s.clearAsksByTaskLocked(instanceID, taskIDs)
+	s.mu.Unlock()
+	for _, w := range removed {
+		s.updateAskToolResultStatus(w, askTaskStoppedResult, persist.ToolStatusCancelled)
+		s.notifyAskCenterRemove(w, "task_stopped")
+	}
+	return len(removed)
 }
 
 // ask 登记等待（tool-call 命中 ask_user 时调用）：广播 ask-user
@@ -480,7 +520,8 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 	// 每 workdir 单调序号（有序队列）。
 	s.askSeq[workDir]++
 	seq := s.askSeq[workDir]
-	// 会话批次（要求 5）：同会话的多个提问共用一个批次；会话未知 → 以 ask 唯一键自成一档。
+	// 会话集合（2026-11-10：不再等待全部答完；批次用于答复合并 / ask-resolve / 取消清理）。
+	// 会话未知 → 以 ask 唯一键自成一档。
 	batchKey := instKey(turnInstance, sess)
 	if sess == "" {
 		batchKey = instKey(turnInstance, askID)
@@ -542,8 +583,8 @@ func (s *Server) postAskExpired(askID string) {
 	}
 }
 
-// expireAsk 结算显式超时的 ask：取走登记 → 任务节点 done → 超时答复记入会话批次
-// （同批全部答完则一次性投递）→ 通知 Ask 中心摘除（reason=timeout）。
+// expireAsk 结算显式超时的 ask：取走登记 → 任务节点 done → 超时答复立即投递
+// （同批已答集合合并；不等待其它未答项）→ 通知 Ask 中心摘除（reason=timeout）。
 // 与用户作答同一条路径：答复是**后续用户消息**，不再回填本次 tool-result。
 func (s *Server) expireAsk(askID string) {
 	if askID == "" {
@@ -558,7 +599,7 @@ func (s *Server) expireAsk(askID string) {
 	if w.taskID != "" {
 		s.tasks.done(w.taskID, TaskStateDone, w.autoAnswer, "")
 	}
-	s.updateAskToolResult(w, w.autoAnswer)
+	s.updateAskToolResult(w, askTimeoutHistoryResult)
 	s.notifyAskCenterRemove(w, "timeout")
 	if text, ready := s.recordAskAnswer(w, w.autoAnswer); ready {
 		s.deliverAskAnswers(w, text)
@@ -567,31 +608,40 @@ func (s *Server) expireAsk(askID string) {
 		w.askID, w.sessionID, w.autoAnswer)
 }
 
-// deliverAskAnswers 把「同会话全部问答」投递回 LLM（要求 4/5：结果传给 LLM，且一次只发一条）：
+// deliverAskAnswers 把一条（或并发已答集合）答复投递回 LLM：
 //   - 主会话：写持久化 inbox（**next_turn**）——有运行轮则等本轮结束自动消费；
 //     无运行轮立即起新一轮。进程重启 / 相位错过都不丢；
 //   - 群聊 / 子会话（kind 非空）：沿用既有口径——有运行轮直接喂入，否则起新一轮
-//     （这些会话由各自调度器驱动，不经 consumeNextTurn）。
+//     （这些会话由各自调度器驱动，不经 consumeNextTurn）；
+//   - 投递失败（inbox 业务失败 / 起轮被拒 / 桥错误）→ `persistUndeliveredAskAnswer`
+//     把答复落到原轮次，至少重载可见（不重试）。
 func (s *Server) deliverAskAnswers(w *askWaiter, text string) {
 	if w == nil || strings.TrimSpace(text) == "" {
 		return
 	}
 	if w.sessionID == "" {
 		logf("[chonkpilot-server] ask 答复无法投递（缺会话标识）: ask_id=%s\n", w.askID)
+		s.persistUndeliveredAskAnswer(w, text)
 		return
 	}
 	inst := s.askAnswerInstance(w)
 	if inst == "" {
 		logf("[chonkpilot-server] ask 答复无法投递（缺实例归属）: ask_id=%s session=%s\n", w.askID, w.sessionID)
+		s.persistUndeliveredAskAnswer(w, text)
 		return
 	}
 	// 非主会话：有在飞轮次 → 直接喂入；否则起新轮（与 replyExpiredAsk 同口径）。
 	if kind := s.sessionRow(inst, w.sessionID).Kind; kind != "" {
+		var derr error
 		if tc := s.turnBySessionForAdd(inst, w.sessionID); tc != nil {
-			s.sendTextToTurn(inst, w.sessionID, tc.req.Turn, text)
-			return
+			derr = s.sendTextToTurn(inst, w.sessionID, tc.req.Turn, text)
+		} else {
+			derr = s.startAskAnswerTurn(inst, w.sessionID, text)
 		}
-		s.startAskAnswerTurn(inst, w.sessionID, text)
+		if derr != nil {
+			// 投递失败不让答案消失：至少落到原轮次（重载可见）；不重试。
+			s.persistUndeliveredAskAnswer(w, text)
+		}
 		return
 	}
 	// 主会话：持久化 inbox（next_turn）——有运行轮时等其正常结束再起新一轮；
@@ -603,11 +653,44 @@ func (s *Server) deliverAskAnswers(w *askWaiter, text string) {
 	})
 	if err != nil {
 		logf("[chonkpilot-server] ask 答复序列化失败: ask_id=%s err=%v\n", w.askID, err)
+		s.persistUndeliveredAskAnswer(w, text)
 		return
 	}
-	if err := s.onInboxAdd(context.Background(), "", &mq.Value{Payload: payload}); err != nil {
-		logf("[chonkpilot-server] ask 答复投递失败: ask_id=%s session=%s err=%v\n", w.askID, w.sessionID, err)
+	v := &mq.Value{Payload: payload}
+	// onInboxAdd 的业务失败（落库失败 / 超长）也返回 nil error + ok:false，必须同时检查。
+	ok := false
+	if derr := s.onInboxAdd(context.Background(), "", v); derr != nil {
+		logf("[chonkpilot-server] ask 答复投递失败: ask_id=%s session=%s err=%v\n", w.askID, w.sessionID, derr)
+	} else if res, _ := v.Result.(map[string]any); res != nil {
+		ok, _ = res["ok"].(bool)
+		if !ok {
+			logf("[chonkpilot-server] ask 答复入队失败: ask_id=%s session=%s res=%v\n", w.askID, w.sessionID, res)
+		}
 	}
+	if !ok {
+		s.persistUndeliveredAskAnswer(w, text)
+	}
+}
+
+// persistUndeliveredAskAnswer 是答复投递失败的最后兜底：把答复作为 user 消息写入
+// **原 ask 所属轮次**（不触发新一轮、不重试）。这样至少重载/历史可见，不会因 inbox/
+// 群聊调度失败而永久丢失。写库也失败 → 明确日志（无更多补偿路径）。
+func (s *Server) persistUndeliveredAskAnswer(w *askWaiter, text string) {
+	if w == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	if w.turnID == "" {
+		logf("[chonkpilot-server] ask 答复无法落库（缺 turn_id）: ask_id=%s session=%s\n", w.askID, w.sessionID)
+		return
+	}
+	msg := map[string]any{"role": "user", "content": text}
+	if _, err := s.newSessionStore(w.instanceID).AppendMsgMap(w.turnID, msg, ""); err != nil {
+		logf("[chonkpilot-server] ask 答复投递失败且落库失败: ask_id=%s turn=%s session=%s err=%v\n",
+			w.askID, w.turnID, w.sessionID, err)
+		return
+	}
+	logf("[chonkpilot-server] ask 答复投递失败，已落库到原轮次: ask_id=%s turn=%s session=%s\n",
+		w.askID, w.turnID, w.sessionID)
 }
 
 // askAnswerInstance 选择答复投递实例：源会话所在窗口 → 发起 turn 的实例。
@@ -623,28 +706,32 @@ func (s *Server) askAnswerInstance(w *askWaiter) string {
 	return w.ownerInstance
 }
 
-// sendTextToTurn 向已存在的运行轮投递一条用户文本（群聊 / 子会话答复路径）。
-func (s *Server) sendTextToTurn(inst, sess, turn, text string) {
+// sendTextToTurn 向已存在的运行轮投递一条用户文本（群聊 / 子会话答复路径）；
+// 失败返回 error，由调用方落库兜底。
+func (s *Server) sendTextToTurn(inst, sess, turn, text string) error {
 	body, err := json.Marshal(SendReq{
 		InstanceID: inst, Session: sess, Turn: turn, Type: SendTypeTextUser, Content: text,
 	})
 	if err != nil {
-		return
+		return err
 	}
 	if err := s.onLLMSend(context.Background(), "", &mq.Value{Payload: body}); err != nil {
 		logf("[chonkpilot-server] ask 答复喂入运行轮失败: session=%s turn=%s err=%v\n", sess, turn, err)
+		return err
 	}
+	return nil
 }
 
-// startAskAnswerTurn 在无运行轮时以答复起新一轮（群聊 / 子会话路径）。
-func (s *Server) startAskAnswerTurn(inst, sess, text string) {
+// startAskAnswerTurn 在无运行轮时以答复起新一轮（群聊 / 子会话路径）；失败返回 error，
+// 由调用方落库兜底。
+func (s *Server) startAskAnswerTurn(inst, sess, text string) error {
 	res := s.acceptStart(StartReq{InstanceID: inst, Session: sess, Turn: "turn-" + newID()})
 	if ok, _ := res["accepted"].(bool); !ok {
 		logf("[chonkpilot-server] ask 答复起新轮被拒: session=%s target=%s res=%v\n", sess, inst, res)
-		return
+		return fmt.Errorf("起新轮被拒: %v", res)
 	}
 	turnID, _ := res["turn"].(string)
-	s.sendTextToTurn(inst, sess, turnID, text)
+	return s.sendTextToTurn(inst, sess, turnID, text)
 }
 
 // askCenterSubscriber 取 Ask 中心该 user 的订阅实例（workdir 作用域匹配；无 → ok=false）。
