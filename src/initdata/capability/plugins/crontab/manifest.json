@@ -69,7 +69,7 @@
         "tooltip": "定时任务（点击查看）"
       }
     ],
-    "rpc": ["status", "ping", "list", "toggle", "delete", "runs", "badge", "load", "save", "reset"]
+    "rpc": ["status", "ping", "list", "toggle", "delete", "run", "create", "runs", "badge", "load", "save", "reset"]
   },
   "permissions": {
     "data": [],

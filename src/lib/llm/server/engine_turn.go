@@ -114,6 +114,8 @@ func (tc *turnCtx) runEngineLoop() {
 			// 无合格候选 → 降级用默认（仅日志留痕）。
 			ImageFallbacks:           tc.llmImageFallbacks,
 			ImageFallbackUnavailable: tc.llmVisionUnavailable,
+			// 每 step 真实用量（含缓存命中/推理）→ `llm-usage` 事件（前端上下文环 + 悬停明细）。
+			UsageObserver: tc.observeStepUsage,
 		})},
 		Config: tc.engineRuntimeConfig(),
 		Inbox:  tc.engineInbox,
@@ -338,9 +340,24 @@ type engineStepLLM struct {
 }
 
 func (l engineStepLLM) Step(ctx context.Context, req chat.StepRequest, opts chat.StepOptions) (<-chan chat.StepEvent, error) {
+	// 四步压缩策略（2026-11-14）：**每次 LLM step** 都按「本次请求总输入」判定阈值；
+	// 超阈值时同步简化 / 压缩并替换本次请求消息（不静默截断，失败返回错误 → 轮次错误终态）。
+	if l.tc != nil {
+		if err := l.tc.ensureStepContext(ctx, &req); err != nil {
+			return nil, err
+		}
+	}
 	// 最终请求消息列表的思维链回传规则（生产在组装内应用）：引擎自持 messages 时，
 	// 追加进列表的 assistant 段仍带 reasoning → 在此按同一规则归一（幂等，不修改引擎状态）。
 	req.Messages = session.ApplyReasoningRule(req.Messages)
+	// 用量事件 send 阶段：把「即将发给 LLM 的请求」的本地估算先送到前端（环可即时显示），
+	// step 结束时再用上游真实 usage 校准（见 UsageObserver → observeStepUsage）。
+	if l.tc != nil {
+		est := estimateStepInputTokens(req)
+		step := l.tc.usageStep.Add(1)
+		l.tc.usageEst.Store(int64(est))
+		l.tc.publishUsage("send", step, est, nil)
+	}
 	ch, err := l.inner.Step(ctx, req, opts)
 	if err != nil {
 		// 超窗兜底（SESSION-1 阶段一）：同一份 payload 立刻压缩 → 重新组装 → 重试一次。
@@ -388,19 +405,106 @@ func (l engineStepLLM) Step(ctx context.Context, req chat.StepRequest, opts chat
 	return out, nil
 }
 
-// afterOverflow 是超窗兜底的一次性动作：判定超窗 → 用**同一份 payload** 同步压缩 →
+// ─── 用量事件（session-usage / 前端 type llm-usage）──────────────────────
+//
+// 每 step 两条：
+//   - send：请求**发出前**，携带本地估算输入 token（环即时显示「估算」）；
+//   - done：step 结束，携带上游真实 usage（prompt/completion/total/reasoning/cached），
+//     前端据此校准环与悬停明细。
+//
+// 非终态、不落库；`parents` 随载荷下发，前端据此忽略子轮次（环只跟主会话）。
+// 恢复轮（recoverTurnCtx）无 provider 名/max token 来源 → 事件仍发，但相关字段缺省。
+
+// observeStepUsage 是 `ChatOptions.UsageObserver` 的实现（流 goroutine 内回调，必须非阻塞）。
+func (tc *turnCtx) observeStepUsage(u UsageReport) {
+	if tc == nil {
+		return
+	}
+	tc.publishUsage("done", tc.usageStep.Load(), int(tc.usageEst.Load()), &u)
+}
+
+// publishUsage 发布一条 `llm-usage` 事件（bus 不可用 = 静默跳过，不影响回合）。
+func (tc *turnCtx) publishUsage(phase string, step int64, est int, u *UsageReport) {
+	if tc == nil || tc.server == nil || tc.server.bus == nil {
+		return
+	}
+	tc.server.publish("llm-usage", tc.usageEvent(phase, step, est, u))
+}
+
+// usageEvent 构造 `session-usage` 载荷（纯函数，便于单测；ts 为当前 UTC 时间）。
+func (tc *turnCtx) usageEvent(phase string, step int64, est int, u *UsageReport) map[string]any {
+	ev := map[string]any{
+		"instance_id":       tc.req.InstanceID,
+		"session":           tc.req.Session,
+		"turn":              tc.req.Turn,
+		"parents":           tc.req.Parents,
+		"phase":             phase,
+		"step":              step,
+		"llm":               tc.llmName,
+		"est_prompt_tokens": est,
+		"ts":                time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if tc.llmModel != "" {
+		ev["model"] = tc.llmModel
+	}
+	if tc.llmMaxContextToken != nil {
+		ev["max_context_token"] = *tc.llmMaxContextToken
+	}
+	if tc.llmMaxOutputToken != nil {
+		ev["max_output_token"] = *tc.llmMaxOutputToken
+	}
+	if u != nil {
+		if u.Model != "" {
+			ev["model"] = u.Model // 上游回显优先（auto 切换 provider 时更准确）
+		}
+		ev["prompt_tokens"] = u.PromptTokens
+		ev["completion_tokens"] = u.CompletionTokens
+		ev["total_tokens"] = u.TotalTokens
+		ev["reasoning_tokens"] = u.ReasoningTokens
+		ev["cached_tokens"] = u.CachedTokens
+	}
+	return ev
+}
+
+// estimateStepInputTokens 估算**单次请求**的输入 token（与组装侧同口径：字符数 / 2）。
+//
+// 口径 = system/messages 正文 + tool_call 名与参数 + 下发工具 schema（名/描述/参数 JSON）。
+// 与上游真实 usage 的偏差用于前端悬停明细的「校准」展示；不参与任何压缩/边界判定。
+func estimateStepInputTokens(req chat.StepRequest) int {
+	n := 0
+	for _, m := range req.Messages {
+		n += session.EstimateTokens(m.Content)
+		for _, c := range m.ToolCalls {
+			n += session.EstimateTokens(c.Name)
+			n += session.EstimateTokens(c.Arguments)
+		}
+	}
+	for _, t := range req.Tools {
+		n += session.EstimateTokens(t.Name)
+		n += session.EstimateTokens(t.Description)
+		if len(t.InputSchema) > 0 {
+			n += session.EstimateTokens(string(t.InputSchema))
+		}
+	}
+	return n
+}
+
+// afterOverflow 是超窗兜底的一次性动作：判定超窗 → 用**同一压缩函数**同步压缩 →
 // 重新组装上下文 → 重试一次。返回 (新事件流, true) = 已重试；false = 不适用 / 压缩未生效 /
 // 重试仍失败（调用方按原样处理，主流程不受影响）。
 func (l engineStepLLM) afterOverflow(ctx context.Context, req *chat.StepRequest, opts chat.StepOptions, cause error) (<-chan chat.StepEvent, bool) {
 	if l.tc == nil || !isContextOverflow(cause) {
 		return nil, false
 	}
-	if !l.tc.compressOnOverflow(ctx, req.Messages) {
+	if !l.tc.compressOnOverflow(ctx) {
 		return nil, false
 	}
-	l.tc.refreshHistoryFromSnapshot() // 压缩已写入快照 → 重读已提交快照（否则仍用旧历史）
-	a := l.tc.buildAssembly()         // 重新组装得到更小的上下文
-	req.Messages = session.ApplyReasoningRule(a.Context.Messages)
+	a, err := l.tc.buildAssembly() // 压缩后重新组装（tc.hist 已替换为摘要）
+	if err != nil {
+		logf("[chonkpilot-server] compress: 超窗兜底重组装失败（turn=%s）: %v\n", l.tc.req.Turn, err)
+		return nil, false
+	}
+	req.Messages = a.Context.Messages // 已应用 reasoning 规则
 	ch, err := l.inner.Step(ctx, *req, opts)
 	if err != nil {
 		logf("[chonkpilot-server] compress: 超窗兜底重试仍失败（turn=%s）: %v\n", l.tc.req.Turn, err)
@@ -410,16 +514,36 @@ func (l engineStepLLM) afterOverflow(ctx context.Context, req *chat.StepRequest,
 	return ch, true
 }
 
+// ensureStepContext 在每次 LLM step 前执行四步阈值判定：
+//   - 本次请求估算 <= 触发阈值 → 原样返回（零额外读库）；
+//   - 超阈值 → 走 `buildAssembly`（全量 / 简化 / 同步压缩 / 报错），并用结果替换请求消息。
+func (tc *turnCtx) ensureStepContext(ctx context.Context, req *chat.StepRequest) error {
+	if tc == nil || req == nil {
+		return nil
+	}
+	trigger := tc.compressTriggerTokens()
+	if trigger <= 0 || estimateStepInputTokens(*req) <= trigger {
+		return nil
+	}
+	res, err := tc.buildAssembly()
+	if err != nil {
+		return err
+	}
+	req.Messages = res.Context.Messages
+	return nil
+}
+
 // engineTurnContext 返回生产同一份逐字上下文（`tc.msgs()`：系统提示词 + 引导 + 本轮已落库消息）。
 //
-// SESSION-1 阶段一：组装结果改为 `Assembly`（Context / LastTurnID / Zones / Usage）——
-// 发给 LLM 的 `chat.Context` 与改动前逐字节一致（`Assembly.Context`）；另在同一位置
-// **异步**触发压缩（达阈值才触发，非阻塞、失败不影响本轮）。
+// 组装结果 = `Assembly`（Context / LastTurnID / Zones / Usage）；四步压缩策略在
+// `buildAssembly` 内同步执行（超阈值 → 简化 / 压缩；失败 → error → 引擎错误终态）。
 type engineTurnContext struct{ tc *turnCtx }
 
 func (c engineTurnContext) Build(context.Context, chat.ContextRequest) (chat.Context, error) {
-	a := c.tc.buildAssembly()
-	c.tc.maybeStartCompress(a)
+	a, err := c.tc.buildAssembly()
+	if err != nil {
+		return chat.Context{}, err
+	}
 	// TURNRUN-1 批次 2：`Assembly.Context` 是 session 自持类型（2H §2 决策 1），
 	// 边界转换在宿主做；两结构字段一一对应（SystemPrompt + Messages），纯搬运零语义变更。
 	return chat.Context{SystemPrompt: a.Context.SystemPrompt, Messages: a.Context.Messages}, nil

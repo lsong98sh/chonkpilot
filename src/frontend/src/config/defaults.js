@@ -2,9 +2,11 @@
 // 用户已保存的配置（usr 库）优先，这些值仅在无配置时兜底。
 
 // LLM 协议类型：openai = OpenAI 兼容 Chat Completions（默认）；
-// responses = OpenAI Responses API（含 DeepSeek /responses，P1-2）。
+// responses = OpenAI Responses API（含 DeepSeek /responses，P1-2）；
+// anthropic = Anthropic /v1/messages（x-api-key + anthropic-version）。
 export const DEFAULT_LLM_PROTOCOL = 'openai'
 export const RESPONSES_LLM_PROTOCOL = 'responses'
+export const ANTHROPIC_LLM_PROTOCOL = 'anthropic'
 
 // 新增 LLM 的默认值
 export const DEFAULT_LLM = {
@@ -28,6 +30,10 @@ export const DEFAULT_LLM = {
   capability: { reasoning: 3, vision: 0 },
   // 旧声明式能力数组：**由 capability 派生**（保存时写回；此处初值仅占位）。
   capabilities: [],
+  // 附加参数（请求体额外字段，JSON 对象；值可为字符串 / 数字 / 布尔 / JSON 对象）
+  // 与请求头（字符串 map）：在「附加参数」「头信息」页签以 K=V 行编辑。
+  extraParams: {},
+  headers: {},
 }
 
 // 新增 MCP 服务器的默认值（默认禁用，12-数据层；字段对齐 servers.list 规范）

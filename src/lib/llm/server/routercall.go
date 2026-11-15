@@ -51,7 +51,7 @@ func (s *Server) exeDefaultSpec() router.Spec {
 // specFor 把本轮命中的 provider 配置折算为 `router.Spec`：
 //   - `pcfg == nil`（未命中 usr llms / 非保留名）→ exe flags 隐含默认；
 //   - `BaseURL` / `Model` 为空 → 回落 exe flags（与旧 `llmClientFor` 的回落口径逐字一致）；
-//   - 协议已由 `loadLLMProvider` 归一（openai / responses / echo）。
+//   - 协议已由 `loadLLMProvider` 归一（openai / responses / anthropic / echo）。
 func (s *Server) specFor(pcfg *llmProviderCfg) router.Spec {
 	if pcfg == nil {
 		return s.exeDefaultSpec()
@@ -62,6 +62,8 @@ func (s *Server) specFor(pcfg *llmProviderCfg) router.Spec {
 		BaseURL:      orDefault(pcfg.BaseURL, s.opts.LLMBase),
 		APIKey:       pcfg.APIKey,
 		DefaultModel: orDefault(pcfg.Model, s.opts.LLMModel),
+		ExtraParams:  pcfg.ExtraParams,
+		ExtraHeaders: pcfg.Headers,
 	}
 }
 
@@ -86,6 +88,8 @@ func (s *Server) specFromRecord(llm map[string]any) (router.Spec, bool) {
 		BaseURL:      orDefault(strings.TrimSpace(str(llm["baseUrl"])), s.opts.LLMBase),
 		APIKey:       strings.TrimSpace(str(llm["apiKey"])),
 		DefaultModel: orDefault(strings.TrimSpace(str(llm["model"])), s.opts.LLMModel),
+		ExtraParams:  configAnyMap(llm["extraParams"]),
+		ExtraHeaders: configStringMap(llm["headers"]),
 	}, true
 }
 
@@ -145,11 +149,13 @@ func (s *Server) chat(ctx context.Context, spec router.Spec, msgs []ChatMsg, too
 // forwardRouterEvents 把 router 事件流折算为 `StreamEvent` 流：
 //   - `tool_call`（完整值，D-32）逐条累积，**随 `done` 一并投出**（复刻旧 chat 路径「终态一次带全部
 //     ToolCalls」的形状，`turn.go` 的 `calls = ev.ToolCalls` 语义不变）；
-//   - `usage` 当前无消费方（LR-9 归一在 router，llm 侧记账未接线）→ 不投；
+//   - `usage`（LR-9 归一在 router）暂存后**随 `done` 一并投出**：一次调用一份用量快照，
+//     step 结束才能确定最终值（OpenAI 在末片、Anthropic 在 message_delta）；
 //   - 通道因取消而关闭且**尚未投过 done** → 补投一条 ctx 错误事件（镜像旧路径「取消静默」的判定）。
 func forwardRouterEvents(ctx context.Context, events <-chan router.Event, out chan<- StreamEvent) {
 	defer close(out)
 	var calls []router.ToolCall
+	var usage *router.Usage
 	sentDone := false
 	// send 非阻塞投递：消费方若已提前离开（如 ev.Err 后 break 不再排空）→ 生产端不得永久
 	// 阻塞在 `out <-`（否则 defer close(out) 不执行 → goroutine 泄漏）；ctx 取消即退出。
@@ -171,6 +177,11 @@ func forwardRouterEvents(ctx context.Context, events <-chan router.Event, out ch
 			if !send(StreamEvent{Reasoning: ev.Text, Model: ev.Model}) {
 				return
 			}
+		case router.EvUsage:
+			if ev.Usage != nil {
+				u := *ev.Usage // 值拷贝：事件对象可能被 router 复用
+				usage = &u
+			}
 		case router.EvToolCall:
 			if ev.ToolCallFull != nil {
 				calls = append(calls, *ev.ToolCallFull)
@@ -180,7 +191,7 @@ func forwardRouterEvents(ctx context.Context, events <-chan router.Event, out ch
 			if len(calls) > 0 {
 				finish = "tool_calls" // 旧 chat 路径口径：有工具调用即 tool_calls
 			}
-			if !send(StreamEvent{ToolCalls: FromRouterToolCalls(calls), Done: true, FinishReason: finish, Model: ev.Model}) {
+			if !send(StreamEvent{ToolCalls: FromRouterToolCalls(calls), Done: true, FinishReason: finish, Model: ev.Model, Usage: usage}) {
 				return
 			}
 			sentDone = true

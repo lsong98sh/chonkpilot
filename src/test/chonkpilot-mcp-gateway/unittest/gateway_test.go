@@ -438,8 +438,8 @@ func awaitAwaiting(t *testing.T, outCh chan map[string]any) (string, map[string]
 	if ts, _ := sc["timeout_s"].(float64); ts != 0.1 {
 		t.Fatalf("awaiting timeout_s = %v, want 0.1 (sc=%v)", sc["timeout_s"], sc)
 	}
-	if opts, _ := sc["options"].([]any); len(opts) != 2 || opts[0] != "wait" || opts[1] != "cancel" {
-		t.Fatalf("never awaiting options = %v, want [wait,cancel]", sc["options"])
+	if opts, _ := sc["options"].([]any); len(opts) != 2 || opts[0] != "detach" || opts[1] != "cancel" {
+		t.Fatalf("manual awaiting options = %v, want [detach,cancel]", sc["options"])
 	}
 	taskID, _ := sc["task_id"].(string)
 	if taskID == "" {
@@ -454,17 +454,16 @@ func awaitAwaiting(t *testing.T, outCh chan map[string]any) (string, map[string]
 	return taskID, sc
 }
 
-// TestNeverTimeoutAwaitsDecision 统一异步模型（**2026-11-06 起「裁决不再阻塞」**）：
-// never 到超时点 → 发 mcp-tools-timeout{options:[wait,cancel]} 且 tools/call **立即返回
-// awaiting 占位**（不是最终结果、不置 isError）；tools/wait = 撤销 awaiting（不产生第二次
-// 交付、不重新计时）；真实结果最终经 mcp-tasks-report **恰一次**交付。
+// TestManualThresholdAwaitsDecision 四模式（2026-11-14）：manual 到转异步阈值 →
+// 发 mcp-tools-timeout{options:[detach,cancel]} 且 tools/call **立即返回 awaiting 占位**
+// （不是最终结果、不置 isError）；真实结果最终经 mcp-tasks-report **恰一次**交付。
 //
-// 旧契约（wait 唤醒原阻塞调用、由 tools/call 交付最终结果）已被规格 18 §4「裁决不再阻塞」
-// 与 agent 仓 async_await_test.go（TestAwaitingWaitRevokesThenReport）取代。
-func TestNeverTimeoutAwaitsDecision(t *testing.T) {
+// 旧 never/awaiting 语义已退役（never → sync；manual 取代「到点交用户裁决」）。
+func TestManualThresholdAwaitsDecision(t *testing.T) {
 	release := make(chan struct{})
 	bus, _ := startTestGW(t, []mockSpec{{
 		name: "tool_slow", desc: "slow",
+		meta: map[string]any{"async": "manual", "async-threshold": 0.1},
 		handle: func(ctx context.Context) (*mcp.CallToolResult, error) {
 			select {
 			case <-release:
@@ -478,11 +477,10 @@ func TestNeverTimeoutAwaitsDecision(t *testing.T) {
 	reportCh := subReport(t, bus)
 
 	outCh := callAsync(t, bus, map[string]any{
-		"name": "tool_slow", "tool_call_id": "call-never",
-		"arguments": map[string]any{"async": "never", "timeout": 0.1},
+		"name": "tool_slow", "tool_call_id": "call-manual",
 	})
 
-	// ① 超时点：调用**立即**交付 awaiting 占位，事件同步给出 wait/cancel 选项。
+	// ① 阈值点：调用**立即**交付 awaiting 占位，事件同步给出 detach/cancel 选项。
 	taskID, _ := awaitAwaiting(t, outCh)
 	select {
 	case ev := <-evCh:
@@ -492,36 +490,14 @@ func TestNeverTimeoutAwaitsDecision(t *testing.T) {
 		if ev["task_id"] != taskID {
 			t.Fatalf("event task_id = %v, want %s（与 awaiting 一致）", ev["task_id"], taskID)
 		}
-		if opts, _ := ev["options"].([]any); len(opts) != 2 || opts[0] != "wait" || opts[1] != "cancel" {
-			t.Fatalf("never options = %v, want [wait,cancel]", ev["options"])
+		if opts, _ := ev["options"].([]any); len(opts) != 2 || opts[0] != "detach" || opts[1] != "cancel" {
+			t.Fatalf("manual options = %v, want [detach,cancel]", ev["options"])
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatalf("never 超时应发 mcp-tools-timeout")
+		t.Fatalf("manual 阈值应发 mcp-tools-timeout")
 	}
 
-	// ② wait：确认继续等待 → 撤销 awaiting；不产生第二次返回（占位已交付）。
-	w := callMethod(t, bus, "tools/wait", map[string]any{"task_id": taskID})
-	if w["waiting"] != true || w["task_id"] != taskID {
-		t.Fatalf("tools/wait 回执 = %v, want {waiting:true, task_id:%s}", w, taskID)
-	}
-	select {
-	case res := <-outCh:
-		t.Fatalf("wait 后不应再交付占位/结果（占位已在超时点交付）: %v", res)
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	// ③ 超时已撤销：再次 wait → 拒绝（已非待裁决态）。
-	if err := callMethodErr(t, bus, "tools/wait", map[string]any{"task_id": taskID}); err == nil {
-		t.Fatal("wait 后 awaiting 应已撤销，第二次 tools/wait 应被拒绝")
-	}
-	// ④ 撤销后不重新计时：继续等待超过原超时点也不再发裁决（不重复询问）。
-	select {
-	case ev := <-evCh:
-		t.Fatalf("wait 撤销后不应再次发 mcp-tools-timeout: %v", ev)
-	case <-time.After(400 * time.Millisecond):
-	}
-
-	// ⑤ 最终结果按规格经 mcp-tasks-report 恰一次到达（全文 + 归属字段）。
+	// ② manual 不再提供 wait；占位已交付，释放执行体 → 终态经 report 恰一次到达。
 	close(release)
 	r := awaitReport(t, reportCh, taskID)
 	if r["state"] != "done" {
@@ -533,8 +509,8 @@ func TestNeverTimeoutAwaitsDecision(t *testing.T) {
 	if r["tool"] != "tool_slow" {
 		t.Fatalf("report tool = %v, want tool_slow", r["tool"])
 	}
-	if r["tool_call_id"] != "call-never" {
-		t.Fatalf("report tool_call_id = %v, want call-never", r["tool_call_id"])
+	if r["tool_call_id"] != "call-manual" {
+		t.Fatalf("report tool_call_id = %v, want call-manual", r["tool_call_id"])
 	}
 	select {
 	case dup := <-reportCh:
@@ -543,10 +519,10 @@ func TestNeverTimeoutAwaitsDecision(t *testing.T) {
 	}
 }
 
-// TestNeverTimeoutCancelDeliversImmediately 负例（选 cancel）：awaiting 后取消 → CancelExec
-// 立即成功回执，执行终态 cancelled 经 mcp-tasks-report **立即**交付（不为等待执行体响应而
-// 阻塞——工具 handler 仍在等外部释放）；不产生 done 回报、也不再有第二次占位交付。
-func TestNeverTimeoutCancelDeliversImmediately(t *testing.T) {
+// TestManualThresholdCancelDeliversImmediately 负例（manual 选 cancel）：awaiting 后取消 →
+// CancelExec 立即成功回执，执行终态 cancelled 经 mcp-tasks-report **立即**交付（不为等待执行体
+// 响应而阻塞——工具 handler 仍在等外部释放）；不产生 done 回报、也不再有第二次占位交付。
+func TestManualThresholdCancelDeliversImmediately(t *testing.T) {
 	release := make(chan struct{})
 	var once sync.Once
 	closeRelease := func() { once.Do(func() { close(release) }) }
@@ -554,6 +530,7 @@ func TestNeverTimeoutCancelDeliversImmediately(t *testing.T) {
 
 	bus, gw := startTestGW(t, []mockSpec{{
 		name: "tool_slow_cancel", desc: "slow cancel",
+		meta: map[string]any{"async": "manual", "async-threshold": 0.1},
 		handle: func(ctx context.Context) (*mcp.CallToolResult, error) {
 			select {
 			case <-release:
@@ -567,14 +544,13 @@ func TestNeverTimeoutCancelDeliversImmediately(t *testing.T) {
 	reportCh := subReport(t, bus)
 
 	outCh := callAsync(t, bus, map[string]any{
-		"name": "tool_slow_cancel", "tool_call_id": "call-cancel",
-		"arguments": map[string]any{"async": "never", "timeout": 0.1},
+		"name": "tool_slow_cancel", "tool_call_id": "call-manual-cancel",
 	})
 	taskID, _ := awaitAwaiting(t, outCh)
 	select {
 	case <-evCh:
 	case <-time.After(5 * time.Second):
-		t.Fatalf("never 超时应发 mcp-tools-timeout")
+		t.Fatalf("manual 阈值应发 mcp-tools-timeout")
 	}
 
 	// 选 cancel：立即回执（不等待执行体退出）。

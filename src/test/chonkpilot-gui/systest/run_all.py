@@ -1,9 +1,10 @@
-"""全量回归运行器：依次执行 systest/gui 下所有 test_*.py + run_*.py，汇总结果。
+"""回归运行器：默认执行场景化单实例套件 `run_e2e.py`；旧套件经 `--group legacy` 仍可跑。
 
-用法 / 分组（2026-10-05 增分组开关；**默认仍为全量**，不改变既有习惯）：
-  * `python run_all.py`                → `--group all`（等价默认）：core + sem 全量。
-  * `python run_all.py --group core`   → 仅 `test_*.py` + 非 sem 的 `run_*.py`。
-  * `python run_all.py --group sem`    → 仅语义/回环级 `run_sem_*.py`。
+用法 / 分组（2026-11-11 迁移完成后：旧套件已废弃出默认门禁，文件保留）：
+  * `python run_all.py`                → `--group all`（默认）：仅 `run_e2e.py`（110 点 + 破坏性单独跑）。
+  * `python run_all.py --group legacy` → 全部旧套件（test_*.py + run_*.py + run_sem_*.py，90 项）。
+  * `python run_all.py --group core`   → 旧套件交互子集（已废弃，供排查）。
+  * `python run_all.py --group sem`    → 旧套件语义/回环子集（已废弃，供排查）。
   * `python run_all.py --fast`         → 快速子集（精选少量确定性套件；**忽略 --group**）。
   * `-k SUBSTR`（可多次）              → 仅跑名字含 SUBSTR 的套件（与 --group/--fast 叠加过滤）。
   * `--list`                           → 只列出各分组将执行的脚本名后退出。
@@ -24,6 +25,9 @@
         另自拉/自停真转换器，产物缺失时 preflight SKIP）→ 与共享底座完全隔离，退出即回收。
       - **语义/回环级型**（`run_sem_*.py`，20 个）：自起 GUI（动态端口 + 独立临时 work-dir/data-dir/HOME），
         断言「语义内容 / 写-读回环」而非「元素存在」；夹具全落临时目录、结束即弃；产物缺失时自报 SKIP。
+      - **场景化单实例型**（`run_e2e.py`，2026-11-11）：**一次启动**跑空工程 →（LLM 工具预置）
+        → 有数据工程 → 重启阶段；110 个测试点约 10 分钟、GUI 启动 2 次；破坏性测试点默认不跑（另见 run_e2e_destructive.py）。`--only/--area/--init/--max-issues/
+        --cleanup` 见 `python run_e2e.py --help`。产物缺失 / release 构建（无 `--test-port`）时自报 SKIP。
 
 **SKIP ≠ PASS**：运行器按**原始字节**透传每个子进程输出，并据子进程自报的 `(SKIPPED` 标记（`run_*.py`
 的 `RESULT: True (SKIPPED: ...)` 约定）把该套件记为 **SKIP**（既不计入 pass，也不判失败）。整轮退出码
@@ -67,9 +71,9 @@ SCRIPTS = [
 # 第二批：`run_*.py`（端到端/UI 断言套件；隔离与端口分配见模块 docstring）。
 #
 # 计数口径：systest/ 下非 sem `run_*.py`（排除本运行器 `run_all.py` 与 `run_sem_*.py` 语义变体，
-# 后者归 SEM 组）**共 44 个**（含 2026-10-19 新增 `run_meta_tools.py` / `run_plugin_gui.py` /
-# `run_llm_bridge.py`；2026-10-29 新增 `run_mq_scope.py`（MQ 分发出口 S2）；与
-# [51-FP与测试映射 §6.10] 对齐；该处旧文「33」已订正）。
+# 后者归 SEM 组）**共 47 个**（含 2026-11-11 新增 `run_e2e.py` 场景化单实例套件；含 2026-10-19
+# 新增 `run_meta_tools.py` / `run_plugin_gui.py` / `run_llm_bridge.py`；2026-10-29 新增
+# `run_mq_scope.py`（MQ 分发出口 S2）；与 [51-FP与测试映射 §6.1] 对齐）。
 #
 # 执行集 = 下方带注释的 KNOWN 列表 ∪ **`_discover_run_scripts()` 动态枚举**（并入未知新套件），
 # 再剔除 `RUN_SCRIPTS_EXCLUDE` —— 故**新增套件无需改本文件**即可被 `--group all/core` 纳入
@@ -79,6 +83,7 @@ SCRIPTS = [
 # 应**自报 SKIP**（`RESULT: True (SKIPPED: ...)` 约定，见模块 docstring）——SKIP 不计失败，故不会
 # 污染门禁。确无法自起（依赖人工常驻 / 不可自动化）的套件才加入下方 `RUN_SCRIPTS_EXCLUDE`。
 RUN_SCRIPTS_KNOWN = [
+    "run_e2e.py",                 # 场景化单实例 E2E（空工程 → LLM 工具预置 → 有数据工程 → 重启）
     "run_config_ui.py",           # 共享底座 2345（复用优先）+ 独立实例 2347
     "run_project_cfg.py",         # 共享底座 2345
     "run_ui_regressions.py",      # 共享底座 2345
@@ -143,10 +148,15 @@ SEM_SCRIPTS = [
     "run_sem_config_fallback.py", # 配置项写→回读→删→回落回环：usr 精确值落库 + 重置继承（36 配置）
 ]
 
-# 分组定义（`--group`）：core = 交互/端到端（test_* + 非 sem 的 run_*）；sem = 语义/回环级；all = 全量。
+# 分组定义（`--group`，2026-11-11 迁移完成后的废弃口径）：
+#   all    = 场景化单实例套件 `run_e2e.py`（默认门禁；旧套件已等价迁移）
+#   legacy = 全部旧套件（保留可跑，不再纳入默认门禁；文件一个未删）
+#   core / sem = 旧套件的交互/语义子集（保留给排查，标注「已废弃」）
+LEGACY = [n for n in dict.fromkeys(SCRIPTS + RUN_SCRIPTS + SEM_SCRIPTS) if n != "run_e2e.py"]
 GROUPS = {
-    "all": SCRIPTS + RUN_SCRIPTS + SEM_SCRIPTS,
-    "core": SCRIPTS + RUN_SCRIPTS,
+    "all": ["run_e2e.py"],
+    "legacy": LEGACY,
+    "core": SCRIPTS + [n for n in RUN_SCRIPTS if n != "run_e2e.py"],
     "sem": list(SEM_SCRIPTS),
 }
 
@@ -209,7 +219,7 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="回归运行器：串行执行 systest 套件；SKIP≠PASS")
     ap.add_argument("--group", choices=sorted(GROUPS), default="all",
-                    help="分组：all（默认·全量）/ core（交互+端到端）/ sem（语义/回环级）")
+                    help="分组：all（默认·新场景套件）/ legacy（旧套件，已废弃但保留）/ core / sem（旧套件子集）")
     ap.add_argument("--fast", action="store_true",
                     help="快速子集（精选少量确定性套件；忽略 --group）")
     ap.add_argument("-k", action="append", default=[], metavar="SUBSTR",

@@ -26,11 +26,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-framework/host/folder"
-	"github.com/lsong98sh/chonkpilot-framework/host/models"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/paths"
+	"github.com/lsong98sh/chonkpilot-framework/host/folder"
+	"github.com/lsong98sh/chonkpilot-framework/host/models"
 )
 
 // callOpenInConsole 在系统控制台（cmd 新窗口）打开到指定路径所在目录。
@@ -250,6 +250,7 @@ func callSaveLayoutState(b *Bridge, ctx context.Context, params []json.RawMessag
 //   - maximized = ShowCmd==SW_SHOWMAXIMIZED（精确值，替代前端屏幕尺寸近似 isMaximizedNow）；
 //   - 最小化时 ShowCmd=SW_SHOWMINIMIZED → 按 maximized=false + NormalPosition 记录
 //     （「最小化退出改正常」；启动恢复 applyWindowPlacement 对非最大化恒 SW_RESTORE，不最小化）。
+//
 // 未接线（测试宿主等）回落前端上报几何（原行为）。
 func callSaveWindowState(b *Bridge, ctx context.Context, params []json.RawMessage) ([]byte, error) {
 	_ = b.prjConfigSaveBatch(windowSaveEntries(b, params))
@@ -370,6 +371,16 @@ func (b *Bridge) recordRecentDir(dir string) {
 	_ = models.SaveRecent(models.RecentsPath(), dir)
 }
 
+// RecordRecentDir 供**无窗口桥**的宿主入口（如托盘「打开目录 → 最近目录」）记录最近目录：
+// 语义与 `Bridge.recordRecentDir` 完全一致（usr config recent_dirs + flash-recents.json）。
+// user-config 域豁免 instance_id（见 data persist 的 instanceFreeDomains）→ 可用空实例调用。
+func RecordRecentDir(bus mq.Bus, dir string) {
+	if bus == nil || dir == "" {
+		return
+	}
+	(&Bridge{bus: bus}).recordRecentDir(dir)
+}
+
 // recentDirsList 读 usr config 自由键 recent_dirs（JSON 数组字符串）→ 最近目录快照；
 // 无记录/读取失败/坏值 → 空表。
 func (b *Bridge) recentDirsList() []string {
@@ -417,6 +428,8 @@ func (b *Bridge) removeRecentDir(dir string) error {
 		kept = append(kept, d)
 	}
 	if !removed {
+		// 配置里无该条（历史漂移）也同步清掉「最近项目」文件里的同名项（托盘菜单读该文件）。
+		_ = models.RemoveRecent(models.RecentsPath(), dir)
 		return nil // 无该记录 → 幂等成功
 	}
 	raw, _ := json.Marshal(kept)
@@ -424,6 +437,8 @@ func (b *Bridge) removeRecentDir(dir string) error {
 	if _, errs := b.dataCall(msgkeys.TopicDataUserConfigSave, body); len(errs) > 0 {
 		return errs[0]
 	}
+	// 同步「最近项目」文件（托盘菜单来源）：用户移除后托盘不再显示该项。
+	_ = models.RemoveRecent(models.RecentsPath(), dir)
 	return nil
 }
 

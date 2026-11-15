@@ -115,6 +115,22 @@ func (c *chatLLMClient) Step(ctx context.Context, req chat.StepRequest, opts cha
 				}
 			}
 			if ev.Done {
+				// 真实用量（usage）只在 done 上（router 归一后随终态投出）；回调在流 goroutine 内，
+				// 实现必须非阻塞（宿主这里只做一次 bus publish）。
+				if ev.Usage != nil && c.opts.UsageObserver != nil {
+					model := ev.Model
+					if model == "" {
+						model = co.Model
+					}
+					c.opts.UsageObserver(UsageReport{
+						PromptTokens:     ev.Usage.PromptTokens,
+						CompletionTokens: ev.Usage.CompletionTokens,
+						TotalTokens:      ev.Usage.TotalTokens,
+						ReasoningTokens:  ev.Usage.ReasoningTokens,
+						CachedTokens:     ev.Usage.CachedTokens,
+						Model:            model,
+					})
+				}
 				send(chat.StepEvent{Type: chat.StepEventDone, ToolCalls: ev.ToolCalls, Finish: ev.FinishReason})
 				return
 			}

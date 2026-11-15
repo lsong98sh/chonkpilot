@@ -135,6 +135,9 @@
 
     <div class="input-actions">
       <div class="input-actions-left">
+        <!-- 上下文占用环（最近一次发给 LLM 的输入 token / 该 LLM 的上下文窗口）；
+             始终显示：无用量数据（本会话尚未发生 LLM step）→ 空环。 -->
+        <UsageRing :usage="usage" @open-config="$emit('open-config')" />
         <slot name="controls" />
       </div>
       <div class="input-actions-right">
@@ -179,6 +182,7 @@ import { EventNames } from '../../events/event-names'
 import { formatItemText } from '../../composables/useSendQueue'
 import { useChatPrompts } from '../../composables/useChatPrompts'
 import { composeUserText, promptTagOf } from '../../utils/chatPrompt'
+import UsageRing from '../../components/common/UsageRing.vue'
 // INPUTVAL-1：单条 ≤16K 字符；附件单文件 ≤20 MB、单条最多 9 个。
 import {
   MAX_CHAT_CHARS, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS,
@@ -192,9 +196,11 @@ const props = defineProps({
   // 待发队列（当前 LLM）指示
   queueCount: { type: Number, default: 0 },
   queueItems: { type: Array, default: () => [] },
+  // 上下文占用（`llm-usage` 合并后的会话状态；null = 尚未发生 LLM step → 不渲染环）
+  usage: { type: Object, default: null },
 })
 
-const emit = defineEmits(['send', 'cancel', 'queue'])
+const emit = defineEmits(['send', 'cancel', 'queue', 'open-config'])
 
 // 富文本状态：text = 纯文本视图（innerText 同步）；attachments = 附件（图片/文件，含上传中）
 const text = ref('')

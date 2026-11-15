@@ -3,28 +3,6 @@
     <!-- 页签区（唯一滚动容器；底栏按钮区固定在其外，不随内容滚动）。
          @input/@change 兜底清除「AI 建议」标记（零 watch；与 EditLLMDialog 同口径）。 -->
     <div class="edit-scroll" @input="clearAiMarks" @change="clearAiMarks">
-      <!-- AI 填充（AICFG-1）：自然语言 → 结构化字段建议 → **只回填待保存态**（不落库）。
-           后端经点分相对主题 config.suggest（MsgTopics.configSuggest）；level/enabled/isolate/
-           sandbox/hot_tools 等禁填字段不动（后端白名单亦丢弃）。transport 回填后自动联动显隐。 -->
-      <div class="ai-fill">
-        <div class="ai-fill-row">
-          <Textarea
-            v-model="aiText"
-            class="ai-fill-input"
-            :rows="2"
-            :placeholder="$t('config.mcp.aiFillPlaceholder')"
-          />
-          <Button
-            size="small"
-            :loading="aiLoading"
-            :disabled="aiLoading || !aiText.trim()"
-            @click="generateSuggest"
-          >{{ $t('config.mcp.aiFill') }}</Button>
-        </div>
-        <div class="ai-fill-hint">{{ $t('config.mcp.aiFillHint') }}</div>
-        <div v-if="aiError" class="ai-fill-error">{{ aiError }}</div>
-        <div v-else-if="aiNotes" class="ai-fill-note">{{ $t('config.mcp.aiFillNote', { notes: aiNotes }) }}</div>
-      </div>
       <Tabs v-model="activeTab" :tabs="tabItems" class="mcp-tabs">
         <!-- 基本信息：连接点与通用元数据（「启用」已移至底栏，与保存按钮同一行） -->
         <template #basic>
@@ -98,7 +76,9 @@
               <label class="form-label">{{ $t('config.mcp.cwd') }}</label>
               <Input v-model="localData.cwd" :maxlength="MAX_PATH" :placeholder="$t('config.mcp.cwdPlaceholder')" />
             </div>
-            <!-- 两个隔离开关：紧跟「运行时|工作目录」行，同排两列 -->
+            <!-- 「按实例隔离」+ 沙箱说明：紧跟「运行时|工作目录」行，同排两列。
+                 沙箱开关已移出本对话框（见 设置 → 工具沙箱，usr 键 tool_sandbox）：
+                 `mcps[].sandbox` 仅保留旧配置的读取时迁移，不再作为开关来源。 -->
             <div class="form-item form-item-12">
               <label class="form-label">
                 <span>{{ $t('config.mcp.isolate') }}</span>
@@ -111,11 +91,11 @@
             <div class="form-item form-item-12">
               <label class="form-label">
                 <span>{{ $t('config.mcp.sandbox') }}</span>
-                <Tooltip :content="sandboxTooltip" placement="top">
+                <Tooltip :content="$t('config.mcp.sandboxMovedTip')" placement="top">
                   <Icon name="help" :size="13" class="label-help" />
                 </Tooltip>
               </label>
-              <Switch v-model="sandboxToggle" :disabled="!sandboxApplicable" />
+              <div class="sandbox-moved">{{ $t('config.mcp.sandboxMovedHint') }}</div>
             </div>
             <!-- 启动参数：每行一个参数（字符串数组，非 KV）→ list 行编辑 -->
             <div class="form-item form-item-full">
@@ -175,14 +155,40 @@
       </Tabs>
     </div>
 
-    <!-- 底部按钮区（固定在滚动区之外，不随内容滚动）：右对齐「启用 / 取消 / 保存」 -->
+    <!-- 就地状态区（不随页签滚动；AI 注记 / 错误，固定在底栏上方） -->
+    <div v-if="aiError || aiNotes" class="status-area">
+      <div v-if="aiError" class="ai-fill-error">{{ aiError }}</div>
+      <div v-else-if="aiNotes" class="ai-fill-note">{{ $t('config.mcp.aiFillNote', { notes: aiNotes }) }}</div>
+    </div>
+
+    <!-- 底部按钮区（固定在滚动区之外，不随内容滚动）：
+         左侧「AI 填充」，右侧「启用 + 取消 + 保存」（与 EditLLMDialog 同布局口径）。 -->
     <div class="edit-footer">
+      <div class="footer-left">
+        <Button :disabled="aiLoading" @click="openAiFill">{{ $t('config.mcp.aiFill') }}</Button>
+      </div>
       <div class="footer-enabled">
         <label class="form-label">{{ $t('config.mcp.enabled') }}</label>
         <Switch v-model="localData.enabled" />
       </div>
       <Button v-mq:[EventNames.editMcpCancel].click>{{ $t('common.cancel') }}</Button>
       <Button type="primary" v-mq:[EventNames.editMcpSave].click>{{ $t('common.save') }}</Button>
+    </div>
+
+    <!-- AI 填充对话框：自然语言 → 结构化字段建议 → **只回填待保存态**（不落库）。
+         后端经点分相对主题 config.suggest（MsgTopics.configSuggest）；level/enabled/isolate/
+         sandbox/hot_tools 等禁填字段不动（后端白名单亦丢弃）。transport 回填后自动联动显隐。 -->
+    <div v-if="aiDialogOpen" class="ai-modal-mask" @click.self="closeAiFill">
+      <div class="ai-modal">
+        <div class="ai-modal-title">{{ $t('config.mcp.aiFillDialogTitle') }}</div>
+        <Textarea v-model="aiText" :rows="5" :placeholder="$t('config.mcp.aiFillPlaceholder')" />
+        <div class="ai-fill-hint">{{ $t('config.mcp.aiFillHint') }}</div>
+        <div v-if="aiError" class="ai-fill-error">{{ aiError }}</div>
+        <div class="ai-modal-actions">
+          <Button :disabled="aiLoading" @click="closeAiFill">{{ $t('common.cancel') }}</Button>
+          <Button type="primary" :loading="aiLoading" :disabled="aiLoading || !aiText.trim()" @click="generateSuggest">{{ $t('config.mcp.aiFillConfirm') }}</Button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -295,25 +301,6 @@ const isolateHint = computed(() => {
   const auto = !isolateExplicit.value
   return auto ? t('config.mcp.isolateAuto') + ' — ' + t('config.mcp.isolateHint') : t('config.mcp.isolateHint')
 })
-
-// ── 沙箱（sandbox，三态）──
-// 仅对 stdio 的 **spawn 子进程** 生效：http/sse 不落地子进程，agentbox 无从注入 → 控件禁用。
-// 传输归一与 gateway TransportName 一致：显式 transport 优先；缺省/auto：有 url → http，否则 stdio。
-const sandboxTransportName = computed(() => {
-  if (transport.value === 'stdio' || transport.value === 'http' || transport.value === 'sse') return transport.value
-  return (localData.url || '').trim() ? 'http' : 'stdio'
-})
-const sandboxApplicable = computed(() => sandboxTransportName.value === 'stdio')
-// 三态：未显式拨动 → 缺键（不隔离）；拨动即显式 true/false（与 isolate 同口径）。
-const sandboxExplicit = ref(props.initialData.sandbox === true || props.initialData.sandbox === false)
-const sandboxValue = ref(props.initialData.sandbox === true)
-const sandboxToggle = computed({
-  get: () => (sandboxExplicit.value ? sandboxValue.value : false),
-  set: (v) => { sandboxExplicit.value = true; sandboxValue.value = !!v },
-})
-const sandboxTooltip = computed(() =>
-  sandboxApplicable.value ? t('config.mcp.sandboxHint') : t('config.mcp.sandboxStdioOnly')
-)
 
 // ── 高频工具（hot_tools）：工具页签勾选（数据源 = 既有 tools-list）──────────
 // hot_tools 语义（gateway registry.isHot）：`"*"` = 该 server 全部 hot；否则为**原名**列表。
@@ -458,9 +445,8 @@ function handleSave() {
   // （stdio → 隔离、http/sse → 共享），保持旧配置兼容。
   if (isolateExplicit.value) localData.isolate = !!isolateValue.value
   else delete localData.isolate
-  // sandbox：同口径三态（未拨动 = 缺键 = 不隔离）。
-  if (sandboxExplicit.value) localData.sandbox = !!sandboxValue.value
-  else delete localData.sandbox
+  // 沙箱开关已移至「设置 → 工具沙箱」（usr 键 tool_sandbox）：本对话框**不再写** localData.sandbox
+  // （旧字段仅由 gateway/data 侧读取时迁移，不在此处增删）。
   // 级别：保存落对应级 `capability/mcps/<名>.json`（app/user/project/prjusr）
   localData.level = level.value
   emit('save', { ...localData }, props.editIndex)
@@ -468,11 +454,13 @@ function handleSave() {
 }
 
 // ── AI 填充（AICFG-1）：自然语言 → 结构化字段建议（config.suggest）──────────────
-// 只回填**待保存态**、标「AI 建议」；level/enabled/isolate/sandbox/hot_tools 禁填（不在白名单）。
+// 入口在底栏左侧「AI 填充」（点击弹出对话框，与 EditLLMDialog 同交互）；只回填**待保存态**、
+// 标「AI 建议」；level/enabled/isolate/沙箱/hot_tools 禁填（不在白名单）。
 // transport 回填后写 transport ref → showUrl/showSpawn 联动显隐（复用既有逻辑）。
 const AI_MCP_FIELDS = ['name', 'transport', 'description', 'url', 'runtime', 'args', 'env', 'namespace', 'timeout']
 const ALLOWED_MCP_TRANSPORT = ['stdio', 'http', 'sse']
 
+const aiDialogOpen = ref(false)
 const aiText = ref('')
 const aiLoading = ref(false)
 const aiFields = ref([])
@@ -483,6 +471,14 @@ function aiMark(key) { return aiFields.value.includes(key) }
 // 用户手填/改选即清除标记（由 .edit-scroll 的 @input/@change 原生事件冒泡触发；零 watch）。
 function clearAiMarks() {
   if (aiFields.value.length) aiFields.value = []
+}
+
+function openAiFill() {
+  aiError.value = ''
+  aiDialogOpen.value = true
+}
+function closeAiFill() {
+  if (!aiLoading.value) aiDialogOpen.value = false
 }
 
 // 只把白名单字段写入待保存态（level/沙箱等禁填字段一律不动）。
@@ -522,6 +518,9 @@ async function generateSuggest() {
     const res = await suggestConfig('mcp', text, current)
     applySuggest(res.fields || {})
     aiNotes.value = res.notes || ''
+    // 成功即关闭填充对话框并回到「基本信息」页签核对结果（与 EditLLMDialog 同口径）
+    aiDialogOpen.value = false
+    activeTab.value = 'basic'
   } catch (e) {
     const msg = (e && e.message) || String(e)
     if (e && e.kind === 'invalid') {
@@ -546,6 +545,7 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
 
 <style scoped>
 .mcp-dialog {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -567,13 +567,26 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   padding: 12px 16px;
   border-top: 1px solid var(--border);
 }
-/* 底栏「启用」：label + Switch 同行，**固定在最左侧**（2026-09-27 用户口径），
-   「取消 / 保存」保持右对齐。 */
-.footer-enabled {
+/* 底栏左侧「AI 填充」；右侧「启用 / 取消 / 保存」保持右对齐（2026-11-14 用户口径）。 */
+.footer-left {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-right: auto;
+}
+.footer-enabled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 就地状态区（AI 注记 / 错误；固定在底栏上方，不随页签滚动） */
+.status-area {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
 }
 /* Tabs 默认 height:100% + 内层 overflow:hidden 会裁掉超出内容；此处放开，
    交由 .edit-scroll 统一滚动（页签头固定、内容整体滚动）。
@@ -621,23 +634,11 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   line-height: 1.4;
   color: var(--fg-secondary);
 }
-/* AI 填充（AICFG-1）：自然语言输入 + 【AI 填充】按钮 + 提示/结果行 */
-.ai-fill {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border);
-}
-.ai-fill-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-.ai-fill-input {
-  flex: 1;
-  min-width: 0;
+/* 沙箱说明（开关已移至「设置 → 工具沙箱」；此处仅提示入口） */
+.sandbox-moved {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
 }
 .ai-fill-hint,
 .ai-fill-note,
@@ -707,5 +708,39 @@ onUnmounted(() => _unsubs.forEach(fn => fn()))
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* AI 填充对话框（覆盖在当前编辑弹窗内；点击遮罩取消） */
+.ai-modal-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.38);
+}
+.ai-modal {
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--bg-primary, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: var(--border-radius);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+}
+.ai-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ai-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

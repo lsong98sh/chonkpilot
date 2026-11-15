@@ -105,8 +105,9 @@ function isolateLabel(s) {
   return explicit ? text : text + t('config.mcp.isolateAutoSuffix')
 }
 
-// ── 沙箱（sandbox，三态）的编辑入口在 EditMCPDialog「运行信息」页签（仅 stdio 可开）；
-//    本列表页只保留跨页摘要与空信任目录语义说明，不再提供行内拨动。
+// ── 沙箱开关已移至「设置 → 工具沙箱」页（usr 键 tool_sandbox，按服务器名配置）：
+//    本列表页只保留跨页摘要与空信任目录语义说明，不再提供行内拨动；
+//    MCP 条目上的 sandbox 字段仅由 gateway 读取时迁移。
 const builtinOptions = computed(() =>
   systemMCPs.value.map((s, i) => ({ label: s.name || ('#' + (i + 1)), value: String(i) }))
 )

@@ -294,3 +294,40 @@ func TestDelegatedTurnLifecycle(t *testing.T) {
 	}
 	close(gate)
 }
+
+// TestPluginAgentDelegateRejectsUnknownAgent P1：agent 名拼错必须报 agent_not_found，
+// 不得静默退化为全能力子代理。
+func TestPluginAgentDelegateRejectsUnknownAgent(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+	store := newSessionStore(s.bus, "ins-test")
+	if err := store.EnsureSession("s-ghost"); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+	if err := store.EnsureTurn("t-ghost", "s-ghost"); err != nil {
+		t.Fatalf("EnsureTurn: %v", err)
+	}
+	parent := newTurnCtx(context.Background(), s, StartReq{
+		InstanceID: "ins-test", Session: "s-ghost", Turn: "t-ghost", WorkDir: testWorkDir,
+	})
+	t.Cleanup(parent.Close)
+	s.mu.Lock()
+	s.registerTurnLocked(instKey("ins-test", "t-ghost"), parent)
+	s.mu.Unlock()
+
+	reg := pluginbridge.NewRegistry()
+	s.SetPluginRegistry(reg)
+	h, ok := reg.Lookup("plugin/v1/agent.delegate")
+	if !ok {
+		t.Fatal("plugin/v1/agent.delegate 未注册")
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"instance_id": "ins-test", "turn": "t-ghost", "session": "s-ghost",
+		"prompt": "委派任务", "agent": "ghost",
+	})
+	if _, err := h(context.Background(), nil, raw); err == nil || !strings.Contains(err.Error(), "agent_not_found") {
+		t.Fatalf("未知 agent 应报 agent_not_found: %v", err)
+	}
+}

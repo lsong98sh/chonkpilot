@@ -10,17 +10,20 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 )
 
-// llmProtocolOpenAI / llmProtocolResponses 是已知的协议取值（P1-2）：openai = OpenAI 兼容
-// Chat Completions（/chat/completions，默认）；responses = OpenAI Responses API（/responses）。
+// llmProtocolOpenAI / llmProtocolResponses / llmProtocolAnthropic 是已知的协议取值（P1-2）：
+// openai = OpenAI 兼容 Chat Completions（/chat/completions，默认）；responses = OpenAI Responses API
+// （/responses）；anthropic = Anthropic /v1/messages（x-api-key + anthropic-version）。
 // protocol 字段空/缺省 → openai；未知值 → warn 并按 openai 处理（不改变请求行为、不中断）。
 const (
 	llmProtocolOpenAI    = ProtocolOpenAI
 	llmProtocolResponses = ProtocolResponses
+	llmProtocolAnthropic = ProtocolAnthropic
 )
 
 // llmProtocolKnown 判断 protocol 是否为已知协议（未知值 → loadLLMProvider warn 并按 openai 处理）。
 func llmProtocolKnown(p string) bool {
-	return p == llmProtocolOpenAI || p == llmProtocolResponses || p == ProtocolEcho
+	return p == llmProtocolOpenAI || p == llmProtocolResponses ||
+		p == llmProtocolAnthropic || p == ProtocolEcho
 }
 
 // builtinFallbackName 是**内置兜底** provider 的保留名（D-30）：协议 `echo` —— **不发任何 HTTP**，
@@ -63,6 +66,10 @@ type llmProviderCfg struct {
 	Thinking          *bool    // thinking=false → 不发送 reasoning_effort；缺键 → 由请求体决定
 	ReasoningEffort   string   // thinking=true 时的 reasoning_effort（缺省 high）
 	MaxToolIterations int      // >0 生效；否则回落缺省
+	// ExtraParams / Headers 是该 provider 的附加请求参数与自定义请求头（LLM 编辑页「附加参数」
+	// 「头信息」页签）：随 router.Spec 下发，由各协议适配器合并到请求体 / HTTP 头。
+	ExtraParams map[string]any
+	Headers     map[string]string
 }
 
 // loadLLMProvider 从 user-config 加载 llm-start.llm（provider name）对应的 LLM 配置。
@@ -386,6 +393,8 @@ func providerFromLLMs(cfg map[string]any, selectedModel string) *llmProviderCfg 
 			APIKey:          strings.TrimSpace(str(llm["apiKey"])),
 			Model:           strings.TrimSpace(str(llm["model"])),
 			ReasoningEffort: strings.TrimSpace(str(llm["reasoningEffort"])),
+			ExtraParams:     configAnyMap(llm["extraParams"]),
+			Headers:         configStringMap(llm["headers"]),
 		}
 		// 存在性判定（允许 0 生效）：键缺失才回落「不发送」。
 		if t, ok := configFloat(llm, "temperature"); ok {
@@ -432,6 +441,63 @@ func configFloat(d map[string]any, key string) (float64, bool) {
 		return float64(v), true
 	}
 	return 0, false
+}
+
+// configAnyMap 取 `llms[].extraParams`（JSON 对象）：非对象 / 空对象 → nil（不携带）。
+// 值类型不在读侧强校验（写侧 validate.go 已拒绝非法形态）；仅过滤 nil 键值。
+func configAnyMap(v any) map[string]any {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, val := range m {
+		if val == nil {
+			continue
+		}
+		out[k] = val
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// configStringMap 取 `llms[].headers`（字符串 map）：兼容 JSON 解码的 map[string]any 与内部
+// map[string]string；仅保留字符串值，键去空白、空键跳过。
+func configStringMap(v any) map[string]string {
+	var src map[string]any
+	switch m := v.(type) {
+	case map[string]any:
+		src = m
+	case map[string]string:
+		out := make(map[string]string, len(m))
+		for k, val := range m {
+			k = strings.TrimSpace(k)
+			if k != "" {
+				out[k] = val
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for k, val := range src {
+		k = strings.TrimSpace(k)
+		s, ok := val.(string)
+		if k == "" || !ok {
+			continue
+		}
+		out[k] = s
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // loadLLMRuntimeConfig 读 usr 配置的超时/重试四项（T-27 接线，2026-09-11 审计 B）：

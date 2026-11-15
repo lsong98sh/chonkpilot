@@ -22,72 +22,63 @@ func histThree() []ChatMsg {
 	}
 }
 
-// TestAssemblyLastTurnIDAndZones：`LastTurnID` = 最后一个**已完成**轮；`Zones` 用 turn id 表达
-// （完整区 = 最近 2 轮、简化区 = t1）；Messages 与投影管线（session.Project + reasoning 规则）逐字节一致。
-func TestAssemblyLastTurnIDAndZones(t *testing.T) {
+// TestAssemblyFullUnderTrigger：未达触发阈值 → 2.1 全量（历史全部原文，不简化）；`LastTurnID`
+// = 最后一个已完成轮；Zones 全量（FullFrom = 首个历史轮，无简化区）。
+func TestAssemblyFullUnderTrigger(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
 
 	hist := histThree()
 	tc := &turnCtx{
-		server:        s,
-		req:           StartReq{InstanceID: "ins-test", Session: "s-asm", Turn: "t-cur"},
-		hist:          hist,
-		turnTokens:    []facade.TurnToken{{TurnID: "t1"}, {TurnID: "t2"}, {TurnID: "t3"}},
-		keepFullTurns: 2,
-		briefBudget:   10000,
+		server:     s,
+		req:        StartReq{InstanceID: "ins-test", Session: "s-asm", Turn: "t-cur"},
+		hist:       hist,
+		turnTokens: []facade.TurnToken{{TurnID: "t1"}, {TurnID: "t2"}, {TurnID: "t3"}},
 	}
 	a := tc.assembly()
 
 	if a.LastTurnID != "t3" {
 		t.Fatalf("LastTurnID = %q, want t3（最后一个被纳入的已完成轮，不含当前轮）", a.LastTurnID)
 	}
-	if a.Zones.FullFrom != "t2" {
-		t.Fatalf("Zones.FullFrom = %q, want t2（keep_full_max_turns=2）", a.Zones.FullFrom)
+	if a.Zones.FullFrom != "t1" {
+		t.Fatalf("Zones.FullFrom = %q, want t1（全量）", a.Zones.FullFrom)
 	}
-	if a.Zones.BriefFrom != "t1" {
-		t.Fatalf("Zones.BriefFrom = %q, want t1（brief 预算足够 → 简化区含 t1）", a.Zones.BriefFrom)
+	if a.Zones.BriefFrom != "" {
+		t.Fatalf("未达阈值 → 无简化区，got BriefFrom=%q", a.Zones.BriefFrom)
 	}
 	if a.Zones.LastTurnID != a.LastTurnID {
 		t.Fatalf("Zones.LastTurnID = %q, want %q", a.Zones.LastTurnID, a.LastTurnID)
 	}
-	// 与改动前管线逐字节一致（system 仍在 Messages 首位、指引顺序 / reasoning 规则不变）。
-	projMsgs, _ := session.Project(hist, 2, 0, 10000, nil, nil, false)
-	want := session.ApplyReasoningRule(projMsgs)
+	// 全量 = 原文（仅 reasoning 规则：无 tool_calls 的 assistant 清 reasoning）。
+	want := session.ApplyReasoningRule(hist)
 	if !reflect.DeepEqual(a.Context.Messages, want) {
-		t.Fatalf("Assembly.Context.Messages 与改动前管线不一致:\n got=%+v\nwant=%+v",
+		t.Fatalf("全量投影应逐条保留历史原文:\n got=%+v\nwant=%+v",
 			a.Context.Messages, want)
 	}
 	if a.Usage.History <= 0 {
 		t.Fatalf("Usage.History 应 > 0: %+v", a.Usage)
 	}
-	if a.Usage.Total != a.Usage.Fixed+a.Usage.History {
-		t.Fatalf("Usage.Total 口径不符: %+v", a.Usage)
+	if a.Usage.Total != a.Usage.Fixed+a.Usage.History+a.Usage.Current {
+		t.Fatalf("Usage.Total 口径不符（应为 Fixed+History+Current）: %+v", a.Usage)
 	}
 }
 
-// TestAssemblyZonesDisabled：N/M 两条件均不启用 → 不压缩（完整区 = 全量、无简化区）。
-func TestAssemblyZonesDisabled(t *testing.T) {
+// TestAssemblyCurrentTurnCounted：`Usage.Current` 计入本轮已落库消息，`Total` 为本次请求总输入。
+func TestAssemblyCurrentTurnCounted(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
 	s := newTestServer(t, llm)
 
 	tc := &turnCtx{
-		server:         s,
-		req:            StartReq{InstanceID: "ins-test", Session: "s-asm2", Turn: "t-cur"},
-		hist:           histThree(),
-		turnTokens:     []facade.TurnToken{{TurnID: "t1"}, {TurnID: "t2"}, {TurnID: "t3"}},
-		keepFullTurns:  0,
-		keepFullTokens: 0,
-		briefBudget:    10000,
+		server:     s,
+		req:        StartReq{InstanceID: "ins-test", Session: "s-asm2", Turn: "t-cur"},
+		hist:       histThree(),
+		turnTokens: []facade.TurnToken{{TurnID: "t1"}, {TurnID: "t2"}, {TurnID: "t3"}},
 	}
 	a := tc.assembly()
-	if a.Zones.FullFrom != "t1" {
-		t.Fatalf("两条件均不启用 → 完整区应为全量（FullFrom=t1），got %q", a.Zones.FullFrom)
-	}
-	if a.Zones.BriefFrom != "" {
-		t.Fatalf("两条件均不启用 → 无简化区，got BriefFrom=%q", a.Zones.BriefFrom)
+	if a.Usage.Current != 0 {
+		t.Fatalf("无当前轮消息 → Current 应为 0: %+v", a.Usage)
 	}
 	if a.LastTurnID != "t3" {
 		t.Fatalf("LastTurnID = %q, want t3", a.LastTurnID)
@@ -106,8 +97,6 @@ func TestAssemblyUsageFixed(t *testing.T) {
 		req:            StartReq{InstanceID: "ins-test", Session: "s-asm3", Turn: "t-cur"},
 		hist:           histThree(),
 		turnTokens:     []facade.TurnToken{{TurnID: "t1"}, {TurnID: "t2"}, {TurnID: "t3"}},
-		keepFullTurns:  1,
-		briefBudget:    10000,
 		sysPromptText:  "你是测试智能体，一个全能智能体。你运行在测试环境中。",
 		memGuideText:   "【记忆】按需读取记忆目录下的相关记忆。",
 		assetGuideText: "【知识库资产】用 mcp_find 检索、mcp_load 加载。",
@@ -120,6 +109,14 @@ func TestAssemblyUsageFixed(t *testing.T) {
 		session.ToolsTokenEstimate(toolSchemas(tc.llmTools()))
 	if a.Usage.Fixed != wantFixed {
 		t.Fatalf("Usage.Fixed = %d, want %d（system + 两条指引 + 工具 schema）", a.Usage.Fixed, wantFixed)
+	}
+	// 前导 system 与 system prompt 逐字相同 → 不重复计入 History（见 compose.Build）。
+	wantHist := session.MessageTokens(histThree())
+	if a.Usage.History != wantHist {
+		t.Fatalf("Usage.History = %d, want %d", a.Usage.History, wantHist)
+	}
+	if a.Usage.Total != wantFixed+a.Usage.History+a.Usage.Current {
+		t.Fatalf("Usage.Total 口径不符: %+v", a.Usage)
 	}
 	if a.Usage.Fixed <= 0 {
 		t.Fatalf("Usage.Fixed 应 > 0: %+v", a.Usage)

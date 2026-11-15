@@ -55,19 +55,21 @@ func parseSchemaJSON(s string) (map[string]any, error) {
 // ToolDoc 是 *.tool.md 契约（25-mcp-server；要素对齐 dist/scripts/markitdown.json）。
 // 注意：category 由 meta 声明（缺省无分类）；分类目录归属不影响原语名（原语名 = 文件名）。
 type ToolDoc struct {
-	Name         string // 原语名 = 文件名（不含 .tool.md）
-	Title        string // H1 可读标题
-	Dir          string // 契约文件所在目录（entry 相对解析基准）
-	Runtime      string // meta: runtime（executor exe/PATH 名、解释器如 python/node，或 "builtin" = 进程内执行）
-	Entry        string // meta: entry（已废弃；兼容读取，解释器类遗留）
-	Hot          bool   // meta: hot（吸收原 llm；固定暴露标志）
-	Category     string // meta: category（分类声明；缺省 = 契约根目录名派生）
-	Async        string // meta: async（auto|always|never|manual，缺省 auto）
-	AsyncTh      int    // meta: async-threshold（秒；async=auto 下超时自动转后台）
-	OnTimeout    string // meta: on_timeout（fail|background，缺省 background）
-	OnTimeoutSet bool   // meta: on_timeout 键是否显式声明
-	PolicyLock   bool   // meta: policy_lock（true = 界面不可覆盖）
-	Idempotent   bool   // meta: idempotent（可重试性；缺省 false = 安全默认，见 G-20）
+	Name       string // 原语名 = 文件名（不含 .tool.md）
+	Title      string // H1 可读标题
+	Dir        string // 契约文件所在目录（entry 相对解析基准）
+	Runtime    string // meta: runtime（executor exe/PATH 名、解释器如 python/node，或 "builtin" = 进程内执行）
+	Entry      string // meta: entry（已废弃；兼容读取，解释器类遗留）
+	Hot        bool   // meta: hot（吸收原 llm；固定暴露标志）
+	Category   string // meta: category（分类声明；缺省 = 契约根目录名派生）
+	Async      string // meta: async（sync|async|auto|manual；兼容旧 always/never，缺省 auto）
+	AsyncTh    int    // meta: async-threshold（秒；auto=到点自动转后台 / manual=到点交用户裁决）
+	PolicyLock bool   // meta: policy_lock（true = 界面不可覆盖）
+	// TouchFiles（meta: touch_files）显式声明该工具是否会在**项目工作区**产生文件变动
+	// （true = 涉及 → 前置打点钩子打检查点；false = 不涉及 → 直接放行）。仅 TouchFilesSet 时写入 _meta。
+	TouchFiles    bool
+	TouchFilesSet bool
+	Idempotent    bool // meta: idempotent（可重试性；缺省 false = 安全默认，见 G-20）
 	// Internal=true（meta: internal）：仅作为 core-mcp-server 的**内部执行器**（/internal/exec），
 	// 不进入 MCP tools/list（插件查询工具：由插件按启用状态注册给 gateway，执行经 core）。
 	Internal bool
@@ -164,29 +166,33 @@ func parseToolDoc(f *ContractFile) (*ToolDoc, error) {
 	meta := c.Meta
 
 	doc := &ToolDoc{
-		Name:         f.Name,
-		Title:        c.Title,
-		Dir:          f.Dir,
-		Runtime:      meta["runtime"],
-		Entry:        meta["entry"],
-		Hot:          isTruthy(meta["hot"]) || isTruthy(meta["llm"]), // llm 已并入 hot（兼容旧契约）
-		Category:     meta["category"],
-		Async:        firstNonEmpty(meta["async"], "auto"),
-		AsyncTh:      atoiSafe(meta["async-threshold"]),
-		OnTimeout:    firstNonEmpty(meta["on_timeout"], "background"),
-		OnTimeoutSet: meta["on_timeout"] != "",
-		PolicyLock:   isTruthy(meta["policy_lock"]),
-		Idempotent:   isTruthy(meta["idempotent"]),
-		Internal:     isTruthy(meta["internal"]),
-		CoreOnly:     isTruthy(meta["core-only"]),
-		Args:         meta["args"],
-		Description:  c.Description,
+		Name:        f.Name,
+		Title:       c.Title,
+		Dir:         f.Dir,
+		Runtime:     meta["runtime"],
+		Entry:       meta["entry"],
+		Hot:         isTruthy(meta["hot"]) || isTruthy(meta["llm"]), // llm 已并入 hot（兼容旧契约）
+		Category:    meta["category"],
+		Async:       firstNonEmpty(meta["async"], "auto"),
+		AsyncTh:     atoiSafe(meta["async-threshold"]),
+		PolicyLock:  isTruthy(meta["policy_lock"]),
+		Idempotent:  isTruthy(meta["idempotent"]),
+		Internal:    isTruthy(meta["internal"]),
+		CoreOnly:    isTruthy(meta["core-only"]),
+		Args:        meta["args"],
+		Description: c.Description,
 	}
 	if v, ok := meta["timeout"]; ok && v != "" {
 		if _, err := fmt.Sscanf(v, "%d", &doc.Timeout); err != nil {
 			return nil, fmt.Errorf("bad timeout %q", v)
 		}
 		doc.TimeoutSet = true // 键显式声明（含 0/-1）；空串/键缺失 = 未设置
+	}
+	// touch_files：显式声明才透出（bool）；缺省不写 = 由 gateway 按来源/旧启发式判定。
+	// 旧 on_timeout 字段已退役（2026-11-14）→ 契约里残留也忽略（不再解析/校验）。
+	if v, ok := meta["touch_files"]; ok && strings.TrimSpace(v) != "" {
+		doc.TouchFiles = isTruthy(v)
+		doc.TouchFilesSet = true
 	}
 	doc.Output = meta["output"]
 	if doc.Output == "" {
@@ -253,8 +259,9 @@ func buildTool(d *ToolDoc, cfg *Config) (*mcp.Tool, error) {
 	if d.TimeoutSet {
 		ext["timeout"] = d.Timeout
 	}
-	if d.OnTimeoutSet {
-		ext["on_timeout"] = d.OnTimeout
+	// 打点声明（2026-11-14）：显式 touch_files 才透出（bool）；供 gateway 前置打点钩子/前端缺省判定。
+	if d.TouchFilesSet {
+		ext["touch_files"] = d.TouchFiles
 	}
 	if d.PolicyLock {
 		ext["policy_lock"] = true
@@ -279,13 +286,14 @@ func buildTool(d *ToolDoc, cfg *Config) (*mcp.Tool, error) {
 
 // applyToolAsyncOverride 把用户级覆盖写入暴露 _meta（ext）：
 //   - mode → _meta.async（沿用现状口径：**auto 不显式透出**；惟契约声明了非 auto
-//     （never/always/manual）时须显式写 "auto" 才能把契约值压回自动档）；
-//   - threshold → _meta.async-threshold（仅 >0 写出；显式 0/-1 = 无阈值，不写出、保持契约现值）；
-//   - hard_timeout **不写**（gateway 侧 _meta.timeout 语义 = 超时裁决点，不可被硬上限污染；
-//     硬上限只在 executor 生效，见 resolveExecTimeout）。
+//     （sync/async/manual）时须显式写 "auto" 才能把契约值压回自动档）；
+//   - threshold → _meta.async-threshold（仅 >0 写出；显式 0/-1 = 不设点，不写出、保持契约现值）；
+//   - hard_timeout **不写**（gateway 直接从覆盖表 HardTimeout 取，与契约 `_meta.timeout` 合并；
+//     `_meta` 不承载用户级硬上限，避免污染契约面）；
+//   - touch_files **不写**（用户覆盖只影响打点钩子判定，不改变契约声明）。
 //
 // 优先级（用户口径）：调用级 args.async/args.timeout（gateway doCall，最高）> 本覆盖
-// > 契约 _meta > 软缺省（第三方无声明 → never）。即覆盖只改写**契约默认**，不剥夺调用级覆盖。
+// > 契约 _meta > 软缺省（第三方无声明 → auto）。即覆盖只改写**契约默认**，不剥夺调用级覆盖。
 func applyToolAsyncOverride(ext map[string]any, d *ToolDoc, ov ToolAsyncOverride) {
 	switch {
 	case ov.Mode == "auto":
@@ -299,13 +307,6 @@ func applyToolAsyncOverride(ext map[string]any, d *ToolDoc, ov ToolAsyncOverride
 	}
 	if ov.Threshold > 0 {
 		ext["async-threshold"] = ov.Threshold
-	}
-	if ov.OnTimeoutSet && ov.OnTimeout != "" {
-		ext["on_timeout"] = ov.OnTimeout
-	}
-	// 旧配置兼容：cancel_on_timeout > 0 = 到点失败（取消）。
-	if ov.CancelOnTimeoutSet && ov.CancelOnTimeout > 0 {
-		ext["on_timeout"] = "fail"
 	}
 }
 

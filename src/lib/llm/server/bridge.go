@@ -9,10 +9,8 @@
 // usr `llms` 读取），**不改其行为**。
 //
 // 关键取舍（与设计稿 §3.3 对齐）：`protocol` 返回**原始配置值**（不经 `NormalizeLLMProtocol`
-// 归一）——因为 llm server 的归一表把 `anthropic` 折叠为 `openai`（`llm.go NormalizeLLMProtocol`：
-// 未知 → openai），而桥接入口必须按 protocol 区分鉴权头（`openai`/`responses` → Authorization:
-// Bearer；`anthropic` → x-api-key；其它 → 400）。归一化只属 router 出网口径，桥接入口是**不经
-// router 的透明反代**，故此处读原值，零行为变更。
+// 归一）——桥接入口是**不经 router 的反代**，必须按 protocol 区分鉴权头（`openai`/`responses`
+// → Authorization: Bearer；`anthropic` → x-api-key；其它 → 400）。归一化只属 router 出网口径。
 package server
 
 import (
@@ -31,11 +29,13 @@ const bridgeDefaultName = "default"
 //   - BaseURL  = 该 provider 的 API 前缀（空 → 已回落 exe flag `--llm-base`，与 `specFor` 同口径）；
 //   - APIKey   = provider 配置的 apiKey（空 = 不注入鉴权头；**只随请求内存流转，不落日志**）；
 //   - Protocol = `llms[].protocol` 的**原始值**（`openai` / `responses` / `anthropic` / 空 / 其它；
-//     桥侧据此决定鉴权头，未识别 → 400）。
+//     桥侧据此决定鉴权头，未识别 → 400）；
+//   - Headers  = `llms[].headers`（用户配置的额外请求头；桥侧注入时优先于默认鉴权头）。
 type BridgeTarget struct {
 	BaseURL  string
 	APIKey   string
 	Protocol string
+	Headers  map[string]string
 }
 
 // ResolveBridgeTarget 只读解析 provider name 对应的桥接目标（BRIDGE-1 步骤 2）：
@@ -86,6 +86,7 @@ func bridgeTargetFromConfig(cfg map[string]any, name, baseURL string) (BridgeTar
 			BaseURL:  orDefault(strings.TrimSpace(str(llm["baseUrl"])), baseURL),
 			APIKey:   strings.TrimSpace(str(llm["apiKey"])),
 			Protocol: strings.TrimSpace(str(llm["protocol"])),
+			Headers:  configStringMap(llm["headers"]),
 		}, true
 	}
 	return BridgeTarget{}, false
@@ -110,6 +111,7 @@ func (s *Server) storeBridgeTargets(cfg map[string]any) {
 			BaseURL:  orDefault(strings.TrimSpace(str(llm["baseUrl"])), s.opts.LLMBase),
 			APIKey:   strings.TrimSpace(str(llm["apiKey"])),
 			Protocol: strings.TrimSpace(str(llm["protocol"])),
+			Headers:  configStringMap(llm["headers"]),
 		}
 	}
 	s.bridgeMu.Lock()

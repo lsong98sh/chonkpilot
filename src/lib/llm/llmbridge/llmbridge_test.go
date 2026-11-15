@@ -170,6 +170,7 @@ type anthropicReqSnap struct {
 	auth    string
 	apiKey  string
 	version string
+	extra   string
 	body    string
 }
 
@@ -192,7 +193,8 @@ func TestBridgeAnthropicToolUseSSEPassthrough(t *testing.T) {
 		snaps <- anthropicReqSnap{
 			path: r.URL.Path, auth: r.Header.Get("Authorization"),
 			apiKey: r.Header.Get("X-Api-Key"), version: r.Header.Get("anthropic-version"),
-			body: string(b),
+			extra: r.Header.Get("X-Ant-Extra"),
+			body:  string(b),
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -209,7 +211,8 @@ func TestBridgeAnthropicToolUseSSEPassthrough(t *testing.T) {
 		if name != "claude" {
 			return Target{}, false
 		}
-		return Target{BaseURL: up.URL, APIKey: "sk-ant-server", Protocol: "anthropic"}, true
+		return Target{BaseURL: up.URL, APIKey: "sk-ant-server", Protocol: "anthropic",
+			Headers: map[string]string{"anthropic-version": "2025-01-01", "x-ant-extra": "from-config"}}, true
 	})
 
 	req, _ := http.NewRequest(http.MethodPost, bridge.URL+"/llm/claude/v1/messages", strings.NewReader(anthropicRequestBody))
@@ -238,8 +241,11 @@ func TestBridgeAnthropicToolUseSSEPassthrough(t *testing.T) {
 	if snap.auth != "" {
 		t.Fatalf("anthropic 型不应带 Authorization（客户端自报头须删除），实得 %q", snap.auth)
 	}
-	if snap.version != "2023-06-01" {
-		t.Fatalf("anthropic-version 应原样透传，实得 %q", snap.version)
+	if snap.version != "2025-01-01" {
+		t.Fatalf("配置的 anthropic-version 头须优先于客户端/默认值，实得 %q", snap.version)
+	}
+	if snap.extra != "from-config" {
+		t.Fatalf("配置的额外头未注入，实得 %q", snap.extra)
 	}
 	if snap.body != anthropicRequestBody {
 		t.Fatalf("上游 body 应与客户端原文逐字节相同：\n got=%s\nwant=%s", snap.body, anthropicRequestBody)

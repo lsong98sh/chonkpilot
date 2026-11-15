@@ -185,7 +185,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
   - 实现 = `chonkpilot-plugins/mcp/src/main.go:118-172`；schema = `query`（关键词，缺省空）+ `type`（`tool`（默认）/`prompt`/`resource`/`all`）+ `limit`（缺省 20，上限 200）。**无 `purpose` 参数**（原 LLM 语义推荐已移除），**`query`/`purpose` 均省略 → 返回该类型全部条目**；`type=agent` / `type=skill` 不支持。
   - `query` → 本地关键词检索（name/description 子串、忽略大小写）；`type` → 候选集按工具 / prompt / resource 收敛。
   - 返回 `{ok,type,count,entries}`；每条 entry 含 `name`/`description`/`server`/`inputSchema`（工具）等。**gateway 侧只负责路由与 `_meta` 归一**，排查发现逻辑请到 `mcp` 插件。
-  - `mcp_load`（插件 `main.go:174-196`）= 按 `name` 加载条目完整定义（**无 `kind` 参数**）；`mcp_invoke`（`main.go:198-235`）= 按 `name` + `arguments` + `timeoutSec` 经 `plugin/v1/tools.call` 调用。
+  - `mcp_load`（插件 `main.go`）= 按 `name` 加载条目完整定义（**无 `kind` 参数**；skill/prompt/resource 只返回 `content`）；`mcp_invoke`（插件 `main.go`）= 按 `name` + `arguments` 经 `plugin/v1/tools.call` 同步调用。**`mcp_invoke` 不设自身超时**（契约 `timeout: 0`），等待/超时行为由**目标工具**的契约决定：`on_timeout=fail` → 报错；`auto/always` → 转后台返回 `pending`；`manual/never` → 返回 `awaiting`（可选 wait/cancel）。
   - **`mcp_load` 对 `resource` 的内容承载（2026-10-14 历史口径）**：经 gateway `ReadResource` 实时读取，文本 `content` / 二进制 `blob`；现行 `mcp_load` 由插件返回 entry，内容读取口径以插件实现与 [28-plugins](28-plugins.md) 为准。
 - **调用展示名参数的注入与剥离**：`injectDisplayName` 给**每个**工具注入展示参数 **`tool_call_display_name`**（≤20 字符，UI 展示调用名；写入 `properties` + `required`，除非契约已定义同名）；`doCall` 执行前**统一剥离**，不传下游工具。
   - **为何不叫 `purpose`**：`purpose` 是工具可自有的语义参数（插件工具亦可定义）；旧实现把注入参数命名为 `purpose`，导致 `doCall` 的剥离把工具自身的 `purpose` 一并吞掉。**更名后无需标记**，剥离逻辑无条件。【2026-11-04 核对】现行 `mcp_find` 已无 `purpose` 参数，此条仅解释历史命名与仍存在的注入参数。

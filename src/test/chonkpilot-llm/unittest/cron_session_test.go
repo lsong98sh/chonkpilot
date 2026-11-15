@@ -186,3 +186,70 @@ func TestCronSessionAttributionViaPluginCapability(t *testing.T) {
 		t.Fatalf("轮次终态不符: %+v", turn)
 	}
 }
+
+// TestCronAppendNoticeViaPluginCapability：session.append-notice 向既有会话落 kind=notify
+// 消息 + 收通知轮次（供定时 LLM 任务回写创建会话）。
+func TestCronAppendNoticeViaPluginCapability(t *testing.T) {
+	bus := newBus(t)
+	llm := startLLM(t, bus, textLLMServer("ok").URL, true)
+	wd := t.TempDir()
+	t.Cleanup(data.Reset)
+	bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+		"instance_id": "ins-notice", "client_type": "unittest", "work_dir": wd,
+	})).Wait()
+
+	pb := pluginbridge.New(pluginbridge.Options{
+		Bus: bus, Addr: filepath.Join(t.TempDir(), "plugin.sock"), Version: "test",
+	})
+	if err := pb.Start(); err != nil {
+		t.Fatalf("pluginbridge start: %v", err)
+	}
+	t.Cleanup(func() { _ = pb.Close() })
+	llm.SetPluginRegistry(pb.Registry())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cli, err := transport.Dial(ctx, transport.Options{Backend: transport.BackendUDS, Addr: pb.Addr()})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+	if res, err := cli.Call(ctx, "plugin.hello", map[string]any{"id": "cron.notice"}); err != nil || !res.OK {
+		t.Fatalf("hello: %+v %v", res, err)
+	}
+
+	sid := "creator-session-1"
+	resEnsure, err := cli.Call(ctx, "plugin/v1/session.ensure", map[string]any{
+		"work_dir": wd, "session_id": sid, "kind": "chat", "title": "创建者会话",
+	})
+	if err != nil || !resEnsure.OK {
+		t.Fatalf("session.ensure: %+v %v", resEnsure, err)
+	}
+	dialogID, _ := resEnsure.Value.(map[string]any)["dialog_id"].(string)
+
+	res, err := cli.Call(ctx, "plugin/v1/session.append-notice", map[string]any{
+		"work_dir": wd, "session_id": sid, "task_id": "ct_notice",
+		"message": "定时任务已完成：审查结果 3 条",
+	})
+	if err != nil || !res.OK {
+		t.Fatalf("session.append-notice: %+v %v", res, err)
+	}
+	val, _ := res.Value.(map[string]any)
+	if val["message_id"] == "" || val["session_id"] != sid {
+		t.Fatalf("append-notice 回执不符: %+v", val)
+	}
+
+	hist := dataResultOf(t, dataReq(t, bus, "data-session-history", map[string]any{
+		"req_id": "h-notice", "instance_id": "ins-notice",
+		"data": map[string]any{"session_id": sid, "dialog_id": dialogID},
+	}))
+	body, _ := hist["messages"].(map[string]any)
+	turns, _ := body["turns"].([]any)
+	if len(turns) != 1 {
+		t.Fatalf("应有 1 个通知轮次: %+v", hist)
+	}
+	turn, _ := turns[0].(map[string]any)
+	if turn["status"] != "done" || turn["turn_id"] != val["turn_id"] {
+		t.Fatalf("通知轮次终态不符: %+v", turn)
+	}
+}

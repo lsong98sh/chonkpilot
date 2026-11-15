@@ -112,7 +112,8 @@ func callTool(ctx context.Context, cfg *Config, td *ToolDoc, args map[string]any
 		return "", err
 	}
 
-	// 执行硬上限：显式设置 → 采用（0/-1 = 无上限 → 不设 WithTimeout，仍随请求 ctx 可取消）。
+	// 执行硬上限：>0 → 到该秒数取消/终止子进程；<=0 / 未设置 → 不处理（契约 0/-1 = 无上限，
+	// 不设 WithTimeout，仍随请求 ctx 可取消）。
 	// ctx2 均**派生自请求 ctx**（B3）：无上限时 = 请求 ctx 本身（不设超时点、取消仍可达），
 	// 有上限时 = WithTimeout(请求 ctx)（到点杀子进程，取消亦可达）。
 	timeout, noLimit := resolveExecTimeout(cfg, td)
@@ -141,7 +142,7 @@ func callTool(ctx context.Context, cfg *Config, td *ToolDoc, args map[string]any
 	cmd.Env = cfg.executorEnv(cx)
 	out, runErr := cmd.Output()
 
-	// noLimit（0/-1 = 无上限）时 ctx2 = 请求 ctx（不设超时点）→ DeadlineExceeded 分支永不命中，
+	// noLimit（无上限）时 ctx2 = 请求 ctx（不设超时点）→ DeadlineExceeded 分支永不命中，
 	// 子进程自然运行至结束；Canceled 分支命中取消（请求 ctx 被取消 → 子进程被 kill）。
 	if ctx2.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("tool %s timeout after %ds", td.Name, timeout)
@@ -187,25 +188,23 @@ func callBuiltin(ctx context.Context, cfg *Config, td *ToolDoc, payload map[stri
 }
 
 // resolveExecTimeout 返回 tools/call 的**执行硬上限**（秒）与「是否无上限」——即子进程被杀的时间点。
-// 优先级（用户口径，2026-09-27）：
-//  1. usr 键 `tool_async` 的 hard_timeout（**仅用户显式设置时**生效；工具页「执行硬上限」）；
-//  2. 契约 meta: timeout（td.Timeout，**仅显式声明时**生效，含 0/-1）；
+// 语义（四模式重构，2026-11-14）：执行硬上限 >0 = 到该秒数**取消/终止**；<=0 = **不处理**。
+// 优先级：
+//  1. usr 键 `tool_async` 的 hard_timeout（**仅 >0 生效**；工具页「执行硬上限」）；
+//  2. 契约 meta: timeout（td.Timeout，**仅显式声明时**生效，含 0/-1 = 无上限）；
 //  3. cfg.execTimeout()（prj timeout_sec / 内置默认 300s）。
 //
-// **未设置**（键缺失 / null / 空串）→ 回落下一优先级；显式 **0 / -1 = 无上限**（noLimit=true，
-// 不设 WithTimeout，子进程永远运行，用户主动取消才结束）。
+// 未设置（键缺失 / null / 空串）或 <=0 → 回落下一优先级；契约显式 0 / -1 = 无上限
+// （noLimit=true，不设 WithTimeout，子进程永远运行，用户主动取消才结束）。
 // 注：未配置 hard_timeout/契约 timeout 时**完全维持**「契约 timeout 优先于 timeout_sec」的既有语义
 // （见 [41 I-79]：prj timeout_sec 仅对未声明 timeout 的契约生效），本函数不改该口径。
 func resolveExecTimeout(cfg *Config, td *ToolDoc) (timeout int, noLimit bool) {
-	if ov, ok := cfg.toolAsyncOverride(td.Name); ok && ov.HardTimeoutSet {
-		if ov.HardTimeout <= 0 {
-			return 0, true // 显式 0/-1 = 无上限
-		}
+	if ov, ok := cfg.toolAsyncOverride(td.Name); ok && ov.HardTimeoutSet && ov.HardTimeout > 0 {
 		return ov.HardTimeout, false
 	}
 	if td.TimeoutSet {
 		if td.Timeout <= 0 {
-			return 0, true // 显式 0/-1 = 无上限
+			return 0, true // 契约显式 0/-1 = 无上限
 		}
 		return td.Timeout, false
 	}

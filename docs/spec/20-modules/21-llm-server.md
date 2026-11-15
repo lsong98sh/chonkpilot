@@ -101,7 +101,7 @@
 
 ### 3.3 广播（`domainTopics` 映射）
 
-`session-receive`（reason/text/tool-call）· `session-complete`（唯一终态）· `session-ask` · `session-turn-start` · `task-started`/`task-updated`/`task-done` · `server-starting` · `prompt-optimised` · **`session-retry`（前端 `llm-retry`）** · **`session-interrupted`（前端 `llm-interrupted`）** · **`session-inbox-changed`** · **`subchat-opened` / `subchat-state` / `subchat-participant-state`**（后 4 组 2026-11-04 核对补列；子聊天/群聊主题亦见 §4.6）。
+`session-receive`（reason/text/tool-call）· `session-complete`（唯一终态）· `session-ask` · `session-turn-start` · **`session-usage`（前端 `llm-usage`；2026-11-13）** · `task-started`/`task-updated`/`task-done` · `server-starting` · `prompt-optimised` · **`session-retry`（前端 `llm-retry`）** · **`session-interrupted`（前端 `llm-interrupted`）** · **`session-inbox-changed`** · **`subchat-opened` / `subchat-state` / `subchat-participant-state`**（后 4 组 2026-11-04 核对补列；子聊天/群聊主题亦见 §4.6）。
 （`session-compress` 已于 2026-10-31 退出消息面：压缩改为**内部方法面**，见 §3.6 / [61 §7.1](../60-reference/61-消息一览.md)。）
 
 ### 3.4 会话编排能力与 agent 契约（core 不再自持工具契约）
@@ -367,6 +367,19 @@ runEngineLoop：step（LLM 流式 reason/text/tool-call 广播）
 
 **边界**：插入帧 LLM 失败 → 仅丢弃该帧并恢复外层（主轮不受影响）；帧深上限 5；`llm-cancel` = 全局终止（所有帧 + 在飞工具，恰一次 `interrupted`，不回到原任务）。
 
+### 4.11 用量通知（`session-usage` / 前端 `llm-usage`，2026-11-13）
+
+每个 LLM step **两条**事件，非终态、不落库：
+
+| phase | 时机 | 载荷要点 |
+|------|------|---------|
+| `send` | 请求**发出前**（`engineStepLLM.Step`） | `est_prompt_tokens` = 本地估算输入（字符数 / 2：system/messages + tool_call 名与参数 + 工具 schema）；`max_context_token` / `max_output_token` 取自本轮 provider 配置；`llm` / `model` |
+| `done` | step 结束（`ChatOptions.UsageObserver`） | 上游真实 usage：`prompt_tokens` / `completion_tokens` / `total_tokens` / `reasoning_tokens` / **`cached_tokens`**；`model` 以上游回显为准 |
+
+- **接线**：router `EvUsage`（LR-9 归一）→ `StreamEvent.Usage`（随 done 投出）→ `chatLLMClient.Step` 折成 `UsageReport` → `turnCtx.observeStepUsage` → `server.publish("llm-usage", …)`；`domainTopics` 映射 `llm-usage → session-usage`。
+- **前端消费**：输入框下方「上下文占用百分比环」= 真实 `prompt_tokens`（缺失回落到 `est_prompt_tokens`）/ `max_context_token`；悬停显示估算偏差、缓存命中、输出/推理/合计、模型与 step。订阅与按会话状态见 `src/frontend/src/composables/useLlmUsage.js`，纯函数见 `utils/llmUsage.js`。
+- **边界**：上游不返回 usage → 只发 `send`（环保持估算并标注）；`maxContextToken` 未配置（0）→ 环显示「—」，不伪造 0%；`parents` 非空 = 子轮次，前端忽略；恢复轮（`recoverTurnCtx`）无 provider 配置来源 → 真实 usage 仍发，上限字段缺省。
+
 ---
 
 ## 5. 数据结构与存储
@@ -420,7 +433,7 @@ runEngineLoop：step（LLM 流式 reason/text/tool-call 广播）
 
 ## 10. 关联测试
 
-`src/lib/llm/server/*_test.go`：`llm_test`（流解析/错误分类）· `assemble_test`（**三段拼接**：完整区原文 / 简化区**仅 text**（`TestAssembleTurnsBriefZoneTextOnly`/`TestAssembleTurnsThreeZones`）/ token 边界与预存优先（`TestAssembleTurnsTokenBound`）；口径 X）· `llm_testconn_test`（`llm.test-connection` 只读探活 —— `TestLLMTestConnectionOK` / `...AuthMaskedKey`（Key 脱敏）/ `...Network` / `...Timeout` / `...InvalidParams` / `...ResponsesProtocol`（Responses 协议映射 `max_output_tokens`）/ `TestMaskLLMSecrets`，见 §3.1）· `llm_images_test`（图片多模态：`TestChatImageContentParts`/`TestResponsesImageInputItem`/`TestChatImageErrors`（6 子例，**HTTP hits=0**）/`TestImageRecentTurnsRule`/`TestImagesDisabledPlainText`/`TestTurnSendsImagesEndToEnd`，见 §4.9）· `turn_test`/`turn_cover_test`（续写/空回复/auth/异步/压缩事件/取消）· `tool_task_test`（任务结果读取 / `task.wait` 等待）· `tool_retry_test`（定位/重启恢复）· **`inbox_test`**（中途插话：S1 插入 / S3 嵌套工具 / S4 awaitJoin / S5 回执先到 / S4.5 重入 / 重复回执幂等 / 流式期 next_turn 与合并 / promote / 全局取消 / 上限 50 / **Q6 撤回优先 + 已消费不可撤回 + 批次 pending 复核** —— `TestInbox*`，见 §4.10）· `tasks_test` · `session_test`（含 **`TestBuildContextTokensReadsPrestored`**：P3 读通道真取预存值） · `prompt_test` · `plugins_test` · `domainmcp_test`（已迁工具 / purpose 注入） · **`engine_turn_nonblock_test`**（2026-11-04 工具去阻塞 / 委派子轮） · **`askcenter_route_test`**（Ask 中心路由）。〔2026-11-04 核对：`sessionlock_test` / `jobdsl_test` 不存在，已从清单删除。〕**2026-11-06 第二批新增**：`session_facade_test`（会话原语门面直调：未启动 persist 的总线下仍成功）、`facade_reads_test`（场景 / 记忆类别 / ask 回查门面直调，同一判据）、`capnodes_plan_test` + `capability_reconcile_test`（热重扫只重建变化节点；新增根期间未变化工具全程不消失）、`plugin_task_wait_test`（`plugin/v1/task.wait` 终态事件 / 超时）；gateway `timeout_arbiter_test`（假时钟：完成 / awaiting / detach / cancel / 到点复核终态）、`toolmeta_test`（`task.wait` 事件回执 + 旧宿主回落退避）。
+`src/lib/llm/server/*_test.go`：`llm_test`（流解析/错误分类）· `assemble_test`（**三段拼接**：完整区原文 / 简化区**仅 text**（`TestAssembleTurnsBriefZoneTextOnly`/`TestAssembleTurnsThreeZones`）/ token 边界与预存优先（`TestAssembleTurnsTokenBound`）；口径 X）· `llm_testconn_test`（`llm.test-connection` 只读探活 —— `TestLLMTestConnectionOK` / `...AuthMaskedKey`（Key 脱敏）/ `...Network` / `...Timeout` / `...InvalidParams` / `...ResponsesProtocol`（Responses 协议映射 `max_output_tokens`）/ `TestMaskLLMSecrets`，见 §3.1）· `llm_images_test`（图片多模态：`TestChatImageContentParts`/`TestResponsesImageInputItem`/`TestChatImageErrors`（6 子例，**HTTP hits=0**）/`TestImageRecentTurnsRule`/`TestImagesDisabledPlainText`/`TestTurnSendsImagesEndToEnd`，见 §4.9）· `turn_test`/`turn_cover_test`（续写/空回复/auth/异步/压缩事件/取消）· `tool_task_test`（任务结果读取 / `task.wait` 等待）· `tool_retry_test`（定位/重启恢复）· **`inbox_test`**（中途插话：S1 插入 / S3 嵌套工具 / S4 awaitJoin / S5 回执先到 / S4.5 重入 / 重复回执幂等 / 流式期 next_turn 与合并 / promote / 全局取消 / 上限 50 / **Q6 撤回优先 + 已消费不可撤回 + 批次 pending 复核** —— `TestInbox*`，见 §4.10）· `tasks_test` · `session_test`（含 **`TestBuildContextTokensReadsPrestored`**：P3 读通道真取预存值） · `prompt_test` · `plugins_test` · `domainmcp_test`（已迁工具 / purpose 注入） · **`engine_turn_nonblock_test`**（2026-11-04 工具去阻塞 / 委派子轮） · **`askcenter_route_test`**（Ask 中心路由）**· `routercall_usage_test` + `engine_usage_test`（`session-usage`：router usage 随 done 投出 / 估算口径 / send-done 载荷，2026-11-13）**。〔2026-11-04 核对：`sessionlock_test` / `jobdsl_test` 不存在，已从清单删除。〕**2026-11-06 第二批新增**：`session_facade_test`（会话原语门面直调：未启动 persist 的总线下仍成功）、`facade_reads_test`（场景 / 记忆类别 / ask 回查门面直调，同一判据）、`capnodes_plan_test` + `capability_reconcile_test`（热重扫只重建变化节点；新增根期间未变化工具全程不消失）、`plugin_task_wait_test`（`plugin/v1/task.wait` 终态事件 / 超时）；gateway `timeout_arbiter_test`（假时钟：完成 / awaiting / detach / cancel / 到点复核终态）、`toolmeta_test`（`task.wait` 事件回执 + 旧宿主回落退避）。
 黑盒：`src/test/chonkpilot-llm/unittest/llm_test.go`（仅经公开主题驱动）；L1 `src/lib/llm/server/inbox_test.go`（S01–S07 + Q6 顺序/撤回：撤回后不落 message、已消费不可撤回、批次逐条 pending 复核）；`src/test/chonkpilot-data/unittest/persist/facade_inbox_test.go`（inbox 持久化 / 幂等 / 上限 / 重启保留 / 会话级联）；`src/lib/data/internal/kernel/viewdata_inbox_test.go`（工具状态投影占位）。L4：`src/test/chonkpilot-gui/systest/run_inbox.py`（真实 exe + mock LLM：工具执行中 `llm-inbox-add` → 插话先出流、主轮不提前终态）。
 
 ---

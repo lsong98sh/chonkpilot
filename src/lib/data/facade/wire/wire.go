@@ -88,6 +88,10 @@ func SessionToWire(s facade.Session) map[string]any {
 	put(row, "playbook", s.Playbook)
 	put(row, "convergence", s.Convergence)
 	put(row, "origin", s.Origin)
+	// 任务完成通知未读点（仅 true 写键 → 旧载荷/旧客户端不受影响）。
+	if s.NotifyUnread {
+		row["notify_unread"] = true
+	}
 	if s.Snapshot != nil {
 		kern := data.SnapshotFromFacade(*s.Snapshot)
 		b, err := json.Marshal(kern.History)

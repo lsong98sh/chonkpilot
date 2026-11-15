@@ -38,9 +38,17 @@
       **工具名一律用网关暴露名**（P0a 2026-10-29 口径）：插件工具 = manifest 原名（`file_*` /
       `task_run` / `mcp_*` / `ask_user` / `desktop_run`），内置 self 节点工具（`history_*`）同样
       **无 `self_` 前缀**。未按暴露名调用无法路由（I-20）。
+      **场景化 E2E（run_e2e.py，2026-11-11）**：
+        `e2eplan=<base64 JSON [{path,content,...}]>` → 一次 `file_write`（批量 targets，
+                                  空工程 → 有数据工程幂等预置）
+        `【T-E2E-READ】… e2epath=<绝对路径>` → `file_read`（LLM 工具调用链用例）
+        `【T-E2E-TASK】`            → `task_run`（Write-Output E2E-TASK-OK；任务树用例）
+        判据用**测试编号**（`t-e2e-read` / `t-e2e-task`）而非裸关键词：工具结果回喂后会再次
+        进入 route_tool_calls，裸关键词可能被工具输出（命令文本/文件内容）命中 → 无限工具循环。
 工具结果回填后再次收到调用时文本不再含关键词 → 返回普通回复，避免循环。
 """
 
+import base64
 import json
 import os
 import re
@@ -341,6 +349,9 @@ def route_tool_calls(text):
     if "call slow3p-never" in t:
         return [("slow3p_slow_sleep", {"seconds": 5, "async": "never", "timeout": 1,
                                        "tool_call_display_name": "夹具"})]
+    if "call slow3p-manual" in t:
+        return [("slow3p_slow_sleep", {"seconds": 5, "async": "manual", "timeout": 1,
+                                       "tool_call_display_name": "夹具"})]
     # ── 配置⑤ 超时自动取消（run_tool_async.py 新增用例）──
     # 第三方 stdio 夹具：async=never + timeout=1s，配合 usr
     # `tool_async.slow3p_slow_sleep.cancel_on_timeout` → 到 1s **自动取消**（不等裁决）
@@ -456,6 +467,59 @@ def route_tool_calls(text):
         if to:
             args["to"] = int(to) if re.fullmatch(r"-?\d+", to) else to
         return [("history_restore", args)]
+    # ── 场景化 E2E（run_e2e.py，2026-11-11）──────────────────────────────
+    # 一次 assistant 消息内批量 file_write（targets 由提示词 e2eplan=<base64 JSON> 携带）：
+    # 空工程 → 有数据工程预置（幂等：框架只把磁盘缺失项放进 plan）。
+    if "e2eplan=" in t:
+        m = re.search(r"e2eplan=([A-Za-z0-9+/=]+)", text)
+        targets = []
+        if m:
+            try:
+                targets = json.loads(base64.b64decode(m.group(1)).decode("utf-8"))
+            except Exception:
+                targets = []
+        targets = [x for x in (targets or [])
+                   if isinstance(x, dict) and isinstance(x.get("path"), str) and x.get("path")]
+        if targets:
+            return [("file_write", {"targets": targets,
+                                    "tool_call_display_name": "E2E 预置工程"})]
+        return None
+    # 读指定文件（路径经 `e2epath=<绝对路径>` 传入；工具结果回填后供断言哨兵）。
+    # 判据用**测试编号**（t-e2e-read）而非裸关键词：工具结果可能包含文件内容，裸关键词会被
+    # 回喂的工具结果再次命中 → 无限工具循环（TOOL_LOOP_LIMIT）。
+    if "t-e2e-read" in t:
+        p = _prompt_arg(text, "e2epath")
+        if p:
+            return [("file_read", {"targets": [{"path": p}],
+                                   "tool_call_display_name": "E2E 读取"})]
+        return None
+    # 真实 task_run（stdout 哨兵 E2E-TASK-OK）：任务树 / 工具任务节点用例。
+    # 同上：用编号判据，避免工具结果（含命令文本）回喂后再次命中关键词。
+    if "t-e2e-task" in t:
+        return [("task_run", {"command": "Write-Output E2E-TASK-OK",
+                              "tool_call_display_name": "E2E 任务"})]
+    # 子代理（单聊）：subchat_open（agent/scenario 由提示词携带；scenario 团队由 e2e 夹具预置）
+    if "t-e2e-subchat" in t:
+        sc = _prompt_arg(text, "e2escenario")
+        ag = _prompt_arg(text, "e2eagent")
+        if sc and ag:
+            return [("subchat_open", {"agent": ag, "scenario_id": sc, "llm": "mock",
+                                      "prompt": "E2E 子代理交接：请处理子任务并回报。",
+                                      "purpose": "E2E 子代理",
+                                      "tool_call_display_name": "E2E 子代理"})]
+        return None
+    # 群聊（多聊）：subchat_open + participants>=2（主 agent + 两名成员）
+    if "t-e2e-group" in t:
+        sc = _prompt_arg(text, "e2escenario")
+        parts = [x for x in _prompt_arg(text, "e2eparticipants").split(",") if x]
+        if sc and len(parts) >= 2:
+            return [("subchat_open", {"agent": "e2e-main", "scenario_id": sc, "llm": "mock",
+                                      "prompt": "E2E 群聊议题：请依次发言并收敛。",
+                                      "purpose": "E2E 群聊",
+                                      "participants": [{"agent": x, "role": ""} for x in parts],
+                                      "tool_call_display_name": "E2E 群聊"})]
+        return None
+
     # 普通工具场景
     # R-11：文件操作参数须为绝对路径或以 ~/ 开头（相对路径会被执行器拒绝），
     # 故用 ws 绝对路径（与 run_llm.py 期望的 "hello from a.txt" 对应）。

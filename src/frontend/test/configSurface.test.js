@@ -209,7 +209,7 @@ test('⑥ 来源判定：self/dir=builtin；第三方=非 self/dir；无 server 
   assert.equal(isThirdPartyProvider({}), null, '无 _meta.server → 不标注（宁缺勿错）')
 })
 
-test('⑥ 沙箱页：executor 级行 + 第三方/http·sse 边界说明；async 页：dir 行 hard_timeout 标注并禁用', () => {
+test('⑥ 沙箱页：executor 级行 + 第三方/http·sse 边界说明；工具配置页：四模式 + 无 dir 禁用', () => {
   const sandbox = read('views/config/SettingsToolSandboxPage.vue')
   assert.match(sandbox, /:data-exec="row\.key"/, '须按执行体单位渲染行')
   assert.match(sandbox, /thirdPartyHint/, '须给第三方 / http·sse 边界说明（不可隔离原因）')
@@ -218,15 +218,17 @@ test('⑥ 沙箱页：executor 级行 + 第三方/http·sse 边界说明；async
   assert.doesNotMatch(read('composables/useToolSandbox.js'), /utils\/toolSource/, 'executor 级不再逐工具判定来源')
 
   const asyncPage = read('views/config/SettingsToolAsyncPage.vue')
-  assert.match(asyncPage, /isDirNode\(meta\)/, 'async 页须判定 dir 节点')
-  assert.match(asyncPage, /hardTimeoutNotApplicable/, '须给 hard_timeout 不适用原因')
-  assert.match(asyncPage, /:disabled="row\.dirNode === true"/, 'dir 行 hard_timeout 须禁用')
-  // 不写库守卫：dir 行不得把 hard_timeout 写入 usr 配置
-  assert.match(asyncPage, /if \(!row\.dirNode && row\.hardTimeout/, 'dir 行不写 hard_timeout（避免误导）')
+  // 四模式（2026-11-14）：sync/async/auto/manual 全部可选，manual 不再折叠为 auto
+  assert.match(asyncPage, /const MODES = \['sync', 'async', 'auto', 'manual'\]/, '须四模式')
+  assert.match(asyncPage, /value: 'manual'/, '模式选项须含手动异步')
+  // 执行硬上限对所有模式可编辑（dir 节点禁用 / I-109 逻辑已删除）
+  assert.doesNotMatch(asyncPage, /isDirNode|dirNode|hardTimeoutNotApplicable/, 'dir 节点 hard_timeout 禁用逻辑应删除')
+  // 旧两列/两参数已删除
+  assert.doesNotMatch(asyncPage, /on_timeout|cancel_on_timeout|onTimeout|cancelOnTimeout/, '旧超时动作/超时自动取消字段应删除')
 })
 
-// ⑦ 工具异步页「超时」占位：**未设置** → 「回落全局」；**0 / -1 = 无上限**（用户口径 2026-09-27）。
-test('⑦ 超时列占位「回落全局」+ 0/-1 = 无上限口径（cTimeout 空时生效）', () => {
+// ⑦ 执行硬上限口径：>0 取消、<=0 / 留空不处理；转异步阈值仅 auto/manual。
+test('⑦ 执行硬上限 >0 取消 / <=0 不处理；转异步阈值仅 auto/manual 可填', () => {
   assert.equal(readLocale('zh-CN', 'config.json').toolAsync.hardTimeoutPlaceholder, '回落全局')
   assert.equal(readLocale('en-US', 'config.json').toolAsync.hardTimeoutPlaceholder, 'Fall back to global')
 
@@ -234,17 +236,18 @@ test('⑦ 超时列占位「回落全局」+ 0/-1 = 无上限口径（cTimeout �
   assert.match(
     asyncPage,
     /row\.cTimeout === '' \? \$t\('config\.toolAsync\.hardTimeoutPlaceholder'\)/,
-    '超时列占位须取该词条（cTimeout 空 = 契约未声明硬上限 → 回落全局）',
+    '硬上限占位须取该词条（cTimeout 空 = 契约未声明硬上限 → 回落全局）',
   )
-  // 0 / -1 = 无上限的合法值判定（阈值 / 硬上限同一口径）
   assert.match(asyncPage, /function isLimitValue\(v\)/, '须有 isLimitValue 合法值判定')
-  assert.match(asyncPage, /n >= 0 \|\| n === -1/, '0 与 -1 须判为合法（无上限）')
-  assert.match(asyncPage, /isLimitValue\(raw\)/, 'onNumberBlur 须用 isLimitValue 判定合法值')
-  // 占位语义与 0/-1 口径写入表头 tooltip（i18n）
-  assert.match(asyncPage, /advancedHint/, '超时列表头须带 0/-1 口径 tooltip')
-  const hint = readLocale('zh-CN', 'config.json').toolAsync.advancedHint
-  assert.match(hint, /0 \/ -1/, 'zh tooltip 须写明 0 / -1 = 无上限')
-  assert.match(hint, /回落全局/, 'zh tooltip 须写明留空 = 回落全局')
+  assert.match(asyncPage, /n >= 0 \|\| n === -1/, '0 与 -1 须判为合法（不设点）')
+  assert.match(asyncPage, /function isThresholdMode\(row\) \{[\s\S]{0,120}mode === 'manual'/, 'isThresholdMode 须含 manual（仅 auto/manual 有阈值）')
+  assert.match(asyncPage, /n > 0\) e\.hard_timeout = n/, '执行硬上限仅 >0 才写库')
+  // 表头 tooltip 新语义
+  assert.match(asyncPage, /hardTimeoutHint/, '硬上限列表头须带 tooltip')
+  const hint = readLocale('zh-CN', 'config.json').toolAsync.hardTimeoutHint
+  assert.match(hint, />0 = 到该秒数直接取消/, 'zh tooltip 须写明 >0 取消')
+  assert.match(hint, /<=0 \/ 留空 = 不处理/, 'zh tooltip 须写明 <=0 / 留空不处理')
+  assert.match(hint, /回落契约/, 'zh tooltip 须写明回落契约')
 })
 
 // ── ⑧ 索引页「叠加 gitignore」（2026-09-27）──────────────
@@ -284,7 +287,7 @@ test('i18n：新增键 zh-CN / en-US 齐备', () => {
     mcp: ['toolSandboxSummary', 'gotoToolSandbox', 'tabTools', 'loadTools', 'loadToolsHint',
       'kvAdd', 'kvDelete', 'kvKey', 'kvValue', 'hotToolsAllLabel',
       'hotToolsEmpty', 'hotToolsLoading'],
-    toolAsync: ['naBadge', 'hardTimeoutNotApplicable'],
+    toolAsync: ['modeSync', 'modeAsync', 'modeAuto', 'modeManual', 'transferThreshold', 'hardTimeoutHint'],
     toolSandbox: ['serverSummary', 'gotoMcp', 'thirdPartyHint', 'execCore'],
   }
   for (const loc of LOCALES) {

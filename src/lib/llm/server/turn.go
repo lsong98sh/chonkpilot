@@ -184,8 +184,10 @@ type turnCtx struct {
 	//     恢复轮 = exe flags 隐含默认）；
 	//   - llmModel：请求体 model（provider.model；未命中 = llm-start.llm 传入值；空 = spec.DefaultModel
 	//     = exe flag -llm-model）；
+	//   - llmName：本轮解析后的 provider 名（auto → 默认 LLM；未命中/恢复轮为空），仅用于用量事件展示；
 	//   - llmThink/llmEffort：映射 reasoning_effort（Effort 优先；两者均空 = 不发送）。
 	llmSpec   router.Spec
+	llmName   string
 	llmModel  string
 	llmThink  string
 	llmEffort string
@@ -199,6 +201,11 @@ type turnCtx struct {
 	// llmVisionUnavailable = auto 模式且默认 LLM 不具备识图能力，但无任何合格候选 → 含图像时
 	// 降级仍用默认 LLM（仅日志留痕）。
 	llmVisionUnavailable bool
+	// usageStep / usageEst 是用量事件（session-usage）的每步上下文：
+	//   - usageStep：本 turn 已发出的 LLM step 序号（1 起；同一 step 的重试不递增）；
+	//   - usageEst：当前 step 的本地估算输入 token（send 事件携带，done 事件用于校准展示）。
+	usageStep atomic.Int64
+	usageEst  atomic.Int64
 	// 超时/重试（来自 usr 配置，启动时加载一次；T-27 接线 + RETRY-2）：
 	//   - responseTimeout/streamTimeout 传给 router `CallOptions`（首字节 / 流间隔超时）；
 	//   - retryCount/retryBudget 传给 router `CallOptions`（报文级重试次数 + 退避预算）；
@@ -233,19 +240,21 @@ type turnCtx struct {
 	// 「【已收敛】」标记 + 用户拍板为准，子 agent 自报结束无意义）。`llmTools` 下发面与 `toolAllowed`
 	// 调用处**双拦**（挡模型幻觉）。空 = 不拒绝（其余会话零开销、行为逐字节不变）。
 	denyTools map[string]struct{}
-	// keepFullTurns / keepFullTokens / briefBudget 三段边界（项目级 `keep_full_max_turns` /
-	// `keep_full_max_tokens` / `compress_token_threshold`，启动时加载一次）：完整区 = 最近 N 轮 / M token；
-	// 简化区 = 再往前 brief token 累计 <= T（仅 text 投影）；算法与压缩侧共用（data.LocateZones）。
-	keepFullTurns  int
-	keepFullTokens int
-	briefBudget    int
-	// compressWanted / compressJob：组装时判定达阈值 → 暂存压缩任务，终态快照写完后再真正启动
-	// （锚点 = 本轮；见 compress.go:startPendingCompress）。仅本轮组装 goroutine 写、终态读，
-	// 二者严格先后（Step 返回后才 finish），无需加锁。
-	compressWanted bool
-	compressJob    compressJob
+	// compressTrigger 是项目级「压缩触发阈值（tokens）」显式值（`compress_trigger_tokens`，
+	// 启动时加载一次）：>0 直接使用；0 = 自动（最大上下文的 70%，见 compressTriggerTokens()）。
+	compressTrigger int
+	// 四步压缩策略的本轮状态（2026-11-14）：
+	//   - simplified / simplifiedFrom：已进入 2.2（简化），simplifiedFrom = 最早被简化的历史轮 id；
+	//   - compressAttempted：本轮已尝试过 2.3 压缩（每轮最多一次 LLM 摘要）；
+	//   - compressed：本轮已成功压缩（tc.hist 已替换为摘要）。
+	// 仅在组装 / step goroutine 读写（严格先后，无需加锁）。2.2 标识**不落快照**——原文未被
+	// 降级，跨轮次按原历史重新计算即可。
+	simplified        bool
+	simplifiedFrom    string
+	compressAttempted bool
+	compressed        bool
 	// turnTokens 会话各轮**预存** token（`data-session-context` 只增伴随数组 turn_tokens，升序、
-	// 排除当前轮）：组装侧三段判定**直接取预存值**（尾部对齐；缺值回退实时估算）。
+	// 排除当前轮）：轮 id 映射（压缩锚点 / simplifiedFrom）用。
 	turnTokens []facade.TurnToken
 	// forceFull 重试/恢复标记：本 turn 必须全量拼接（即使落在"非完整区"）。
 	// 仅在 recoverTurnCtx（进程重启/死 turn 恢复）构造时置位（loop 启动前，无并发写）。
@@ -371,7 +380,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	// 排除本 turn，本 turn 既有消息由引擎从库带回，保证该 turn 恒为末段（全量拼接）。
 	hist, turnTokens := s.newSessionStore(req.InstanceID).BuildContextTokens(req.Session, req.Turn, !req.Continue)
 	// LLM-P4「单轮配置读收敛」：本轮**只读两次配置**——usr 对象 1 次（provider / 超时 / 续写 /
-	// defaultLLM）+ prj 平铺表 1 次（三段边界 + 占位符路径键），其余全部从本快照派生。
+	// defaultLLM）+ prj 平铺表 1 次（压缩触发阈值 + 占位符路径键），其余全部从本快照派生。
 	// 改前一轮内共 5 次（loadUserConfig · prjConfigValues · replaceToolchain 内 usr+prj ·
 	// resolveAgentLLMName 内 usr），读序/合成规则不变（usr = UserConfigGet；
 	// prj = ConfigKVList(prj-config)，prjusr 覆盖 prj）。
@@ -466,7 +475,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		}
 		denyTools[nextRunTool] = struct{}{}
 	}
-	// 三段边界 / 等待超时键：直接取本轮已读的 prj 平铺表（LLM-P4；原实现另发一次 ConfigKVGet）。
+	// 压缩触发阈值 / 等待超时键：直接取本轮已读的 prj 平铺表（LLM-P4；原实现另发一次 ConfigKVGet）。
 	// 取值口径不变：这些键只落 prj（非 usr 配置键），值解析函数自身 TrimSpace + 缺省回落。
 	zoneVals := prjList
 	tc := &turnCtx{
@@ -484,6 +493,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		llmMaxOutputToken:    llmMO,
 		llmMaxContextToken:   llmMC,
 		llmSpec:              llmSpec,
+		llmName:              llmName,
 		llmModel:             llmModel,
 		llmThink:             llmThink,
 		llmEffort:            llmEffort,
@@ -500,9 +510,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		maxToolIterations:    llmMaxIter,
 		allowedTools:         allowedTools,
 		denyTools:            denyTools,
-		keepFullTurns:        keepFullTurnsOf(zoneVals),
-		keepFullTokens:       keepFullTokensOf(zoneVals),
-		briefBudget:          briefBudgetOf(zoneVals),
+		compressTrigger:      compressTriggerTokensOf(zoneVals),
 		turnTokens:           turnTokens,
 		engineInbox:          newChatInbox(),
 		sysPromptText:        sc.sysPrompt,
@@ -563,7 +571,7 @@ type turnScenario struct {
 
 // turnCfg 是本轮**一次性**读到的配置快照（LLM-P4「单轮配置读收敛」）。
 //
-// 原实现一轮内至少读 5 次配置：`loadUserConfig`（provider/超时）、`prjConfigValues`（三段边界）、
+// 原实现一轮内至少读 5 次配置：`loadUserConfig`（provider/超时）、`prjConfigValues`（压缩触发阈值）、
 // `replaceToolchain` → `readUserConfig` + `readPrjConfigList`（占位符取值）、`resolveAgentLLMName`
 // → `UserConfigGet`（defaultLLM）。现收敛为 **2 次**：usr 对象 1 次 + prj 平铺表 1 次，其余全部
 // 从本快照派生（读序/合成规则不变：usr = UserConfigGet，prj = ConfigKVList(prj-config)）。

@@ -16,27 +16,14 @@
       <!-- 上下文压缩配置 -->
       <section class="cfg-section">
         <h3 class="section-title">{{ $t('projectConfig.compress_section') }}</h3>
-        <!-- 保留完整对话 = **本轮恒保留**（下限），更早的轮「累计完整态 token > M」或「已纳入轮数 >= N」
-             的那一轮起全部进入**简化区**（口径 V/W；两条件均 0 = 不压缩；简化区 token ≥ T 才生成摘要） -->
+        <!-- 四步压缩策略（2026-11-14）：唯一数值项 = 压缩触发阈值。
+             自动 = 最大上下文的 70%（provider 未配置窗口时按 128000 → 89600）；0 = 自动。 -->
         <div class="form-item form-item-12">
-          <label class="form-label">{{ $t('projectConfig.keep_full_max_turns') }}</label>
-          <Input v-model.number="keepFullMaxTurns" type="number" :min="0" :max="50" :step="1" @update:model-value="refreshDirty" />
-          <!-- 口径 W：<0 = 非法（显式提示，不静默）；0 = 该条件不启用 -->
-          <div class="field-hint" :class="{ 'hint-error': keepFullMaxTurnsInvalid }">
-            {{ keepFullMaxTurnsInvalid ? $t('projectConfig.keep_full_max_turns_invalid') : $t('projectConfig.keep_full_max_turns_hint') }}
+          <label class="form-label">{{ $t('projectConfig.compress_trigger_tokens') }}</label>
+          <Input v-model.number="compressTriggerTokens" type="number" :min="0" :max="1000000000" :step="1000" @update:model-value="refreshDirty" />
+          <div class="field-hint" :class="{ 'hint-error': compressTriggerInvalid }">
+            {{ compressTriggerInvalid ? $t('projectConfig.compress_trigger_tokens_invalid') : $t('projectConfig.compress_trigger_tokens_hint') }}
           </div>
-        </div>
-        <div class="form-item form-item-12">
-          <label class="form-label">{{ $t('projectConfig.keep_full_max_tokens') }}</label>
-          <Input v-model.number="keepFullMaxTokens" type="number" :min="0" :max="1000000" :step="1000" @update:model-value="refreshDirty" />
-          <!-- 口径 W：<0 = 非法（显式提示，不静默）；0 = 该条件不启用 -->
-          <div class="field-hint" :class="{ 'hint-error': keepFullMaxTokensInvalid }">
-            {{ keepFullMaxTokensInvalid ? $t('projectConfig.keep_full_max_tokens_invalid') : $t('projectConfig.keep_full_max_tokens_hint') }}
-          </div>
-        </div>
-        <div class="form-item form-item-12">
-          <label class="form-label">{{ $t('projectConfig.compress_threshold') }}</label>
-          <Input v-model.number="compressTokenThreshold" type="number" :min="10000" :max="500000" :step="10000" @update:model-value="refreshDirty" />
           <div class="quick-thresholds">
             <Button
               v-for="b in QUICK_THRESHOLDS"
@@ -127,34 +114,28 @@ const { t } = useI18n()
 const { dirty, markDirty, markSaved } = useUnsavedMark()
 const saving = ref(false)
 
-// 快速阈值按钮（FP L212）：64K/128K/256K/512K/1M
+// 快速阈值按钮（四步策略常用档位）：32K / 64K / 128K
 const QUICK_THRESHOLDS = [
+  { label: '32K', value: 32 * 1024 },
   { label: '64K', value: 64 * 1024 },
   { label: '128K', value: 128 * 1024 },
-  { label: '256K', value: 256 * 1024 },
-  { label: '512K', value: 512 * 1024 },
-  { label: '1M', value: 1024 * 1024 },
 ]
 
-// 系统默认（与 compress 插件 DefaultOptions 一致：
-// keep_full_max_turns=10 / keep_full_max_tokens=24000 / compress_token_threshold=20000）
-const keepFullMaxTurns = ref(10)
-const keepFullMaxTokens = ref(24000)
-const compressTokenThreshold = ref(20000)
+// 压缩触发阈值（`compress_trigger_tokens`）：0 = 自动（最大上下文的 70%）；>0 = 显式 token 值。
+// 判定对象 = 本次请求总输入（system prompt + 指引 + 工具 schema + 全部历史 + 当前轮）。
+const compressTriggerTokens = ref(0)
 // 子会话治理开关（DSL-4，42 §2 (253)，默认关闭）：
 //   - compress.subsession「压缩子会话」：关 = 子会话 turn 跳过压缩。
 // 落库走既有 setConfigs（prj 键），保存即生效（后端插件按 session.parent_id 分流）。
 const compressSubsession = ref(false)
-// 口径 W（2026-09-25）：`< 0` = 非法值（前端显式提示，不静默；后端按「不启用」处理并留日志）；
-// `0` = 该条件不启用（只用另一条件）；**两者均为 0 = 不压缩**（保留全量、不生成摘要）。
-const keepFullMaxTurnsInvalid = computed(() => Number(keepFullMaxTurns.value) < 0)
-const keepFullMaxTokensInvalid = computed(() => Number(keepFullMaxTokens.value) < 0)
-const hasIllegalBounds = computed(() => keepFullMaxTurnsInvalid.value || keepFullMaxTokensInvalid.value)
+// 阈值取值语义：`< 0` = 非法值（前端显式提示，不静默；后端按「自动」处理）；
+// `0` = 自动（最大上下文的 70%）。
+const compressTriggerInvalid = computed(() => Number(compressTriggerTokens.value) < 0)
 
-// warnIllegalBounds 保存/落库前提示非法值（不阻断保存：后端按不启用处理，但用户必须知情）。
+// warnIllegalBounds 保存/落库前提示非法值（不阻断保存：后端按自动处理，但用户必须知情）。
 function warnIllegalBounds() {
-  if (hasIllegalBounds.value) {
-    message.warning(t('projectConfig.keep_full_max_illegal_warning'))
+  if (compressTriggerInvalid.value) {
+    message.warning(t('projectConfig.compress_trigger_tokens_invalid'))
   }
 }
 const summarizePrompt = ref('')
@@ -182,14 +163,12 @@ const expandedRecords = ref({})
 const hasActiveSession = ref(false)
 
 // ── 手动保存的 dirty 判定（无 watch：由各变更点显式调用 refreshDirty 重算）──
-// 仅将「点【保存】才落库」的项纳入快照：压缩三项数值 + 压缩子会话开关；
+// 仅将「点【保存】才落库」的项纳入快照：压缩触发阈值 + 压缩子会话开关；
 // 弹窗编辑（总结提示词）即时落库，不进快照。
 let savedState = ''
 function currentState() {
   return JSON.stringify({
-    turns: Number(keepFullMaxTurns.value) || 0,
-    tokens: Number(keepFullMaxTokens.value) || 0,
-    threshold: Number(compressTokenThreshold.value) || 0,
+    trigger: Number(compressTriggerTokens.value) || 0,
     compSub: !!compressSubsession.value,
   })
 }
@@ -211,12 +190,9 @@ async function loadConfig() {
   try {
     const res = await getAllConfig()
     const c = res.config || res
-    // 保留完整对话：**本轮恒保留**（下限），更早的轮超 N 轮或累计完整态 token 超 M 的那一轮起
-    // 进入**简化区**（`keep_full_max_turns`、`keep_full_max_tokens`）；0 = 该条件不启用、
-    // 两者均 0 = 不压缩（口径 V/W）；简化区摘要阈值 `compress_token_threshold`（作用域 = 简化区）。
-    keepFullMaxTurns.value = readNum(c, 'keep_full_max_turns', 10)
-    keepFullMaxTokens.value = readNum(c, 'keep_full_max_tokens', 24000)
-    compressTokenThreshold.value = readNum(c, 'compress_token_threshold', 20000)
+    // 压缩触发阈值（`compress_trigger_tokens`）：0 = 自动（最大上下文的 70%）；缺失/非法 → 0。
+    // 旧三段键（keep_full_max_turns / keep_full_max_tokens / compress_token_threshold）不再读取。
+    compressTriggerTokens.value = readNum(c, 'compress_trigger_tokens', 0)
     // 子会话治理开关（prj 键；缺失/非 'true' → 关闭）
     compressSubsession.value = c['compress.subsession'] === 'true'
   } catch (e) {
@@ -344,12 +320,11 @@ async function handleSave() {
   saving.value = true
   try {
     warnIllegalBounds()
-    // 本页全部 prj 键（压缩三项 + 子会话开关）**一次批量写** → 后端整批一次
+    // 本页全部 prj 键（触发阈值 + 子会话开关）**一次批量写** → 后端整批一次
     // 广播 data-prj-config-refresh（61 §3.1），不再逐键 N 条。
+    // 旧三段键（keep_full_max_* / compress_token_threshold）已从 UI 移除，不再写入。
     const entries = {
-      keep_full_max_turns: String(keepFullMaxTurns.value),
-      keep_full_max_tokens: String(keepFullMaxTokens.value),
-      compress_token_threshold: String(compressTokenThreshold.value),
+      compress_trigger_tokens: String(Number(compressTriggerTokens.value) || 0),
       // 子会话治理开关（DSL-4，42 §2 (253)；prj 键，默认关闭）——与压缩同域，随本页一次批量写。
       'compress.subsession': String(compressSubsession.value),
     }
@@ -405,7 +380,7 @@ function openSummaryEditor() {
 
 // 快速阈值按钮：只改本地值（点【保存】才落库）
 function handleQuickThreshold({ value }) {
-  compressTokenThreshold.value = value
+  compressTriggerTokens.value = value
   refreshDirty()
 }
 
@@ -418,8 +393,7 @@ onMounted(() => {
   // （仅本页关注键）+ **合并突发广播为 1 次重载**（读最终快照）+ **保存期间（saving）跳过**，避免
   // 早到的广播让 loadConfig 读到「尚含旧值」的中间快照，把本地**未提交**的数值冲回旧值。
   unsubs.push(usePrjConfigRefresh({
-    keys: ['keep_full_max_turns', 'keep_full_max_tokens',
-      'compress_token_threshold', 'compress.subsession'],
+    keys: ['compress_trigger_tokens', 'compress.subsession'],
     reload: loadConfig,
     isSaving: () => saving.value,
   }))
@@ -477,7 +451,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 1em;
 }
-/* 记忆类别表不再自建横向滚动容器（与工具异步页同范式）→ 溢出交给 .form-layout */
+/* 记忆类别表不再自建横向滚动容器（与工具配置页同范式）→ 溢出交给 .form-layout */
 .form-layout :deep(.b-table-wrapper) {
   overflow-x: visible;
 }

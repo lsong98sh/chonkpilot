@@ -357,7 +357,7 @@ function activeTasks(sessionId = '', topSession = '') {
     if (!matches(t, sessionId, topSession)) continue
     out.push(t)
   }
-  out.sort((a, b) => (a.started_at || '').localeCompare(b.started_at || ''))
+  out.sort((a, b) => String(a.started_at || '').localeCompare(String(b.started_at || '')))
   return out
 }
 
@@ -369,7 +369,7 @@ function tasksOfSession(sessionId = '') {
     if (t.session_id !== sessionId) continue
     out.push(t)
   }
-  out.sort((a, b) => (a.started_at || '').localeCompare(b.started_at || ''))
+  out.sort((a, b) => String(a.started_at || '').localeCompare(String(b.started_at || '')))
   return out
 }
 

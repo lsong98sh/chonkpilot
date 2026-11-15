@@ -353,6 +353,7 @@ var mqTypeMap = map[string]string{
 	// session 域（值 = 稳定前端 type，非契约主题）
 	msgkeys.TopicSessionReceive:   "llm-receive",
 	msgkeys.TopicSessionComplete:  "llm-complete",
+	msgkeys.TopicSessionUsage:     "llm-usage",
 	msgkeys.TopicSessionRetry:     "llm-retry",
 	msgkeys.TopicSessionAsk:       "ask-user",
 	msgkeys.TopicSessionTurnStart: "turn-start",
@@ -479,10 +480,10 @@ var frontMethodSubjects = map[string]string{
 	// Ask 中心订阅（后端唯一分发，2026-11-05）：前端 Ask 中心窗口挂载/卸载时登记/退订。
 	msgkeys.TopicAskCenterSubscribe:   msgkeys.TopicAskCenterSubscribe,
 	msgkeys.TopicAskCenterUnsubscribe: msgkeys.TopicAskCenterUnsubscribe,
-	msgkeys.TopicTaskStop:        msgkeys.TopicTaskStop,
-	msgkeys.TopicTaskBackground:  msgkeys.TopicTaskBackground,
-	msgkeys.TopicToolRetry:       msgkeys.TopicToolRetry,
-	msgkeys.TopicPromptOptimise:  msgkeys.TopicPromptOptimise,
+	msgkeys.TopicTaskStop:             msgkeys.TopicTaskStop,
+	msgkeys.TopicTaskBackground:       msgkeys.TopicTaskBackground,
+	msgkeys.TopicToolRetry:            msgkeys.TopicToolRetry,
+	msgkeys.TopicPromptOptimise:       msgkeys.TopicPromptOptimise,
 	// 实例消息（61 §4.1，阶段 2a）：instance-claim = 前端启动认领（请求-响应，桥按
 	// publishV 把 server 写回的 v.Result 作为 /publish 响应回发起者 → 多客户端不串号）；
 	// instance-heartbeat = **发布方改为前端 SPA**（客户端续期 30s；-tags split 门控语义不变：

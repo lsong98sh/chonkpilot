@@ -87,6 +87,13 @@
               @mousedown.stop
               @click.stop
             />
+            <!-- 任务完成通知未读点（持久化在 prjusr dialogs 行；打开该会话即已读并本地清除）。
+                 点击交给整行：选中会话 → data-session-active-set → 数据层清未读。 -->
+            <span
+              v-if="session.notify_unread"
+              class="session-notify-dot"
+              :title="$t('chat.session_notify_unread')"
+            ></span>
           </div>
           <div class="session-meta">
             <!-- 运行中徽标（2026-11-03）：来源 = `session-running-list` 内存快照（不落库） -->
@@ -399,6 +406,8 @@ async function handleSelect(session) {
     return
   }
   currentSessionId.value = session.session_id
+  // 打开即已读：本地先清点（数据层 active-set 同步持久化 notify_read_at）。
+  if (session.notify_unread) session.notify_unread = false
   sessionApi.setActiveSessionID(session.session_id).catch(e => console.warn('[SessionsPane] setActiveSessionID error:', e))
   mq.emit(EventNames.sessionChanged, { session_id: session.session_id })
 }
@@ -547,6 +556,16 @@ onMounted(() => {
   _unsubs.push(mq.on(EventNames.sessionNew, ({ parent_session_id }) => {
     if (parent_session_id) return
     sessionApi.listSessions().then(list => { sessions.value = list }).catch(() => {})
+  }))
+  // 定时任务完成通知（tool-notify）→ 刷新列表，标题后的未读点即时出现。
+  _unsubs.push(mq.on(EventNames.toolNotify, (d) => {
+    if (!d || d.notice !== 'cron-complete') return
+    const active = d.session_id && d.session_id === currentSessionId.value
+    if (active) sessionApi.setActiveSessionID(d.session_id).catch(() => {})
+    sessionApi.listSessions().then((list) => {
+      sessions.value = (list || []).map(s =>
+        (active && s.session_id === d.session_id) ? { ...s, notify_unread: false } : s)
+    }).catch(() => {})
   }))
   _unsubs.push(mq.on(EventNames.sessionSelect, ({ session }) => {
     if (session) handleSelect(session)
@@ -705,6 +724,16 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 任务完成通知未读点：持久化在 dialogs 行；打开会话即清除（见 handleSelect） */
+.session-notify-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 /* 子聊天子节点（F8）：缩进挂在父会话行下；点击打开对话窗口（含已结束 → 只读回看） */
 .session-subchats {

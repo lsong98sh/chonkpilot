@@ -39,8 +39,22 @@ type StreamEvent struct {
 	ToolCalls    []ToolCall
 	Done         bool
 	FinishReason string
-	Model        string // 上游回显的模型名（chunk / 响应对象的 model 字段，多数实现每个 chunk 都带；探活用，缺失为空）
-	Err          error  // *LLMError（错误分类）
+	Model        string        // 上游回显的模型名（chunk / 响应对象的 model 字段，多数实现每个 chunk 都带；探活用，缺失为空）
+	Usage        *router.Usage // 上游 usage（router 归一：prompt/completion/total/reasoning/cached；nil = 未提供）
+	Err          error         // *LLMError（错误分类）
+}
+
+// UsageReport 是一次 LLM step 的真实用量快照（宿主消费口径；字段 0 = 上游未提供）。
+//
+// 独立于 `chat.Usage` 的原因：chat 组件契约只有 prompt/completion/total；缓存命中与推理 token
+// 只在 router canonical usage 里，且这两个值要原样送到前端「用量明细」浮层，故在宿主侧保留。
+type UsageReport struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	ReasoningTokens  int
+	CachedTokens     int
+	Model            string
 }
 
 // ErrKind 是 LLM 错误分类（S6：retryable vs 不可重试）。取值与 router `ErrorKind` 同名同义
@@ -76,17 +90,21 @@ func llmErr(kind ErrKind, msg string) *LLMError {
 const (
 	ProtocolOpenAI    = "openai"    // OpenAI 兼容 Chat Completions（默认，/chat/completions）
 	ProtocolResponses = "responses" // OpenAI Responses API（/responses；DeepSeek 已支持）
+	// ProtocolAnthropic = Anthropic /v1/messages（x-api-key + anthropic-version；router 适配器）。
+	ProtocolAnthropic = "anthropic"
 	// ProtocolEcho 是内置 echo provider 的协议（P1-3）：**不发任何 HTTP**，直接回显本轮
 	// 最后一条真实用户消息（D-30 后仅作 router **内置兜底**，见 routercall.go）。
 	ProtocolEcho = "echo"
 )
 
-// NormalizeLLMProtocol 归一协议取值：responses → responses；echo → echo；
-// 其余（空/openai/未知）→ openai。
+// NormalizeLLMProtocol 归一协议取值：responses → responses；anthropic → anthropic；
+// echo → echo；其余（空/openai/未知）→ openai。
 func NormalizeLLMProtocol(p string) string {
 	switch strings.TrimSpace(p) {
 	case ProtocolResponses:
 		return ProtocolResponses
+	case ProtocolAnthropic:
+		return ProtocolAnthropic
 	case ProtocolEcho:
 		return ProtocolEcho
 	}
@@ -131,6 +149,10 @@ type ChatOptions struct {
 	// （无合格候选 / 候选配置不全）→ 本次请求若含图像也不改选（降级用默认 LLM，不阻断），
 	// 首次调用时留一条日志便于排障。
 	ImageFallbackUnavailable bool
+
+	// UsageObserver 是 step 结束时的真实用量回调（可选；nil = 不投）。
+	// 在上游给出 usage 时调用一次（在流事件 goroutine 内，实现必须非阻塞）；上游未提供 → 不调用。
+	UsageObserver func(UsageReport)
 }
 
 // ImageFallback 是一个「具备识图能力」的替换候选的调用快照：替换时整体切换 provider

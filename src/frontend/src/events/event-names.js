@@ -46,6 +46,7 @@ export const EventNames = {
   llmStarted: 'llm-started', // 后端 → 前端：受理 ack（含 turn_id；notify=true = 后端通知轮次）——前端据此维护 currentTurnId + busy
   llmReceive: 'llm-receive', // 后端 → 前端：LLM 流增量（桥 mqTypeMap：session-receive → llm-receive；payload.type 二次分子主题 text/reason/tool-call）
   llmComplete: 'llm-complete', // 后端 → 前端：一轮终结（队列出队的唯一 ack；payload 含 turn_id/status）
+  llmUsage: 'llm-usage', // 后端 → 前端：每个 LLM step 的用量（send=估算 / done=真实 usage；桥 mqTypeMap：session-usage → llm-usage）
   llmCancel: 'llm-cancel', // 前端 → 后端：取消当前轮（{session, turn}，21-llm-server；替代 CancelChat RPC）
   // INBOX（中途插话 / 等下一轮，2026-10-17；2026-11-01 语义调整）：所有发送先落 prjusr inbox，
   // `insert=true` = 用户显式插话（可插入相位批量插入），缺省 = 排队下一轮（61 §4.3）

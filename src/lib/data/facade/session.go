@@ -75,6 +75,9 @@ type Session struct {
 	UpdatedAt string `json:"updated_at,omitempty"`
 	// LastActivity 最近活动时间（可选；空 = 取 UpdatedAt，与既有"活动排序"口径一致）。
 	LastActivity string `json:"last_activity,omitempty"`
+	// NotifyUnread = 该对话有**未读任务完成通知**（crontab append-notice 写 dialogs 未读水位；
+	// 用户切到该会话（active-set）即已读）。仅 true 才写键，旧客户端不受影响。
+	NotifyUnread bool `json:"notify_unread,omitempty"`
 	// Kind 会话类型标识（空 = 普通顶层会话；取值见 SessionKind* 常量）。**仅非空才落库**，
 	// 故普通顶层会话行形状与既有逐字节一致。
 	// **读侧回退口径**：行缺该键（历史数据）且 ParentID 非空 ⇒ 视为 SessionKindSubSession。
@@ -235,6 +238,26 @@ type SessionActiveSetRequest struct {
 // SessionActiveSetResponse 是「当前活动会话」写出参。
 type SessionActiveSetResponse struct {
 	// OK 是否成功（失败走 error）。
+	OK bool `json:"ok"`
+}
+
+// SessionNotifyUnreadSetRequest 是任务完成通知未读水位写入参。
+//
+// 由 llm-server 的 `plugin/v1/session.append-notice` 在落通知消息后调用（Unread=true），
+// 以及由 `SessionActiveSet` 在切到该会话时调用（Unread=false，标记已读）。
+// SessionID 与 DialogID 二选一：优先 DialogID；只给 SessionID 时按 dialogs 行的
+// main_session_id 反查（cron 通知目标 = 主会话）。
+type SessionNotifyUnreadSetRequest struct {
+	InstanceID string `json:"instance_id"`
+	Scope      Scope  `json:"-"`
+	SessionID  string `json:"session_id,omitempty"`
+	DialogID   string `json:"dialog_id,omitempty"`
+	// Unread=true 写 notify_at；false 写 notify_read_at。时间为服务端 now（UTC RFC3339Nano）。
+	Unread bool `json:"unread"`
+}
+
+// SessionNotifyUnreadSetResponse 是未读水位写入出参。
+type SessionNotifyUnreadSetResponse struct {
 	OK bool `json:"ok"`
 }
 

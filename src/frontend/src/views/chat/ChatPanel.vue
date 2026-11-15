@@ -184,9 +184,11 @@
       @send="handleSend"
       @cancel="handleCancel"
       @queue="handleQueue"
+      @open-config="onUsageOpenConfig"
       :loading="isLoading"
       :queue-count="queueCount"
       :queue-items="queueItems"
+      :usage="sessionUsage"
     >
       <template #controls>
         <!-- F1/E4：固定参数会话（sub_chat / group_chat）→ LLM 选择入口**不可用**（服务端以会话行
@@ -288,6 +290,7 @@ import { pluginFailureText } from '../../../packages/plugin-ui/src/pluginNotice.
 import { classifyError } from '../../utils/errorMessage'
 import { useSelectionStore } from '../../stores/selection'
 import { useSessionSearch } from '../../composables/useSessionSearch'
+import { useLlmUsage } from '../../composables/useLlmUsage'
 
 const { t, te } = useI18n()
 
@@ -415,6 +418,10 @@ const llmFailDetailOpen = ref(false)
 // useLLMSetup：订阅既有配置刷新（data-user-config-refresh + IDE config-refresh），
 // 配置一变化（用户在设置页配好 LLM / 改了 provider）→ **提示立即消失**（不必等下一次发送）。
 useLLMSetup(() => { llmSetupFailed.value = false })
+
+// 上下文用量环：状态订阅（每 step 的估算/真实 token，按会话保存）；输入框下方渲染。
+// `sessionUsage`（分母回落口径）定义在 LLM 控件之后（依赖 llmList / selectedLLM）。
+const { usageOf } = useLlmUsage()
 
 // clearFailHint 收起本轮的可见重试 / 终态错误提示（新一次发送、会话切换、成功终态）。
 function clearFailHint() {
@@ -623,6 +630,43 @@ function onPickLLM(opt) {
 function selectLLM(name) {
   selectedLLM.value = name
   llmPopoverVisible.value = false
+}
+
+// 上下文环的展示状态：分母优先用该次调用随事件下发的上限；事件缺省（旧服务端 / 恢复轮）→
+// 回落到当前 LLM 配置（用户补配 maxContextToken 后无需等下一轮即可恢复显示）。
+const sessionUsage = computed(() => {
+  const u = usageOf(currentSessionId.value)
+  if (!u) return null
+  if (Number(u.max_context_token) > 0) return u
+  const names = [
+    String(u.llm || '').trim(),
+    selectedLLM.value === AUTO_LLM ? defaultLLMName.value : selectedLLM.value,
+    defaultLLMName.value,
+  ]
+  const rec = names
+    .map(n => llmList.value.find(l => (l.name || '') === n))
+    .find(Boolean)
+  if (!rec) return u
+  return {
+    ...u,
+    max_context_token: Number(u.max_context_token) || Number(rec.maxContextToken) || 0,
+    max_output_token: Number(u.max_output_token) || Number(rec.maxOutputToken) || 0,
+  }
+})
+
+// 上下文环（maxContextToken 未配置）点击 → 打开 LLM 设置页；能定位到具体 provider 就带上名字
+// （SettingsLLMPage 加载后直接打开该 LLM 的编辑框）。目标优先级 = 本轮实际 provider（usage.llm；
+// auto 已解析为真实 provider）→ 当前选择 → 默认 LLM；仅下发命中 usr llms 的名字。
+function onUsageOpenConfig() {
+  const names = [
+    sessionUsage.value && sessionUsage.value.llm,
+    selectedLLMPayloadName(),
+    defaultLLMName.value,
+  ]
+  const name = names
+    .map(n => String(n || '').trim())
+    .find(n => n && n !== AUTO_LLM && llmOptions.value.some(o => o.value === n)) || ''
+  mq.emit(EventNames.previewTabOpen, { kind: 'settings-llm', llm: name })
 }
 
 // 点击 session id Tag → 复制完整 id（FP：悬停显示完整 id，点击复制）

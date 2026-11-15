@@ -46,6 +46,7 @@ var domainTopics = map[string]string{
 	// 事件（server → 订阅者；键为前端/internal 名，非契约主题者保留字面量）
 	"llm-receive":                msgkeys.TopicSessionReceive,
 	"llm-complete":               msgkeys.TopicSessionComplete,
+	"llm-usage":                  msgkeys.TopicSessionUsage,
 	"llm-retry":                  msgkeys.TopicSessionRetry,
 	"llm-interrupted":            msgkeys.TopicSessionInterrupted,
 	"ask-user":                   msgkeys.TopicSessionAsk,

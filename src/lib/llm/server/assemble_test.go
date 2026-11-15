@@ -71,8 +71,8 @@ func TestRecoverTurnCtxMarksForceFull(t *testing.T) {
 	if !tc.forceFull {
 		t.Fatal("恢复重建的轮次应标记 forceFull")
 	}
-	if tc.keepFullTurns != defaultKeepFullTurns {
-		t.Fatalf("维持轮数应回落默认 %d：got %d", defaultKeepFullTurns, tc.keepFullTurns)
+	if tc.compressTrigger != 0 {
+		t.Fatalf("恢复轮未配置显式阈值时应为 0（自动）：got %d", tc.compressTrigger)
 	}
 	tc.Close()
 }
@@ -107,10 +107,11 @@ func TestRecoverTurnCtxCarriesSystemPromptAndDirs(t *testing.T) {
 	}
 }
 
-// TestLoadKeepFullBoundsValueSemantics（P1 口径 W，组装侧读点）：键**存在且为数字** → 原样采用
-// （`0` = 该条件不启用、负数 = 非法按不启用）；**缺失/非数字** → 回落默认（10 / 24000）。
-// **与压缩侧 `resolveOpts` 同口径**（差异即"两侧判定不一致"，故单列断言）。
-func TestLoadKeepFullBoundsValueSemantics(t *testing.T) {
+// TestCompressTriggerValueSemantics（四步策略，2026-11-14）：
+//   - 项目级 `compress_trigger_tokens` 键：>0 显式采用；0 / 缺失 / 非数字 / 负数 → 0（自动）；
+//   - 自动阈值 = 最大上下文 70%；窗口缺省/非正 → 128000 → 89600；
+//   - 显式值优先于自动值。
+func TestCompressTriggerValueSemantics(t *testing.T) {
 	llm := httptest.NewServer(http.HandlerFunc((&llmRecorder{}).handler))
 	defer llm.Close()
 	s := newTestServer(t, llm)
@@ -122,50 +123,47 @@ func TestLoadKeepFullBoundsValueSemantics(t *testing.T) {
 		t.Fatalf("data.Prj: %v", err)
 	}
 	defer releasePrj() // 短开（D-45）：用完即释
-	// 缺失 → 默认。
-	if got := s.loadKeepFullTurns("ins-test"); got != defaultKeepFullTurns {
-		t.Fatalf("缺失 keep_full_max_turns → 默认 %d：got %d", defaultKeepFullTurns, got)
+	// 缺失 → 0（自动）。
+	if got := compressTriggerTokensOf(s.prjConfigValues("ins-test", compressTriggerTokensKey)); got != 0 {
+		t.Fatalf("缺失 compress_trigger_tokens → 0（自动）：got %d", got)
 	}
-	if got := s.loadKeepFullTokens("ins-test"); got != defaultKeepFullTokens {
-		t.Fatalf("缺失 keep_full_max_tokens → 默认 %d：got %d", defaultKeepFullTokens, got)
-	}
-	// 显式 0 → 原样（该条件不启用，不再回落默认）。
-	if err := data.SetConfig(prj, "keep_full_max_turns", "0"); err != nil {
+	// 显式 0 → 0（自动）。
+	if err := data.SetConfig(prj, "compress_trigger_tokens", "0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := data.SetConfig(prj, "keep_full_max_tokens", "0"); err != nil {
+	if got := compressTriggerTokensOf(s.prjConfigValues("ins-test", compressTriggerTokensKey)); got != 0 {
+		t.Fatalf("显式 0 应为自动：got %d", got)
+	}
+	// 显式正整数 → 原样。
+	if err := data.SetConfig(prj, "compress_trigger_tokens", "64000"); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.loadKeepFullTurns("ins-test"); got != 0 {
-		t.Fatalf("显式 0 应原样采用：got %d", got)
+	if got := compressTriggerTokensOf(s.prjConfigValues("ins-test", compressTriggerTokensKey)); got != 64000 {
+		t.Fatalf("显式 64000 应原样采用：got %d", got)
 	}
-	if got := s.loadKeepFullTokens("ins-test"); got != 0 {
-		t.Fatalf("显式 0 应原样采用：got %d", got)
+	// 非数字 / 负数 → 0（自动）。
+	for _, raw := range []string{"abc", "-3"} {
+		if err := data.SetConfig(prj, "compress_trigger_tokens", raw); err != nil {
+			t.Fatal(err)
+		}
+		if got := compressTriggerTokensOf(s.prjConfigValues("ins-test", compressTriggerTokensKey)); got != 0 {
+			t.Fatalf("%q → 自动（0）：got %d", raw, got)
+		}
 	}
-	// 负数（非法）→ 原样采用（按不启用处理）。
-	if err := data.SetConfig(prj, "keep_full_max_turns", "-3"); err != nil {
-		t.Fatal(err)
+	// 自动阈值：窗口缺省 → 128000 * 70% = 89600。
+	if got := autoCompressTriggerOf(nil); got != 89600 {
+		t.Fatalf("缺省窗口自动阈值 = %d, want 89600", got)
 	}
-	if err := data.SetConfig(prj, "keep_full_max_tokens", "-9"); err != nil {
-		t.Fatal(err)
+	zero := 0
+	if got := autoCompressTriggerOf(&zero); got != 89600 {
+		t.Fatalf("非正窗口应回落 128000：got %d", got)
 	}
-	if got := s.loadKeepFullTurns("ins-test"); got != -3 {
-		t.Fatalf("负数应原样采用（按不启用）：got %d", got)
+	win := 200000
+	if got := autoCompressTriggerOf(&win); got != 140000 {
+		t.Fatalf("200000 * 70%% = %d, want 140000", got)
 	}
-	if got := s.loadKeepFullTokens("ins-test"); got != -9 {
-		t.Fatalf("负数应原样采用（按不启用）：got %d", got)
-	}
-	// 非数字 → 回落默认。
-	if err := data.SetConfig(prj, "keep_full_max_turns", "abc"); err != nil {
-		t.Fatal(err)
-	}
-	if err := data.SetConfig(prj, "keep_full_max_tokens", "x1"); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.loadKeepFullTurns("ins-test"); got != defaultKeepFullTurns {
-		t.Fatalf("非数字 → 默认 %d：got %d", defaultKeepFullTurns, got)
-	}
-	if got := s.loadKeepFullTokens("ins-test"); got != defaultKeepFullTokens {
-		t.Fatalf("非数字 → 默认 %d：got %d", defaultKeepFullTokens, got)
+	// 显式优先。
+	if got := effectiveCompressTrigger(64000, &win); got != 64000 {
+		t.Fatalf("显式阈值应优先：got %d", got)
 	}
 }

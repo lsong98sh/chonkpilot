@@ -1,44 +1,21 @@
-// 压缩内建（SESSION-1 阶段一/二）：进程内、异步、复用「刚发出的 payload」——
-// 不再走 UDS 插件（原 `chonkpilot-plugin-compress.exe` 形态已删除）。
+// 上下文压缩（四步策略 · 同步版，2026-11-14 取代旧后台异步压缩）：
 //
-// SESSION-1 阶段二：纯计算部分（payload 构造 / 阈值判定 / CAS / 快照消息构造 / 一次压缩编排）
-// 已下沉到纯 lib 组件 `chonkpilot-session`（`src/lib/chonkpilot-session/compress.go`）；本文件只剩**宿主
-// 适配**——单飞调度、退避重试、日志文案、提示词读取、摘要调用（`s.chat`）与快照读写端口。
+// 组装路径（`assembly.go:buildAssembly`）在总输入超阈值时同步执行：
 //
-// 语义（用户 2026-10-23 定案）：
+//	2.2 简化（历史轮去 reasoning / tool_calls / tool 结果）
+//	2.3 压缩（历史 → 摘要；进程内单轮 LLM，同步等待）
+//	2.4 报错（压缩后仍超阈值 / 无历史轮可压缩）
 //
-//  1. **触发**：本轮组装完成（`Assembly.Usage` 已算出）时**判定**阈值，任务暂存到轮上下文；
-//     **真正起压缩在终态快照写完之后**（`startPendingCompress`，锚点 = 本轮 `snapshot_turn`）——
-//     非阻塞、用户无感。阈值沿用现有配置键（`keep_full_max_tokens` +
-//     `compress_token_threshold`，读序 prjusr → prj → usr），**不新增配置键**。
+// 本文件保留宿主适配：
+//   - 压缩前 `memory.flush`（跟随压缩的既有口径，不新增消息面）；
+//   - 压缩进度通知（既有 `tool-notify`：compress-start / compress-done；失败另发 plugin-failure）；
+//   - 摘要调用（`llmOnceMessages`，5 分钟上限、随本轮 ctx 取消）；
+//   - 提示词读取（`capability/system/summary.md`，项目级 → 用户级 → 系统级 → embed）；
+//   - 快照读写端口（门面 SnapshotGet / SnapshotSet，CAS 写 `[system 摘要]`）；
+//   - 厂商超窗兜底（`compressOnOverflow`：同一压缩函数，同步压缩后重试一次）。
 //
-//     〔2026-11-07 修正〕原实现于「组装完成即起 worker」，锚点 = 上一已完成轮；而当前轮终态
-//     写快照会把 `snapshot_turn` 推到本轮。压缩摘要调用与当前轮生成并发，当前轮先完成时
-//     `snapshotWriteBase` 与 `SetSnapshot` 之间的窗口会让已回填的摘要被覆盖（实测 A/B-4：
-//     摘要请求已发、日志「已压缩」、最终快照无 `[已压缩早前对话]`）；后完成则 CAS 丢弃。
-//     改为终态后启动后，CAS 基准恒等于刚落库的本轮快照，压缩不再与自身触发轮竞争。
-//
-//  2. **输入 = 刚发出的 payload 复用**：取 `Assembly.Context.Messages`，**去掉全部 system 角色
-//     消息**（含系统提示词 / 记忆指引 / 资产指引 / 既有摘要），把**最后一条 user** 换成压缩要求
-//     （要求文本读 `capability/system/summary.md`）→ 走进程内单轮 LLM（`llmOnceMessages`，
-//     不新开 HTTP 通道）。
-//
-//  3. **回填**：摘要 → 写会话快照 `[system 摘要] + 保留段`、`snapshot_turn` = 启动时快照覆盖轮
-//     （终态启动 = 本轮；本轮消息已追加进保留段）。**CAS**：仅当快照仍停在压缩基准时才写，
-//     否则丢弃（已有别的压缩 / 新一轮推进过快照）。
-//
-//  4. **四约束**：① 同会话同一时刻只允许一个压缩（单飞）；② 快照 + snapshot_turn 单事务写
-//     （一次 `SnapshotSet` = 同一条记录）、`snapshot_turn` 单调不减；③ 组装只读**已提交**快照
-//     （组装走 `BuildContextTokens`，本文件不参与读路径）；④ 压缩失败不影响主流程（原文保留、
-//     只记日志、按退避重试）。
-//
-//  5. **兜底**：正常请求因**超窗**失败 → 用同一份 payload 立刻压缩后**重试一次**（见
-//     `compressOnOverflow` / `engineStepLLM.Step`）。
-//
-//  6. **进度通知**：后台压缩在**既有**通知面 `tool-notify` 发 `compress-queued` / `compress-start` /
-//     `compress-done`（与原 compress 插件同形，前端零改动）；失败另发 `plugin-failure`。
-//
-// 零新增 MQ 主题：进度/失败均复用既有 `tool-notify`（61-消息一览 §4.3）。
+// **不再有**后台压缩队列 / 单飞 / 终态后启动 / 退避重试（同步路径天然串行，失败直接进入
+// 本轮错误终态，不会与主流程竞争快照）。
 package server
 
 import (
@@ -55,22 +32,16 @@ import (
 	"github.com/lsong98sh/chonkpilot-agent/session"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
-	hook "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
 
 const (
-	// 压缩进度通知取值（既有通知面 tool-notify；与原 compress 插件逐字一致，见 61-消息一览 §4.3）：
-	// 入队（排队）/ 开始前 / 结束后各一次，供前端显示会话级压缩指示 + 队列状态。
-	noticeCompressQueued = "compress-queued"
-	noticeCompressStart  = "compress-start"
-	noticeCompressDone   = "compress-done"
+	// 压缩进度通知取值（既有通知面 tool-notify；字段形状沿用原 compress 插件，前端零改动）：
+	// 同步压缩只发 start / done（无排队语义）。
+	noticeCompressStart = "compress-start"
+	noticeCompressDone  = "compress-done"
 )
 
 const (
-	// compressRetryMax 压缩失败后的重试次数（不含首次；退避 = attempt × compressRetryBackoff）。
-	compressRetryMax = 2
-	// compressRetryBackoff 退避基数（线性递增：2s / 4s）。
-	compressRetryBackoff = 2 * time.Second
 	// compressTimeout 单次摘要调用的外层超时（无上下文单轮 LLM 的压缩上限）。
 	compressTimeout = 5 * time.Minute
 	// llmCompressSubsystemKey 压缩子系统默认 LLM（usr；缺省回落 defaultLLM，由数据层读侧完成）。
@@ -81,58 +52,9 @@ const (
 	summarySystemDocKind = "summary"
 )
 
-// compressJob 是一次压缩的输入（全部来自组装结果，压缩期间不再读消息表）。
+// compressJob 是一次压缩的身份（进度通知用）。
 // 类型定义在组件包（`session.CompressionJob`），此处别名保持宿主调用点不变。
 type compressJob = session.CompressionJob
-
-// maybeStartCompress 组装完成后的**阈值判定点**（非阻塞；不等待结果、不影响主流程）。
-//
-// 达阈值时只把任务暂存到 `tc.compressWanted/compressJob`；真正启动见 `startPendingCompress`
-// （终态快照写完之后，锚点 = 本轮）——避免与当前轮终态写快照竞争导致摘要被覆盖 / CAS 丢弃。
-// 同一轮只保留**首个**达阈值的 payload（此时尚未产生本轮 assistant/tool 消息，摘要输入最干净）。
-//
-// 门控：
-//   - 无已完成轮（首轮）→ 不压缩（无回填锚点）；
-//   - 未达阈值 → 不压缩；
-//   - 子会话 + 项目未开「压缩子会话」（`compress.subsession`，默认关）→ 不压缩（既有口径）。
-func (tc *turnCtx) maybeStartCompress(a session.Result) {
-	if tc == nil || tc.server == nil || a.LastTurnID == "" {
-		return
-	}
-	if tc.compressWanted {
-		return
-	}
-	if !session.Due(a.Usage, tc.keepFullTokens, tc.briefBudget) {
-		return
-	}
-	if tc.isSubsession() && !tc.server.compressSubsessionOn(tc.req.InstanceID) {
-		return
-	}
-	tc.compressJob = session.NewJob(a, tc.req.InstanceID, tc.req.Session, tc.req.Turn)
-	tc.compressWanted = true
-}
-
-// startPendingCompress 在**终态快照已落库之后**启动本轮暂存的压缩任务：
-// 锚点改为本轮（快照覆盖轮），CAS 必命中；压缩期间不会再被本轮终态覆盖（终态已过）。
-//
-// `currentTurn` = 本轮全部消息：任务在组装期暂存时 Retain 只含历史轮（当时本轮未完成），
-// 而终态快照必须保留本轮——故启动时把它追加到保留段，压缩回填不会丢掉刚落库的本轮内容。
-//
-// 记忆沉淀（`memory.flush`）同在此时触发——提取跟随压缩且能读到本轮完整产物（2026-10-31 定案）。
-func (s *Server) startPendingCompress(tc *turnCtx, currentTurn []ChatMsg) {
-	if s == nil || tc == nil || !tc.compressWanted {
-		return
-	}
-	job := tc.compressJob
-	tc.compressWanted = false
-	if tc.req.Turn == "" {
-		return
-	}
-	job.Anchor = tc.req.Turn
-	job.Retain = append(append([]ChatMsg{}, job.Retain...), currentTurn...)
-	s.flushMemoryBeforeCompress(job.InstanceID, job.SessionID)
-	s.startCompress(job)
-}
 
 // flushMemoryBeforeCompress 在压缩前用**既有** `memory.flush` 主题触发一次记忆沉淀
 // （2026-10-31 用户定案：提取时机跟随压缩 —— 阈值判定通过后、执行压缩前；不新增消息面）。
@@ -162,69 +84,9 @@ func (s *Server) flushMemoryBeforeCompress(instanceID, session string) {
 	}()
 }
 
-// startCompress 后台起一次压缩（**每会话串行 + 覆盖合并队列**）。
-//
-// 返回 true = 本次立即起 worker；false = 同会话已有任务在飞 → 本次进 compressPending（同会话
-// 多次触发**只留最新**，由该会话 worker 依次消费）并广播 `compress-queued`。
-func (s *Server) startCompress(job compressJob) bool {
-	if s == nil || job.SessionID == "" {
-		return false
-	}
-	key := instKey(job.InstanceID, job.SessionID)
-	s.compressMu.Lock()
-	if s.compressRunning == nil {
-		s.compressRunning = map[string]bool{}
-	}
-	if s.compressRunning[key] {
-		if s.compressPending == nil {
-			s.compressPending = map[string]compressJob{}
-		}
-		s.compressPending[key] = job // 覆盖合并：同会话只留最新一次
-		s.compressMu.Unlock()
-		s.emitCompressNotice(job, noticeCompressQueued, "压缩排队中…")
-		return false
-	}
-	s.compressRunning[key] = true
-	s.compressMu.Unlock()
-	go s.compressWorker(key, job)
-	return true
-}
-
-// compressWorker 按会话串行消费压缩任务：压缩一个 → 取下一个待处理（覆盖合并）→ 直到队列空。
-//
-// 三个时点各广播一次**既有**通知面 `tool-notify`（61-消息一览 §4.3；不新增主题）：
-// `compress-start`（每次开始前）/ `compress-done`（每次结束后，失败也发 → 终态必有）；
-// `compress-queued` 由 startCompress 在入队时发。失败另经 plugin-failure 上报（既有失败字段）。
-func (s *Server) compressWorker(key string, job compressJob) {
-	for {
-		s.emitCompressNotice(job, noticeCompressStart, "正在压缩上下文…")
-		if err := s.compressWithRetry(context.Background(), job); err != nil {
-			logf("[chonkpilot-server] compress: 失败（session=%s turn=%s）: %v\n", job.SessionID, job.TurnID, err)
-			// 失败的用户可见面：沿用既有 `plugin-failure`（plugin=compress，61 §4.3），前端据此落
-			// 错误态；随后仍发 `compress-done`（前端「失败优先」→ done 不覆盖错误态）。
-			s.pluginNotify(hook.Notice{
-				Plugin: "compress", Kind: "compress", Reason: err.Error(),
-				InstanceID: job.InstanceID, Session: job.SessionID, Turn: job.TurnID,
-			})
-		}
-		s.emitCompressNotice(job, noticeCompressDone, "上下文压缩完成")
-		s.compressMu.Lock()
-		next, ok := s.compressPending[key]
-		if ok {
-			delete(s.compressPending, key)
-			s.compressMu.Unlock()
-			job = next // 串行消费下一项（同会话不并发、不重入）
-			continue
-		}
-		delete(s.compressRunning, key)
-		s.compressMu.Unlock()
-		return
-	}
-}
-
-// emitCompressNotice 经**既有通知面** tool-notify（61-消息一览 §4.3；不新增主题）投递压缩队列
-// 进度（`compress-queued` / `compress-start` / `compress-done`），字段形状沿用原 compress 插件
-// （前端 `useCompressStatus` / `useQueueStatus` 无需改动即可消费）。
+// emitCompressNotice 经**既有通知面** tool-notify（61-消息一览 §4.3；不新增主题）投递压缩进度
+// （`compress-start` / `compress-done`），字段形状沿用原 compress 插件（前端 `useCompressStatus` /
+// `useQueueStatus` 无需改动即可消费）。
 //
 // turn_id = 压缩基准（`Anchor` = 快照将被写到的轮；空则回落当前轮），与原插件 `snapshot_turn` 同义；
 // message_id 前缀 / 拼法与原插件一致（前端按 message_id 幂等去重）。实例字段必带（61 §0）。
@@ -247,131 +109,39 @@ func (s *Server) emitCompressNotice(job compressJob, notice, message string) {
 	})
 }
 
-// compressWithRetry 执行压缩并按退避重试（失败不阻断主流程；`ok=false` = 无变更/已丢弃，不算失败）。
-func (s *Server) compressWithRetry(ctx context.Context, job compressJob) error {
-	var lastErr error
-	for attempt := 0; attempt <= compressRetryMax; attempt++ {
-		if attempt > 0 {
-			// 后台压缩 goroutine 允许等待（§10.2 白名单）；用显式 timer + ctx 取消，
-			// 不留 `<-time.After`（§11.2 验收：白名单外无 time.After）。
-			timer := time.NewTimer(time.Duration(attempt) * compressRetryBackoff)
-			select {
-			case <-ctx.Done():
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				return lastErr
-			case <-timer.C:
-			}
-		}
-		if _, err := s.compressOnce(ctx, job); err == nil {
-			return nil
-		} else {
-			lastErr = err
-			logf("[chonkpilot-server] compress: 第 %d 次失败（session=%s）: %v\n", attempt+1, job.SessionID, err)
-		}
+// compressOnOverflow 厂商超窗兜底：用**同一压缩函数** 立刻同步压缩一次（忽略阈值判定）。
+// 返回 true = 压缩成功（本轮历史已替换为摘要，调用方重新组装后重试一次）。
+//
+// 每轮最多一次（与 2.3 共用 `compressAttempted`）；失败只记日志（主流程仍返回厂商原错误）。
+func (tc *turnCtx) compressOnOverflow(ctx context.Context) bool {
+	if tc == nil || tc.server == nil || tc.compressAttempted {
+		return false
 	}
-	return lastErr
-}
-
-// compressOnce 一次完整压缩：组装 payload → 摘要 → CAS 回填快照（实现在组件）。
-// 返回 ok=true 表示已写入快照；ok=false = 无需压缩 / CAS 丢弃（均非错误）。
-func (s *Server) compressOnce(ctx context.Context, job compressJob) (bool, error) {
-	if s.cfg == nil || job.Anchor == "" {
-		return false, nil
-	}
-	requirement := s.summaryPrompt(job.InstanceID)
-	if requirement == "" {
-		return false, errors.New("摘要提示词为空（capability/system/summary.md）")
-	}
-	res, err := session.CompressOnce(ctx, s.snapshotStore(job),
-		compressSummarizer{s: s, instanceID: job.InstanceID}, job, requirement)
+	full, err := tc.buildAssembly()
 	if err != nil {
-		return false, err
-	}
-	return logCompressCommit(job, res), nil
-}
-
-// logCompressCommit 按既有文案记录回填结果（CAS 丢弃 / 已压缩），返回是否写入快照。
-func logCompressCommit(job compressJob, res session.CommitResult) bool {
-	if res.CASMiss {
-		logf("[chonkpilot-server] compress: CAS 丢弃（session=%s snapshot_turn=%q anchor=%q）\n",
-			job.SessionID, res.Snapshot.Turn, job.Anchor)
+		logf("[chonkpilot-server] compress: 超窗兜底前组装失败（session=%s）: %v\n", tc.req.Session, err)
 		return false
 	}
-	if res.Written {
-		logf("[chonkpilot-server] compress: 已压缩（session=%s snapshot_turn=%s，保留 %d 条）\n",
-			job.SessionID, job.Anchor, res.Messages-1)
+	// 组装本身可能已命中 2.3（估算口径低估真实总量）→ 已压缩，直接重试。
+	if tc.compressed {
+		return true
 	}
-	return res.Written
-}
-
-// compressOnOverflow 超窗兜底：用**同一份 payload** 立刻压缩一次（同步）。
-// 返回 true = 压缩已写入快照（调用方据此重新读快照组装并重试一次）。
-func (tc *turnCtx) compressOnOverflow(ctx context.Context, payload []ChatMsg) bool {
-	if tc == nil || tc.server == nil {
+	if tc.compressAttempted {
 		return false
 	}
-	a := tc.buildAssembly()
-	if a.LastTurnID == "" || len(payload) == 0 {
+	if full.LastTurnID == "" {
 		return false
 	}
-	job := session.NewJob(a, tc.req.InstanceID, tc.req.Session, tc.req.Turn)
-	job.Payload = payload
-	ok, err := tc.server.compressOnce(ctx, job) // 单飞：同会话后台任务在飞时这里仍会跑，
-	// 但 CAS 保证只有一份结果能落快照（另一份被丢弃），不产生重复压缩。
+	tc.compressAttempted = true
+	summary, err := tc.compressHistory(ctx, full)
 	if err != nil {
 		logf("[chonkpilot-server] compress: 超窗兜底失败（session=%s）: %v\n", tc.req.Session, err)
 		return false
 	}
-	return ok
-}
-
-// refreshHistoryFromSnapshot 重新读**已提交**快照，刷新本轮历史（hist / turnTokens）：
-// 压缩回填后（超窗兜底重试前）必须重读，否则仍用轮次开始时的旧历史 → 重试仍超窗。
-// 读不到（nil）→ 保持不变（保守）。
-func (tc *turnCtx) refreshHistoryFromSnapshot() {
-	if tc == nil || tc.server == nil {
-		return
-	}
-	hist, tokens := tc.server.newSessionStore(tc.req.InstanceID).
-		BuildContextTokens(tc.req.Session, tc.req.Turn, true)
-	if hist == nil {
-		return
-	}
-	if tc.sysPromptText != "" {
-		hist = append([]ChatMsg{{Role: "system", Content: tc.sysPromptText}}, hist...)
-	}
-	tc.hist = hist
-	tc.turnTokens = tokens
-}
-
-// snapshotWriteBase 返回终态写快照的**基**（已提交快照消息）——
-// 与本轮消息拼接后写入（`snapshot_turn` 仍 = 本轮）。
-//
-// 存在理由（SESSION-1）：压缩内建在**本轮进行中**回填快照；若终态仍用轮次开始时的 `tc.hist`
-// 覆盖，压缩结果会被立刻抹掉。故仅当「当前快照的覆盖轮 == `tc.hist` 最后一个轮」（= 同一批
-// 历史、压缩不改这个 id）时以已提交快照为基；其余（无快照 / 同轮继续 / 不衔接）→ false（回落
-// 改动前的 `tc.hist + cur`，行为不变）。
-func (s *Server) snapshotWriteBase(tc *turnCtx) ([]ChatMsg, bool) {
-	if s.cfg == nil || tc == nil || tc.req.Continue || len(tc.turnTokens) == 0 {
-		return nil, false
-	}
-	last := tc.turnTokens[len(tc.turnTokens)-1].TurnID
-	if last == "" {
-		return nil, false
-	}
-	resp, err := s.cfg.SnapshotGet(facade.SnapshotGetRequest{
-		InstanceID: tc.req.InstanceID, SessionID: tc.req.Session, Scope: s.cfgScope(tc.req.InstanceID),
-		DialogID: s.dialogOf(tc.req.InstanceID, tc.req.Session),
-	})
-	if err != nil || !resp.Found || resp.Snapshot.Turn != last {
-		return nil, false
-	}
-	return chatMessagesFromFacade(resp.Snapshot.Messages), true
+	tc.hist = []ChatMsg{summary}
+	tc.turnTokens = nil
+	tc.simplified, tc.simplifiedFrom, tc.compressed = false, "", true
+	return true
 }
 
 // isContextOverflow 判定错误是否为「上下文超窗」（厂商文案差异大，按关键词匹配）。
@@ -466,6 +236,33 @@ func summaryPromptPaths(workDir string) []string {
 	return out
 }
 
+// snapshotWriteBase 返回终态写快照的**基**（已提交快照消息）——
+// 与本轮消息拼接后写入（`snapshot_turn` 仍 = 本轮）。
+//
+// 存在理由：压缩可能在本轮进行中回填快照；若终态仍用轮次开始时的 `tc.hist` 覆盖，压缩结果
+// 会被抹掉。故仅当「当前快照的覆盖轮 == `tc.hist` 最后一个轮」时以已提交快照为基；其余
+// （无快照 / 同轮继续 / 不衔接）→ false（回落 `tc.hist + cur`）。
+//
+// 四步策略（2026-11-14）：压缩成功后本轮 `tc.hist` 已替换为摘要、`tc.turnTokens` 清空 →
+// 此处恒回落 `tc.hist + cur`（= 摘要 + 本轮消息），正是期望行为。
+func (s *Server) snapshotWriteBase(tc *turnCtx) ([]ChatMsg, bool) {
+	if s.cfg == nil || tc == nil || tc.req.Continue || len(tc.turnTokens) == 0 {
+		return nil, false
+	}
+	last := tc.turnTokens[len(tc.turnTokens)-1].TurnID
+	if last == "" {
+		return nil, false
+	}
+	resp, err := s.cfg.SnapshotGet(facade.SnapshotGetRequest{
+		InstanceID: tc.req.InstanceID, SessionID: tc.req.Session, Scope: s.cfgScope(tc.req.InstanceID),
+		DialogID: s.dialogOf(tc.req.InstanceID, tc.req.Session),
+	})
+	if err != nil || !resp.Found || resp.Snapshot.Turn != last {
+		return nil, false
+	}
+	return chatMessagesFromFacade(resp.Snapshot.Messages), true
+}
+
 // ─── 端口实现（压缩）────────────────────────────────────────────
 
 // compressSnapshotStore 是 `session.SnapshotStore` 的宿主实现（门面 SnapshotGet / SnapshotSet）。
@@ -475,9 +272,9 @@ type compressSnapshotStore struct {
 	sessionID  string
 }
 
-// snapshotStore 按任务范围构造快照端口（读写同一会话）。
-func (s *Server) snapshotStore(job compressJob) session.SnapshotStore {
-	return compressSnapshotStore{s: s, instanceID: job.InstanceID, sessionID: job.SessionID}
+// snapshotStoreFor 按实例 / 会话构造快照端口（读写同一会话）。
+func (s *Server) snapshotStoreFor(instanceID, sessionID string) session.SnapshotStore {
+	return compressSnapshotStore{s: s, instanceID: instanceID, sessionID: sessionID}
 }
 
 func (st compressSnapshotStore) Current(context.Context) (session.Snapshot, error) {

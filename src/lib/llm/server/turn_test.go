@@ -1126,9 +1126,9 @@ func TestLLMRuntimeConfigSystemDefaults(t *testing.T) {
 //
 //	① 用户级三项 = persist userConfigSystemDefaults（经既有 data-user-config-load 回读）
 //	② 项目级三项 = mcpms.DefaultConfig()（300 / 16 / 12 项跳过目录）
-//	③ keep_full_max_turns = defaultKeepFullTurns（10）；compress_token_threshold = 压缩插件
-//	   DefaultOptions().TokenMax（20000）。**③ 已不在「参数配置页」镜像**（该项唯一编辑入口
-//	   收敛至「上下文管理」页 ContextConfig.vue，去重 2026-09-15）；本断言保留为后端常量守护。
+//	③ 四步压缩策略的自动阈值常量（最大上下文缺省 128000、70% → 89600）。**③ 已不在
+//	   「参数配置页」镜像**（该项唯一编辑入口 = 「上下文管理」页 ContextConfig.vue）；
+//	   本断言保留为后端常量守护。
 func TestSystemDefaultParamsMirror(t *testing.T) {
 	llm := mockLLMServer()
 	defer llm.Close()
@@ -1173,9 +1173,12 @@ func TestSystemDefaultParamsMirror(t *testing.T) {
 		t.Fatalf("skip_dirs 默认=%s want %s", got, wantSkip)
 	}
 
-	// ③ 维持轮数默认（压缩阈值 20000 的权威在 compress 包，见其镜像用例）
-	if defaultKeepFullTurns != 10 {
-		t.Fatalf("keep_full_max_turns 默认=%d want 10", defaultKeepFullTurns)
+	// ③ 自动压缩阈值常量（窗口缺省 128000 → 70% = 89600）
+	if defaultContextWindowTokens != 128000 {
+		t.Fatalf("defaultContextWindowTokens = %d want 128000", defaultContextWindowTokens)
+	}
+	if got := autoCompressTriggerOf(nil); got != 89600 {
+		t.Fatalf("自动压缩阈值 = %d want 89600（128000 * 70%%）", got)
 	}
 }
 

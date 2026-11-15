@@ -57,6 +57,9 @@ type Target struct {
 	BaseURL  string // provider API 前缀（空 → 由宿主回落 --llm-base；仍空 → 502）
 	APIKey   string // provider apiKey（空 = 不注入鉴权头；**不落日志**）
 	Protocol string // 原始 protocol（openai / responses / anthropic / 空=openai / 其它=400）
+	// Headers 是用户配置的额外请求头（`llms[].headers`）：在默认鉴权头之后注入 → **用户头优先**
+	// （同名头覆盖 Authorization / x-api-key）。空 = 不注入。
+	Headers map[string]string
 }
 
 // Resolver 解析 `/llm/<name>/...` 的 `<name>` 段 → 转发目标；未命中 → ok=false（桥侧 404）。
@@ -207,6 +210,7 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 			out.URL.RawQuery = pr.In.URL.RawQuery
 			out.Host = base.Host
 			applyAuth(out.Header, protocol, target.APIKey)
+			applyExtraHeaders(out.Header, target.Headers)
 		},
 		// SSE 直通：立刻 flush，不缓冲（设计稿 §3.3「直 pipe，不缓冲、不改写」）。
 		FlushInterval: -1,
@@ -217,6 +221,18 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// applyExtraHeaders 注入用户配置的额外请求头：在 applyAuth **之后**调用 → 同名头
+// （大小写不敏感，http.Header.Set 归一）以用户配置为准；空键跳过。
+func applyExtraHeaders(h http.Header, extra map[string]string) {
+	for k, v := range extra {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		h.Set(k, v)
+	}
 }
 
 // applyAuth 按 protocol **先删后设**鉴权头（设计稿 §3.3）：删除 `Authorization` / `x-api-key`

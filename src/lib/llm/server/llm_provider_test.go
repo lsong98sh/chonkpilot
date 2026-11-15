@@ -324,3 +324,38 @@ func TestLLMProviderLegacyMaxTokensCompat(t *testing.T) {
 		t.Fatalf("max_tokens=%v ok=%v want 1234（旧键 maxTokens 读时兼容为 maxOutputToken）", v, ok)
 	}
 }
+
+// TestProviderAndSpecCarryExtraParamsHeaders：usr `llms[]` 的 extraParams / headers 经
+// providerFromLLMs 解析、再经 specFor / specFromRecord 传给 router.Spec（附加参数 / 头信息接线）。
+func TestProviderAndSpecCarryExtraParamsHeaders(t *testing.T) {
+	record := map[string]any{
+		"name": "p-ant", "protocol": "anthropic", "baseUrl": "http://ant.example", "model": "claude-x",
+		"extraParams": map[string]any{"top_k": 5.0, "flag": true, "note": "hi"},
+		"headers":     map[string]any{"anthropic-beta": "test-1"},
+	}
+	cfg := map[string]any{"llms": []any{record}}
+
+	p := providerFromLLMs(cfg, "p-ant")
+	if p == nil {
+		t.Fatal("providerFromLLMs 未命中")
+	}
+	if p.Protocol != ProtocolAnthropic {
+		t.Fatalf("protocol=%q want anthropic", p.Protocol)
+	}
+	if !reflect.DeepEqual(p.ExtraParams, map[string]any{"top_k": 5.0, "flag": true, "note": "hi"}) {
+		t.Fatalf("ExtraParams=%v", p.ExtraParams)
+	}
+	if !reflect.DeepEqual(p.Headers, map[string]string{"anthropic-beta": "test-1"}) {
+		t.Fatalf("Headers=%v", p.Headers)
+	}
+
+	s := &Server{opts: Options{LLMBase: "http://default", LLMModel: "dm"}}
+	spec := s.specFor(p)
+	if spec.Protocol != ProtocolAnthropic || spec.ExtraParams["top_k"] != 5.0 || spec.ExtraHeaders["anthropic-beta"] != "test-1" {
+		t.Fatalf("specFor 未携带协议 / 附加参数 / 头：%+v", spec)
+	}
+	spec, ok := s.specFromRecord(record)
+	if !ok || spec.Protocol != ProtocolAnthropic || spec.ExtraParams["note"] != "hi" || spec.ExtraHeaders["anthropic-beta"] != "test-1" {
+		t.Fatalf("specFromRecord 未携带协议 / 附加参数 / 头：%+v ok=%v", spec, ok)
+	}
+}

@@ -131,6 +131,14 @@ func (s *Server) exitInstance(instanceID string) {
 	// 其退出 → 停机该群聊调度器（进程内停机，lifecycle 不变；重开点「继续」据 round_targets 断点补跑）。
 	s.stopGroupRunsForInstance(instanceID)
 	flushInstanceIndex(s.bus, instanceID) // 回收该实例的 session/turn 备忘（长驻服务端防累积）
+	// 先在实例视图摘除（幂等）：capWatcher 重扫按实例视图重建 dir 节点；实例仍在内时，
+	// 退出后并发重扫可能把已注销节点重新加回（dirNodes 残留）。manager 自身也订阅
+	// instance-exit，重复 HandleExit 无副作用。
+	if s.im != nil {
+		if payload, err := json.Marshal(map[string]any{"instance_id": instanceID}); err == nil {
+			_ = s.im.HandleExit(payload)
+		}
+	}
 	s.unregisterCapabilityNodes(instanceID)
 	if s.capWatch != nil {
 		// B-38：回收该实例派生的 capability 根监听（防长驻服务端 fswatcher 句柄随实例累积）。

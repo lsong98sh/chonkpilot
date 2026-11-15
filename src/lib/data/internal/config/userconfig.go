@@ -78,8 +78,9 @@ var collectionKeys = map[string]string{
 var userConfigFreeKeys = map[string]bool{
 	// recent_dirs = 最近打开的项目目录（JSON 数组字符串；gui.recent.list 数据源）。
 	"recent_dirs": true,
-	// tool_async = 工具级异步配置（**结构化 JSON 对象字符串**，形状
-	// {"<工具暴露名>":{"mode":"always|never|auto|manual","threshold":30,"hard_timeout":300}}；
+	// tool_async = 工具配置（**结构化 JSON 对象字符串**，形状
+	// {"<工具暴露名>":{"mode":"sync|async|auto|manual","threshold":30,"hard_timeout":300,
+	// "touch_files":true}}；threshold 仅 auto/manual；hard_timeout 仅 >0 生效；
 	// 消费方见 64-配置项一览 §3：llm server loadExecConfig → mcp-server Config.SetToolAsync
 	// → 暴露 _meta.async / async-threshold + executor 硬上限；**保存即生效**（既有
 	// data-user-config-refresh 订阅，零新增主题）。「恢复默认」= 删该工具键项（整表覆盖写）。

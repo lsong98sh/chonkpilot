@@ -21,6 +21,10 @@ func TestValidateUserConfigPayloadLLMs(t *testing.T) {
 		// 旧声明式能力（字符串数组）仍可写 → 读侧映射为档位 3.0。
 		map[string]any{"name": "f", "capabilities": []any{"reasoning", "vision"}},
 		map[string]any{"name": "g", "capabilities": []any{}},
+		// 附加参数（字符串 / 数字 / 布尔）与请求头（字符串到字符串）→ 允许。
+		map[string]any{"name": "h", "extraParams": map[string]any{
+			"s": "v", "n": 1.5, "b": true,
+		}, "headers": map[string]any{"X-Test": "1"}},
 	}}
 	if err := ValidateUserConfigPayload(ok); err != nil {
 		t.Fatalf("合法载荷不应报错：%v", err)
@@ -45,6 +49,16 @@ func TestValidateUserConfigPayloadLLMs(t *testing.T) {
 		{"capability 两位小数", map[string]any{"name": "k", "capability": map[string]any{"reasoning": 3.25}}, "capability.reasoning"},
 		{"capabilities 非数组", map[string]any{"name": "l", "capabilities": "vision"}, "capabilities"},
 		{"capabilities 含非字符串", map[string]any{"name": "m", "capabilities": []any{1}}, "capabilities"},
+		{"extraParams 非对象", map[string]any{"name": "n", "extraParams": "x"}, "extraParams"},
+		{"extraParams 值为数组", map[string]any{"name": "o", "extraParams": map[string]any{"a": []any{1}}}, "extraParams.a"},
+		{"extraParams 值为 null", map[string]any{"name": "p", "extraParams": map[string]any{"a": nil}}, "extraParams.a"},
+		{"extraParams 嵌套对象", map[string]any{"name": "q", "extraParams": map[string]any{"a": map[string]any{"b": 1}}}, "extraParams.a"},
+		{"headers 非对象", map[string]any{"name": "r", "headers": []any{}}, "headers"},
+		{"headers 值非字符串", map[string]any{"name": "s", "headers": map[string]any{"X": 1}}, "headers.X"},
+		{"headers 键超长", map[string]any{"name": "t", "headers": map[string]any{strings.Repeat("k", maxLLMExtraKeyChars+1): "v"}}, "键名超长"},
+		{"extraParams 键超长", map[string]any{"name": "u", "extraParams": map[string]any{strings.Repeat("k", maxLLMExtraKeyChars+1): "v"}}, "键名超长"},
+		{"extraParams 空键", map[string]any{"name": "v", "extraParams": map[string]any{" ": "v"}}, "键名不能为空"},
+		{"headers 值超长", map[string]any{"name": "w", "headers": map[string]any{"X": strings.Repeat("v", MaxKeyChars+1)}}, "超长"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -150,6 +164,22 @@ func TestValidateConfigKV(t *testing.T) {
 	}
 	if err := ValidateConfigKV("prj-config", map[string]string{"max_concurrency": "2048"}); err == nil {
 		t.Fatalf("max_concurrency 超上限应拒绝")
+	}
+	// 四步压缩策略触发阈值：非负整数（上限 1e9）；0 = 自动。
+	if err := ValidateConfigKV("prj-config", map[string]string{"compress_trigger_tokens": "-1"}); err == nil {
+		t.Fatalf("compress_trigger_tokens 负数应拒绝")
+	}
+	if err := ValidateConfigKV("prj-config", map[string]string{"compress_trigger_tokens": "1000000001"}); err == nil {
+		t.Fatalf("compress_trigger_tokens 超上限应拒绝")
+	}
+	for _, ok := range []string{"0", "64000", "1000000000"} {
+		if err := ValidateConfigKV("prj-config", map[string]string{"compress_trigger_tokens": ok}); err != nil {
+			t.Fatalf("合法 compress_trigger_tokens=%s 不应报错：%v", ok, err)
+		}
+	}
+	// 旧三段键保留校验（兼容旧配置写入；组装侧已不再读取）。
+	if err := ValidateConfigKV("prj-config", map[string]string{"keep_full_max_turns": "-1"}); err == nil {
+		t.Fatalf("旧键 keep_full_max_turns 负数仍应拒绝（兼容校验）")
 	}
 	if err := ValidateConfigKV("prj-config", map[string]string{"ask_timeout_sec": "-1"}); err == nil {
 		t.Fatalf("ask_timeout_sec 负数应拒绝")

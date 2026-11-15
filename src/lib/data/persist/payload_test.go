@@ -64,6 +64,34 @@ func TestScenarioPayloadDataForm(t *testing.T) {
 }
 
 // TestMcpPayloadTriState：isolate / sandbox 三态按「有键/无键」保真（nil ≠ false）。
+// TestUserConfigPayloadFlatAndDataForms：插件桥按历史口径发扁平键 → 必须并入 Data；
+// `data` 内同键优先，头部键（req_id/instance_id/id）不得混入配置对象。
+func TestUserConfigPayloadFlatAndDataForms(t *testing.T) {
+	flat := []byte(`{"req_id":"r1","instance_id":"ins","plugins.crontab.missed-grace-sec":"0"}`)
+	var p UserConfigPayload
+	if err := json.Unmarshal(flat, &p); err != nil {
+		t.Fatalf("flat unmarshal: %v", err)
+	}
+	if got := p.Data["plugins.crontab.missed-grace-sec"]; got != "0" {
+		t.Fatalf("扁平键未并入 Data: %v", p.Data)
+	}
+	if _, ok := p.Data["req_id"]; ok {
+		t.Fatalf("头部键混入 Data: %v", p.Data)
+	}
+
+	both := []byte(`{"data":{"theme":"dark"},"theme":"light","locale":"zh-CN"}`)
+	var q UserConfigPayload
+	if err := json.Unmarshal(both, &q); err != nil {
+		t.Fatalf("mixed unmarshal: %v", err)
+	}
+	if q.Data["theme"] != "dark" {
+		t.Fatalf("data 应优先: %v", q.Data)
+	}
+	if q.Data["locale"] != "zh-CN" {
+		t.Fatalf("顶层补缺失败: %v", q.Data)
+	}
+}
+
 func TestMcpPayloadTriState(t *testing.T) {
 	var p McpPayload
 	if err := json.Unmarshal([]byte(`{"instance_id":"ins","name":"srv","level":"user","sandbox":false}`), &p); err != nil {

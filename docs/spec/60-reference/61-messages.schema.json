@@ -52,6 +52,7 @@
       "llm-inbox-promote": {"kind": "command", "direction": "client->server", "scope": "instance-required", "visibility": "call"},
       "session-receive": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
       "session-complete": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
+      "session-usage": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
       "tool-notify": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
       "task-updated": {"kind": "event", "direction": "server->client", "scope": "instance-required", "visibility": "observe", "frequency": "high"},
       "plugin-list": {"kind": "query", "direction": "client->server", "scope": "instance-optional", "visibility": "call"},
@@ -179,6 +180,15 @@
     "match": { "type": "bool", "desc": "是否一致" },
     "max_context_token": { "type": "int", "desc": "上下文 token 上限" },
     "max_output_token": { "type": "int", "desc": "输出 token 上限" },
+    "cached_tokens": { "type": "int", "desc": "上游缓存命中的输入 token（0 = 未提供）" },
+    "completion_tokens": { "type": "int", "desc": "上游真实输出 token（0 = 未提供）" },
+    "est_prompt_tokens": { "type": "int", "desc": "本地估算的输入 token（字符数 / 2；用于校准展示）" },
+    "phase": { "type": "string", "desc": "用量事件阶段（send = 请求发出前估算；done = step 结束真实用量）" },
+    "prompt_tokens": { "type": "int", "desc": "上游真实输入 token（0 = 未提供）" },
+    "reasoning_tokens": { "type": "int", "desc": "上游推理 token（0 = 未提供）" },
+    "step": { "type": "int", "desc": "LLM step 序号（一轮内工具循环递增，1 起）" },
+    "total_tokens": { "type": "int", "desc": "上游真实总 token（0 = 未提供）" },
+    "ts": { "type": "string", "desc": "事件时间（RFC3339）" },
     "maximized": { "type": "bool", "desc": "已最大化" },
     "mcp_server": { "type": "object", "desc": "MCP server 定义" },
     "md5": { "type": "string", "desc": "文件 md5" },
@@ -2450,6 +2460,30 @@
       }
     },
     {
+      "topic": "session-usage",
+      "face": "server",
+      "direction": "server->client",
+      "event": {
+        "instance_id": { "type": "string", "required": true },
+        "session": { "type": "string", "required": true },
+        "turn": { "type": "string", "required": true },
+        "parents": { "type": "any", "required": true },
+        "phase": { "type": "string", "required": true },
+        "step": { "type": "int", "required": true },
+        "est_prompt_tokens": { "type": "int", "required": true },
+        "ts": { "type": "string", "required": true },
+        "llm": { "type": "string", "required": false },
+        "model": { "type": "string", "required": false },
+        "max_context_token": { "type": "int", "required": false },
+        "max_output_token": { "type": "int", "required": false },
+        "prompt_tokens": { "type": "int", "required": false },
+        "completion_tokens": { "type": "int", "required": false },
+        "total_tokens": { "type": "int", "required": false },
+        "reasoning_tokens": { "type": "int", "required": false },
+        "cached_tokens": { "type": "int", "required": false }
+      }
+    },
+    {
       "topic": "session-retry",
       "face": "server",
       "direction": "server->client",
@@ -3214,7 +3248,8 @@
       "payload": {
         "kind": { "type": "string", "required": true },
         "title": { "type": "string", "required": false },
-        "tab": { "type": "string", "required": false }
+        "tab": { "type": "string", "required": false },
+        "llm": { "type": "string", "required": false }
       },
       "result": {}
     }

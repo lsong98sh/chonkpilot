@@ -86,6 +86,13 @@ import { EventNames } from '../../events/event-names'
 
 const EditLLMDialog = defineAsyncComponent(() => import('./EditLLMDialog.vue'))
 
+// 聚焦请求（可选；2026-11-13）：由 `preview-tab-open{kind:'settings-llm', llm}` 透传
+// （CodeView `focusLlm` / `focusNonce`；nonce 变化 → 本组件重挂载 → 加载后打开该 provider 的编辑框）。
+const props = defineProps({
+  focusLlm: { type: String, default: '' },
+  focusNonce: { type: Number, default: 0 },
+})
+
 const { t } = useI18n()
 
 const llms = ref([])
@@ -322,9 +329,19 @@ async function deleteLLM(index) {
   if (!ok) llms.value = snapshot
 }
 
+// focusRequestedLLM 按 `focusLlm`（provider 名）打开编辑框：未命中/空 → 保持列表页
+// （缺省行为不变；名字已失效时用户仍可从列表手动选择）。
+function focusRequestedLLM() {
+  const name = String(props.focusLlm || '').trim()
+  if (!name) return
+  const idx = llms.value.findIndex(it => String((it && it.name) || '') === name)
+  if (idx >= 0) editLLM(idx)
+}
+
 const unsubs = []
-onMounted(() => {
-  loadConfig()
+onMounted(async () => {
+  await loadConfig()
+  focusRequestedLLM()
   unsubs.push(mq.on(EventNames.configAddLlm, addLLM))
   unsubs.push(mq.on(EventNames.configEditLlm, ({ index }) => editLLM(index)))
   unsubs.push(mq.on(EventNames.configDeleteLlm, ({ index }) => deleteLLM(index)))

@@ -165,11 +165,10 @@ test('A1/A2/A4 i18n：新增键 zh/en 齐备且可插值', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════
-// P1（2026-09-25 口径 W）：保留完整对话两项阈值的取值语义提示（0 = 不启用；<0 = 非法显式提示）
+// P1（2026-11-14 四步压缩策略）：压缩触发阈值取值语义（0 = 自动；<0 = 非法显式提示）
 // ═══════════════════════════════════════════════════════════════
-test('P1 上下文阈值取值语义：非法值（<0）前端显式提示 + 0 语义提示（zh/en 齐备）', () => {
-  const KEYS = ['keep_full_max_turns_hint', 'keep_full_max_turns_invalid',
-    'keep_full_max_tokens_hint', 'keep_full_max_tokens_invalid', 'keep_full_max_illegal_warning']
+test('P1 压缩触发阈值：0 = 自动提示 + 非法值（<0）显式提示（zh/en 齐备）', () => {
+  const KEYS = ['compress_trigger_tokens', 'compress_trigger_tokens_hint', 'compress_trigger_tokens_invalid']
   for (const loc of LOCALES) {
     const j = readLocale(loc, 'projectConfig.json')
     for (const k of KEYS) {
@@ -177,20 +176,17 @@ test('P1 上下文阈值取值语义：非法值（<0）前端显式提示 + 0 �
     }
   }
   const src = read(PAGE)
-  // 两项输入放开 0（原 :min="1"/":min="1000" 会阻止「不启用」）
-  assert.match(src, /v-model\.number="keepFullMaxTurns"[\s\S]*?:min="0"/, 'keepFullMaxTurns 须允许 0')
-  assert.match(src, /v-model\.number="keepFullMaxTokens"[\s\S]*?:min="0"/, 'keepFullMaxTokens 须允许 0')
+  // 输入放开 0（0 = 自动，不能 :min="1" 挡住）
+  assert.match(src, /v-model\.number="compressTriggerTokens"[\s\S]*?:min="0"/, 'compressTriggerTokens 须允许 0')
   // 非法值 → 显式提示（不静默）：三元切换提示 + 标红 class
-  assert.match(src, /keepFullMaxTurnsInvalid \? \$t\('projectConfig\.keep_full_max_turns_invalid'\)/, 'turns 非法值须显式提示')
-  assert.match(src, /keepFullMaxTokensInvalid \? \$t\('projectConfig\.keep_full_max_tokens_invalid'\)/, 'tokens 非法值须显式提示')
-  assert.match(src, /'hint-error': keepFullMaxTurnsInvalid/, 'turns 非法须标红')
-  assert.match(src, /'hint-error': keepFullMaxTokensInvalid/, 'tokens 非法须标红')
-  // 判定与保存前警示接线
-  assert.match(src, /const keepFullMaxTurnsInvalid = computed\(\(\) => Number\(keepFullMaxTurns\.value\) < 0\)/, 'turns 非法 = <0')
-  assert.match(src, /const keepFullMaxTokensInvalid = computed\(\(\) => Number\(keepFullMaxTokens\.value\) < 0\)/, 'tokens 非法 = <0')
-  // 2026-09-27（手动保存口径）：数值项不再 blur 落库；非法值警示仅在【保存】路径统一给出
-  assert.doesNotMatch(src, /@blur="handleChange"/, '数值项 blur 不再落库（改手动保存，无 saveNumbers）')
+  assert.match(src, /compressTriggerInvalid \? \$t\('projectConfig\.compress_trigger_tokens_invalid'\)/, '非法值须显式提示')
+  assert.match(src, /'hint-error': compressTriggerInvalid/, '非法值须标红')
+  assert.match(src, /const compressTriggerInvalid = computed\(\(\) => Number\(compressTriggerTokens\.value\) < 0\)/, '非法 = <0')
+  // 保存路径统一警示非法值
   assert.match(fnBody(src, 'handleSave'), /warnIllegalBounds\(\)/, '保存按钮路径须警示非法值')
+  // 旧三段键已从 UI 移除，不再写入。
+  assert.doesNotMatch(src, /v-model\.number="keepFullMax/, '旧三段键输入应已移除')
+  assert.doesNotMatch(src, /keep_full_max_turns:\s*String/, '旧三段键不再写入 prj 配置')
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -300,9 +296,13 @@ test('C1 Tooltip 长文案折行 + 保留换行（pre-wrap，不再 nowrap）', 
   assert.doesNotMatch(block[0], /white-space: nowrap/, '不应再按单行渲染')
 })
 
-test('C1 MCP 底栏「启用」最左 + 页签内容与分割线留 0.5em', () => {
+test('C1 MCP 底栏左侧「AI 填充」+ 右侧「启用 / 取消 / 保存」+ 页签内容与分割线留 0.5em', () => {
   const src = read('views/config/EditMCPDialog.vue')
-  assert.match(src, /\.footer-enabled \{[\s\S]*?margin-right: auto;[\s\S]*?\}/, '「启用」须固定在底栏最左侧')
+  // 左侧按钮区（AI 填充）占满剩余空间 → 其余按钮保持右对齐（2026-11-14 用户口径）
+  assert.match(src, /\.footer-left \{[\s\S]*?margin-right: auto;[\s\S]*?\}/, '「AI 填充」须固定在底栏最左侧')
+  // 「启用」不再独占最左，与取消/保存同属右侧组
+  assert.match(src, /\.footer-enabled \{[\s\S]*?\}/, '缺底栏「启用」组样式')
+  assert.doesNotMatch(src, /\.footer-enabled \{[^}]*margin-right: auto;/, '「启用」不应再占最左（左侧让给 AI 填充）')
   assert.match(src, /\.mcp-tabs :deep\(\.b-tabs-body\) \{[\s\S]*?padding-top: 0\.5em;[\s\S]*?\}/, '页签内容须与分割线留 0.5em')
   // 底栏其余按钮仍右对齐
   assert.match(src, /\.edit-footer \{[\s\S]*?justify-content: flex-end;/, '「取消/保存」保持右对齐')

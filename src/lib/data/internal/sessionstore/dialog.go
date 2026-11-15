@@ -50,6 +50,12 @@ type DialogRow struct {
 	// 免去为每个对话短开库文件）。
 	MainSessionID string `json:"main_session_id,omitempty"`
 	UpdatedAt     string `json:"updated_at"`
+	// NotifyAt / NotifyReadAt 是「任务完成通知」的未读水位（RFC3339Nano UTC，字典序可比较）：
+	//   - NotifyAt 由 append-notice 写入（有新结果）；
+	//   - NotifyReadAt 在该会话被激活（data-session-active-set）时写入（已读）。
+	// 列表只在 NotifyAt > NotifyReadAt 时回 notify_unread=true。旧行缺键 = 无通知。
+	NotifyAt     string `json:"notify_at,omitempty"`
+	NotifyReadAt string `json:"notify_read_at,omitempty"`
 }
 
 // Record 转 `dialogs` 行记录。
@@ -64,6 +70,12 @@ func (r DialogRow) Record() data.Record {
 	if r.MainSessionID != "" {
 		rec["main_session_id"] = r.MainSessionID
 	}
+	if r.NotifyAt != "" {
+		rec["notify_at"] = r.NotifyAt
+	}
+	if r.NotifyReadAt != "" {
+		rec["notify_read_at"] = r.NotifyReadAt
+	}
 	return rec
 }
 
@@ -76,6 +88,8 @@ func rowFromRecord(dialogID string, rec data.Record) DialogRow {
 		Kind:          sval(rec["kind"]),
 		MainSessionID: sval(rec["main_session_id"]),
 		UpdatedAt:     sval(rec["updated_at"]),
+		NotifyAt:      sval(rec["notify_at"]),
+		NotifyReadAt:  sval(rec["notify_read_at"]),
 	}
 }
 
@@ -274,6 +288,11 @@ func Reconcile(catalog *data.DB) (ReconcileResult, error) {
 		// （半创建 / 历史行）时不得把对账结果回落成 `main`，否则定时任务对话会出现在用户列表。
 		if exists && IsHiddenDialogKind(cur.Kind) && !IsHiddenDialogKind(want.Kind) {
 			want.Kind = cur.Kind
+		}
+		// 未读水位不是库内元数据，对账时**保留目录行现值**（否则每次标题/更新时间变化都会清零）。
+		if exists {
+			want.NotifyAt = cur.NotifyAt
+			want.NotifyReadAt = cur.NotifyReadAt
 		}
 		if !exists {
 			if err := PutDialog(catalog, want); err != nil {

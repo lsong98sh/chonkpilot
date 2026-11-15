@@ -9,6 +9,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -198,7 +199,29 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if subSession == "" {
 			subSession = "sub-" + newID()
 		}
-		h, err := s.startChildTurn(context.Background(), tc.req, subSession, prompt, strings.TrimSpace(in.Agent))
+		agentName := strings.TrimSpace(in.Agent)
+		// P1（2026-11-12）：agent 名拼错不得静默退化为“全能力子代理”。
+		// 统一判据 = 当前场景 agent / app 级注册表；都未命中 → 明确 agent_not_found。
+		if agentName != "" {
+			_, _, agents := s.loadScenario(in.InstanceID, tc.req.ScenarioID)
+			if a, _ := s.resolveAgentDef(tc.req.ScenarioID, agents, agentName); a == nil {
+				if _, ok := s.registeredAgentDef(agentName); !ok {
+					names := make([]string, 0, len(agents))
+					for _, ag := range agents {
+						if n := strings.TrimSpace(ag.Name); n != "" {
+							names = append(names, n)
+						}
+					}
+					hint := "场景内无可用 agent"
+					if len(names) > 0 {
+						hint = "可用：" + strings.Join(names, ", ")
+					}
+					return nil, &pluginbridge.Error{Code: "agent_not_found",
+						Msg: fmt.Sprintf("未知 agent %q（%s；留空 = 全能力）", agentName, hint)}
+				}
+			}
+		}
+		h, err := s.startChildTurn(context.Background(), tc.req, subSession, prompt, agentName)
 		if err != nil {
 			return nil, &pluginbridge.Error{Code: "delegate_failed", Msg: err.Error()}
 		}
@@ -213,7 +236,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		}
 		title := strings.TrimSpace(in.Title)
 		if title == "" {
-			title = oneLine(prompt, 60)
+			title = firstLine(prompt, 60)
 		}
 		node, nerr := s.tasks.start(&TaskNode{
 			Tool: "task_llm", ToolCallID: in.ToolCallID, ParentID: parentID,
@@ -576,6 +599,84 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		}
 		return map[string]any{"ok": true}, nil
 	})
+	// session.append-notice：向**既有**会话追加一条通知消息（role=user / kind=notify），
+	// 并广播 tool-notify{notice=cron-complete}。供 crontab 在定时 LLM 任务完成后通知创建会话。
+	//
+	// 与 ensure-turn + append-message + complete-turn 的差异：一次调用完成「建通知轮次 →
+	// 落通知消息 → 收轮次 → 广播」，插件无需自持消息面细节；**不创建会话**，会话不存在即失败
+	// （调用方降级到任务页/系统通知，不阻断任务）。
+	reg.Register("plugin/v1/session.append-notice", func(_ context.Context, _ *pluginbridge.Session, args json.RawMessage) (any, error) {
+		var in struct {
+			InstanceID string `json:"instance_id"`
+			WorkDir    string `json:"work_dir"`
+			SessionID  string `json:"session_id"`
+			DialogID   string `json:"dialog_id"`
+			TaskID     string `json:"task_id"`
+			Message    string `json:"message"`
+			TurnID     string `json:"turn_id"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, err
+		}
+		message := strings.TrimSpace(in.Message)
+		sessionID := strings.TrimSpace(in.SessionID)
+		if message == "" {
+			return nil, &pluginbridge.Error{Code: "args_invalid", Msg: "message 必填"}
+		}
+		if sessionID == "" {
+			return nil, &pluginbridge.Error{Code: "args_invalid", Msg: "session_id 必填"}
+		}
+		instanceID := s.resolveInstanceForWorkDir(in.InstanceID, in.WorkDir)
+		if instanceID == "" {
+			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "未找到该项目的主窗口实例"}
+		}
+		dialogID := strings.TrimSpace(in.DialogID)
+		if dialogID == "" {
+			dialogID = s.ensureDialogIndex(instanceID, sessionID)
+		}
+		if dialogID == "" {
+			return nil, &pluginbridge.Error{Code: "session_not_found", Msg: "通知目标会话不存在"}
+		}
+		turnID := strings.TrimSpace(in.TurnID)
+		if turnID == "" {
+			turnID = "turn-notice-" + newID()
+		}
+		st := s.newSessionStore(instanceID)
+		if err := st.EnsureTurnInDialog(turnID, sessionID, dialogID); err != nil {
+			return nil, &pluginbridge.Error{Code: "turn_ensure_failed", Msg: err.Error()}
+		}
+		msgID, err := st.AppendMsgMap(turnID, map[string]any{
+			"role":       "user",
+			"kind":       "notify",
+			"content":    message,
+			"session_id": sessionID,
+		}, "")
+		if err != nil {
+			return nil, &pluginbridge.Error{Code: "message_append_failed", Msg: err.Error()}
+		}
+		if err := st.CompleteTurnInDialog(turnID, dialogID, "done", ""); err != nil {
+			return nil, &pluginbridge.Error{Code: "turn_complete_failed", Msg: err.Error()}
+		}
+		s.publish("tool-notify", map[string]any{
+			"instance_id": instanceID,
+			"notice":      "cron-complete",
+			"session_id":  sessionID,
+			"turn_id":     turnID,
+			"message_id":  msgID,
+			"task_id":     strings.TrimSpace(in.TaskID),
+			"message":     message,
+		})
+		// 未读水位（持久化）：有结果但用户还没打开该会话 → 会话列表标题后显示未读点；
+		// 用户切到该会话（宿主推送的活动位切换）时由数据层清掉。失败不阻断通知。
+		if _, err := s.cfg.SessionNotifyUnreadSet(facade.SessionNotifyUnreadSetRequest{
+			InstanceID: instanceID, Scope: s.cfgScope(instanceID),
+			SessionID: sessionID, DialogID: dialogID, Unread: true,
+		}); err != nil {
+			s.pluginLogf("cron-notify: 未读水位写入失败（session=%s）: %v", sessionID, err)
+		}
+		return map[string]any{"ok": true, "session_id": sessionID, "turn_id": turnID,
+			"message_id": msgID, "dialog_id": dialogID}, nil
+	})
 }
 
 // resolveInstanceForWorkDir 解析能力调用应归属的实例 id（P4）：显式 `instance_id` 优先；
@@ -602,7 +703,8 @@ func (s *Server) finalizeDelegatedNode(node *TaskNode, out childOutcome, werr er
 	}
 	switch {
 	case werr != nil:
-		s.tasks.done(node.TaskID, TaskStateError, "", werr.Error())
+		// 传输/执行失败时仍保留子轮次已产出的内容（result_summary），不丢成空节点。
+		s.tasks.done(node.TaskID, TaskStateError, strings.TrimSpace(out.Text), werr.Error())
 	case out.Status == "complete" && strings.TrimSpace(out.Text) != "":
 		s.tasks.done(node.TaskID, TaskStateDone, out.Text, "")
 	case out.Status == "incomplete":
@@ -624,6 +726,9 @@ func delegatedWireResult(h *childTurn, node *TaskNode, out childOutcome, werr er
 	switch {
 	case werr != nil:
 		m["ok"], m["state"], m["error"] = false, "error", werr.Error()
+		if strings.TrimSpace(out.Text) != "" {
+			m["partial"] = out.Text
+		}
 	case out.Status == "complete" && strings.TrimSpace(out.Text) != "":
 		m["ok"], m["state"], m["text"] = true, "done", out.Text
 	case out.Status == "incomplete":
@@ -640,6 +745,22 @@ func delegatedWireResult(h *childTurn, node *TaskNode, out childOutcome, werr er
 		m["ok"], m["state"], m["error"] = false, "error", "子代理未完成（"+out.Status+"）"
 	}
 	return m
+}
+
+// firstLine 取文本首个非空行并按 rune 截断（task_llm 缺省标题 = prompt 首行，与契约一致）。
+func firstLine(s string, max int) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if max <= 0 || utf8.RuneCountInString(line) <= max {
+			return line
+		}
+		r := []rune(line)
+		return string(r[:max]) + "…"
+	}
+	return ""
 }
 
 // oneLine 把文本压成单行并按 rune 截断（委派子代理任务节点标题用；不改变原文语义）。

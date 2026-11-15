@@ -188,7 +188,7 @@ async function onSave() {
 .page-body {
   flex: 1;
   min-height: 0;
-  /* 两轴滚动都由页面正文承担（2026-09-27 用户口径，与工具异步页同范式）：
+  /* 两轴滚动都由页面正文承担（2026-09-27 用户口径，与工具配置页同范式）：
      横向滚动条贴 preview 区底部，而不是滚到内容底边才见到。 */
   overflow: auto;
   padding: 8px 0;

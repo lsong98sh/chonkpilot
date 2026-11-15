@@ -47,10 +47,47 @@ func (p ConfigPayload) key() string {
 }
 
 // UserConfigPayload 是 user-config 四动作的载荷（save 的 data = 整份配置对象）。
+//
+// 两形都接受（与文件头约定一致）：`{data:{…}}` 优先，顶层扁平键补缺。
+// 插件桥 `plugin/v1/config.user.set` 按历史口径发**扁平键**（`{plugins.<id>.<k>: v}`），
+// 若只认 `data` 会被静默保存成空配置（插件配置页保存成功、重启即丢）。
 type UserConfigPayload struct {
 	Header
 	ID   string         `json:"id,omitempty"`
 	Data map[string]any `json:"data,omitempty"`
+}
+
+// UnmarshalJSON 合并 `{data:{…}}` 与顶层扁平两形（`data` 优先、顶层补缺；头部键不并入）。
+func (p *UserConfigPayload) UnmarshalJSON(b []byte) error {
+	type plain UserConfigPayload
+	var w plain
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	var flat map[string]json.RawMessage
+	if err := json.Unmarshal(b, &flat); err != nil {
+		return err
+	}
+	if w.Data == nil {
+		w.Data = map[string]any{}
+	}
+	for k, raw := range flat {
+		switch k {
+		case "req_id", "instance_id", "id", "data":
+			continue
+		}
+		if _, exists := w.Data[k]; exists {
+			continue // data 优先
+		}
+		var v any
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if dec.Decode(&v) == nil {
+			w.Data[k] = v
+		}
+	}
+	*p = UserConfigPayload(w)
+	return nil
 }
 
 // key 取 user-config 单键操作的键：顶层 id → data.id → data.key。

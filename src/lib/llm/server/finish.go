@@ -56,19 +56,14 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		logf("[chonkpilot-server] CompleteTurnTokens 失败（session=%s turn=%s）: %v\n", tc.req.Session, tc.req.Turn, err)
 	}
 	// 写快照（唯一终态写）：snapshot_turn = 本轮（快照覆盖到最后一条 turn）
-	// 基 = 当前已提交快照（压缩内建可能在本轮期间回填过；详见 snapshotWriteBase）；
-	// 不衔接 / 无快照 / 同轮继续 → 回落改前口径（tc.hist + 本轮消息）。
+	// 四步策略 2.3 成功后本轮 `tc.hist` 已替换为摘要、turnTokens 清空 → 此处即
+	// `[system 摘要] + 本轮消息`（期望行为）；未压缩 → 原历史 + 本轮消息。
 	msgs := append(append([]ChatMsg{}, tc.hist...), cur...)
 	if base, ok := s.snapshotWriteBase(tc); ok {
 		msgs = append(append([]ChatMsg{}, base...), cur...)
 	}
 	if err := st.SetSnapshot(tc.req.Session, msgs, tc.req.Turn); err != nil {
 		logf("[chonkpilot-server] SetSnapshot 失败（session=%s turn=%s）: %v\n", tc.req.Session, tc.req.Turn, err)
-	} else {
-		// 压缩内建（2026-11-07 修正）：终态快照落库**之后**再起本轮暂存的压缩（锚点 = 本轮）。
-		// 启动点从组装期后移到此，避免摘要回填与本次终态写快照竞争（覆盖 / CAS 丢弃）；
-		// cur 追加进保留段，压缩快照仍包含刚落库的本轮消息。
-		s.startPendingCompress(tc, cur)
 	}
 	ev := map[string]any{
 		"instance_id": tc.req.InstanceID, "session": tc.req.Session, "turn": tc.req.Turn,
@@ -107,9 +102,9 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		ev["retry_wait_ms"] = 0
 	}
 	s.publish("llm-complete", ev)
-	// 压缩（SESSION-1，2026-10-23 定案）：**纯内部方法面**，不再作为 MQ 事件广播
-	// （`session-compress` 已于 2026-10-31 从消息面移除；61 同步）。压缩触发 = 组装后按
-	// `Usage` 判阈值 → 后台压缩（见 compress.go），与本函数的终态落库无耦合。
+	// 压缩（四步策略，2026-11-14）：**纯内部方法面**，不再作为 MQ 事件广播
+	// （`session-compress` 已于 2026-10-31 从消息面移除；61 同步）。压缩在每次 LLM step 前的
+	// 组装路径内**同步**执行（见 assembly.go / compress.go），本轮终态只是写终态快照。
 	// 终态后的续轮动作由 runner 决策（`session/runner.DecideFollowUp`，TURNRUN-1 批次 5）：
 	//   - complete / incomplete → 消费 `next_turn` 起新一轮（INBOX）；
 	//   - 其余终态（error / interrupted / cancelled）→ 丢弃**本 turn** 的 LLM 排队项（NEXTRUN-1 终态收敛），

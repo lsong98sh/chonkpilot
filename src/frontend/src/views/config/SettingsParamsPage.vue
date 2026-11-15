@@ -168,8 +168,9 @@ const userGroups = computed(() => [
 //     chonkpilot-mcp-server/server/config.go DefaultConfig()（300/16/12 项跳过目录；与
 //     chonkpilot-mcp-tools/internal/fileops/fileops.go SkipDirs 同集）
 // 守护测试：chonkpilot-llm/server TestSystemDefaultParamsMirror。
-// 注：keep_full_max_turns / keep_full_max_tokens / compress_token_threshold 的唯一编辑入口已收敛至
-// 「上下文管理」页（ContextConfig.vue），本页不再镜像；其后端默认值（10 / 24000 / 20000）仍由上用例守护。
+// 注：上下文压缩的数值项（触发阈值 `compress_trigger_tokens`）唯一编辑入口在
+// 「上下文管理」页（ContextConfig.vue），本页不镜像；旧三段键（keep_full_max_turns /
+// keep_full_max_tokens / compress_token_threshold）自 2026-11-14 起不再读取。
 const SYSTEM_DEFAULTS = Object.freeze({
   responseTimeout: '120',
   streamTimeout: '60',

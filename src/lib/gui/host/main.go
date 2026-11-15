@@ -35,8 +35,8 @@ import (
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/lsong98sh/chonkpilot-framework/host/assetserver"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/tray"
 	"github.com/lsong98sh/chonkpilot-framework/host/gui"
 	"github.com/lsong98sh/chonkpilot-framework/host/models"
@@ -519,6 +519,15 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 		return nil
 	}
 	openProject := func(dir string) error { return openProjectAs(dir, false) }
+	// openAndRecord 打开项目并记入「最近目录」（托盘「打开目录」入口）：与 `gui.dir.open` 同口径 ——
+	// usr config `recent_dirs`（前端最近项目列表）+ `flash-recents.json`（托盘菜单读它，见 ListRecentDirs）。
+	openAndRecord := func(dir string) {
+		if err := openProject(dir); err != nil {
+			gui.NativeAlert("Chonkpilot", err.Error())
+			return
+		}
+		bridge.RecordRecentDir(bus, dir)
+	}
 	// 回调必须先于**任何窗口创建**注入（createWindow 会把它转给桥的 gui.dir.open）。
 	env.SetProjectOpener(openProject)
 
@@ -527,7 +536,7 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 	// 会话类走项目桥的既有 `data-session-ensure-session`（零新增消息面）。
 	if app.Workspace != nil {
 		app.Workspace.SetProjectOps(hostProjectOps{
-			env: env,
+			env:  env,
 			open: openProjectAs,
 			instanceID: func(dir string) (string, bool) {
 				return app.Workspace.Instances().MainInstanceForWorkDir(dir)
@@ -666,7 +675,7 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 							if !ok {
 								return llmbridge.Target{}, false
 							}
-							return llmbridge.Target{BaseURL: t.BaseURL, APIKey: t.APIKey, Protocol: t.Protocol}, true
+							return llmbridge.Target{BaseURL: t.BaseURL, APIKey: t.APIKey, Protocol: t.Protocol, Headers: t.Headers}, true
 						},
 					})
 					if err := b.Start(); err != nil {
@@ -697,7 +706,7 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 	gui.WatchLogLevel(bus)
 	gui.LogStartupStage("启动流程就绪（进入窗口事件循环，首屏于导航完成后另记）")
 
-	// ── 托盘（PRODSIM-1）：常驻入口 —— 显示日志 / 打开项目 / 项目列表 / 退出 ──
+	// ── 托盘（PRODSIM-1）：常驻入口 —— 显示日志 / 打开目录（最近目录 + 其他…）/ 项目列表 / 退出 ──
 	// 托盘不可用（启动失败）→ 退回旧行为：所有项目主窗口关闭即退出。
 	// （退出通道 exitCh / requestExit 已在建窗之前声明：测试通道 `/quit` 与托盘共用。）
 	trayStop, trayErr := tray.Start(tray.Callbacks{
@@ -709,10 +718,20 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 			if dir == "" {
 				return
 			}
-			if err := openProject(dir); err != nil {
-				gui.NativeAlert("Chonkpilot", err.Error())
-			}
+			openAndRecord(dir)
 		},
+		// 「打开目录」子菜单：最近项目（最新在前）；失效目录不占菜单项（点击也不会成功）。
+		ListRecentDirs: func() []string {
+			recents := models.LoadRecents(models.RecentsPath())
+			out := make([]string, 0, len(recents))
+			for _, d := range recents {
+				if models.DirExists(d) {
+					out = append(out, d)
+				}
+			}
+			return out
+		},
+		OnPickRecentDir: func(workDir string) { openAndRecord(workDir) },
 		OnExit: func() {
 			env.Shutdown()       // 关所有项目主窗口/小窗口（各自发 instance-exit）
 			env.CloseLogWindow() // 强制销毁（无视 HideOnClose）

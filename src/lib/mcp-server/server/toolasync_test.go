@@ -193,9 +193,9 @@ func TestToolAsyncInvalidValuesIgnored(t *testing.T) {
 	// 非法 mode 与合法 threshold 混用 → 只丢 mode
 	cfg2 := DefaultConfig()
 	cfg2.SetToolAsync(map[string]ToolAsyncOverride{
-		"self_core_file_read": {Mode: "  Always ", Threshold: 7, HardTimeout: 0},
+		"self_core_file_read": {Mode: "  Async ", Threshold: 7, HardTimeout: 0},
 	})
-	if ov := cfg2.ToolAsync["self_core_file_read"]; ov.Mode != "always" || ov.Threshold != 7 {
+	if ov := cfg2.ToolAsync["self_core_file_read"]; ov.Mode != "async" || ov.Threshold != 7 {
 		t.Fatalf("mode 应去空白并小写、threshold 保留：%+v", ov)
 	}
 	cfg3 := DefaultConfig()
@@ -211,15 +211,15 @@ func TestToolAsyncInvalidValuesIgnored(t *testing.T) {
 		t.Fatalf("非法 mode 不应写入 _meta.async（got %v）", tool.Meta["async"])
 	}
 
-	// 负数（-1 = 无上限）**保留**：mode 非法被丢、数值字段保留 → 仍为有效覆盖
+	// threshold=-1（不设点）**保留**；hard_timeout=-1（<=0 = 不处理）→ 等同未设置（丢弃 Set）。
 	cfg5 := DefaultConfig()
 	if !cfg5.SetToolAsync(map[string]ToolAsyncOverride{
 		"self_core_file_read": {Mode: "sometimes", Threshold: -1, HardTimeout: -1},
 	}) {
-		t.Fatal("非法 mode + 显式 -1 数值应保留数值字段（有效覆盖）")
+		t.Fatal("非法 mode + 显式 threshold=-1 应保留数值字段（有效覆盖）")
 	}
-	if ov := cfg5.ToolAsync["self_core_file_read"]; ov.Mode != "" || !ov.ThresholdSet || ov.Threshold != -1 || !ov.HardTimeoutSet || ov.HardTimeout != -1 {
-		t.Fatalf("显式 -1 应保留（无上限）：%+v", ov)
+	if ov := cfg5.ToolAsync["self_core_file_read"]; ov.Mode != "" || !ov.ThresholdSet || ov.Threshold != -1 || ov.HardTimeoutSet {
+		t.Fatalf("threshold=-1 应保留（不设点）；hard_timeout<=0 应等同未设置：%+v", ov)
 	}
 
 	// 空表 = 清空全部覆盖（前端「恢复默认」= 删该工具键项）
@@ -294,8 +294,8 @@ func TestToolAsyncOverrideTouchFiles(t *testing.T) {
 	}
 }
 
-// TestResolveExecTimeoutPriority：执行硬上限优先级 = hard_timeout（用户显式）> 契约 timeout（显式）
-// > cfg.execTimeout()；**显式 0/-1 = 无上限**（noLimit）；未显式设置时既有语义不变。
+// TestResolveExecTimeoutPriority：执行硬上限优先级 = hard_timeout（用户显式 **>0**）> 契约 timeout
+// （显式，0/-1 = 无上限）> cfg.execTimeout()；usr hard_timeout **<=0 = 不处理**（等同未设置）。
 func TestResolveExecTimeoutPriority(t *testing.T) {
 	cfg := DefaultConfig() // 内置默认 300s
 	if got, nl := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 0)); got != 300 || nl {
@@ -322,7 +322,7 @@ func TestResolveExecTimeoutPriority(t *testing.T) {
 		t.Fatalf("孤儿键不得生效，got %d want 120", got)
 	}
 
-	// 显式 0 / -1 = 无上限（契约 / usr 覆盖两路）
+	// 契约 timeout 显式 0 / -1 = 无上限；usr hard_timeout <=0 = 不处理（回落契约）。
 	if got, nl := resolveExecTimeout(cfg, &ToolDoc{Name: "z", TimeoutSet: true, Timeout: 0}); got != 0 || !nl {
 		t.Fatalf("契约 timeout=0 应无上限，got (%d,%v) want (0,true)", got, nl)
 	}
@@ -331,8 +331,8 @@ func TestResolveExecTimeoutPriority(t *testing.T) {
 	}
 	cfg6 := DefaultConfig()
 	cfg6.SetToolAsync(map[string]ToolAsyncOverride{"self_zz": {HardTimeoutSet: true, HardTimeout: 0}})
-	if got, nl := resolveExecTimeout(cfg6, toolDocForTest("zz", "auto", 0, 60)); got != 0 || !nl {
-		t.Fatalf("usr hard_timeout=0 应无上限（压过契约 60），got (%d,%v) want (0,true)", got, nl)
+	if got, nl := resolveExecTimeout(cfg6, toolDocForTest("zz", "auto", 0, 60)); got != 60 || nl {
+		t.Fatalf("usr hard_timeout=0 = 不处理（回落契约 60），got (%d,%v) want (60,false)", got, nl)
 	}
 }
 
@@ -408,5 +408,39 @@ func TestToolAsyncSetReturnsChangedOnDifference(t *testing.T) {
 	}
 	if !cfg.SetToolAsync(map[string]ToolAsyncOverride{"b": {Threshold: 3}}) {
 		t.Fatal("键集合变化应报告变化")
+	}
+}
+
+// TestBuildToolTouchFilesMeta：contract `touch_files` 仅显式声明才写入 `_meta.touch_files`（bool）。
+func TestBuildToolTouchFilesMeta(t *testing.T) {
+	cfg := DefaultConfig()
+
+	d := toolDocForTest("t", "sync", 0, 30)
+	d.TouchFiles, d.TouchFilesSet = false, true
+	tool, err := buildTool(d, cfg)
+	if err != nil {
+		t.Fatalf("buildTool: %v", err)
+	}
+	if v, ok := tool.Meta["touch_files"].(bool); !ok || v {
+		t.Fatalf("_meta.touch_files 应为 false（显式声明），got %v", tool.Meta["touch_files"])
+	}
+
+	d2 := toolDocForTest("t2", "sync", 0, 30)
+	d2.TouchFiles, d2.TouchFilesSet = true, true
+	tool2, err := buildTool(d2, cfg)
+	if err != nil {
+		t.Fatalf("buildTool: %v", err)
+	}
+	if v, ok := tool2.Meta["touch_files"].(bool); !ok || !v {
+		t.Fatalf("_meta.touch_files 应为 true（显式声明），got %v", tool2.Meta["touch_files"])
+	}
+
+	// 未声明 → 不写（由 gateway 回落来源启发式）。
+	tool3, err := buildTool(toolDocForTest("t3", "sync", 0, 30), cfg)
+	if err != nil {
+		t.Fatalf("buildTool: %v", err)
+	}
+	if _, ok := tool3.Meta["touch_files"]; ok {
+		t.Fatalf("未声明 touch_files 不应写入 _meta: %v", tool3.Meta)
 	}
 }

@@ -126,7 +126,7 @@ test('⑱C 数据来源 = 既有 data-snapshot-get（压缩产物唯一落点）
   const go2 = readRepo('lib/data/persist/persist.go')
   assert.match(go2, /TopicDataSnapshotGet, msgkeys\.TopicDataSnapshotSet/, 'data-snapshot-get 须为既有注册主题')
   const l1 = readRepo('lib/llm/server/compress_test.go')
-  assert.match(l1, /func TestCompressCommitSingleFlightAndCAS/, 'L1 须有「压缩产物落快照可读回 + CAS」用例')
+  assert.match(l1, /func TestBuildAssemblyCompressStage/, 'L1 须有「压缩产物落快照可读回 + CAS」用例')
 })
 
 test('⑱C 呈现：摘要原文（截断 + 展开全文）+ 触发范围 + 保留条数 + 空态', () => {
@@ -275,10 +275,10 @@ test('P1 上下文压缩区末尾两条提示：文案逐字 + 归属压缩区 +
   // 纯展示：无功能引入
   assert.doesNotMatch(stripComments(src), /\bwatch(Effect)?\s*\(/, '不得用 watch/watchEffect（项目规则）')
 
-  // zh-CN：用户原文逐字照录
+  // zh-CN：用户原文（2026-11-14 随四步压缩策略更新：保持轮改为触发阈值）
   const zh = readLocale('zh-CN', 'projectConfig.json')
   assert.equal(zh.context_tip_cache_billing,
-    '如果你的provider完全按照token计价，不进行cache命中计价，建议减少保持轮为 1', 'zh 第 1 条须逐字')
+    '如果你的provider完全按照token计价，不进行cache命中计价，可适当降低压缩触发阈值以减少每次请求的输入 token', 'zh 第 1 条须逐字')
   assert.equal(zh.context_tip_compress_llm,
     '上下文压缩，记忆提取使用默认LLM，如需使用特定LLM，敬请期待', 'zh 第 2 条须逐字')
 

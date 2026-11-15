@@ -1176,7 +1176,8 @@ def prjusr_root(work_dir, home=None):
 
 
 def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
-              ready_timeout=90, extra_args=(), no_window=True, plugin_addr=None):
+              ready_timeout=90, extra_args=(), no_window=True, plugin_addr=None,
+              ensure_spec=True, env_overrides=None):
     """自起 GUI（未给 port 则取空闲端口）；登记为结束时回收。
 
     `data_dir` 参数**已废弃**（GUI 无 `--data-dir` 启动参数，2026-10-25 删除）：传了也忽略，
@@ -1190,9 +1191,10 @@ def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
         print("[harness] 警告：端口 %d 仍被占用（15s）→ 仍尝试自起（可能因端口冲突失败）" % port, flush=True)
     work_dir = work_dir or DEFAULT_WS
     os.makedirs(work_dir, exist_ok=True)
-    # 夹具：预置工程规格文件 → 抑制「场景向导」启动自动弹出（该特性仅在缺 project_spec.md 时触发；
-    # 非向导套件应模拟「已初始化项目」）。向导自动弹出另由专用套件覆盖。
-    ensure_project_spec(work_dir)
+    # 非向导套件应模拟「已初始化项目」：预置工程规格文件以抑制向导自动弹出；
+    # 向导自动弹出测试点显式 ensure_spec=False（保持 work-dir 未初始化）。
+    if ensure_spec:
+        ensure_project_spec(work_dir)
     cmd = [exe or resolve_gui_exe(), "--test-port=%d" % port, "--work-dir=%s" % work_dir]
     cmd.extend(extra_args)
     # 插件桥地址一实例一份（BRIDGE-2 测试隔离）：`CHONK_PLUGIN_UDS` 覆盖 UDS 路径；
@@ -1206,6 +1208,8 @@ def start_gui(port=None, work_dir=None, data_dir=None, home=None, exe=None,
         plugin_env = {"CHONK_PLUGIN_UDS": plugin_uds}
     env = dict(os.environ)
     env.update(plugin_env)
+    if env_overrides:
+        env.update({str(k): str(v) for k, v in env_overrides.items()})
     if home:
         os.makedirs(home, exist_ok=True)
         env["USERPROFILE"] = home   # Go os.UserHomeDir() 在 Windows 取 USERPROFILE

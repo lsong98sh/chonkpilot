@@ -58,8 +58,14 @@ func (s *Server) startChildTurn(parentCtx context.Context, parentReq StartReq, s
 	tc := newTurnCtx(parentCtx, s, subReq)
 	// 子轮次同样登记 busy/turns：转后台工具完成（onGatewayTaskDone）按 turn 定位续轮。
 	// 键 = instKey(instance, id)（缺口 5：子轮次与主轮次同 instance 桶）。
+	// 同一 session_id 并发复用 → 拒绝（覆盖 busy 会让两个子轮次共享上下文/互相打断）。
+	key := instKey(subReq.InstanceID, subSession)
 	s.mu.Lock()
-	s.busy[instKey(subReq.InstanceID, subSession)] = subTurn
+	if cur := s.busy[key]; cur != "" && cur != subTurn {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("子会话 %s 正在执行其他轮次（turn=%s），请等其结束或改用新的 session_id", subSession, cur)
+	}
+	s.busy[key] = subTurn
 	s.registerTurnLocked(instKey(subReq.InstanceID, subTurn), tc)
 	s.mu.Unlock()
 	// 子轮次开始广播（turn-start 带 parents 链；前端会话树插入 + history 过滤主会话）

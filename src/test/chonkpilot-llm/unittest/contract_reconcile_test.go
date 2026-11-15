@@ -348,6 +348,10 @@ func TestServerNotDrivenRegistry(t *testing.T) {
 		// 原名直通前端，消费方 = MessageList.vue（按 session 重拉 llm-inbox-list）。事件由
 		// server 包 L1 inbox_test 的 inboxRec（订阅 session-* 全量记录）收录。
 		{"session-inbox-changed", "生产者 = inbox.go publishInboxChanged（2026-11-01，五路径广播）；事件由 server 包 L1 inbox_test inboxRec 收录；前端消费 = MessageList.vue"},
+		// LLM 用量事件（llm-usage / 契约主题 session-usage）：生产者 = engine_turn.go
+		// publishUsage（send / done 两相）；行为由 server 包 L1 engine_usage_test 覆盖，
+		// 前端消费 = UsageRing / useLlmUsage。本套件不驱动逐 step 用量事件 → 仍登记。
+		{"session-usage", "生产者 = engine_turn.go publishUsage（send/done）；行为由 server 包 L1 engine_usage_test 覆盖；前端消费 = UsageRing / useLlmUsage"},
 	}
 	declared := c.byTopic()
 	registered := map[string]bool{}

@@ -62,8 +62,6 @@ func New(bus mq.Bus, opts Options) *Server {
 		taskTurnIndex:   make(map[string]*turnCtx),
 		inboxIndex:      make(map[string]facade.InboxItem),
 		inboxConsuming:  make(map[string]bool),
-		compressRunning: make(map[string]bool),
-		compressPending: make(map[string]compressJob),
 		// 后台任务完成通知挂账（§5.3）
 		notifyQueues:   make(map[string][]completionNotice),
 		notifyHandled:  make(map[string]bool),
@@ -204,8 +202,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	logStartupStage("方法面/事件订阅")
 	// 2026-11-08：core 不再注册任何域工具（ask_user / next_run / subchat_open / subchat_finish
-// 已迁 task 插件；tool_result 删除，结果读取统一走 task_status）。此处只登记**app 级场景**
-// agent（`<exeDir>/scenarios/*/`，内存表；25 §5 / T2：agent 不注册资产；25 §8.1 #8）。
+	// 已迁 task 插件；tool_result 删除，结果读取统一走 task_status）。此处只登记**app 级场景**
+	// agent（`<exeDir>/scenarios/*/`，内存表；25 §5 / T2：agent 不注册资产；25 §8.1 #8）。
 	// 注册失败不致命（宿主 DisableMCP/无下游时跳过）。
 	if s.gw != nil {
 		if err := s.registerDomainAgents(ctx); err != nil {

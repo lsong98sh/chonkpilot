@@ -9,7 +9,7 @@
 ## 1. 职责与边界
 
 - **一句话**：**tree-sitter 代码语义索引引擎**（可独立 console 运行自检）+ **`codegraph` 进程外 exe 插件**（codegraph + vfts 合一）。**引擎以库形式编入插件进程**（`go.mod` require + `replace`，直接 import），运行期**不 spawn stdio 子进程**；独立 exe 仅用于单独构建/`-probe`/`-dump` 自检。`plugin-codegraph` **不是**可用的进程内 Hook（`appwire.DefaultPlugins` 返回 nil）。**（2026-11-04 核对）**
-- **做**：多语言符号/依赖/复杂度/**调用图（caller/callee）**抽取、索引持久化与增量自愈、8 个查询工具 + 4 个管理工具。
+- **做**：多语言符号/依赖/复杂度/**调用图（caller/callee）**抽取、索引持久化与增量自愈、9 个 LLM 可见工具（8 查询 + `codegraph_status`）+ 3 个仅管理工具。
 - **不做**：不落 chonkpilot.db（索引独立目录）；管理工具不发 LLM（hot=false）；引擎侧不做可见性门控（插件以配置启用态决定是否重建/使用）。
 
 ---
@@ -38,19 +38,19 @@
 | `codegraph_configure` | ✗ | 配置 workdir：`enabled` / `exts` / `skip_dirs`（用户排除规则，gitignore 语法）/ `stack_gitignore`（是否叠加 gitignore 体系，引擎仅记录，门控在插件）；`mode=clear` 清索引产物 |
 | `codegraph_initialize` | ✗ | 全量建索引（同步，落盘 `<workDir>/.chonkpilot/codegraph/`） |
 | `codegraph_index_paths` | ✗ | **按路径增量**（resident indexer 用）：`{workdir, files:[], remove:[]}` → `{ok,indexed,removed,skipped}`；不可索引/忽略/解析失败 → 从索引删除并计 skipped |
-| `codegraph_status` | ✗ | 状态：`disabled/未初始化/indexing/ready/error` + 进度 + 规模 |
-| `codegraph_symbol_search` | ✓ | 符号搜索（name 子串，kind/file 过滤；真实 `total` + `limit/offset` 分页；空结果 `note`） |
-| `codegraph_get_symbol_info` | ✓ | 单符号详情（id 优先，或 file+name）：kind/行号/复杂度/签名；多命中返回候选 `symbols` |
-| `codegraph_callers` | ✓ | **谁调用了它**：按被调名（`name` 或 `id` 定位目标，id 优先；`file` 过滤调用方）返回调用方符号；真实 `total` + `limit/offset` 分页 |
-| `codegraph_callees` | ✓ | **它调用了谁**：按 `id` 或 `file+name` 定位目标（id 优先，多命中返回候选），返回直接调用目标（`resolved` + `candidates` 0/1/>1；真实 `total` + `limit/offset` 分页；非函数 `not_callable`） |
-| `codegraph_get_dependency_graph` | ✓ | 文件级依赖（`import`/`use` 原始串）：默认只返回有导入的文件，`file` 精确/路径段后缀匹配（大小写不敏感），真实 `total` + `limit/offset` 分页 + `include_empty`；未命中/无导入带 `note` |
-| `codegraph_find_circular_deps` | ✓ | 循环依赖（简单环 DFS；workdir 相对路径、确定性枚举、默认含自环；`limit/offset` 分页 + `truncated`） |
-| `codegraph_analyze_complexity` | ✓ | 圈复杂度 topN（默认只含 func/method/constructor，`kind=all` 可看全部；topN 上限 200 + `total`/`truncated`；嵌套闭包剪枝；稳定排序；`coverage` 文件数/解析错误数） |
-| `codegraph_get_module_summary` | ✓ | 目录/项目摘要（已索引文件数/符号数/语言分布/最高复杂度函数 top5/解析错误文件数/最近索引时间；`path` 路径段边界 + 大小写不敏感） |
+| `codegraph_status` | ✓ | 状态：`disabled/未初始化/indexing/ready/error` + 进度 + 规模（只读；LLM 可查进度） |
+| `codegraph_symbol_search` | ✓ | 符号搜索（name 子串，kind/file 过滤；真实 `total` + `limit/offset` 分页；空结果 `note`；直接遍历索引，不复制全量符号） |
+| `codegraph_get_symbol_info` | ✓ | 单符号详情（id 优先，或 file+name）：kind/行号/复杂度/签名；多命中返回候选 `symbols`；id/名称走 `byID`/`byName` 索引 |
+| `codegraph_callers` | ✓ | **谁调用了它**：按被调名（`name` 或 `id` 定位目标，id 优先；`file` 过滤调用方，按路径段后缀匹配；`lang` 过滤语言）返回调用方符号；真实 `total` + `limit/offset` 分页 |
+| `codegraph_callees` | ✓ | **它调用了谁**：按 `id` 或 `file+name` 定位目标（id 优先，多命中返回候选），返回直接调用目标（`resolved` + `candidates` 0/1/>1；真实 `total` + `limit/offset` 分页；非函数 `not_callable`）。每个目标附 `owner/ownerKind`、`dispatch`（static/interface/trait/abstract/ambiguous）、全部 `candidateSymbols`、接口/抽象目标的 `possibleImplementations`、`self_recursive`/`recursive`；`lang` 可收窄候选语言 |
+| `codegraph_get_dependency_graph` | ✓ | 文件级依赖（`import`/`use` 原始串）：默认只返回有导入的文件，`file` 精确/路径段后缀匹配（大小写不敏感），真实 `total` + `limit/offset` 分页 + `include_empty`；`coverage` 文件数/解析错误数/口径说明；未命中/无导入带 `note` |
+| `codegraph_find_circular_deps` | ✓ | 循环依赖（简单环 DFS；workdir 相对路径、确定性枚举、默认含自环；`limit/offset` 分页 + `truncated`；`max_cycle_length` 剪枝巨环、`path` 限定子图、支持 ctx 取消） |
+| `codegraph_analyze_complexity` | ✓ | 圈复杂度 topN（默认只含 func/method/constructor，`kind=all` 可看全部；topN 上限 200 + `total`/`truncated`；嵌套闭包剪枝；稳定排序；`coverage` 文件数/解析错误数 + 口径说明） |
+| `codegraph_get_module_summary` | ✓ | 目录/项目摘要（已索引文件数/符号数/语言分布/最高复杂度函数 top5/解析错误文件数/最近索引时间；`path` 路径段边界 + 大小写不敏感；`coverageNote` 说明未索引文件口径） |
 
 - 查询工具 `workdir` 可选：缺省取 `_meta.chonkpilot.work_dir`，显式传入时必须为当前项目内绝对路径；`readyGate` 未就绪 → 结构化应答（`pending/indexing/error/not_initialized`，**不算协议错误**）。
 - **完整性门（2026-10-19 P5）**：`readyGate` 先读 `<workDir>/.chonkpilot/codegraph/status.json`（`{state,pending,message,updated_at}`）：`error` → 结构化 error；`indexing`/`pending>0` → 5s 有界等待（100ms 轮询）→ `pending`；`ready && pending==0` 或文件不存在 → 回落 `EnsureReady`。
-- 插件侧：8 个查询工具注册进插件自带 MCP server（hot=true，schema/description/`_meta` 来自 `src/tools/codegraph/*.tool.md`，`workdir` 可选 + `_meta` 注入）；manifest `mcp.category=codegraph`、`origin=builtin`，**无 `handler_subject`**。`vfts_query` 另由插件注册并去掉 `workdir`（见 [2B §3.2](2B-vfts.md)）。**（2026-11-10 核对）**
+- 插件侧：9 个查询工具注册进插件自带 MCP server（hot=true，schema/description/`_meta` 来自 `src/tools/codegraph/*.tool.md`，`workdir` 可选 + `_meta` 注入）；manifest `mcp.category=codegraph`、`origin=builtin`，**无 `handler_subject`**。`vfts_query` 另由插件注册并去掉 `workdir`（见 [2B §3.2](2B-vfts.md)）。**（2026-11-10 核对）**
 - **调用图语义与限制（重要，工具 description 同步声明）**：`calls` 存的是**调用点文本的最后一段名**（如 `a.b.Foo()` → `Foo`、`fmt.Println` → `Println`、`new Widget()` → `Widget`、`println!` → `println`），查询匹配 = 忽略大小写的**全等** 或 **后缀 `.name`**（故 `pkg.Foo` 与 `Foo` 视为同一目标）。这是**名字级启发式**：**无类型解析、无重载/接收者区分、无跨包唯一性判定**——`Callees` 的 `resolved=true` 仅表示该名在索引内**唯一命中**一个符号，非真实绑定；`Callers` 同理（同名不同定义会一并列出）。仅覆盖**已索引文件**内的**直接**调用；动态派发（`a["x"]()`、反射、`eval`）与未索引符号不参与。
 
 ### 3.2 支持语言（7）
@@ -207,7 +207,7 @@ tree-sitter `parser.Parse` → 递归 walk：`defKinds`（符号类别）· `nam
 ## 9. 现状与待办
 
 - ✅ **索引落盘由 JSON 改为 bbolt**：索引本体 = `<workDir>/.chonkpilot/codegraph/index.db`（bucket `meta/files/symbols`；事务原子 + 增量只写变更）；`meta.json` 保留为工作区元信息；旧 `index.json` **不自动迁移**（检测到即删除 + 全量重建），损坏/截断库自动删除重建。引擎保留只读自检 `-dump <dir>`（独立 exe/调试用；**L4 已不再使用**，改经查询工具面探测）。详见 §4.3。**（2026-11-04 核对）**
-- ✅ **调用图（caller/callee）已落地**：引擎 **12 工具 = 4 管理 + 8 查询**（含 `codegraph_callers` / `codegraph_callees`）；插件注册 8 个查询（hot）+ vfts 1 个。`Symbol.Calls` + `Index.byCall` 反向索引；7 语言 AST 调用提取（口径与限制见 §3.1/§4.2）。**已知限制**：名字级启发式（无类型/重载/接收者解析、不区分跨包同名）、仅直接调用、动态派发与未索引符号不参与。
+- ✅ **调用图（caller/callee）已落地**：引擎 **12 工具 = 4 管理（其中 `codegraph_status` 对 LLM 可见）+ 8 查询**（含 `codegraph_callers` / `codegraph_callees`）；插件注册 9 个查询（hot，含 status）+ vfts 1 个。`Symbol.Calls` + `Index.byCall` 反向索引；7 语言 AST 调用提取（口径与限制见 §3.1/§4.2）。**已知限制**：名字级启发式（无类型/重载/接收者解析、不区分跨包同名）、仅直接调用、动态派发与未索引符号不参与。
 - ✅ **多 workdir 已落地（进程内）**：索引状态按 workdir 独立（进程内 `wsReg` 复用 Workspace，`server/graph.go:149-199`），**非子进程**；**无 `codegraph.status` 键**（已退场）。工具面/工具名/schema 未变，执行按 `_meta.chonkpilot.work_dir` / `context.instance_id` 路由。**工具面差异注册留待 v2**。**（2026-11-04 核对）**
 - ⚠️ 引擎侧 `Configure` 的 `enabled` 仅记录，**真正门控在插件配置页/重建调度**（文档需以此为准）。
 - ⚠️ **索引进度推送与失败重试未实现**：插件**不回写** `codegraph.status`，无 `pushStatusPhase` / `startProgressPoll` / 500ms 轮询，也无 `callWithRetry` / `RetryAttempts` / `RetryBackoff`；状态经 `engine-status` / `badge` 现取。**（2026-11-04 核对）**

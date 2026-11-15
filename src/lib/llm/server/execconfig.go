@@ -130,15 +130,17 @@ var prjExecConfigKeys = map[string]bool{
 	"chromePath":      true,
 }
 
-// toolAsyncUserConfigKey 是**工具级异步配置**的 usr 键（64-配置项一览 §3）：值 = 结构化 JSON
+// toolAsyncUserConfigKey 是**工具配置**的 usr 键（64-配置项一览 §3）：值 = 结构化 JSON
 // 对象字符串（persist 自由键通道，与 recent_dirs 同形态），形状 =
-// `{"<工具暴露名>": {"mode": "always|never|auto|manual", "threshold": 30, "hard_timeout": 300,
-// "cancel_on_timeout": 30, "touch_files": true}}`。
+// `{"<工具暴露名>": {"mode": "sync|async|auto|manual", "threshold": 30, "hard_timeout": 300,
+// "touch_files": true}}`。
 // key = tools/list 暴露名（P0a 2026-10-29 起内置 self 节点 = 契约名，历史 `self_<契约名>` 键仍兼容；
 // 第三方 = <节点名>_<原名>，天然消歧）；
-// threshold（秒，可选，auto/manual 档的超时转后台点）、hard_timeout（秒，可选，executor 执行
-// 硬杀上限）、cancel_on_timeout（秒，可选，>0 = 到超时点自动取消；gateway 消费）、
-// touch_files（bool，可选，是否涉及文件变动）。未配置的工具 = 维持契约现值；「恢复默认」= 删该工具键项。
+// threshold（秒，可选，**仅 auto/manual**：到点自动转后台 / 交用户裁决；sync/async 不写）、
+// hard_timeout（秒，可选，执行硬上限；**仅 >0 写库/生效**，<=0 = 不处理）、
+// touch_files（bool，可选，是否涉及文件变动；与契约缺省一致时不写）。
+// 未配置的工具 = 维持契约现值；「恢复默认」= 删该工具键项。
+// 旧字段 on_timeout / cancel_on_timeout 已退役（2026-11-14 四模式重构）→ 读入忽略、不再写。
 const toolAsyncUserConfigKey = "tool_async"
 
 // applyToolAsync 解析 usr `tool_async` 值并写入内嵌 mcp-server 覆盖表（Config.SetToolAsync）。
@@ -169,9 +171,11 @@ func (s *Server) applyToolAsync(raw string) {
 	s.reloadAppContracts()
 }
 
-// toGatewayAsyncOverrides 把 mcp-server 归一后的工具级异步覆盖转为 gateway 自有类型（RB-2：
+// toGatewayAsyncOverrides 把 mcp-server 归一后的工具配置覆盖转为 gateway 自有类型（RB-2：
 // gateway lib 不依赖 chonkpilot-mcp-server 包）。携带 gateway 面消费的 mode / threshold /
-// touch_files / cancel_on_timeout（hard_timeout 属执行硬上限，仅 executor 消费、不透出 → 不携带）。
+// hard_timeout / touch_files：
+//   - hard_timeout 在 gateway 侧用于**计时取消**（不再透出 `_meta`，直接从覆盖表取）；
+//   - 旧字段 on_timeout / cancel_on_timeout 已退役（四模式重构）→ 不再转换。
 func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]mcpgateway.ToolAsyncOverride {
 	if len(in) == 0 {
 		return nil
@@ -180,9 +184,8 @@ func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]m
 	for k, v := range in {
 		out[k] = mcpgateway.ToolAsyncOverride{
 			Mode: v.Mode, Threshold: v.Threshold, ThresholdSet: v.ThresholdSet,
-			OnTimeout: v.OnTimeout, OnTimeoutSet: v.OnTimeoutSet,
+			HardTimeout: v.HardTimeout, HardTimeoutSet: v.HardTimeoutSet,
 			TouchFiles: v.TouchFiles, TouchFilesSet: v.TouchFilesSet,
-			CancelOnTimeout: v.CancelOnTimeout, CancelOnTimeoutSet: v.CancelOnTimeoutSet,
 		}
 	}
 	return out

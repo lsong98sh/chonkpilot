@@ -13,6 +13,7 @@
           <component
             v-if="tab.kind !== 'file'"
             :is="specialComponent(tab.kind)"
+            :key="tab.kind === 'settings-llm' ? `${tab.key}:${tab.focusNonce || 0}` : tab.key"
             class="special-tab"
             v-bind="specialProps(tab)"
           />
@@ -325,6 +326,10 @@ function specialProps(tab) {
   if (tab.kind === 'settings-project') {
     return { innerTab: tab.innerTab || '', innerTabNonce: tab.innerTabNonce || 0 }
   }
+  if (tab.kind === 'settings-llm') {
+    // 聚焦请求（可选）：SettingsLLMPage 加载后按 provider 名直接打开编辑框。
+    return { focusLlm: tab.focusLlm || '', focusNonce: tab.focusNonce || 0 }
+  }
   const pg = pluginPageKeyOf(tab.kind)
   if (pg) {
     // entry / title 由 PluginPageGate 内部解析（视图就绪才挂载，G-107）；此处只传定位键。
@@ -354,7 +359,7 @@ function specialTitle(kind) {
   }
 }
 
-function openSpecialTab(kind, title, innerTab) {
+function openSpecialTab(kind, title, innerTab, focusLlm) {
   let tab = findTab(t => t.kind === kind)
   if (tab) {
     setActiveKey(tab.key)
@@ -362,6 +367,12 @@ function openSpecialTab(kind, title, innerTab) {
     if (innerTab) {
       tab.innerTab = innerTab
       tab.innerTabNonce = (tab.innerTabNonce || 0) + 1
+    }
+    // settings-llm 的可选聚焦目标（provider 名）：同样用 nonce 触发子组件重聚焦
+    // （SettingsLLMPage 以 key 含 nonce 的方式重挂载 → 加载后打开该 LLM 的编辑框）。
+    if (kind === 'settings-llm' && focusLlm) {
+      tab.focusLlm = focusLlm
+      tab.focusNonce = (tab.focusNonce || 0) + 1
     }
     return
   }
@@ -374,6 +385,10 @@ function openSpecialTab(kind, title, innerTab) {
   if (innerTab) {
     tab.innerTab = innerTab
     tab.innerTabNonce = 1
+  }
+  if (kind === 'settings-llm' && focusLlm) {
+    tab.focusLlm = focusLlm
+    tab.focusNonce = 1
   }
   tabs.value.push(tab)
   setActiveKey(tab.key)
@@ -560,7 +575,7 @@ function handleTabOpen(event) {
     openSpecialTab(`plugin-page:${event.plugin}:${event.page}`, event.title, null)
     return
   }
-  openSpecialTab(kind, event.title, event.tab)
+  openSpecialTab(kind, event.title, event.tab, event.llm)
 }
 
 function closeTab(key) {

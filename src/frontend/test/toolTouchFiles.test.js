@@ -59,6 +59,13 @@ test('① defaultTouchFiles：self 内置仅白名单涉及；dir 节点/第三�
   assert.equal(defaultTouchFiles('self_file_read', { alias: 'self' }), false)
 })
 
+test('① defaultTouchFiles：契约 `_meta.touch_files` 优先于来源启发式', () => {
+  assert.equal(defaultTouchFiles('self_file_read', SELF, { touch_files: true }), true, '契约 true 覆盖「不涉及」缺省')
+  assert.equal(defaultTouchFiles('self_filesys_run', SELF, { touch_files: false }), false, '契约 false 覆盖「涉及」缺省')
+  assert.equal(defaultTouchFiles('github_x', THIRD, { touch_files: false }), false, '第三方亦可由契约声明不涉及')
+  assert.equal(defaultTouchFiles('self_file_read', SELF, {}), false, '无契约声明 → 回落来源启发式')
+})
+
 test('① effectiveTouchFiles / checkpointEnabled：显式配置优先于缺省', () => {
   assert.equal(effectiveTouchFiles({ mode: 'never' }, 'self_file_read', SELF), false, '未配 touch_files → 缺省')
   assert.equal(effectiveTouchFiles({ touch_files: true }, 'self_file_read', SELF), true, '显式 true 覆盖缺省')
@@ -112,16 +119,16 @@ test('② 页面：buildEntry 仅在与缺省不一致时写 touch_files；行�
   const src = read(PAGE)
   const be = src.match(/function buildEntry\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)
   assert.ok(be, '未找到 buildEntry')
-  assert.match(be[0], /touchFilesOverride\(row\.touch, row\.name, row\.server\)/, '须用 touchFilesOverride 判定是否写库')
+  assert.match(be[0], /touchFilesOverride\(row\.touch, row\.name, row\.server, row\.meta\)/, '须用 touchFilesOverride 判定是否写库（含契约 _meta）')
   assert.match(be[0], /if \(tf !== undefined\) e\.touch_files = tf/, '仅偏离缺省时写入 touch_files')
   // 待保存态与已落库态比较须含 touch_files（否则改开关不触发 dirty）
   const canon = src.match(/function canon\s*\([^)]*\)\s*\{[\s\S]*?\n\}/)
   assert.ok(canon, '未找到 canon')
   assert.match(canon[0], /touch_files: e\.touch_files/, 'dirty 比较须含 touch_files')
   // 行初始化 + 恢复默认回落缺省
-  assert.match(src, /touch: defaultTouchFiles\(tl\.name, srv\)/, '行初始化须给 touch 缺省值')
-  assert.match(src, /row\.touch = defaultTouchFiles\(row\.name, row\.server\)/, '恢复默认须回落缺省')
-  assert.match(src, /row\.touch = effectiveTouchFiles\(u, row\.name, row\.server\)/, '回填须用生效值')
+  assert.match(src, /touch: defaultTouchFiles\(tl\.name, srv, meta\)/, '行初始化须给 touch 缺省值（契约 _meta 优先）')
+  assert.match(src, /row\.touch = row\.touchDefault/, '恢复默认须回落缺省')
+  assert.match(src, /row\.touch = effectiveTouchFiles\(u, row\.name, row\.server, row\.meta\)/, '回填须用生效值（契约 _meta 优先）')
 })
 
 // ═══════════════════════════════════════════════════════════════

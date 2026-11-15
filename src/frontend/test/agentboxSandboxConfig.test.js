@@ -1,14 +1,15 @@
 /**
  * agentbox 沙箱「配置面」接线守卫（[42 §2 (104)/(109)]）
  *
- * 覆盖三条硬要求（2026-09-26 起 sandbox 编辑入口收敛到 EditMCPDialog「运行信息」页签）：
- *   ① MCP 编辑弹窗「运行信息」页签「沙箱」开关 → 保存写 usr `mcps[].sandbox`（三态，未设 = 不隔离）；
+ * 覆盖三条硬要求（2026-11-14 起沙箱开关来源收敛到「设置 → 工具沙箱」页 usr `tool_sandbox`）：
+ *   ① MCP 编辑弹窗**不再提供沙箱 Switch**、保存也不再写 usr `mcps[].sandbox`（旧字段仅由
+ *      gateway 读取时迁移）；原位只留「请到工具沙箱页按服务器名配置」提示；
  *   ② 页签「工具沙箱配置」→ 按 **executor 类别**（core/desktop/browser）写 usr `tool_sandbox`
  *      （未设 = 不隔离）；拨动只改本地待保存态，点【保存】才落库，无改动时保存按钮禁用；
- *   ③ **仅 stdio 可操作**：http/sse（及缺省 url 推断为 http）控件禁用 + i18n 原因。
+ *   ③ 对话框仅保留「按实例隔离」（isolate）三态开关；http/sse 的 stdio-only 判定已随沙箱开关移除。
  *
  * 前端暂无组件级测试运行器（`npm test` = node:test 直跑，见 package.json）→ 用**源码守卫**
- * 锁定接线契约，防回归到「改了 UI 但没写对配置键」或「http/sse 项可误勾」。
+ * 锁定接线契约，防回归到「改了 UI 但没写对配置键」或「沙箱开关又被塞回对话框」。
  *
  * 注：本文件放在 src 之外（frontend/test/），以免 node 内置模块导入进入 tsconfig 对 src 下
  * js/vue 的类型检查范围。
@@ -24,32 +25,34 @@ const here = dirname(fileURLToPath(import.meta.url))
 const srcDir = join(here, '..', 'src')
 const readSrc = (rel) => readFileSync(resolveSrc(rel), 'utf8')
 
-test('MCP 编辑弹窗：运行信息页签 sandbox Switch + 三态 + 保存写 mcps[].sandbox', () => {
+test('MCP 编辑弹窗：沙箱 Switch 已移除，不再写 mcps[].sandbox（旧字段仅读取迁移）', () => {
   const vue = readSrc('views/config/EditMCPDialog.vue')
-  // Switch 绑定沙箱三态开关（未显式拨动 = off 展示；拨动才写库）
-  assert.match(vue, /<Switch\s+v-model="sandboxToggle"/, '缺 sandbox 三态 Switch')
-  // 三态：显式记录 + 值；保存时未显式拨动则删键
-  assert.match(vue, /const sandboxExplicit = ref\(/, '缺 sandboxExplicit 三态标记')
-  assert.match(vue, /if \(sandboxExplicit\.value\) localData\.sandbox = !!sandboxValue\.value/,
-    'handleSave 须在显式拨动时写 localData.sandbox')
-  assert.match(vue, /else delete localData\.sandbox/, '未拨动须删键（缺键 = 未设置）')
+  // 三态开关整体退场（含显式标记 / 值 / computed 开关）
+  assert.doesNotMatch(vue, /sandboxToggle|sandboxExplicit|sandboxValue/, '对话框不应再有 sandbox 三态开关')
+  // 保存逻辑不得再写 / 删该键（旧配置值原样透传，供 gateway 读取时迁移）
+  assert.doesNotMatch(vue, /localData\.sandbox\s*=/, 'handleSave 不应再写 localData.sandbox')
+  assert.doesNotMatch(vue, /else delete localData\.sandbox/, 'handleSave 不应再删该键')
+  // 原位提示：开关入口在「设置 → 工具沙箱」按服务器名配置（附说明 tooltip）
+  assert.match(vue, /config\.mcp\.sandboxMovedHint/, '缺「沙箱开关已移至工具沙箱页」提示')
+  assert.match(vue, /config\.mcp\.sandboxMovedTip/, '缺说明 tooltip（i18n）')
   // 落盘通道（2026-10-01 起）= **mcp 域四级文件化**（由列表页 saveOne 承担，不再整表替换 usr mcps）
   assert.match(readSrc('views/config/SettingsMCPPage.vue'),
     /saveMcpServer\(/, '落盘通道须为 mcp 域（四级文件化配置）')
 })
 
-test('MCP 编辑弹窗：仅 stdio 可操作，http/sse 禁用并给 i18n 原因', () => {
+test('MCP 编辑弹窗：仅保留「按实例隔离」三态；沙箱可操作性判定已移除', () => {
   const vue = readSrc('views/config/EditMCPDialog.vue')
-  // 传输归一：显式 transport 优先；缺省/auto 有 url → http，否则 stdio（与 gateway TransportName 一致）
-  const tn = vue.match(/const sandboxTransportName = computed\([\s\S]*?\n\}\)/)
-  assert.ok(tn, '未找到 sandboxTransportName')
-  assert.match(tn[0], /\(localData\.url \|\| ''\)\.trim\(\) \? 'http' : 'stdio'/, '缺省须按 url 推断 http/stdio')
-  // 可操作判据 = stdio + 控件禁用
-  assert.match(vue, /const sandboxApplicable = computed\(\(\) => sandboxTransportName\.value === 'stdio'\)/,
-    'sandboxApplicable 须仅 stdio 为真')
-  assert.match(vue, /:disabled="!sandboxApplicable"/, 'http/sse 须禁用 Switch')
-  // 禁用原因 tooltip（i18n）
-  assert.match(vue, /t\('config\.mcp\.sandboxStdioOnly'\)/, '须给禁用原因（i18n）')
+  assert.doesNotMatch(vue, /sandboxTransportName|sandboxApplicable/, '沙箱传输判定应随开关一并移除')
+  assert.doesNotMatch(vue, /sandboxStdioOnly/, '对话框不应再引用 stdio-only 禁用原因')
+  // 按实例隔离三态保留（未拨动 = 删键 → gateway 按 transport 推断）
+  assert.match(vue, /<Switch v-model="isolateToggle" \/>/, '缺「按实例隔离」三态 Switch')
+  assert.match(vue, /if \(isolateExplicit\.value\) localData\.isolate = !!isolateValue\.value/,
+    '显式拨动须写 isolate')
+  assert.match(vue, /else delete localData\.isolate/, '未拨动须删键')
+  // 提示与 isolate 同排两列（移除开关后行仍整齐）
+  const rt = vue.slice(vue.indexOf('<template #runtime>'), vue.indexOf('<template #tools>'))
+  assert.ok(rt.indexOf('config.mcp.isolate') < rt.indexOf('config.mcp.sandboxMovedHint'),
+    '沙箱提示须紧随「按实例隔离」')
 })
 
 test('MCP 列表页：沙箱列已移除（编辑入口唯一 = 对话框运行信息页签）', () => {
@@ -110,7 +113,7 @@ test('i18n：zh-CN / en-US 双语文案齐备', () => {
   for (const loc of ['zh-CN', 'en-US']) {
     const j = JSON.parse(readSrc('locales/' + loc + '/config.json'))
     assert.ok(j.page && typeof j.page.toolSandbox === 'string' && j.page.toolSandbox.length > 0, `${loc} 缺 config.page.toolSandbox`)
-    for (const k of ['sandbox', 'sandboxHint', 'sandboxStdioOnly']) {
+    for (const k of ['sandbox', 'sandboxHint', 'sandboxStdioOnly', 'sandboxMovedHint', 'sandboxMovedTip']) {
       assert.ok(j.mcp && typeof j.mcp[k] === 'string' && j.mcp[k].length > 0, `${loc} 缺 config.mcp.${k}`)
     }
     assert.ok(j.toolSandbox && typeof j.toolSandbox === 'object', `${loc} 缺 toolSandbox 段`)

@@ -63,18 +63,18 @@ type configSuggestReq struct {
 }
 
 // configSuggestWhitelist 各 kind 允许回填的字段（§4 白名单，逐字对照设计稿）：
-//   - llm：✅ name/model/protocol/thinking/reasoningEffort/capabilities；
-//     ⚠️ baseUrl/maxContextToken/maxOutputToken/temperature/maxToolIterations；🚫 apiKey。
+//   - llm：✅ name/model/protocol/thinking/reasoningEffort/capabilities/extraParams；
+//     ⚠️ baseUrl/maxContextToken/maxOutputToken/temperature/maxToolIterations；🚫 apiKey/headers。
 //   - mcp：✅ name/transport/description/url；⚠️ runtime/args/env/namespace/timeout；
 //     🚫 level/enabled/isolate/sandbox/hot_tools。
 //   - tool：✅ title/description/parameters/content；✅/⚠️ meta；⚠️ refs/delegate。
 //
-// **不在本表的字段（尤其 apiKey）一律丢弃**——模型即便输出也不回传。
+// **不在本表的字段（尤其 apiKey / headers）一律丢弃**——模型即便输出也不回传（headers 含敏感信息）。
 var configSuggestWhitelist = map[string][]string{
 	configSuggestKindLLM: {
 		"name", "model", "protocol", "baseUrl",
 		"maxContextToken", "maxOutputToken", "thinking", "reasoningEffort",
-		"capabilities", "temperature", "maxToolIterations",
+		"capabilities", "temperature", "maxToolIterations", "extraParams",
 	},
 	configSuggestKindMCP: {
 		"name", "transport", "description", "url",
@@ -230,15 +230,16 @@ func configSuggestFieldSpec(kind string) string {
 		return strings.Join([]string{
 			"- name (string): provider display name",
 			`- model (string): model id`,
-			`- protocol (string): "openai" (Chat Completions) or "responses" (Responses API)`,
+			`- protocol (string): "openai" (Chat Completions), "responses" (Responses API) or "anthropic" (Anthropic Messages API)`,
 			"- baseUrl (string): API endpoint base URL",
 			"- maxContextToken (integer): context window size in tokens",
 			"- maxOutputToken (integer): max output tokens",
 			"- thinking (boolean): enable reasoning",
-			`- reasoningEffort (string): "high" or "max"`,
+			`- reasoningEffort (string): "low", "high" or "max"`,
 			`- capabilities (array of strings): subset of ["reasoning","vision"]`,
 			"- temperature (number): 0..2",
 			"- maxToolIterations (integer): max tool-call rounds",
+			"- extraParams (object): extra request-body fields with string/number/boolean values",
 		}, "\n")
 	case configSuggestKindMCP:
 		return strings.Join([]string{

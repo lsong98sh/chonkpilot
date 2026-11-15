@@ -1,6 +1,8 @@
-// SESSION-1 阶段一/二：压缩内建（进程内、异步）的**宿主侧**单测：
-// 单飞、CAS 丢弃、超窗兜底重试一次（payload 构造 / 阈值判定 / CAS 纯函数用例已随实现搬到
-// 组件包 `src/lib/chonkpilot-session/compress_test.go`）。
+// 上下文压缩（四步策略，2026-11-14）的宿主侧单测：
+//   - 2.1 → 2.2 简化的阈值切换（当前轮不得被简化）；
+//   - 2.2 → 2.3 同步压缩（摘要落快照 + Meta 标识 + tc.hist 替换）；
+//   - 2.4 压缩后仍超阈值 / 无历史轮 → 明确错误；
+//   - 厂商超窗兜底仍可同步压缩并重试一次。
 package server
 
 import (
@@ -10,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,7 +19,6 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	chat "github.com/lsong98sh/chonkpilot-agent/chat"
 	"github.com/lsong98sh/chonkpilot-agent/session"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestIsContextOverflow：超窗错误识别（厂商文案差异大，按关键词）。
@@ -40,185 +40,202 @@ func TestIsContextOverflow(t *testing.T) {
 	}
 }
 
-// slowLLMServer 慢速 mock（400ms）：用于单飞并发断言（首个压缩在飞时第二个必须被拒）。
-func slowLLMServer() *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(400 * time.Millisecond)
-		var body struct {
-			Messages []ChatMsg `json:"messages"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
+// summaryLLMServer 返回固定摘要。
+func summaryLLMServer(summary string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		llmSSE(w, []string{
-			sseChunk(map[string]any{"content": "摘要内容"}, ""),
+			sseChunk(map[string]any{"content": summary}, ""),
 			sseChunk(map[string]any{}, "stop"),
 		})
 	}))
 }
 
-// TestCompressCommitSingleFlightAndCAS：端到端（真实快照）——
-// 压缩写入 `[system 摘要] + 保留段`、`snapshot_turn` 不变；同会话第二个任务被单飞拒绝；
-// CAS 基准不符时丢弃（不覆盖快照）。
-func TestCompressCommitSingleFlightAndCAS(t *testing.T) {
-	llm := slowLLMServer()
-	defer llm.Close()
-	s := newTestServer(t, llm)
-	completeTurnOne(t, s, "s-cmp", "t1", "hello compress")
-
-	tc := &turnCtx{
-		server:        s,
-		req:           StartReq{InstanceID: "ins-test", Session: "s-cmp", Turn: "t2"},
-		hist:          newSessionStore(s.bus, "ins-test").LoadMessages("t1"),
-		turnTokens:    []facade.TurnToken{{TurnID: "t1"}},
-		keepFullTurns: 1,
-		briefBudget:   1,
+// prepareSessionTurns 注册实例 + 建会话 + 建两个 turn 行（**不**起 live turn，避免 session busy）。
+func prepareSessionTurns(t *testing.T, s *Server, sess string, turns ...string) *sessionStore {
+	t.Helper()
+	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
+	}))
+	time.Sleep(50 * time.Millisecond)
+	st := newSessionStore(s.bus, "ins-test")
+	if err := st.EnsureSession(sess); err != nil {
+		t.Fatalf("EnsureSession(%s): %v", sess, err)
 	}
-	a := tc.buildAssembly()
-	if a.LastTurnID != "t1" {
-		t.Fatalf("LastTurnID = %q, want t1", a.LastTurnID)
-	}
-	if len(a.RetainedMessages()) == 0 {
-		t.Fatalf("保留段不应为空: histTurns=%d retainFrom=%d", a.HistTurns(), a.RetainFrom())
-	}
-	job := session.NewJob(a, "ins-test", "s-cmp", "t2")
-	// 真实 payload 还含**当前轮的用户输入**（组装在首个输入落库之后）；此处补齐，
-	// 使压缩输入的「末条 user」= 当前输入（历史 = t1）。
-	job.Payload = append(append([]ChatMsg{}, a.Context.Messages...),
-		ChatMsg{Role: "user", Kind: "text", Content: "q-now"})
-
-	// ① 单飞：第一个在飞（慢 LLM 400ms）→ 第二个立刻被拒。
-	if !s.startCompress(job) {
-		t.Fatal("首个压缩应启动")
-	}
-	if s.startCompress(job) {
-		t.Fatal("同会话已有任务在飞 → 第二个应被拒（单飞）")
-	}
-	waitCompressIdle(t, s, "ins-test", "s-cmp")
-
-	// ② 回填：首条 = system 摘要，snapshot_turn 不变（= 压缩基准 t1）。
-	snap := snapshotOf(t, s, "s-cmp")
-	if snap == nil {
-		t.Fatal("快照缺失")
-	}
-	if got := str(snap["snapshot_turn"]); got != "t1" {
-		t.Fatalf("snapshot_turn = %q, want t1（锚点 = LastTurnID）", got)
-	}
-	hist, _ := snap["history"].([]any)
-	if len(hist) < 2 {
-		t.Fatalf("快照应含摘要 + 保留段: %+v", snap)
-	}
-	m0, _ := hist[0].(map[string]any)
-	if str(m0["role"]) != "system" || !strings.Contains(str(m0["content"]), compressedSummaryPrefix) {
-		t.Fatalf("首条应为压缩摘要: %+v", m0)
-	}
-	if !strings.Contains(str(m0["content"]), "摘要内容") {
-		t.Fatalf("摘要正文应来自 LLM: %q", str(m0["content"]))
-	}
-	foundRetained := false
-	for _, h := range hist[1:] {
-		if m, _ := h.(map[string]any); strings.Contains(str(m["content"]), "hello compress") {
-			foundRetained = true
+	for _, turn := range turns {
+		if err := st.EnsureTurn(turn, sess); err != nil {
+			t.Fatalf("EnsureTurn(%s): %v", turn, err)
 		}
 	}
-	if !foundRetained {
-		t.Fatalf("保留段应含上轮原文: %+v", hist)
-	}
+	return st
+}
 
-	// ③ CAS：基准不符（t9）→ 丢弃，快照不变。
-	before := snapshotOf(t, s, "s-cmp")
-	casJob := session.CompressionJob{
-		InstanceID: "ins-test", SessionID: "s-cmp", Anchor: "t9",
-		Retain: []ChatMsg{{Role: "user", Kind: "text", Content: "should-not-appear"}},
+// adaptiveSetup 造一个「一轮真实历史 + 当前轮已落库提问」的 turnCtx（快照覆盖 t1）。
+// hist 同时作为 t1 消息落库（含 tool 结果，长度可控）。
+func adaptiveSetup(t *testing.T, s *Server, sess, histUser, histToolResult, current string) *turnCtx {
+	t.Helper()
+	st := prepareSessionTurns(t, s, sess, "t1", "t2")
+	// 历史轮 t1：user + assistant(tool_calls) + tool + assistant 文本。
+	appendFull(t, st, "t1", ChatMsg{Role: "user", Kind: "text", Content: histUser})
+	appendFull(t, st, "t1", ChatMsg{
+		Role: "assistant", Content: "中间说明", Reasoning: "历史思考",
+		ToolCalls: []ToolCall{{ID: "c1", Name: "core_file_read", Arguments: "{}"}},
+	})
+	appendFull(t, st, "t1", ChatMsg{Role: "tool", ToolCallID: "c1", Content: histToolResult})
+	appendFull(t, st, "t1", ChatMsg{Role: "assistant", Content: "结论一"})
+	if err := st.SetSnapshot(sess, st.LoadMessages("t1"), "t1"); err != nil {
+		t.Fatalf("SetSnapshot: %v", err)
 	}
-	res, err := session.Commit(context.Background(), s.snapshotStore(casJob), casJob, "新摘要")
-	if err != nil {
-		t.Fatalf("session.Commit: %v", err)
-	}
-	if res.Written {
-		t.Fatal("CAS 基准不符 → 应丢弃")
-	}
-	after := snapshotOf(t, s, "s-cmp")
-	if str(after["snapshot_turn"]) != str(before["snapshot_turn"]) {
-		t.Fatalf("CAS 丢弃后 snapshot_turn 不应变化: before=%v after=%v", before["snapshot_turn"], after["snapshot_turn"])
-	}
-	if strings.Contains(stringOf(after["history"]), "should-not-appear") {
-		t.Fatal("CAS 丢弃后不应写入新摘要")
+	// 当前轮 t2：已落库的 user 提问（组装从库带回）。
+	appendMsg(t, st, "t2", "user", current)
+	return &turnCtx{
+		server:          s,
+		req:             StartReq{InstanceID: "ins-test", Session: sess, Turn: "t2"},
+		hist:            st.LoadMessages("t1"),
+		turnTokens:      []facade.TurnToken{{TurnID: "t1"}},
+		compressTrigger: 1 << 30, // 先取全量口径，再按需下调
 	}
 }
 
-// TestMaybeStartCompressTriggersMemoryFlush：阈值判定通过 → 暂存压缩任务（不立即启动）；
-// 终态快照写完后 `startPendingCompress` 启动压缩，并用**既有** memory.flush 触发一次记忆沉淀
-// （payload instance_id/session/dialog_id；2026-10-31 用户定案：提取跟随压缩）；
-// 未达阈值 → 不暂存、不投递。
-func TestMaybeStartCompressTriggersMemoryFlush(t *testing.T) {
-	llm := slowLLMServer()
+// TestBuildAssemblySimplifiedStage：阈值介于全量与简化之间 → 走 2.2：
+// 历史轮的 reasoning / tool_calls / tool 结果被去掉，当前轮提问保持完整；本轮记录简化标识。
+func TestBuildAssemblySimplifiedStage(t *testing.T) {
+	llm := summaryLLMServer("不应调用摘要")
 	defer llm.Close()
 	s := newTestServer(t, llm)
-	completeTurnOne(t, s, "s-flush", "t1", "hello flush")
+	tc := adaptiveSetup(t, s, "s-simp", strings.Repeat("历史提问", 300), strings.Repeat("工具输出", 400), "当前提问")
 
-	got := make(chan map[string]any, 8)
-	sub, err := s.bus.On("memory.flush", 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var m map[string]any
-		if json.Unmarshal(v.Payload, &m) == nil {
-			select {
-			case got <- m:
-			default:
-			}
-		}
-		v.Result = map[string]any{"ok": true, "queued": true}
-		return nil
-	})
+	fullRes, err := tc.buildAssembly()
 	if err != nil {
-		t.Fatalf("订阅 memory.flush: %v", err)
+		t.Fatalf("全量组装: %v", err)
 	}
-	defer sub.Unsubscribe()
+	if fullRes.Usage.Total <= 0 {
+		t.Fatalf("全量总量应 > 0: %+v", fullRes.Usage)
+	}
+	// 阈值 = 全量 - 1 → 必然超阈值；简化态应低于全量 → 命中 2.2。
+	tc.compressTrigger = fullRes.Usage.Total - 1
+	res, err := tc.buildAssembly()
+	if err != nil {
+		t.Fatalf("简化组装不应报错: %v", err)
+	}
+	if !tc.simplified || tc.simplifiedFrom != "t1" {
+		t.Fatalf("应记录简化标识: simplified=%v from=%q", tc.simplified, tc.simplifiedFrom)
+	}
+	if res.Usage.Total > tc.compressTrigger {
+		t.Fatalf("简化后应回到阈值内: %+v trigger=%d", res.Usage, tc.compressTrigger)
+	}
+	joined := stringOf(res.Context.Messages)
+	if strings.Contains(joined, "工具输出") {
+		t.Fatalf("历史轮的 tool 结果应被去掉: %s", joined)
+	}
+	if strings.Contains(joined, "历史思考") {
+		t.Fatalf("历史 reasoning 应被去掉: %s", joined)
+	}
+	if !strings.Contains(joined, "当前提问") {
+		t.Fatalf("当前轮不得被简化: %s", joined)
+	}
+	// 2.2 不得改写快照（原文未降级）。
+	snap := snapshotOf(t, s, "s-simp")
+	if snap == nil || str(snap["snapshot_turn"]) != "t1" {
+		t.Fatalf("简化不应改写快照: %+v", snap)
+	}
+}
 
+// TestBuildAssemblyCompressStage：简化也不达标 → 2.3 同步压缩：
+// 摘要落快照（`[system 摘要]`、snapshot_turn = 最后历史轮、Meta 带 compress 标识）、
+// 本轮历史替换为摘要，组装结果 = 摘要 + 当前轮。
+func TestBuildAssemblyCompressStage(t *testing.T) {
+	llm := summaryLLMServer("压缩摘要正文")
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	tc := adaptiveSetup(t, s, "s-comp", strings.Repeat("历史提问", 300), strings.Repeat("工具输出", 400), "当前提问")
+
+	fullRes, err := tc.buildAssembly()
+	if err != nil {
+		t.Fatalf("全量组装: %v", err)
+	}
+	// 先取简化态总量：临时用全量阈值计算简化口径。
+	tc.simplified = false
+	tc.compressTrigger = 1 << 30
+	simp := tc.composer().Build(context.Background(), session.Request{
+		CurrentTurnID: tc.req.Turn, Mode: session.ModeSimplified,
+	})
+	// 阈值 = 简化 - 1 → 简化超阈值，进入压缩；压缩结果（摘要较小）应回到阈值内。
+	tc.compressTrigger = simp.Usage.Total - 1
+	res, err := tc.buildAssembly()
+	if err != nil {
+		t.Fatalf("压缩阶段不应报错: %v", err)
+	}
+	if !tc.compressed || !tc.compressAttempted {
+		t.Fatalf("应记录压缩标识: compressed=%v attempted=%v", tc.compressed, tc.compressAttempted)
+	}
+	if len(tc.hist) != 1 || !strings.HasPrefix(tc.hist[0].Content, compressedSummaryPrefix) {
+		t.Fatalf("本轮历史应替换为摘要: %+v", tc.hist)
+	}
+	if len(tc.turnTokens) != 0 {
+		t.Fatalf("压缩后 turnTokens 应清空: %+v", tc.turnTokens)
+	}
+	if !strings.Contains(stringOf(res.Context.Messages), "压缩摘要正文") ||
+		!strings.Contains(stringOf(res.Context.Messages), "当前提问") {
+		t.Fatalf("压缩后组装结果应为摘要 + 当前轮: %s", stringOf(res.Context.Messages))
+	}
+	// 快照：`[system 摘要]`、snapshot_turn = t1、Meta 标识。
+	snap := snapshotOf(t, s, "s-comp")
+	if snap == nil || str(snap["snapshot_turn"]) != "t1" {
+		t.Fatalf("压缩快照锚点应为 t1: %+v", snap)
+	}
+	histAny, _ := snap["history"].([]any)
+	if len(histAny) != 1 {
+		t.Fatalf("2.3 语义 = 全量压缩，不保留旧历史原文: %+v", histAny)
+	}
+	m0, _ := histAny[0].(map[string]any)
+	if str(m0["role"]) != "system" || !strings.Contains(str(m0["content"]), "压缩摘要正文") {
+		t.Fatalf("快照首条应为摘要: %+v", m0)
+	}
+	// Meta 随快照透传（不发给 LLM；门面 JSON 键为 `_meta`）。
+	if !strings.Contains(stringOf(m0["_meta"]), "compressed_from") {
+		t.Fatalf("摘要 Meta 应携带 compressed_from: %+v", m0)
+	}
+	if got := fullRes.Usage.Total; got <= 0 {
+		t.Fatalf("全量总量应 > 0: %d", got)
+	}
+}
+
+// TestBuildAssemblyCompactionError：阈值极低（压缩后仍超）→ 2.4 明确错误。
+func TestBuildAssemblyCompactionError(t *testing.T) {
+	llm := summaryLLMServer("摘要")
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	tc := adaptiveSetup(t, s, "s-err", "q1", "工具输出", "当前提问")
+	tc.compressTrigger = 1 // 固定开销本身已超阈值 → 压缩后仍超
+	_, err := tc.buildAssembly()
+	if err == nil {
+		t.Fatal("压缩后仍超阈值应报错")
+	}
+	if !strings.Contains(err.Error(), "context compaction failed") ||
+		!strings.Contains(err.Error(), "after full/simplified/compressed stages") {
+		t.Fatalf("错误文案应明确指出四步压缩失败: %v", err)
+	}
+}
+
+// TestBuildAssemblyNoHistoryError：超阈值且没有历史轮（只剩当前轮）→ 2.4 报错。
+func TestBuildAssemblyNoHistoryError(t *testing.T) {
+	llm := summaryLLMServer("摘要")
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	startTurn(t, s, "s-nohist", "t1")
+	st := newSessionStore(s.bus, "ins-test")
+	appendMsg(t, st, "t1", "user", "当前提问")
 	tc := &turnCtx{
-		server:        s,
-		req:           StartReq{InstanceID: "ins-test", Session: "s-flush", Turn: "t2"},
-		hist:          newSessionStore(s.bus, "ins-test").LoadMessages("t1"),
-		turnTokens:    []facade.TurnToken{{TurnID: "t1"}},
-		keepFullTurns: 1,
-		briefBudget:   1,
+		server:          s,
+		req:             StartReq{InstanceID: "ins-test", Session: "s-nohist", Turn: "t1"},
+		compressTrigger: 1,
 	}
-	tc.maybeStartCompress(tc.buildAssembly())
-	if !tc.compressWanted {
-		t.Fatal("达阈值应在组装时暂存压缩任务")
+	_, err := tc.buildAssembly()
+	if err == nil {
+		t.Fatal("无历史轮且超阈值应报错（不得静默截断）")
 	}
-	// 组装期不再直接启动（避免与终态写快照竞争）→ 尚无 memory.flush。
-	select {
-	case m := <-got:
-		t.Fatalf("压缩尚未启动，不应提前投递 memory.flush: %+v", m)
-	case <-time.After(200 * time.Millisecond):
-	}
-	s.startPendingCompress(tc, nil)
-	select {
-	case m := <-got:
-		if m["instance_id"] != "ins-test" || m["session"] != "s-flush" {
-			t.Fatalf("memory.flush 归属字段不符: %+v", m)
-		}
-		if dlg, _ := m["dialog_id"].(string); dlg == "" {
-			t.Fatalf("memory.flush 必带 dialog_id（61 §0.6）: %+v", m)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("阈值达成后应投递 memory.flush")
-	}
-	waitCompressIdle(t, s, "ins-test", "s-flush")
-
-	// 未达阈值（预算极大）→ 不暂存、不投递（memory.flush 与压缩同一门控）。
-	tcNo := &turnCtx{
-		server:         s,
-		req:            StartReq{InstanceID: "ins-test", Session: "s-flush", Turn: "t3"},
-		hist:           tc.hist,
-		turnTokens:     tc.turnTokens,
-		keepFullTurns:  1,
-		keepFullTokens: 1 << 30,
-	}
-	tcNo.maybeStartCompress(tcNo.buildAssembly())
-	s.startPendingCompress(tcNo, nil)
-	select {
-	case m := <-got:
-		t.Fatalf("未达阈值不应投递 memory.flush: %+v", m)
-	case <-time.After(300 * time.Millisecond):
+	if !strings.Contains(err.Error(), "context compaction failed") {
+		t.Fatalf("错误文案不符: %v", err)
 	}
 }
 
@@ -241,20 +258,22 @@ func (f *overflowOnceLLM) Step(_ context.Context, req chat.StepRequest, _ chat.S
 	return ch, nil
 }
 
-// TestEngineStepOverflowFallback：正常请求超窗 → 用同一份 payload 压缩 → 重新组装 → 重试一次。
+// TestEngineStepOverflowFallback：正常请求超窗 → 用同一压缩函数同步压缩 → 重新组装 → 重试一次。
 func TestEngineStepOverflowFallback(t *testing.T) {
-	llm := slowLLMServer()
+	llm := summaryLLMServer("超窗兜底摘要")
 	defer llm.Close()
 	s := newTestServer(t, llm)
-	completeTurnOne(t, s, "s-of", "t1", "hello overflow")
-
+	st := prepareSessionTurns(t, s, "s-of", "t1", "t2")
+	appendMsg(t, st, "t1", "user", "hello overflow")
+	appendMsg(t, st, "t1", "assistant", "answer")
+	if err := st.SetSnapshot("s-of", st.LoadMessages("t1"), "t1"); err != nil {
+		t.Fatalf("SetSnapshot: %v", err)
+	}
 	tc := &turnCtx{
-		server:        s,
-		req:           StartReq{InstanceID: "ins-test", Session: "s-of", Turn: "t2"},
-		hist:          newSessionStore(s.bus, "ins-test").LoadMessages("t1"),
-		turnTokens:    []facade.TurnToken{{TurnID: "t1"}},
-		keepFullTurns: 1,
-		briefBudget:   1,
+		server:     s,
+		req:        StartReq{InstanceID: "ins-test", Session: "s-of", Turn: "t2"},
+		hist:       st.LoadMessages("t1"),
+		turnTokens: []facade.TurnToken{{TurnID: "t1"}},
 	}
 	payload := []ChatMsg{
 		{Role: "system", Content: "系统提示词"},
@@ -283,15 +302,8 @@ func TestEngineStepOverflowFallback(t *testing.T) {
 		t.Fatalf("重试事件应原样透传: text=%q finish=%q", text.String(), finish)
 	}
 	// 重试请求 = 压缩后重新组装的上下文（含新摘要 system 段）。
-	retried := fake.reqs[1].Messages
-	foundSummary := false
-	for _, m := range retried {
-		if m.Role == "system" && strings.Contains(m.Content, compressedSummaryPrefix) {
-			foundSummary = true
-		}
-	}
-	if !foundSummary {
-		t.Fatalf("重试应使用压缩后的上下文（含摘要段）: %+v", retried)
+	if !strings.Contains(stringOf(fake.reqs[1].Messages), "超窗兜底摘要") {
+		t.Fatalf("重试应使用压缩后的上下文（含摘要段）: %+v", fake.reqs[1].Messages)
 	}
 	// 压缩已回填：snapshot_turn 仍为 t1，首条为摘要。
 	snap := snapshotOf(t, s, "s-of")
@@ -313,7 +325,7 @@ func (f *errLLM) Step(context.Context, chat.StepRequest, chat.StepOptions) (<-ch
 
 // TestEngineStepOverflowNoFallback：非超窗错误 → 不压缩、不重试，原样返回错误（主流程语义不变）。
 func TestEngineStepOverflowNoFallback(t *testing.T) {
-	llm := slowLLMServer()
+	llm := summaryLLMServer("摘要")
 	defer llm.Close()
 	s := newTestServer(t, llm)
 
@@ -333,23 +345,10 @@ func TestEngineStepOverflowNoFallback(t *testing.T) {
 	}
 }
 
-// TestCompressCommitsOnTriggeringTurnSnapshot（2026-11-07 回归）：两轮真实 turn（mock 即时应答），
-// 压缩在**终态快照写完后**启动，锚点 = 触发轮 → 快照必含摘要（不再被本轮终态覆盖 / CAS 丢弃），
-// 且会话原轮次消息仍在（压缩只变换快照，不删会话消息）。
-func TestCompressCommitsOnTriggeringTurnSnapshot(t *testing.T) {
-	var total, summaries atomic.Int64
-	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		total.Add(1)
-		var body struct {
-			Messages []ChatMsg `json:"messages"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		text := lastText(body.Messages)
-		if strings.Contains(text, "对话历史摘要器") {
-			summaries.Add(1)
-		}
-		llmSSE(w, []string{sseChunk(map[string]any{"content": "mock-reply: " + text}, "")})
-	}))
+// TestCompressSynchronousOnTriggeringTurn（端到端）：显式低阈值 → 第二轮组装时同步压缩；
+// 终态快照 = 摘要 + 本轮消息（snapshot_turn = 本轮），且会话原轮次消息不因压缩删除。
+func TestCompressSynchronousOnTriggeringTurn(t *testing.T) {
+	llm := summaryLLMServer("端到端摘要")
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s)
@@ -357,56 +356,35 @@ func TestCompressCommitsOnTriggeringTurnSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("data.Prj: %v", err)
 	}
-	for k, v := range map[string]string{
-		"keep_full_max_turns": "1", "keep_full_max_tokens": "1", "compress_token_threshold": "1",
-	} {
-		if err := data.SetConfig(prj, k, v); err != nil {
-			t.Fatalf("SetConfig(%s): %v", k, err)
-		}
+	// 阈值极低：第二轮必然压缩（摘要很小，压缩后回到阈值内亦可；这里取固定开销以上的低值）。
+	if err := data.SetConfig(prj, "compress_trigger_tokens", "1000000000"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
 	}
-	release()
-
+	// 先按大阈值跑两轮（保证消息落库），再以低阈值跑第三轮 → 组装期同步压缩。
 	completeTurnOne(t, s, "s-term", "t1", "hello one")
 	completeTurnOne(t, s, "s-term", "t2", "hello two")
-
-	deadline := time.Now().Add(5 * time.Second)
-	var content, turn string
-	for time.Now().Before(deadline) {
-		snap := snapshotOf(t, s, "s-term")
-		if snap != nil {
-			turn = str(snap["snapshot_turn"])
-			if hist, _ := snap["history"].([]any); len(hist) > 0 {
-				if m0, _ := hist[0].(map[string]any); str(m0["role"]) == "system" &&
-					strings.HasPrefix(str(m0["content"]), compressedSummaryPrefix) {
-					content = str(m0["content"])
-					break
-				}
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
+	if err := data.SetConfig(prj, "compress_trigger_tokens", "1"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
 	}
-	if content == "" {
-		t.Fatalf("压缩快照未回填（终态后启动仍未命中）：turn=%q", turn)
+	release()
+	// 阈值 1：第三方请求（t3）组装时压缩后仍超 → 本轮 error 终态（2.4 显式报错，不静默截断）。
+	startTurn(t, s, "s-term", "t3")
+	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		"instance_id": "ins-test", "session": "s-term", "turn": "t3",
+		"type": "text-user", "content": "hello three",
+	}))
+	evs := collectTurn(t, s.bus, "t3", 10*time.Second)
+	done := lastComplete(evs)
+	if done == nil {
+		t.Fatalf("t3 应有终态: %+v", evs)
 	}
-	if turn != "t2" {
-		t.Fatalf("snapshot_turn = %q, want t2（锚点 = 触发轮）", turn)
+	if str(done["status"]) != "error" {
+		t.Fatalf("压缩后仍超阈值应 error 终态: %+v", done)
 	}
-	// 压缩回填必须保留**刚落库的本轮消息**（终态后启动 → 本轮已入快照，不能只写历史摘要）。
-	snapNow := snapshotOf(t, s, "s-term")
-	if !strings.Contains(stringOf(snapNow["history"]), "hello two") {
-		t.Fatalf("压缩快照丢失本轮消息：%s", stringOf(snapNow["history"]))
+	if !strings.Contains(str(done["message"]), "context compaction failed") {
+		t.Fatalf("错误应到达轮终态: %+v", done)
 	}
-	if !strings.Contains(content, "对话历史摘要器") {
-		t.Fatalf("摘要正文应来自摘要请求：%q", content)
-	}
-	// 每轮只发一次主请求 + 本轮压缩只发一次摘要请求（A/B-4 的 nreq = 轮数+1 口径）。
-	if got, want := total.Load(), int64(3); got != want {
-		t.Fatalf("LLM 请求数 = %d, want %d（2 轮 + 1 摘要）", got, want)
-	}
-	if got := summaries.Load(); got != 1 {
-		t.Fatalf("摘要请求数 = %d, want 1（终态后启动不得重复起压缩）", got)
-	}
-	// 原轮次消息未丢（会话消息表不因压缩删除）。
+	// 原轮次消息未丢（压缩只变换快照）。
 	st := s.newSessionStore("ins-test")
 	joined := stringOf(st.LoadMessages("t1")) + stringOf(st.LoadMessages("t2"))
 	for _, want := range []string{"hello one", "hello two"} {
@@ -437,24 +415,7 @@ func completeTurnOne(t *testing.T, s *Server, session, turn, text string) {
 	}
 }
 
-// waitCompressIdle 等待同会话压缩任务结束（单飞闸门释放）。
-func waitCompressIdle(t *testing.T, s *Server, instanceID, session string) {
-	t.Helper()
-	key := instKey(instanceID, session)
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		s.compressMu.Lock()
-		running := s.compressRunning[key]
-		s.compressMu.Unlock()
-		if !running {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("压缩任务未在 10s 内结束")
-}
-
-// stringOf 取快照 history 的 JSON 文本（断言用）。
+// stringOf 取消息 / 快照 history 的 JSON 文本（断言用）。
 func stringOf(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)

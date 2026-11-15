@@ -52,7 +52,8 @@ func startMovedDomainPlugin(t *testing.T, bus mq.Bus, s *llmserver.Server) {
 				InstanceID string `json:"instance_id"`
 				Turn       string `json:"turn"`
 				ToolCallID string `json:"tool_call_id"`
-				Purpose    string `json:"purpose"`
+				DisplayName string `json:"display_name"`
+				Purpose     string `json:"purpose"` // 旧键保留（仅测试适配器兼容）
 			} `json:"context"`
 		}
 		if err := json.Unmarshal(v.Payload, &msg); err != nil {
@@ -63,7 +64,14 @@ func startMovedDomainPlugin(t *testing.T, bus mq.Bus, s *llmserver.Server) {
 			in["instance_id"] = msg.Context.InstanceID
 			in["turn"] = msg.Context.Turn
 			in["tool_call_id"] = msg.Context.ToolCallID
-			in["purpose"] = msg.Context.Purpose
+			// C1 起 gateway 的上下文键 = display_name（旧 purpose 已退役）；测试适配器同时
+			// 透传两键，兼容 ask_user 等仍按 purpose 读取的插件能力。
+			display := msg.Context.DisplayName
+			if display == "" {
+				display = msg.Context.Purpose
+			}
+			in["display_name"] = display
+			in["purpose"] = display
 		}
 		method := map[string]string{
 			"ask_user":       "plugin/v1/ask.user",

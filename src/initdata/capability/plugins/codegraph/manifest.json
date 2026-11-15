@@ -19,6 +19,7 @@
     "mode": "http",
     "namespace": "-",
     "hot_tools": [
+      "codegraph_status",
       "codegraph_symbol_search",
       "codegraph_get_symbol_info",
       "codegraph_callers",

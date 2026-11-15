@@ -166,9 +166,9 @@ type Server struct {
 	// （见 stopGroupRunsForInstance）。独立小锁（不含 IO，避免与 s.mu 锁序纠缠）。
 	groupMu   sync.Mutex
 	groupRuns map[string]*groupSched
-	tasks     *taskManager // 任务编排（任务树/级联/批量/状态事件，§6.6）
+	tasks     *taskManager        // 任务编排（任务树/级联/批量/状态事件，§6.6）
 	cleaned   map[string]bool     // instanceID → 已做过遗留 running 清理
-	dirNodes         map[string][]string // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
+	dirNodes  map[string][]string // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
 	// dirSigs 是 dirNodes 的**契约根签名**（instanceID → 节点名 → 根签名）：热重扫据此只重建
 	// 真正变化的节点（根集合/契约文件变化），未变化节点不动 → 工具面无「先注销再注册」窗口。
 	// 与 dirNodes 同锁（s.mu）。
@@ -219,13 +219,6 @@ type Server struct {
 	// 即与 router 的 provider 对账同源、同一时刻；快照未命中时回落直读（并顺带自愈快照）。
 	bridgeMu      sync.RWMutex
 	bridgeTargets map[string]BridgeTarget
-
-	// 压缩内建（SESSION-1 阶段一）：同会话**串行 + 覆盖合并队列**（键 = instKey(instance, session)）。
-	// 一个会话同一时刻只跑一个压缩任务；在飞期间的再次触发进 compressPending（只留最新），
-	// 由该会话 worker 依次消费；成功 / 失败均释放（失败不影响主流程）。
-	compressMu      sync.Mutex
-	compressRunning map[string]bool
-	compressPending map[string]compressJob
 
 	// 后台任务完成通知（§5.3 四段链路，见 notifyqueue.go）：
 	//   - notifyQueues：per {instance, session} FIFO 挂账（会话忙碌时只入队，轮末冲刷）；

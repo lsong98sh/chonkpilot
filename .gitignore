@@ -42,6 +42,9 @@ node_modules/
 # 配置截图（`_cfg_ui_shots/*.png`）、临时工作区（`_prev_ws/`）、探针目录（`_*probe*/`）。
 # 用例源码 `*.py` 位于 systest 根，不在此规则内。
 /src/test/chonkpilot-gui/systest/_*/
+# 场景化 E2E（run_e2e.py）：运行工作区/独立 HOME 与报告均为产物（报告供排查，不入库）
+/src/test/chonkpilot-gui/systest/e2e_runs/
+/src/test/chonkpilot-gui/systest/e2e_reports/
 # 共享工作区 `systest/ws` 内的运行产物（其输入夹具 sample.* / f01~f11.txt 仍入库）
 /src/test/chonkpilot-gui/systest/ws/g11-batch.json
 /src/test/**/workspace/

@@ -32,6 +32,8 @@ const (
 	MaxLLMOutTok  = 1000000 // maxOutputToken 上限
 	MaxLLMCtxTok  = 1000000000
 	MaxLLMIter    = 2000
+	// maxLLMExtraKeyChars 是 LLM 附加参数 / 请求头的键名上限（值上限复用 MaxKeyChars=512）。
+	maxLLMExtraKeyChars = 128
 	// MaxLLMCapability 是 LLM 能力档位上限（D-65：双维度各 0~5，一位小数 = 步进 0.1；0 = 不具备）。
 	MaxLLMCapability = 5.0
 )
@@ -348,6 +350,88 @@ func validateLLMItems(items []any) error {
 				return fmt.Errorf("llms[%d].capabilities: 须为字符串数组", i)
 			}
 		}
+		// 附加参数（请求体额外字段）：JSON 对象，值仅允许字符串 / 数字 / 布尔（null、数组、
+		// 嵌套对象一律拒绝——避免把任意深结构透传到上游请求体）。
+		if v, exists := item["extraParams"]; exists && v != nil {
+			if err := validateLLMExtraParams(fmt.Sprintf("llms[%d].extraParams", i), v); err != nil {
+				return err
+			}
+		}
+		// 请求头：字符串到字符串的对象（键 ≤128、值 ≤512 字符）。
+		if v, exists := item["headers"]; exists && v != nil {
+			if err := validateLLMHeaders(fmt.Sprintf("llms[%d].headers", i), v); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateLLMExtraParams 校验 `llms[].extraParams`：必须是对象；键非空且 ≤128 字符；
+// 值仅允许 string / number / bool（string ≤512 字符）。
+func validateLLMExtraParams(field string, v any) error {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s: 须为对象", field)
+	}
+	for rawKey, val := range obj {
+		key := strings.TrimSpace(rawKey)
+		if key == "" {
+			return fmt.Errorf("%s: 键名不能为空", field)
+		}
+		if utf8.RuneCountInString(key) > maxLLMExtraKeyChars {
+			return fmt.Errorf("%s.%s: 键名超长（上限 %d 字符）", field, key, maxLLMExtraKeyChars)
+		}
+		switch x := val.(type) {
+		case string:
+			if utf8.RuneCountInString(x) > MaxKeyChars {
+				return fmt.Errorf("%s.%s: 值超长（上限 %d 字符）", field, key, MaxKeyChars)
+			}
+		case float64, float32, int, int64, json.Number, bool:
+			// 标量数字 / 布尔：允许
+		default:
+			return fmt.Errorf("%s.%s: 值须为字符串 / 数字 / 布尔（不支持 null / 数组 / 嵌套对象）", field, key)
+		}
+	}
+	return nil
+}
+
+// validateLLMHeaders 校验 `llms[].headers`：字符串到字符串的对象；键非空且 ≤128 字符，
+// 值 ≤512 字符。
+func validateLLMHeaders(field string, v any) error {
+	switch m := v.(type) {
+	case map[string]any:
+		for rawKey, val := range m {
+			key := strings.TrimSpace(rawKey)
+			if key == "" {
+				return fmt.Errorf("%s: 键名不能为空", field)
+			}
+			if utf8.RuneCountInString(key) > maxLLMExtraKeyChars {
+				return fmt.Errorf("%s.%s: 键名超长（上限 %d 字符）", field, key, maxLLMExtraKeyChars)
+			}
+			s, ok := val.(string)
+			if !ok {
+				return fmt.Errorf("%s.%s: 值须为字符串", field, key)
+			}
+			if utf8.RuneCountInString(s) > MaxKeyChars {
+				return fmt.Errorf("%s.%s: 值超长（上限 %d 字符）", field, key, MaxKeyChars)
+			}
+		}
+	case map[string]string: // 内部直传（非总线 JSON）
+		for rawKey, val := range m {
+			key := strings.TrimSpace(rawKey)
+			if key == "" {
+				return fmt.Errorf("%s: 键名不能为空", field)
+			}
+			if utf8.RuneCountInString(key) > maxLLMExtraKeyChars {
+				return fmt.Errorf("%s.%s: 键名超长（上限 %d 字符）", field, key, maxLLMExtraKeyChars)
+			}
+			if utf8.RuneCountInString(val) > MaxKeyChars {
+				return fmt.Errorf("%s.%s: 值超长（上限 %d 字符）", field, key, MaxKeyChars)
+			}
+		}
+	default:
+		return fmt.Errorf("%s: 须为字符串到字符串的对象", field)
 	}
 	return nil
 }
@@ -414,8 +498,14 @@ func ValidateConfigKV(domain string, entries map[string]string) error {
 				return err
 			}
 		case "keep_full_max_turns", "keep_full_max_tokens", "compress_token_threshold":
+			// 旧三段键（2026-11-14 起组装侧不再读取）：保留校验以兼容旧配置写入，不再影响行为。
 			if n, ok := parseIntString(val); !ok || n < 0 {
 				return fmt.Errorf("%s: 必须为非负整数", key)
+			}
+		case "compress_trigger_tokens":
+			// 四步压缩策略的触发阈值：0 = 自动（最大上下文的 70%）；>0 = 显式 token 阈值。
+			if n, ok := parseIntString(val); !ok || n < 0 || n > 1000000000 {
+				return fmt.Errorf("%s: 必须为 0–1000000000 的整数", key)
 			}
 		case "pending_task_timeout_sec":
 			if n, ok := parseIntString(val); !ok || n < 1 {

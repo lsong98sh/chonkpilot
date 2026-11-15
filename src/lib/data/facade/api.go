@@ -254,8 +254,11 @@ type SessionAPI interface {
 	// SessionFork 派生对话（SESSION-COMP-1 P4）：full = 拷库 + id 重映射；context = 主会话 + 快照。
 	SessionFork(req SessionForkRequest) (SessionForkResponse, error)
 
-	// SessionActiveSet 写「当前活动会话」。
+	// SessionActiveSet 写「当前活动会话」（同时把该会话所属对话的未读通知标记为已读）。
 	SessionActiveSet(req SessionActiveSetRequest) (SessionActiveSetResponse, error)
+
+	// SessionNotifyUnreadSet 写任务完成通知的未读水位（append-notice 置未读 / 激活会话置已读）。
+	SessionNotifyUnreadSet(req SessionNotifyUnreadSetRequest) (SessionNotifyUnreadSetResponse, error)
 
 	// SessionActiveGet 读「当前活动会话」（失效 → 回落最近活动顶层会话）。
 	SessionActiveGet(req SessionActiveGetRequest) (SessionActiveGetResponse, error)

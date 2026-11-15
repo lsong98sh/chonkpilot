@@ -238,6 +238,16 @@ func (s *Server) reconcileCapabilityNodes() int {
 		specsByInst[inst] = s.capNodeSpecs(inst, wd)
 	}
 	s.capMu.Lock()
+	// 锁内二次校验：进入本函数后实例可能已退出（exitInstance 同样持 capMu）→ 按最新实例
+	// 视图剔除，避免用旧快照把已注销的 dir 节点重新加回（dirNodes 残留）。
+	if s.im != nil {
+		for inst := range insts {
+			if _, ok := s.im.Lookup(inst); !ok {
+				delete(insts, inst)
+				delete(specsByInst, inst)
+			}
+		}
+	}
 	s.mu.Lock()
 	existing := make(map[string][]string, len(s.dirNodes))
 	oldSigs := make(map[string]map[string]string, len(s.dirSigs))

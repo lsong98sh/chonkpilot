@@ -18,43 +18,39 @@ import (
 	"sync"
 )
 
-// ToolAsyncOverride 是**单个工具**的用户级异步配置覆盖（usr 键 `tool_async` 的一个值；
-// 形状见 64-配置项一览 §3）= `{"<工具暴露名>": {"mode": "always|never|auto|manual",
-// "threshold": 30, "hard_timeout": 300}}`。
+// ToolAsyncOverride 是**单个工具**的用户级工具配置覆盖（usr 键 `tool_async` 的一个值；
+// 形状见 64-配置项一览 §3）= `{"<工具暴露名>": {"mode": "sync|async|auto|manual",
+// "threshold": 30, "hard_timeout": 300, "touch_files": true}}`。
 //
-//   - mode → 暴露 `_meta.async`（四档：always=仅异步 / never=仅同步 / auto=自动异步+超时 /
-//     manual=手动异步）；
-//   - threshold（秒）→ 暴露 `_meta.async-threshold`（auto/manual 档的超时转后台点）；
-//   - hard_timeout（秒）→ **不透出**，仅作 executor 执行硬杀上限（见 executor.go resolveExecTimeout）；
-//   - cancel_on_timeout（秒）→ **不透出**，⑤ 超时自动取消（gateway `doCall` 消费：到超时点直接取消，
-//     不等用户裁决；>0 生效、默认 0 = 不取消；用户口径 2026-10-07，见 18 §7 B1/B4）；
+//   - mode → 暴露 `_meta.async`（四档：sync=仅同步 / async=仅异步 / auto=自动异步 /
+//     manual=手动异步；旧值 never→sync / always→async 读取时别名映射）；
+//   - threshold（秒）→ 暴露 `_meta.async-threshold`（**仅 auto/manual 有意义**：到该秒数自动转后台
+//     / 交用户裁决）；
+//   - hard_timeout（秒）→ **不透出**，仅作执行硬杀上限（executor 见 executor.go resolveExecTimeout；
+//     gateway 从覆盖表直接读取用于计时取消）；**>0 才生效，<=0 等同未设置**；
 //   - touch_files（bool）→ **不透出**，供 gateway 前置打点钩子（§5.4a）判定该工具是否「涉及文件变动」
 //     （`false` = 不涉及 → `plugin-history` 直接放行、不打检查点，省 8–9 次 git 进程）。
 //
-// 取值语义（用户口径，2026-09-27 / 2026-09-28 / 2026-10-07）：
+// 取值语义（用户口径，2026-11-14 四模式重构）：
 //   - 字段**未设置**（键缺失 / `null` / 空串 / 非数字）→ 该字段不覆盖（维持契约现值/回落全局）；
 //   - `*Set` = 该字段是否被显式设置（区分 0/-1 与「未设置」；touch_files 区分 true/false 与「未设置」）；
-//   - threshold / hard_timeout 显式 **0 或 -1 = 无上限**（不设点 / 不杀，永远等，用户可取消）；
-//   - cancel_on_timeout 显式 **> 0 才生效**（0 / 负数 = 不取消）；
-//   - touch_files 未设置 → 由 gateway 按工具来源取缺省（self 内置仅 filesys_run/script_run 涉及，
-//     其余内置不涉及；dir 节点 / 第三方保守按涉及）。
+//   - threshold 显式 **0 / -1 = 不设点**（auto/manual 不进入转后台/裁决，永远等，用户可取消）；
+//   - hard_timeout 仅 **>0** 生效（到该秒数取消/终止）；0 / 负数 = 不处理（回落契约/全局）；
+//   - touch_files 未设置 → 优先读契约 `_meta.touch_files`，无声明再由 gateway 按工具来源取缺省。
 type ToolAsyncOverride struct {
-	Mode               string `json:"mode"`
-	Threshold          int    `json:"threshold"`
-	HardTimeout        int    `json:"hard_timeout"`
-	OnTimeout          string `json:"on_timeout"`
-	TouchFiles         bool   `json:"touch_files"`
-	CancelOnTimeout    int    `json:"cancel_on_timeout"`
-	ThresholdSet       bool   `json:"-"` // threshold 是否显式设置（0/-1 = 无上限）
-	HardTimeoutSet     bool   `json:"-"` // hard_timeout 是否显式设置（0/-1 = 无上限）
-	OnTimeoutSet       bool   `json:"-"` // on_timeout 是否显式设置（fail/background）
-	TouchFilesSet      bool   `json:"-"` // touch_files 是否显式设置（区分 false 与「未设置」）
-	CancelOnTimeoutSet bool   `json:"-"` // cancel_on_timeout 是否显式设置
+	Mode           string `json:"mode"`
+	Threshold      int    `json:"threshold"`
+	HardTimeout    int    `json:"hard_timeout"`
+	TouchFiles     bool   `json:"touch_files"`
+	ThresholdSet   bool   `json:"-"` // threshold 是否显式设置（0/-1 = 不设点）
+	HardTimeoutSet bool   `json:"-"` // hard_timeout 是否显式设置（仅 >0 生效）
+	TouchFilesSet  bool   `json:"-"` // touch_files 是否显式设置（区分 false 与「未设置」）
 }
 
 // UnmarshalJSON 容错解析单个覆盖项：字段缺省 / `null` / 空串 / 非数字 → 视为**未设置**
 // （不报错、不影响其它字段）；数字或数值字符串 → 采用并标记 Set。
-// 这样 `{"hard_timeout": 0}` 与 `{"hard_timeout": null}` 得以区分（前者 = 无上限）。
+// 旧字段 `on_timeout` / `cancel_on_timeout` 已退役（2026-11-14 四模式重构）→ **直接忽略**，
+// 不再影响解析（旧配置读入等价于未设置，不报错）。
 func (o *ToolAsyncOverride) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -68,15 +64,7 @@ func (o *ToolAsyncOverride) UnmarshalJSON(data []byte) error {
 	}
 	o.Threshold, o.ThresholdSet = optIntField(raw["threshold"])
 	o.HardTimeout, o.HardTimeoutSet = optIntField(raw["hard_timeout"])
-	o.CancelOnTimeout, o.CancelOnTimeoutSet = optIntField(raw["cancel_on_timeout"])
 	o.TouchFiles, o.TouchFilesSet = optBoolField(raw["touch_files"])
-	if v, ok := raw["on_timeout"]; ok {
-		var s string
-		if err := json.Unmarshal(v, &s); err == nil && strings.TrimSpace(s) != "" {
-			o.OnTimeout = strings.ToLower(strings.TrimSpace(s))
-			o.OnTimeoutSet = true
-		}
-	}
 	return nil
 }
 
@@ -124,7 +112,8 @@ func optIntField(raw json.RawMessage) (int, bool) {
 	return 0, false
 }
 
-// toolAsyncModes 是合法 mode 取值（auto/sync/async；兼容旧 always/never/manual；其它值 = 非法 → 丢字段）。
+// toolAsyncModes 是合法 mode 取值（sync/async/auto/manual 四档；兼容旧 always/never；
+// 其它值 = 非法 → 丢字段）。UI 不再写 always/never，仅保留读取别名。
 var toolAsyncModes = map[string]bool{"always": true, "never": true, "auto": true, "manual": true, "sync": true, "async": true}
 
 // Defaults 是注入 tools/call 的默认参数（server 级配置，不依赖 NATS）。
@@ -301,7 +290,7 @@ func (c *Config) toolchainVars() map[string]string {
 // chonkpilot-llm/server/server.go loadExecConfig）。传入 nil/空表 = **清空全部覆盖**
 // （恢复契约现值；前端「恢复默认」= 删该工具键项 → 覆盖表收敛为无该项）。
 // 与 SetToolchain 的「空值不覆盖」语义**不同**：本表是整体替换，删除即回落契约。
-// 归一化（非法 mode / 非正 threshold·hard_timeout / 空键）在此完成并记日志（见 normalizeToolAsync）。
+// 归一化（非法 mode / 非正 hard_timeout / 空键）在此完成并记日志（见 NormalizeToolAsync）。
 // 返回**有效覆盖表是否变化**（调用方据此决定是否触发契约重注册热生效，避免无谓抖动）。
 // 加写锁，避免与 buildTool（暴露 _meta）/ callTool（读硬上限）读取构成 data race。
 func (c *Config) SetToolAsync(raw map[string]ToolAsyncOverride) bool {
@@ -319,11 +308,11 @@ func (c *Config) SetToolAsync(raw map[string]ToolAsyncOverride) bool {
 // 不整体拒绝、不影响其它键项）：
 //   - key 去空白；空键 → 丢整项（无法定位工具）；
 //   - mode 去空白并小写；空 = 不覆盖；非法取值 → 丢 mode 字段；
-//   - threshold / hard_timeout：**显式设置即保留**（含 0 / -1 = **无上限**；`Set` 标记区分
-//     它与「未设置」）；未设置（键缺失/null/空串/非数字）→ 不覆盖该字段；
+//   - threshold：**显式设置即保留**（含 0 / -1 = **不设点**；`Set` 标记区分它与「未设置」）；
+//     未设置（键缺失/null/空串/非数字）→ 不覆盖该字段；
+//   - hard_timeout：仅 **>0** 保留（到该秒数取消/终止）；<=0 = 不处理 → 等同未设置（丢弃 Set）；
 //   - touch_files：**显式设置即保留**（true = 涉及 / false = 不涉及；`TouchFilesSet` 区分它与「未设置」）；
-//   - cancel_on_timeout：**显式设置即保留**（含 0；`CancelOnTimeoutSet` 区分它与「未设置」；仅 > 0 生效）；
-//   - 五项皆未设置 → 丢整项；结果为空 → nil（= 无覆盖，便于比较）。
+//   - 四项皆未设置 → 丢整项；结果为空 → nil（= 无覆盖，便于比较）。
 //
 // 注：配置引用的工具不存在（孤儿键）**不报错**——查表时自然不命中（调用点不校验工具面，
 // 因为第三方/目录节点工具与内嵌 mcp-server 的工具面不必一致）。
@@ -346,7 +335,7 @@ func NormalizeToolAsync(raw map[string]ToolAsyncOverride) map[string]ToolAsyncOv
 		}
 		mode := strings.ToLower(strings.TrimSpace(ov.Mode))
 		if mode != "" && !toolAsyncModes[mode] {
-			log.Printf("[mcp-server] tool_async[%s]: 非法 mode=%q（取值 always/never/auto/manual），忽略该字段", name, ov.Mode)
+			log.Printf("[mcp-server] tool_async[%s]: 非法 mode=%q（取值 sync/async/auto/manual），忽略该字段", name, ov.Mode)
 			mode = ""
 		}
 		eff := ToolAsyncOverride{Mode: mode}
@@ -354,31 +343,18 @@ func NormalizeToolAsync(raw map[string]ToolAsyncOverride) map[string]ToolAsyncOv
 			eff.Threshold = ov.Threshold
 			eff.ThresholdSet = true
 		}
-		if ov.OnTimeoutSet && ov.OnTimeout != "" {
-			switch strings.ToLower(strings.TrimSpace(ov.OnTimeout)) {
-			case "fail", "cancel":
-				eff.OnTimeout = "fail"
-				eff.OnTimeoutSet = true
-			case "background", "async", "detach":
-				eff.OnTimeout = "background"
-				eff.OnTimeoutSet = true
-			default:
-				log.Printf("[mcp-server] tool_async[%s]: 非法 on_timeout=%q（取值 fail/background），忽略该字段", name, ov.OnTimeout)
-			}
-		}
+		// 执行硬上限：仅 >0 生效；<=0 = 不处理（等同未设置，回落契约/全局）。
 		if ov.HardTimeoutSet || ov.HardTimeout != 0 {
-			eff.HardTimeout = ov.HardTimeout
-			eff.HardTimeoutSet = true
+			if ov.HardTimeout > 0 {
+				eff.HardTimeout = ov.HardTimeout
+				eff.HardTimeoutSet = true
+			}
 		}
 		if ov.TouchFilesSet || ov.TouchFiles {
 			eff.TouchFiles = ov.TouchFiles
 			eff.TouchFilesSet = true
 		}
-		if ov.CancelOnTimeoutSet || ov.CancelOnTimeout != 0 {
-			eff.CancelOnTimeout = ov.CancelOnTimeout
-			eff.CancelOnTimeoutSet = true
-		}
-		if eff.Mode == "" && !eff.ThresholdSet && !eff.HardTimeoutSet && !eff.OnTimeoutSet && !eff.TouchFilesSet && !eff.CancelOnTimeoutSet {
+		if eff.Mode == "" && !eff.ThresholdSet && !eff.HardTimeoutSet && !eff.TouchFilesSet {
 			continue // 无有效覆盖 → 不登记（等价未配置）
 		}
 		out[name] = eff

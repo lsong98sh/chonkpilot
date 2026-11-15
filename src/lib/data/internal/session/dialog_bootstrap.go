@@ -113,11 +113,12 @@ func (s *Service) sessionListDialogs(prj *data.DB, includeCrontab bool) ([]facad
 			}
 		}
 		out = append(out, facade.Session{
-			ID:        mainID,
-			DialogID:  r.DialogID,
-			Title:     r.Title,
-			Kind:      r.Kind,
-			UpdatedAt: r.UpdatedAt,
+			ID:           mainID,
+			DialogID:     r.DialogID,
+			Title:        r.Title,
+			Kind:         r.Kind,
+			UpdatedAt:    r.UpdatedAt,
+			NotifyUnread: r.NotifyAt != "" && r.NotifyAt > r.NotifyReadAt,
 		})
 	}
 	return out, nil

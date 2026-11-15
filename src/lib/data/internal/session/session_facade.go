@@ -22,6 +22,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/wire"
 	"github.com/chonkpilot/chonkpilot-data/internal/kernel"
+	"github.com/chonkpilot/chonkpilot-data/internal/sessionstore"
 	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
@@ -156,7 +157,64 @@ func (s *Service) SessionActiveSet(req facade.SessionActiveSetRequest) (facade.S
 	if err := kernel.PrjConfigSetVal(prj, "active_session_id", req.SessionID); err != nil {
 		return facade.SessionActiveSetResponse{}, err
 	}
+	// 打开/切到该会话 = 已读：清掉该对话的未读任务通知水位（持久化，跨重启）。
+	// 失败不阻断活动态写入（未读清理是附加语义）。
+	_ = setNotifyWatermark(prj, req.SessionID, req.DialogID, false)
 	return facade.SessionActiveSetResponse{OK: true}, nil
+}
+
+// SessionNotifyUnreadSet 写任务完成通知的未读水位（append-notice 置未读 / 激活会话置已读）。
+func (s *Service) SessionNotifyUnreadSet(req facade.SessionNotifyUnreadSetRequest) (facade.SessionNotifyUnreadSetResponse, error) {
+	prj, err := s.PrjUsrFor(req.InstanceID, req.Scope)
+	if err != nil {
+		return facade.SessionNotifyUnreadSetResponse{}, err
+	}
+	if err := setNotifyWatermark(prj, req.SessionID, req.DialogID, req.Unread); err != nil {
+		return facade.SessionNotifyUnreadSetResponse{}, err
+	}
+	return facade.SessionNotifyUnreadSetResponse{OK: true}, nil
+}
+
+// setNotifyWatermark 在 dialogs 目录行上写未读水位（unread=true → notify_at；
+// false → notify_read_at）。优先按 dialog_id 定位；否则按 main_session_id 反查。
+// 目标对话不存在 → 无操作（通知是附加语义，不因目录未同步而失败）。
+func setNotifyWatermark(prj *data.DB, sessionID, dialogID string, unread bool) error {
+	r, ok, err := findNotifyDialog(prj, sessionID, dialogID)
+	if err != nil || !ok {
+		return err
+	}
+	now := time.Now().UTC().Format(kernel.RFC3339FixedNano)
+	if unread {
+		r.NotifyAt = now
+	} else {
+		r.NotifyReadAt = now
+	}
+	return sessionstore.PutDialog(prj, r)
+}
+
+// findNotifyDialog 定位会话所属的 dialogs 目录行（含隐藏的 crontab 对话）。
+func findNotifyDialog(prj *data.DB, sessionID, dialogID string) (sessionstore.DialogRow, bool, error) {
+	dialogID = strings.TrimSpace(dialogID)
+	sessionID = strings.TrimSpace(sessionID)
+	if dialogID != "" {
+		r, ok, err := sessionstore.GetDialog(prj, dialogID)
+		if err != nil || ok {
+			return r, ok, err
+		}
+	}
+	if sessionID == "" {
+		return sessionstore.DialogRow{}, false, nil
+	}
+	rows, err := sessionstore.ListVisibleDialogs(prj, true)
+	if err != nil {
+		return sessionstore.DialogRow{}, false, err
+	}
+	for _, r := range rows {
+		if r.MainSessionID == sessionID || r.DialogID == sessionID {
+			return r, true, nil
+		}
+	}
+	return sessionstore.DialogRow{}, false, nil
 }
 
 // SessionActiveGet 读「当前活动会话」。

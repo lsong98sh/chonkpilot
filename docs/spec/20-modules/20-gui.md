@@ -607,6 +607,7 @@ src/lib/gui/host/main.go（runMain）：
 - **「任务详情」= 任务区整块显隐**：默认栏条目命令改为内部命令 `toggle-area-visible{nodeId:'split_left_bottom'}`（容器级显隐，任务树 + 任务详情一起显示/隐藏），不再开右侧抽屉；`toggle-area-visible` 与配置校验均支持**容器节点**。
 - **顶栏三区宽度收敛（UI-FIX-1）**：`LfBarZones` 按容器实测宽等比压缩两侧定宽区（`ResizeObserver`），保证 `#right-extra`（最小化 / 最大化 / 关闭）永不被挤出窗口；持久化键升级为 `layout-free:bar-zones:v2:*`。
 - **输入框最小高度**：会话输入框（`InputBox.vue` 自研 contenteditable）最小高度 = **3 行正文**（`min-height: 70px` = 20px × 3 + 上下内边距 10px），`autoResize()` 同步。
+- **上下文占用环（2026-11-13）**：`InputBox` 下方工具栏左端 `UsageRing`（`components/common/UsageRing.vue`）—— 分子 = 最近一次发给 LLM 的输入 token（`llm-usage` 的真实 `prompt_tokens`，缺失回落到 `est_prompt_tokens`），分母 = 该次 LLM 的 `maxContextToken`（事件缺省时回落当前 LLM 配置）；**环始终显示、直径 ≈ 一行文字高（18px）、环内不写字**，颜色阈值 <60% / <85% / ≥85%，悬停展开估算偏差、缓存命中、输出/推理/合计与模型明细。未配置上下文窗口（0）→ 提示「先配置 LLM 的 maxContextToken」，**点击环/提示即打开该 provider 的 LLM 编辑框**（`preview-tab-open{kind:'settings-llm', llm}`，见 [61 §6.1](../60-reference/61-消息一览.md)）；**无用量数据（本会话尚无 LLM step）→ 仍显示为空环**，tooltip 提示「暂无用量数据」。数据订阅/按会话状态见 `composables/useLlmUsage.js`（消息面 = `session-usage`，[61 §4.3](../60-reference/61-消息一览.md)）。
 - **页签 label**：`TabBar` / `LfTabbedContainer` / 通用 `Tabs` 一律 `white-space: nowrap` + `min-width:0` + `text-overflow: ellipsis`（长 label 不换行，超出显示 `…`）。
 - **布局档案下拉**：`LayoutProfilesView` 弹层 **Teleport 到 body**（栏内 view / zone 都是 `overflow:hidden`，原地绝对定位会被裁剪 → 表现为「点击无效」）。
 - **插件状态栏徽标占位**：`PluginPageHost` 以容器查询（`@container (max-height:48px)`）走紧凑态 —— 徽标位（96×20）只显示 10px spinner，不渲染「加载中」文字/占位说明。

@@ -48,19 +48,35 @@ test('① 对话框：两项字段存在、绑定新名、值域正确（maxCont
   assert.doesNotMatch(src, /config\.llm\.maxTokens\b/, '不得再引用旧词条 config.llm.maxTokens')
 })
 
-test('① 位置：「上下文窗口」在「最大输出 Token」右侧（同半行宽，前者在后）', () => {
+test('① 位置：基本页 6 行 × 2 列（名称/协议 → 地址/模型 → 密钥/上下文 → 输出/迭代 → 推理/识图 → 思考/温度）', () => {
   const src = read(DIALOG)
-  // 两项同用 form-item-12（半行宽，一行两列精确合排）；顺序 = 最大输出 Token → 上下文窗口（右侧）。
-  const outIdx = src.indexOf('localData.maxOutputToken')
-  const ctxIdx = src.indexOf('localData.maxContextToken')
-  assert.ok(outIdx > 0 && ctxIdx > 0, '两项字段均须存在')
-  assert.ok(outIdx < ctxIdx, '「上下文窗口」须位于「最大输出 Token」右侧（源码顺序在后）')
-
-  // 各自所在 form-item 块须为 form-item-12（半行宽）。
-  const outBlock = src.slice(src.lastIndexOf('<div class="form-item', outIdx), outIdx)
-  const ctxBlock = src.slice(src.lastIndexOf('<div class="form-item', ctxIdx), ctxIdx)
-  assert.match(outBlock, /form-item-12/, '最大输出 Token 须为半行宽 form-item-12')
-  assert.match(ctxBlock, /form-item-12/, '上下文窗口须为半行宽 form-item-12')
+  // 必填两列与实际字段绑定顺序（源码顺序 = 行优先：从左到右、从上到下）。
+  const order = [
+    'localData.name', 'localData.protocol',
+    'localData.baseUrl', 'localData.model',
+    'localData.apiKey', 'localData.maxContextToken',
+    'localData.maxOutputToken', 'localData.maxToolIterations',
+    'localData.capability.reasoning', 'localData.capability.vision',
+    'localData.reasoningEffort', 'localData.temperature',
+  ]
+  let prev = -1
+  for (const key of order) {
+    const idx = src.indexOf(key)
+    assert.ok(idx > 0, `字段 ${key} 须存在`)
+    assert.ok(idx > prev, `字段顺序错误：${key} 须在上一个字段之后`)
+    prev = idx
+  }
+  // 各字段所在 form-item 块为半行宽（一行两列）。
+  for (const key of order) {
+    const idx = src.indexOf(key)
+    const block = src.slice(src.lastIndexOf('<div class="form-item', idx), idx)
+    assert.match(block, /form-item-12/, `${key} 须为半行宽 form-item-12`)
+  }
+  // 必填标记：名称/协议/接口地址/模型/API 密钥/上下文窗口各带 *。
+  for (const label of ['name', 'protocol', 'baseUrl', 'model', 'apiKey', 'maxContextToken']) {
+    const idx = src.indexOf(`config.llm.${label}`)
+    assert.ok(src.slice(idx, idx + 320).includes('required-mark'), `${label} 须有必填标记 *`)
+  }
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -86,19 +102,19 @@ test('③ i18n：maxOutputToken / maxContextToken / maxContextTokenHint 双语�
   }
   const zh = readLocale('zh-CN', 'config.json').llm
   assert.equal(zh.maxOutputToken, '最大输出 Token', 'zh 最大输出 Token 须逐字一致')
-  assert.equal(zh.maxContextToken, '上下文窗口', 'zh 上下文窗口 须逐字一致')
+  assert.equal(zh.maxContextToken, '上下文窗口大小', 'zh 上下文窗口大小 须逐字一致')
 })
 
 // ═══════════════════════════════════════════════════════════════
 // ④ Token 快捷值（128K/256K/512K/1M）+ 思考模式布局 + 模型能力（多选）
 // ═══════════════════════════════════════════════════════════════
-test('④ Token 快捷值：两项字段各挂 128K/256K/512K/1M 按钮，点击即写对应字段', () => {
+test('④ Token 快捷值：两项字段各挂 128K/256K/384K/512K/1M 按钮，点击即写对应字段', () => {
   const src = read(DIALOG)
   assert.match(src, /const tokenPresets = \[/, '须有 tokenPresets 常量表')
-  for (const v of ['128000', '256000', '512000', '1000000']) {
+  for (const v of ['128000', '256000', '384000', '512000', '1000000']) {
     assert.ok(src.includes(`value: ${v}`), `须含快捷值 ${v}`)
   }
-  for (const l of ['128K', '256K', '512K', '1M']) {
+  for (const l of ['128K', '256K', '384K', '512K', '1M']) {
     assert.ok(src.includes(`label: '${l}'`), `须含按钮文案 ${l}`)
   }
   // 两项字段各自的 Label 行内挂同一组按钮（共用 tokenPresets）
@@ -107,27 +123,29 @@ test('④ Token 快捷值：两项字段各挂 128K/256K/512K/1M 按钮，点击
   assert.match(src, /function setToken\(field, value\)/, '须有写值函数')
 })
 
-test('④ 布局：思考模式开关与标签同行（靠右）、推理强度下拉（无 label）在其下方', () => {
+test('④ 布局：思考模式为 low/high/max 下拉（绑定 reasoningEffort），不再有开关', () => {
   const src = read(DIALOG)
   const thinkIdx = src.indexOf('config.llm.thinking')
   const selectIdx = src.indexOf('<Select v-model="localData.reasoningEffort"')
-  assert.ok(thinkIdx > 0 && selectIdx > 0, '思考模式标签与推理强度下拉均须存在')
-  assert.ok(thinkIdx < selectIdx, '推理强度下拉须在思考模式之后（下方）')
-  // 思考模式：标签 + 开关同行（label-switch-row），开关在标签之后；同一 form-item 块内下方为推理强度下拉
-  const block = src.slice(src.lastIndexOf('<div class="form-item', thinkIdx), src.indexOf('config.llm.maxToolIterations'))
-  assert.match(block, /label-switch-row/, '思考模式须用「标签 + 开关同行」布局')
-  assert.match(block, /<Switch v-model="localData\.thinking" \/>/, '开关须绑定思考模式')
-  assert.match(block, /<Select v-model="localData\.reasoningEffort"/, '推理强度下拉须与思考模式同块（下方）')
-  // 2026-09-26：去掉「推理强度」label（下拉保留 + placeholder 词条保留）；同步回收 protocolHint 词条
-  assert.doesNotMatch(block, /config\.llm\.reasoningEffort/, '不得再有「推理强度」label')
-  assert.match(block, /config\.llm\.reasoningPlaceholder/, '推理强度下拉须保留 placeholder 词条')
-  assert.doesNotMatch(src, /config\.llm\.protocolHint/, '不得再引用「函数协议」说明词条')
+  assert.ok(thinkIdx > 0 && selectIdx > 0, '思考模式标签与思考下拉均须存在')
+  assert.ok(thinkIdx < selectIdx, '思考下拉须在思考模式标签之后')
+  // 思考模式 = 单个 Select（low/high/max），与温度同排两列；旧「标签 + 开关」已移除。
+  const block = src.slice(src.lastIndexOf('<div class="form-item', thinkIdx), src.indexOf('config.llm.temperature'))
+  assert.match(block, /<Select v-model="localData\.reasoningEffort"/, '思考模式须为下拉')
+  assert.doesNotMatch(block, /<Switch/, '思考模式不得再用开关')
+  assert.doesNotMatch(src, /<Switch v-model="localData\.thinking"/, '不得再保留 thinking 开关')
+  for (const lv of ['low', 'high', 'max']) {
+    assert.match(src, new RegExp(`value: '${lv}'`), `思考下拉须含 ${lv} 档位`)
+  }
+  // 保存语义：选了档位 → thinking=true（兼容后端 thinking 键）；字段本身不清除。
+  assert.match(src, /if \(effort\) localData\.thinking = true/, '思考档位非空须置 thinking=true')
   for (const loc of LOCALES) {
     const llm = readLocale(loc, 'config.json').llm
     assert.equal(llm.reasoningEffort, undefined, `${loc} 应回收 config.llm.reasoningEffort（label 已移除）`)
     assert.equal(llm.protocolHint, undefined, `${loc} 应回收 config.llm.protocolHint（说明已移除）`)
-    assert.ok(typeof llm.reasoningPlaceholder === 'string' && llm.reasoningPlaceholder.trim().length > 0,
-      `${loc} 缺 config.llm.reasoningPlaceholder`)
+    for (const k of ['reasoningPlaceholder', 'reasoningLow', 'reasoningHigh', 'reasoningMax']) {
+      assert.ok(typeof llm[k] === 'string' && llm[k].trim().length > 0, `${loc} 缺 config.llm.${k}`)
+    }
   }
 })
 
@@ -135,11 +153,13 @@ test('④ 能力双维度：两个数值输入（推理 / 识图）+ 旧声明�
   const src = read(DIALOG)
   assert.match(src, /config\.llm\.capabilityReasoning/, '须有「推理能力」标签（i18n）')
   assert.match(src, /config\.llm\.capabilityVision/, '须有「识图能力」标签（i18n）')
-  // 两项各为 0~5 / step 0.1 的数值输入，分别绑定 capability.reasoning / capability.vision。
+  // 两项各为档位下拉（优秀5/良好4/一般3/低2/较弱1/不支持0），分别绑定 capability.reasoning / capability.vision。
   for (const dim of ['reasoning', 'vision']) {
-    assert.match(src, new RegExp(`v-model\\.number="localData\\.capability\\.${dim}"`), `${dim} 须绑定双维度字段`)
+    assert.match(src, new RegExp(`v-model="localData\\.capability\\.${dim}"`), `${dim} 须绑定双维度字段`)
   }
-  assert.match(src, /:step="LLM_CAPABILITY_STEP"/, '步进须取 fieldRules 常量')
+  assert.match(src, /const CAPABILITY_TIERS = \[5, 4, 3, 2, 1, 0\]/, '档位下拉须含 5/4/3/2/1/0')
+  assert.match(src, /:options="capabilityOptions\(localData\.capability\.reasoning\)"/, '推理能力须用档位下拉')
+  assert.match(src, /:options="capabilityOptions\(localData\.capability\.vision\)"/, '识图能力须用档位下拉')
   // 旧记录：只有 capabilities 时按「具备 = 中位档」映射为双维度（不置空）。
   assert.match(src, /capabilityFromLegacyCaps/, '旧记录须按 capabilities 映射双维度')
   assert.match(src, /if \(!Array\.isArray\(localData\.capabilities\)\) localData\.capabilities = \[\]/, '旧记录须回落空数组')
@@ -189,11 +209,11 @@ test('⑤ 聊天窗口：所选 LLM 未声明「图形」→ 截图按钮禁用 
 // ═══════════════════════════════════════════════════════════════
 // ⑥ 能力双维度（D-65，2026-11-04）：0~5 一位小数（步进 0.1），0 = 不具备；默认值 + 双语词条 + auto 选项
 // ═══════════════════════════════════════════════════════════════
-test('⑥ 能力双维度：表单值域 + 0 提示 + 保存校验 + 默认值 + 双语词条 + auto 选项', () => {
+test('⑥ 能力双维度：档位下拉 + 0 提示 + 保存校验 + 默认值 + 双语词条 + auto 选项', () => {
   const src = read(DIALOG)
-  assert.match(src, /:min="LLM_CAPABILITY_MIN"/, '档位下限须取 fieldRules 常量')
-  assert.match(src, /:max="LLM_CAPABILITY_MAX"/, '档位上限须取 fieldRules 常量')
-  assert.match(src, /:step="LLM_CAPABILITY_STEP"/, '档位步进须取 fieldRules 常量')
+  assert.match(src, /capabilityOptions/, '档位须用下拉选项函数')
+  assert.match(src, /capabilityExcellent/, '档位下拉须有优秀档文案')
+  assert.match(src, /capabilityNone/, '档位下拉须有不支持（0）文案')
   assert.match(src, /capabilityZeroHint/, '0 = 不具备须就地提示（i18n）')
   assert.match(src, /reasoningUnavailable/, '推理 0 须就地提示')
   assert.match(src, /visionUnavailable/, '识图 0 须就地提示')

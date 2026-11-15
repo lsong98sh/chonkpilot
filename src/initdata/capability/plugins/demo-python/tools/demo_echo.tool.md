@@ -4,7 +4,7 @@ name: demo_echo
 title: 回显文本
 async: sync
 timeout: 30
-on_timeout: fail
+touch_files: false
 category: demo
 hot: true
 ```
@@ -17,7 +17,7 @@ hot: true
 
 **截断**：文本超过 `echoLimit`（默认 200 字符）时只保留前 `echoLimit` 个字符并追加 `…(truncated)`；不返回原长度，也不支持 offset 续读。
 
-本工具无副作用、幂等，超时按 `on_timeout: fail` 报错。
+本工具无副作用、幂等、不涉及文件变动（`touch_files: false`）；到执行硬上限按超时错误返回。
 
 # 参数
 ```json
