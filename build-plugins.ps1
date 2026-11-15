@@ -108,26 +108,26 @@ function Build-Engine {
     Write-Host ("    ok: {0} ({1} MB)" -f $exe.Name, [math]::Round($exe.Length / 1MB, 1))
 }
 
-Write-Host "==> [1/11] web"
+Write-Host "==> [1/12] web"
 Build-Plugin -Mod (Join-Path $pluginsRepo "web\src") -ID "web" -ExeName "chonkpilot-web.exe"
 
-Write-Host "==> [2/11] codegraph (codegraph + vfts, CGO)"
+Write-Host "==> [2/12] codegraph (codegraph + vfts, CGO)"
 Build-Plugin -Mod (Join-Path $pluginsRepo "codegraph\src") -ID "codegraph" -ExeName "chonkpilot-plugin-codegraph.exe"
 Copy-Item (Join-Path $zvecLib "zvec_c_api.dll") (Join-Path $out "codegraph") -Force
 Write-Host "    ok: zvec_c_api.dll"
 
-Write-Host "==> [3/11] browser（桥接层 + 引擎：源码在 plugins 仓 browser/engine）"
+Write-Host "==> [3/12] browser（桥接层 + 引擎：源码在 plugins 仓 browser/engine）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "browser\src") -ID "browser" -ExeName "chonkpilot-plugin-browser.exe"
 Build-Engine -Mod (Join-Path $pluginsRepo "browser\src\engine") -ID "browser" -ExeName "chonkpilot-browser-plugin.exe"
 
-Write-Host "==> [4/11] desktop（桥接层 + 引擎：源码在 plugins 仓 desktop/engine）"
+Write-Host "==> [4/12] desktop（桥接层 + 引擎：源码在 plugins 仓 desktop/engine）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "desktop\src") -ID "desktop" -ExeName "chonkpilot-plugin-desktop.exe"
 Build-Engine -Mod (Join-Path $pluginsRepo "desktop\src\engine") -ID "desktop" -ExeName "chonkpilot-desktop-plugin.exe"
 
 # file 插件的工具契约：唯一源已随插件迁至 `chonkpilot-plugins/file/tools/file`（2026-10-25），
 # 运行时由插件从 `<pluginRoot>/tools/file/` 解析；主仓 capability 根不再含 file 契约
 # （否则与插件重复注册 → gateway 冲突）。
-Write-Host "==> [5/11] file（文件系列 11 工具）"
+Write-Host "==> [5/12] file（文件系列 11 工具）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "file\src") -ID "file" -ExeName "chonkpilot-plugin-file.exe"
 $fileContractsSrc = Join-Path $pluginsRepo "file\src\tools\file"
 # 运行时由插件从 `<pluginRoot>/tools/file/` 解析（绝不能落到 `<pluginRoot>/src/tools/file/`：
@@ -142,30 +142,33 @@ if (Test-Path $fileContractsSrc) {
     throw "file 契约缺失：$fileContractsSrc"
 }
 
-Write-Host "==> [6/11] task（执行 / LLM / 状态 / 终止）"
+Write-Host "==> [6/12] task（执行 / LLM / 状态 / 终止）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "task\src") -ID "task" -ExeName "chonkpilot-plugin-task.exe"
 
-Write-Host "==> [7/11] crontab（本机全局定时任务）"
+Write-Host "==> [7/12] crontab（本机全局定时任务）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "crontab\src") -ID "crontab" -ExeName "chonkpilot-plugin-crontab.exe"
 
-Write-Host "==> [8/11] mcp（检索 / 加载 / 调用）"
+Write-Host "==> [8/12] mcp（检索 / 加载 / 调用）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "mcp\src") -ID "mcp" -ExeName "chonkpilot-plugin-mcp.exe"
 
-Write-Host "==> [9/11] memory（记忆沉淀；业务包在 plugins 仓 memory/lib）"
+Write-Host "==> [9/12] memory（记忆沉淀；业务包在 plugins 仓 memory/lib）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "memory\src") -ID "memory" -ExeName "chonkpilot-memory.exe"
 
-Write-Host "==> [10/11] history（文件检查点链；业务包在 plugins 仓 history/lib）"
+Write-Host "==> [10/12] history（文件检查点链；业务包在 plugins 仓 history/lib）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "history\src") -ID "history" -ExeName "chonkpilot-history.exe"
 
 # Remote 插件（2026-11-01）：源码在 plugins 仓 remote/client（与 remote/server 同目录、分两个工程）。
-Write-Host "==> [11/11] remote（远程接入：出站 WSS 到 Remote Server）"
+Write-Host "==> [11/12] remote（远程接入：出站 WSS 到 Remote Server）"
 Build-Plugin -Mod (Join-Path $pluginsRepo "remote\client") -ID "remote" -ExeName "chonkpilot-plugin-remote.exe"
+
+Write-Host "==> [12/12] session（会话工具：检索 / 列表 / 状态 / 建会话 / 打开）"
+Build-Plugin -Mod (Join-Path $pluginsRepo "session\src") -ID "session" -ExeName "chonkpilot-plugin-session.exe"
 
 # ── 部署到桌面单体产物（存在才部署）──
 $desktopPlugins = Join-Path $root "dist\plugins"
 if (Test-Path $desktopPlugins) {
     Write-Host "==> deploy -> $desktopPlugins"
-    foreach ($id in @("web", "codegraph", "browser", "desktop", "file", "task", "crontab", "mcp", "memory", "history", "remote")) {
+    foreach ($id in @("web", "codegraph", "browser", "desktop", "file", "task", "crontab", "mcp", "memory", "history", "remote", "session")) {
         $srcDir = Join-Path $out $id
         $dstDir = Join-Path $desktopPlugins $id
         if (-not (Test-Path $dstDir)) {

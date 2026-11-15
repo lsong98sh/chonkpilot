@@ -8,6 +8,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-assembly"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
+	"github.com/chonkpilot/chonkpilot-llm/plugindata"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	tasklayer "github.com/chonkpilot/chonkpilot-task"
 	"github.com/lsong98sh/chonkpilot-agent/chat"
@@ -87,6 +88,18 @@ type Server struct {
 	// 不再"发一条 MQ 请求给自己"（dataRequest）；**MQ 面继续存在**（前端/GUI 桥仍走总线）。
 	// 类型用完整 facade.API（而非仅 ConfigAPI）：本包既读 config 域，也读 MCP 四级配置域。
 	cfg facade.API
+	// pluginData 是插件数据能力实现（SESSION-QUERY-1）：会话 browse/read/search 的跨用户只读
+	// 查询经它完成（插件不得直接开库，C8）。nil = 会话查询能力不可用（method_not_found）。
+	pluginData *plugindata.Store
+	// sessionRunMu / sessionRunSlots：项目级并发上限（SESSION-RUN-1）。每个 instance 一个带容量
+	// 的信号量 channel（容量 = `plugins.session.run.max-concurrent`，缺省 3；<=0 = 不限）；
+	// acquire 阻塞排队，收尾释放。session.run 建/续跑的轮次共用该额度。
+	sessionRunMu    sync.Mutex
+	sessionRunSlots map[string]chan struct{}
+	// chatWindowOpener 是打开对话窗口的宿主注入口（SESSION-OPEN-1）：nil = 无 GUI 能力
+	// （headless / 测试）→ session.open 返回 unsupported。由 gui/host 装配
+	// `env.OpenChatWindow`（与托盘 / gui.window.open-chat 同一实现）。
+	chatWindowOpener func(workDir, sessionID, dialogID string) (string, bool)
 	// 内嵌 MCP 栈（2026-09-07 收敛）：官方 go-sdk server（capability 契约 RegisterContracts）
 	// 由入口装配器 `assembly` 构建并作为**能力源**（prompts/skills/resources 资产面）暴露给本层，
 	// 但**不再**作为 gateway 的 self 节点传入（GATEWAY-2 L5：gateway 只接 Transport + Servers）；

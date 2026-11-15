@@ -92,7 +92,8 @@ docs/spec/
 │   ├── 2F-ignore.md                   gitignore 语义匹配（排除判定单一实现）
 │   ├── 2G-会话组件.md                 会话组件（一树一库 / 双 id / fork / 事件）
 │   ├── 2H-轮次运行器与职责边界.md      轮次运行器基座与职责边界（起轮/排队/收口仍在 llm/server）
-│   └── 2I-工作区管理.md               工作区管理（单源视图 / ProjectOps / Router）
+│   ├── 2I-工作区管理.md               工作区管理（单源视图 / ProjectOps / Router）
+│   └── 2J-会话插件.md                 会话工具面（检索 / 列表 / 详情 / 历史；跨用户 private/llm/public）
 ├── 30-function-points/                ← 功能点分级（黑盒业务视角）
 │   ├── 30-FP分级规范.md               分类/功能点/场景三级 + ID 规范 + 状态标记
 │   ├── 31-窗口与布局.md

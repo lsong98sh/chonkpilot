@@ -677,6 +677,9 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		return map[string]any{"ok": true, "session_id": sessionID, "turn_id": turnID,
 			"message_id": msgID, "dialog_id": dialogID}, nil
 	})
+
+	// SESSION-QUERY-1：会话只读查询（browse / read / search；跨用户模式在 handler 内收口）。
+	s.registerSessionCaps(reg)
 }
 
 // resolveInstanceForWorkDir 解析能力调用应归属的实例 id（P4）：显式 `instance_id` 优先；

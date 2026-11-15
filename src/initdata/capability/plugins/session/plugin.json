@@ -1,0 +1,7 @@
+{
+  "id": "session",
+  "cmd": ["chonkpilot-plugin-session.exe"],
+  "enabled": true,
+  "name": "会话工具",
+  "icon": "chat"
+}

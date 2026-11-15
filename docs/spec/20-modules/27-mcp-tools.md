@@ -46,7 +46,7 @@
 | core | （无出厂契约） | web 工具随 `web` 插件（web_search / web_fetch / web_download） |
 
 公共「基本信息」键：`args=<tool> --input={RAW-INPUT-FILE}`、`output=stdout`、`async=auto`、`async-threshold=30`。
-其余工具：~~server 域 1~~ → **0**（2026-11-08 迁出/删除）· **task 插件 8（`task_run` / `task_llm` / `task_status` / `task_stop` / `ask_user` / `next_run` / `subchat_open` / `subchat_finish`；契约 `chonkpilot-plugins/task/src/tools/task/`）** · **web 域 3（`web` 插件：web_search / web_fetch / web_download）** · file 域 11（`file` 插件）· meta 3（`mcp_find` / `mcp_load` / `mcp_invoke`，由 `mcp` 插件 MCP server 暴露）。契约同步规则见 [03-构建与部署](../00-overview/03-构建与部署.md) §7。
+其余工具：~~server 域 1~~ → **0**（2026-11-08 迁出/删除）· **task 插件 8（`task_run` / `task_llm` / `task_status` / `task_stop` / `ask_user` / `next_run` / `subchat_open` / `subchat_finish`；契约 `chonkpilot-plugins/task/src/tools/task/`）** · **session 插件 9（`session_search` / `session_list` / `session_get` / `session_history` / `session_status` / `session_create` / `session_send` / `session_rename` / `session_open`；契约 `chonkpilot-plugins/session/src/tools/session/`）** · **web 域 3（`web` 插件：web_search / web_fetch / web_download）** · file 域 11（`file` 插件）· meta 3（`mcp_find` / `mcp_load` / `mcp_invoke`，由 `mcp` 插件 MCP server 暴露）。契约同步规则见 [03-构建与部署](../00-overview/03-构建与部署.md) §7。
 
 > **task 插件口径（2026-11-04）**：`task_llm` = **全能力委派子代理**（独立子会话/子轮次 + 全工具面，可多层；宿主能力 `plugin/v1/agent.delegate`），不再是「单次 LLM 调用」；`task_status` 支持 `task_id` 单任务查询 + `waitSec` + 运行中返回**已产出的部分输出**（沿用原 `tool_result` 的读取口径；该工具已删除）；`task_stop` 经数据面 `task.stop` → 层级联取消并关闭委派子轮次。
 > **完成语义（2026-11-06）**：委派链**先子后父** —— 子轮次全部终态后才判定父轮次终态；`task_llm` 只有 `state=done` + `text` 表示完整结果，`incomplete` → `error/LLM_INCOMPLETE`（`partial` 非终态），`interrupted/cancelled` → `state=cancelled`；`running` 不返回正文，须经 `task_status` 取终态。

@@ -272,6 +272,29 @@
 
 ---
 
+### 3.8 session（会话工具面；🆕 2026-11-15，批次 A/B/C = 读 + 建/续跑/改名）
+
+> **形态**：进程外插件 = `chonkpilot-plugins/session`（exe = `chonkpilot-plugin-session.exe`；契约
+> `*.tool.md` 自持并 embed；MCP 模式 http）。宿主侧读实现 = `src/lib/llm/plugindata/sessionquery.go`
+> + 桥方法 `src/lib/llm/server/plugin_caps_session.go`。详见 [2J-会话插件](2J-会话插件.md)。
+
+| 项 | 值 |
+|----|----|
+| 工具（9，全 hot） | `session_search`（跨会话 / 跨用户正文检索：keyword / semantic / hybrid）· `session_list`（枚举会话，含 self/top 锚点）· `session_get`（元数据）· `session_history`（分页原文）· `session_status`（持久轮次状态 + 最终回复，可等待）· `session_create`（新建顶层会话 + auto 首轮）· `session_send`（既有会话追发一轮）· `session_rename`（改名）· `session_open`（打开/激活对话窗口） |
+| 宿主能力 | `plugin/v1/session.browse` / `.read` / `.search` / `.status` / `.run` / `.open`（**不覆盖**框架已映射的 `session.list/get/history`，避免破坏 codegraph 调用形状） |
+| self / top | `session_id` 省略 = `_meta.chonkpilot.session`；`"@top"` = `.top_session`；参数 id 只表达"目标"，**self 永不取参数** |
+| 跨用户 | `targets`（`["*"]` = 全项目）；模式 `plugins.session.cross-user` = `private`（缺省）/`llm`/`public`，读序 usr → prj；private 下他人 → `permission_denied`（不静默空结果）；跨用户属 G-102 历史读取，**一次汇总审计** |
+| 安全 | 目标用户必须是单段目录名（防 `../` 越界）；共享数据根形态显式跨用户 → `unsupported`；最多 8 个目标 |
+| 预算 / 并发 | browse 500 会话；search 200 会话 / 200k 消息 / 命中 100；超限 `truncated` / `partial`。`session.run` 并发上限 `plugins.session.run.max-concurrent`（缺省 3，超限排队）。semantic 候选 `max-scan`（缺省 2000）、单次补索引 `max-embed-per-call`（缺省 64） |
+| 语义检索 | `mode=semantic|hybrid` 走 `plugindata/sessionsearch_semantic.go`（OpenAI 兼容 `/embeddings`，默认关闭）；向量表 `session_vectors` 落各对话库、惰性补索引；`auto-index`（缺省 true）后台全量补当前用户全部消息（进度 `index`）；无过滤 semantic 且向量数 ≥ `hnsw-threshold`（缺省 512）走 `hnswlite`（`approx=true`，带过滤回落精确扫描）；hybrid = 0.65×cos + 0.35×keyword；未启用 → `semantic_disabled`，服务不可用 → `semantic_unavailable` |
+| 状态读取 | `session_status` 直读 `turns` / `messages`（父轮结束后仍可用；不依赖 `task_status` / inbox）；`wait_sec` 轮询到终态，返回 `state` + 最终 assistant `text` |
+| 写入语义 | `session_create` 永远**顶层**（新 dialog）+ auto 首轮；父子关系仅用于**取消级联**（`childTurn.barrier=false`，不阻塞父轮终态）；任务节点 `TopSession` = 目标会话、`ParentID` = 调用工具节点 |
+| 不做 | `session_delete` |
+| UI | `ui.selfServe`；视图 `config`（个人设置：跨用户模式 / 并发上限 / 语义检索 7 项）；动作面 `load/save/reset/ping`；资源 embed 在 exe |
+| 测试 | 主仓 `plugindata/sessionquery_test.go` / `sessionstatus_test.go` / `sessionvector_test.go` / `sessionindex_full_test.go`；插件仓 `session/src/tools_test.go` / `config_test.go`；E2E `cases_session_plugin.py` |
+
+---
+
 ## 3A. 插件 UI 与宿主对接（四通道；🆕 2026-10-24 定稿）
 
 > **前置**：插件 iframe 与宿主**同源**，且必须带 `allow-same-origin`（`sandbox="allow-scripts allow-forms allow-same-origin"`）——**等价于「插件代码视为可信代码」**（插件本就是本机 exe）。旧 `/plugin-ui/<id>/*`（宿主直读磁盘 `webui/`）**下线**，资源改由插件自己提供。
@@ -466,6 +489,12 @@
 | `plugin/v1/data.bucket.query` 🆕（G-104） | `{work_dir, user?, name, prefix?, limit?, offset?}` → `{items[], total}` | **桶内查询**（只读、分页 + 可选前缀）；`limit` 缺省 50 / 上限 500；桶不存在 `not_found` |
 | `plugin/v1/prj.users.list` | `{work_dir}` → `{work_dir, users:[{user, db_present, dialog_count, last_active}], count}` | C16：只回 user 标识与基础元数据（只 stat / 数文件，**不读会话内容**） |
 | `plugin/v1/session.export` | `{work_dir, user?, session_id}` → `{ok, export}` | **会话只读导出（G-103，2026-11-03）**：JSON **内联返回**（不落文件），导出体含 `session_id` / `dialog_id` / `exported_at` / `session` / `turns`（各自嵌套 messages）；`session_id` 必填；跨用户按 G-102 矩阵放行 + 审计；不存在 → `not_found` |
+| `plugin/v1/session.browse` 🆕（SESSION-QUERY-1） | `{work_dir, targets?, include_sub?, kind?, since?, limit?, offset?, session?, top_session?}` → `{sessions[], total, scanned_users, truncated}` | **枚举会话**（含子会话开关）：每项带 `user` / `session_id` / `dialog_id` / `title` / `kind` / `turn_count` + `self` / `top` / `cross_user` 锚点。`targets` 空 = 当前用户；`["*"]` = 全项目；private 下他人 → `permission_denied` |
+| `plugin/v1/session.read` 🆕 | `{work_dir, session_id, targets?, view, before_turn_id?, target_messages?, target_bytes?, session?, top_session?}` → `{user, session, turns?, has_more, truncated}` | **单会话元数据 / 分页历史**（跨用户只读）。`session_id` 可为 `@self` / `@top` / 省略（解析为注入的 `session`，回退 `top_session`）；历史语义对齐 `data-session-history` |
+| `plugin/v1/session.search` 🆕 | `{work_dir, query, targets?, roles?, session_id?, since?, limit?, context_runes?, mode?, session?, top_session?}` → `{hits[], total, scanned_*, truncated, partial, search_mode, indexed, approx, index, elapsed_ms}` | **消息正文检索**（跨会话 / 跨用户）：命中带 `user` / `session_id` / `turn_id` / `message_id` / `snippet` / `score` / `semantic_score` / `keyword_score` + 锚点；`session_id` 是**过滤**（空 = 全部会话）；`mode=keyword`（缺省）/`semantic`/`hybrid`；`approx=true` = HNSW 近似；`index` = 后台全量索引状态；预算耗尽 → `partial=true` |
+| `plugin/v1/session.status` 🆕（SESSION-STATUS-1） | `{work_dir, session_id, turn_id?, wait_sec?, targets?, session?, top_session?}` → `{user, session, state, turn_status, turn_id, text?, output?, updated_at, waited_ms}` | **持久状态 / 最终回复**：直读 `turns` + 最后一条 assistant 消息；父轮结束后仍可查（不依赖 `task_status` / inbox）。`wait_sec` 轮询到非 `running`（≤600s）；跨用户同 G-102 读取门控 |
+| `plugin/v1/session.run` 🆕 | `{instance_id?, work_dir?, session_id?, title, prompt, agent?, scenario_id?, wait_sec?, turn?, tool_call_id?, display_name?}` → `{session_id, dialog_id, turn_id, task_id, state, text?, error?}` | **新建顶层会话 / 续跑**：`session_id` 缺省 → 自举新 dialog（kind=main）；给定 → 既有会话追加一轮。建 turn + `kind=llm` 任务节点 + **detached 取消级联**（不阻塞父轮终态）；`wait_sec=0` 立即返回 running |
+| `plugin/v1/session.open` 🆕 | `{instance_id?, work_dir?, session_id?, dialog_id?}` → `{window_id, session_id, dialog_id}` | **打开 / 激活对话窗口**：`session_id` 缺省 = 注入会话、`@top` = 顶层；dialog 由宿主反查；窗口实现 = 宿主 `gui.Env.OpenChatWindow`（与托盘同一实现）；未注入 → `unsupported` |
 
 **KV TTL（G-104）落盘口径**：值以信封 `{__ck_kv:1, value, expires_at?}` 存于 `<key>.json`
 （`expires_at` = Unix 秒，0/缺省 = 永不过期）；**旧数据 = 裸 JSON 值 = 永不过期**（向后兼容）。

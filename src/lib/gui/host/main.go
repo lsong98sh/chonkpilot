@@ -449,6 +449,13 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 		},
 	})
 
+	// SESSION-OPEN-1：`plugin/v1/session.open` → 打开/激活对话窗口（与托盘 /
+	// `gui.window.open-chat` 同一实现；G-105：带 dialog_id 时窗口直连该对话）。
+	srv.SetChatWindowOpener(func(workDir, sessionID, dialogID string) (string, bool) {
+		wid, _, ok := env.OpenChatWindow(workDir, sessionID, dialogID, "")
+		return wid, ok
+	})
+
 	// 插件桥 GUI 反向通道 / 实例列表：窗口宿主就绪后注入。
 	if pb != nil {
 		pb.SetGUI(gui.NewPluginGUIController(env))
@@ -627,6 +634,9 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 				DataDir: dataDirArg,
 				Logf:    func(format string, args ...any) { slog.Warn(fmt.Sprintf(format, args...)) },
 			})
+			// SESSION-QUERY-1：会话跨用户只读查询（browse/read/search）复用同一 Store 的
+			// 授权矩阵与审计落点；注入 llm server 的插件桥能力。
+			srv.SetPluginData(pluginData)
 			mgr := pluginmgr.New(pluginmgr.Options{
 				Bus:            bus,
 				DataDir:        pluginDataDir,

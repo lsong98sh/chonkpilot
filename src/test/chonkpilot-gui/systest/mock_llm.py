@@ -622,6 +622,28 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"error": "not found", "path": self.path})
 
     def do_POST(self):
+        # 语义检索（SESSION-SEMANTIC-1）：OpenAI 兼容 `{base}/embeddings`。
+        # 确定性 4 维映射，供 session 插件 e2e 断言 semantic / hybrid（不依赖外部 embedding 服务）：
+        #   含「交付」/ deliver → [1,0,0,0]；含「登录」/ login → [0,1,0,0]；其它 → [0,0,1,0]。
+        if self.path.endswith("/embeddings"):
+            body = self._read_body()
+            raw = body.get("input")
+            inputs = [raw] if isinstance(raw, str) else list(raw or [])
+            data = []
+            for i, text in enumerate(inputs):
+                s = str(text)
+                low = s.lower()
+                if "交付" in s or "deliver" in low:
+                    vec = [1.0, 0.0, 0.0, 0.0]
+                elif "登录" in s or "login" in low:
+                    vec = [0.0, 1.0, 0.0, 0.0]
+                else:
+                    vec = [0.0, 0.0, 1.0, 0.0]
+                data.append({"object": "embedding", "index": i, "embedding": vec})
+            self._send_json({"object": "list", "data": data,
+                             "model": body.get("model") or "mock-embed",
+                             "usage": {"prompt_tokens": 1, "total_tokens": 1}})
+            return
         # responses 分支（protocol=responses）：POST {base}/responses
         if self.path.endswith("/responses"):
             self._handle_responses()
@@ -718,6 +740,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(tool_calls_message(calls))
             return
 
+        # 短慢流（session_status E2E）：4 段 × 0.6s ≈ 2.4s。test-port 的 HTTP 客户端超时 10s，
+        # 长于该值的工具调用（如 slow-stream 9.6s）会在客户端先超时。
+        if "call slow-status" in text:
+            if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                for i in range(1, 5):
+                    chunk = {"choices": [{"delta": {"role": "assistant", "content": "STATUS-%d " % i},
+                                          "finish_reason": None}]}
+                    self.wfile.write(("data: %s\n\n" % json.dumps(chunk)).encode("utf-8"))
+                    self.wfile.flush()
+                    time.sleep(0.6)
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            else:
+                self._send_json({"choices": [{"message": {"role": "assistant",
+                                                          "content": "STATUS-DONE"},
+                                              "finish_reason": "stop"}]})
+            return
+
         # 五.9 队列写回（2026-10-23）：慢速流式。流式期 `insertable()=false` → 忙碌入队项分类为
         # `next_turn`（真·待发队列）；取消后前端把仍 pending 的项写回输入区。每段 1.2s × 8 ≈ 10s，
         # 给测试留出入队 + 取消窗口。
@@ -804,6 +848,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        # Responses 无 `[DONE]` 终止标记：显式关闭连接，让客户端以 EOF 正常收尾
+        # （HTTP/1.1 keep-alive 会让客户端一直等下一个请求 → 回合永远不完成）。
+        self.send_header("Connection", "close")
+        self.close_connection = True
         self.end_headers()
         half = len(reply) // 2
         for seq, piece in enumerate((reply[:half], reply[half:])):

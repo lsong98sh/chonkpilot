@@ -24,6 +24,11 @@ type childTurn struct {
 	tc      *turnCtx
 	Session string
 	Turn    string
+	// barrier = true：计入父轮次**终态屏障**（`awaitDelegatedChildren` 等它收尾后才允许父轮
+	// 判定终态）。task_llm / agent.delegate 委派恒为 true。
+	// barrier = false：只登记**取消级联**（父轮 cancel / task-stop 会关它），但不阻塞父轮终态 ——
+	// `session.run` 派生的顶层会话（"分解为三个 session"）用此档：父轮可以先把"已启动"说完。
+	barrier bool
 }
 
 // childOutcome 是子轮次的**真实终态快照**（父侧判定「是否可视为完成」的唯一依据）。
@@ -218,10 +223,25 @@ func (s *Server) closeChildTurn(h *childTurn) {
 }
 
 // registerDelegated 登记「父轮次 → 委派子轮次」（用于父取消 / task-stop 级联）。
+//
+// 默认计入**终态屏障**（barrier=true）：父轮次必须等子轮次全部收尾才判定自身终态。
 func (s *Server) registerDelegated(instanceID, parentTurn string, h *childTurn) {
+	s.registerDelegatedWithBarrier(instanceID, parentTurn, h, true)
+}
+
+// registerDetached 登记「父轮次 → 派生轮次」，但**不计入终态屏障**（barrier=false）。
+//
+// 语义：父轮次可以正常收尾，不必等派生会话跑完；父子关系仅用于取消级联
+// （`llm-cancel` / `task-stop` 仍会关闭派生轮次）。用于 session.run（顶层会话分解）。
+func (s *Server) registerDetached(instanceID, parentTurn string, h *childTurn) {
+	s.registerDelegatedWithBarrier(instanceID, parentTurn, h, false)
+}
+
+func (s *Server) registerDelegatedWithBarrier(instanceID, parentTurn string, h *childTurn, barrier bool) {
 	if h == nil || h.Turn == "" {
 		return
 	}
+	h.barrier = barrier
 	k := instKey(instanceID, parentTurn)
 	s.mu.Lock()
 	if s.delegated == nil {
@@ -282,6 +302,10 @@ func (s *Server) awaitDelegatedChildren(tc *turnCtx) {
 	}
 	for _, h := range s.delegatedSnapshot(tc.req.InstanceID, tc.req.Turn) {
 		if h == nil || h.tc == nil {
+			continue
+		}
+		// barrier=false 的派生轮次（session.run）不阻塞父轮终态；取消仍走 closeDelegatedChildren。
+		if !h.barrier {
 			continue
 		}
 		select {

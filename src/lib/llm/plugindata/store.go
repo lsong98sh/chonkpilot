@@ -85,6 +85,10 @@ type Store struct {
 	opts Options
 
 	auditMu sync.Mutex
+
+	// 语义检索运行时（全量索引任务 / HNSW 缓存）；懒初始化，见 sessionindex_full.go。
+	semMu sync.Mutex
+	semRT *semanticRuntime
 }
 
 // New 构造 Store（不做 IO）。
@@ -160,9 +164,14 @@ func (s *Store) bucketRoot(pluginID, workDir, user string) string {
 // isHistoryReadAction 判定动作是否属于「历史记录读取」类（G-102，2026-11-03 用户拍板的
 // 跨用户唯一放行面）：`session.get` / `session.history`（经 `plugin/v1` 转发数据面，无 user
 // 参数）与 `session.export`（本包实现）。KV / 桶的读、写**不属于**历史记录，跨用户一律拒绝。
+//
+// SESSION-QUERY-1（2026-11-15）：会话工具面新增 `session.browse` / `session.read` /
+// `session.search` 三种**只读**动作，同属历史记录读取 → 一并放行（仍受 usr/prj 的
+// `plugins.session.cross-user` 模式前置门控，见 sessionquery.go resolveTargets）。
 func isHistoryReadAction(action string) bool {
 	switch action {
-	case "session.get", "session.history", "session.export":
+	case "session.get", "session.history", "session.export",
+		"session.browse", "session.read", "session.search", "session.status":
 		return true
 	}
 	return false
@@ -176,6 +185,14 @@ func (s *Store) resolveUser(action, pluginID, workDir, explicit string) (string,
 	explicit = strings.TrimSpace(explicit)
 	if explicit == "" || explicit == cur {
 		return cur, nil
+	}
+	// SESSION-QUERY-1：显式跨用户先做目录名安全校验（防 `users/../../...` 越界）。
+	if err := validateUserName(explicit); err != nil {
+		s.audit(auditRecord{
+			Action: action, ActorUser: cur, Plugin: pluginID, WorkDir: workDir,
+			TargetUser: explicit, Result: "denied", Reason: "invalid_target_user",
+		})
+		return "", err
 	}
 	allowed := isHistoryReadAction(action)
 	if !allowed && s.opts.Authorize != nil {
@@ -670,16 +687,17 @@ func (s *Store) sessionExport(req pluginbridge.SessionExportRequest) (any, error
 // ── 审计 ───────────────────────────────
 
 type auditRecord struct {
-	At         string `json:"at"`
-	Action     string `json:"action"`
-	ActorUser  string `json:"actor_user"`
-	Plugin     string `json:"plugin,omitempty"`
-	WorkDir    string `json:"work_dir,omitempty"`
-	TargetUser string `json:"target_user,omitempty"`
-	Bucket     string `json:"bucket,omitempty"`
-	Result     string `json:"result"`
-	Reason     string `json:"reason,omitempty"`
-	Count      int    `json:"count,omitempty"`
+	At         string   `json:"at"`
+	Action     string   `json:"action"`
+	ActorUser  string   `json:"actor_user"`
+	Plugin     string   `json:"plugin,omitempty"`
+	WorkDir    string   `json:"work_dir,omitempty"`
+	TargetUser string   `json:"target_user,omitempty"`
+	Targets    []string `json:"targets,omitempty"`
+	Bucket     string   `json:"bucket,omitempty"`
+	Result     string   `json:"result"`
+	Reason     string   `json:"reason,omitempty"`
+	Count      int      `json:"count,omitempty"`
 }
 
 // audit 追加一条审计记录（JSONL）。失败只留诊断，不影响主流程（审计不阻断能力）。

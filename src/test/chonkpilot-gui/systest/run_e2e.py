@@ -55,6 +55,7 @@ from e2e import cases_session_ops  # noqa: E402,F401
 from e2e import cases_scenario_ops  # noqa: E402,F401
 from e2e import cases_project_ops  # noqa: E402,F401
 from e2e import cases_plugin_ops  # noqa: E402,F401
+from e2e import cases_session_plugin  # noqa: E402,F401
 from e2e import cases_cron  # noqa: E402,F401
 from e2e import cases_screenshot_ops  # noqa: E402,F401
 from e2e import cases_llm_ops  # noqa: E402,F401

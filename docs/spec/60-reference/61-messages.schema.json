@@ -87,6 +87,7 @@
     "async_threshold": { "type": "number", "desc": "异步阈值（秒）" },
     "at": { "type": "string", "desc": "事件时间（RFC3339；turn_events.at）" },
     "b64": { "type": "string", "desc": "截图 base64" },
+    "blocking": { "type": "bool", "desc": "manual 异步阈值提示：同步等待仍在继续（UI 只提供转异步 / 停止）" },
     "base_dicts": { "type": "array", "desc": "vfts 内嵌基础词典文件名清单" },
     "before_turn_id": { "type": "string", "desc": "分页游标：早于该轮" },
     "brief_tokens": { "type": "int", "desc": "摘要 token 数" },
@@ -3210,7 +3211,7 @@
       "topic": "vfts.session.query",
       "face": "vfts",
       "direction": "client->plugin",
-      "notes": "会话内查找：查会话正文索引（仅主会话 user/assistant 文本），hits 按 ts 升序。2026-11-01 SESSION-FTS 新增。",
+      "notes": "会话内查找：查会话正文索引（主会话 + 子会话；user/assistant 文本 + 工具结果），hits 按 ts 升序。2026-11-01 SESSION-FTS 新增；2026-11-15 扩容子会话与工具结果。",
       "payload": {
         "instance_id": { "type": "string", "required": true },
         "session_id": { "type": "string", "required": true },

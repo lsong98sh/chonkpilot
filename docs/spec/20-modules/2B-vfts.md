@@ -86,11 +86,11 @@
 
 - **定位**：在 vfts 内新增**会话正文 FTS 集合**，与文件集合并列、互不影响（文件全量重建不得清空会话索引）。
 - **存储**：`<workDir>/.chonkpilot/vfts-session/`（`collection/` + `meta.json` + `state.json`）。一条消息 = 一个 doc；对外 id = `s:<session_id>:<message_id>`；**zvec 主键不允许 `:`** → 落盘主键 = `s_<base64url(session_id|message_id)>`（单射，`remove` 仍接受对外 id 并内部转换）；`path` 字段写 `sessions/<session_id>/<message_id>`（复用既有 `path` 子串过滤）；另存 `session_id` / `dialog_id` / `turn_id` / `message_id` / `role` / `ts`（消息创建时间，int64）。
-- **索引范围**：**仅主会话**（`session-complete.parents` 为空且会话行 `parent_id` 为空）；`role ∈ {user, assistant}` 且消息 `type=text`；工具调用 / 工具结果 / 思维链 / system 不入索引。
-- **写入时机**：订阅 `session-complete`（已有主题，**零新增字段**）→ 只取 `session / turn / dialog_id / work_dir` 标识 → 按轮拉正文 → 增量写。一轮结束后一次性写入该轮全部可索引消息。**正文来源 = `data-session-history`（按 `turn_id` 过滤）**：`data-session-load-messages` 返回的 `ChatMsg` 不含 `message_id/created_at/type`，无法满足主键与 `ts` 升序，故统一走 history 页（消息面上不新增任何主题）。
+- **索引范围**：**全部会话（主会话 + 子会话 / 委派轮次）**；普通消息 `role ∈ {user, assistant}` 且 `type=text`（思维链 / system 不入）；**工具结果也入索引**（历史视图 `role=tool` / `type=tool_pair`）：文本 = `tool + arguments + result`（result 优先；缺失回落 `result_simplified` / `brief`；result 截断 16k、arguments 2k）。
+- **写入时机**：订阅 `session-complete`（已有主题，**零新增字段**）→ 只取 `session / turn / dialog_id / work_dir` 标识 → 按轮拉正文 → 增量写（parents 非空 = 子会话，同样写入）。一轮结束后一次性写入该轮全部可索引消息。**正文来源 = `data-session-history`（按 `turn_id` 过滤）**：`data-session-load-messages` 返回的 `ChatMsg` 不含 `message_id/created_at/type`，无法满足主键与 `ts` 升序，故统一走 history 页（消息面上不新增任何主题）。
 - **删除收口**：开关关闭 → 清空该 workdir 的会话集合；索引目录丢失/损坏 → 查询遇 `not_initialized` 时**自动后台全量重建**；**没有「会话删除」事件** —— 删除/编辑的回收由下文「后台对账」周期完成（旧 doc 不可达时也能被清掉）。
-- **全量重建**：扫 `dialogs/`（`data-session-list` + `data-session-history` 分页 `before_turn_id`），逐会话重建；`state.json` 记每会话 `indexed_until_turn` 支持**断点续建**；范围 = **当前项目全部会话**（不跨项目）。后台执行、可被新的重建覆盖（不主动清理已删除消息的旧 doc）。
-- **后台对账（D-74，2026-11-04）**：**零新增 MQ 主题** —— 插件内**单协程低优先级**对账回路，插件启动后延迟 3min 首轮、之后每 12min 一轮（常量，不新增配置项）。每轮对每个已登记 workdir（`plugins.codegraph.vfts.sessions` 为开时）用 `data-session-list` / `data-session-history` 与引擎已索引集合比对，**当场修四类差异**：
+- **全量重建**：经 `plugin/v1/session.browse{include_sub:true}`（SESSION-QUERY-1；旧宿主无该方法时回落 `data-session-list`，仅主会话）枚举会话，逐会话 `data-session-history` 分页（`before_turn_id`）重建；`state.json` 记每会话 `indexed_until_turn` 支持**断点续建**；范围 = **当前项目全部会话**（不跨项目）。后台执行、可被新的重建覆盖（不主动清理已删除消息的旧 doc）。
+- **后台对账（D-74，2026-11-04）**：**零新增 MQ 主题** —— 插件内**单协程低优先级**对账回路，插件启动后延迟 3min 首轮、之后每 12min 一轮（常量，不新增配置项）。每轮对每个已登记 workdir（`plugins.codegraph.vfts.sessions` 为开时）用 `plugin/v1/session.browse(include_sub=true)` / `data-session-history` 与引擎已索引集合比对，**当场修四类差异**：
   - **漏索引**（数据面有、`state.json` 无游标 / 无指纹）→ 该会话全量补索引；
   - **内容变更**（指纹不一致 = 正文编辑 / 消息增删）→ 先 `vfts_session_clear{session_id}` 清旧 doc 再全量写入（先删后插，幂等）；
   - **已删除记录**（引擎有、`data-session-list` 已无）→ `vfts_session_clear{session_id}` 清掉该会话；

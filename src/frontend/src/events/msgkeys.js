@@ -281,6 +281,7 @@ export const FieldKeys = {
   baseUrl: 'baseUrl',
   base_dicts: 'base_dicts',
   before_turn_id: 'before_turn_id',
+  blocking: 'blocking',
   brief: 'brief',
   brief_tokens: 'brief_tokens',
   cached_rows: 'cached_rows',
@@ -560,6 +561,7 @@ export const FieldDict = {
   b64: 'b64',
   base_dicts: 'base_dicts',
   before_turn_id: 'before_turn_id',
+  blocking: 'blocking',
   brief: 'brief',
   brief_tokens: 'brief_tokens',
   'builtin-mcp-servers': 'mcpServers',
@@ -2619,7 +2621,9 @@ export const McpTasksReportKeys = {
 
 /** mcp-tools-timeout 字段键（payload/result/event 合并去重）。 */
 export const McpToolsTimeoutKeys = {
+  blocking: 'blocking',
   instance_id: 'instance_id',
+  mode: 'mode',
   options: 'options',
   reason: 'reason',
   task_id: 'task_id',
