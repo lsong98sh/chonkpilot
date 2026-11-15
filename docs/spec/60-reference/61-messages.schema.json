@@ -2989,6 +2989,7 @@
       "topic": "mcp-tools-timeout",
       "face": "gateway",
       "direction": "gateway->client",
+      "notes": "manual 到转异步阈值：原 tools/call 继续同步等待（blocking=true），仅通知前端可转异步；不进入 awaiting。auto 自动转后台不发本事件。",
       "event": {
         "instance_id": { "type": "string", "required": true },
         "tool_call_id": { "type": "string", "required": true },
@@ -2996,7 +2997,9 @@
         "tool": { "type": "string", "required": true },
         "reason": { "type": "string", "required": true },
         "timeout_s": { "type": "number", "required": true },
-        "options": { "type": "array", "required": true }
+        "options": { "type": "array", "required": true },
+        "mode": { "type": "string", "required": true },
+        "blocking": { "type": "bool", "required": true }
       }
     },
     {

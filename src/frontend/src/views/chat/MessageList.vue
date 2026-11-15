@@ -1136,9 +1136,12 @@ function clearPendingTimers() {
   if (pendingTimerThinking) { clearTimeout(pendingTimerThinking); pendingTimerThinking = null }
 }
 
-// 裁决清除：MessageItem 发事件回传消息对象（消息归本组件持有）→ 置空 arbitration（E-08）。
+// 超时信号清除：MessageItem 发事件回传消息对象（消息归本组件持有）→ 置空 arbitration /
+// manualThreshold（E-08）。manual 新语义下两者互斥，但转异步/停止成功后都要一并清理。
 function onClearArbitration(msg) {
-  if (msg) msg.arbitration = null
+  if (!msg) return
+  msg.arbitration = null
+  msg.manualThreshold = null
 }
 
 // user 气泡（send / drain 后的 message / 同轮次继续）：落库回执后渲染。
@@ -1305,15 +1308,19 @@ function onToolPairUpdate(d) {
   if (d.result && !msg.result) msg.result = d.result
 }
 
-// 调用超时待裁决（mcp-tools-timeout，后端 → 前端）：按 tool_call_id（回退 task_id）
-// 匹配当前 tool_pair 卡片，挂载裁决信息（options/timeout_s/tool/task_id）供 MessageItem
-// 渲染裁决条。同一调用只弹一次（timeoutShown 去重，含裁决后再次到达）。
+// 转异步阈值信号（mcp-tools-timeout，后端 → 前端）：按 tool_call_id（回退 task_id）
+// 匹配当前 tool_pair 卡片，挂载 `manualThreshold`（timeout_s/tool/task_id）供 MessageItem
+// 高亮「转异步」图标。**manual 新语义（2026-11-15）**：阈值到达后原调用仍在同步等待，
+// 该事件不是 awaiting 裁决，不挂裁决条、不显示「等待完成」；用户点转异步 → pending，
+// 点停止 → 取消，不操作 → 继续等真实结果。
+// 同一调用只提示一次（timeoutShown 去重，含裁决后再次到达）。
 //
 // 该事件是 fire-and-forget（41 I-57）：可能早于目标卡片渲染（超时很短 / 消息未落库），
-// 或用户刷新/切会话后事件已丢失 → 裁决条不出现、任务永远 running。故未命中卡片时**不丢弃**，
+// 或用户刷新/切会话后事件已丢失 → 图标高亮不出现。故未命中卡片时**不丢弃**，
 // 先入待决缓存 pendingArbitration，待卡片加载/渲染（flush）或任务列表自愈（restore）时补挂。
 const timeoutShown = new Set()
-// key（tool_call_id 优先，回退 task_id）→ { arb, callId, tid }：事件早到/会话重载未命中卡片时暂存
+// key（tool_call_id 优先，回退 task_id）→ { kind, arb?, threshold?, callId, tid }
+// kind='threshold'：manual 阈值通知（新语义）；kind='arb'：历史 awaiting 裁决（兼容恢复）。
 const pendingArbitration = new Map()
 
 // 按调用 id 在已渲染消息中定位 tool_pair 卡片（与 tool-pair 终态事件同一匹配规则）。
@@ -1325,7 +1332,22 @@ function findToolPairMsg(callId, tid) {
   })
 }
 
-// 尝试把裁决挂到卡片：'attached' 已挂载 / 'terminal' 卡片已终态（裁决无意义）/ 'missing' 卡片未渲染。
+// 尝试把「阈值已到、可转异步」标记挂到卡片：'attached' / 'terminal' / 'missing'。
+// 新信号与旧 awaiting 互斥：挂阈值标记时清掉裁决条（旧版遗留 / 恢复数据）。
+function tryAttachThreshold(thr, callId, tid) {
+  const msg = findToolPairMsg(callId, tid)
+  if (!msg) return 'missing'
+  const s = msg.status
+  if (s && s !== 'pending' && s !== 'running') return 'terminal'
+  if (!thr.tool) thr.tool = msg.tool || ''
+  msg.manualThreshold = thr
+  msg.arbitration = null
+  // 去重（I-103）：卡片已承接超时信号 → 任务区节点条让位。
+  clearAwaiting(msg.task_id || tid || callId)
+  return 'attached'
+}
+
+// 尝试把历史 awaiting 裁决条挂到卡片（兼容旧任务；manual 新语义不再产生）。
 function tryAttachArbitration(arb, callId, tid) {
   const msg = findToolPairMsg(callId, tid)
   if (!msg) return 'missing'
@@ -1339,12 +1361,19 @@ function tryAttachArbitration(arb, callId, tid) {
   return 'attached'
 }
 
+// 补挂缓存项（统一按 kind 分派）。
+function attachPendingItem(item) {
+  return item.kind === 'threshold'
+    ? tryAttachThreshold(item.threshold, item.callId, item.tid)
+    : tryAttachArbitration(item.arb, item.callId, item.tid)
+}
+
 // 把待决缓存中已能命中的项补挂到卡片（消息加载 / 卡片渲染后调用）。
 function flushPendingArbitration() {
   if (pendingArbitration.size === 0) return
   for (const [key, item] of pendingArbitration) {
     if (timeoutShown.has(key)) { pendingArbitration.delete(key); continue }
-    const r = tryAttachArbitration(item.arb, item.callId, item.tid)
+    const r = attachPendingItem(item)
     if (r === 'attached' || r === 'terminal') {
       timeoutShown.add(key)
       pendingArbitration.delete(key)
@@ -1359,6 +1388,20 @@ function onToolTimeout(d) {
   if (!callId && !tid) return
   const key = callId || tid
   if (timeoutShown.has(key)) return
+  // manual 新语义：blocking=true → 只报「阈值已到」，原调用仍同步等待。
+  if (d.blocking === true) {
+    const threshold = {
+      options: Array.isArray(d.options) ? d.options : [],
+      timeout_s: d.timeout_s,
+      tool: d.tool || '',
+      task_id: tid,
+    }
+    const r = tryAttachThreshold(threshold, callId, tid)
+    if (r === 'attached' || r === 'terminal') { timeoutShown.add(key); return }
+    pendingArbitration.set(key, { kind: 'threshold', threshold, callId, tid })
+    return
+  }
+  // 历史 awaiting 事件（新四模式下 gateway 不再发）→ 保留兼容渲染。
   const arb = {
     options: Array.isArray(d.options) ? d.options : [],
     timeout_s: d.timeout_s,
@@ -1368,13 +1411,13 @@ function onToolTimeout(d) {
   const r = tryAttachArbitration(arb, callId, tid)
   if (r === 'attached' || r === 'terminal') { timeoutShown.add(key); return }
   // 卡片尚未渲染 → 入待决缓存，等卡片出现（flush）或任务列表自愈（restore）时补挂
-  pendingArbitration.set(key, { arb, callId, tid })
+  pendingArbitration.set(key, { kind: 'arb', arb, callId, tid })
 }
 
-// 切会话 / 刷新恢复（I-57 自愈）：查询任务列表，对处于 awaiting（待裁决）的任务补挂裁决条；
+// 切会话 / 刷新恢复（I-57 自愈）：查询任务列表，对仍在飞且带超时信号的任务补挂。
+// 历史任务若处于 awaiting（旧版崩溃/升级前）→ 按「阈值已到」恢复，不恢复裁决条。
 // 卡片未渲染则先入待决缓存。沿用既有前端通道（useTaskView.refresh → data-tasktree-tasks，
 // 载荷 {session_id, top_session}，返回 {list:[...]}，不新造主题）。
-// awaiting 契约（后端并行实现）：{"reason":"timeout","timeout_s":30,"options":[...]}。
 async function restoreAwaitingArbitration(sessionId) {
   if (sessionId) {
     try {
@@ -1387,18 +1430,18 @@ async function restoreAwaitingArbitration(sessionId) {
         const key = callId || tid
         if (timeoutShown.has(key)) continue
         const cached = pendingArbitration.get(key)
-        const arb = cached ? cached.arb : {
+        const threshold = cached && cached.kind === 'threshold' ? cached.threshold : {
           options: Array.isArray(t.awaiting.options) ? t.awaiting.options : [],
           timeout_s: t.awaiting.timeout_s,
           tool: t.tool || t.tool_name || '',
           task_id: tid,
         }
-        const r = tryAttachArbitration(arb, callId, tid)
+        const r = tryAttachThreshold(threshold, callId, tid)
         if (r === 'attached' || r === 'terminal') {
           timeoutShown.add(key)
           pendingArbitration.delete(key)
         } else {
-          pendingArbitration.set(key, { arb, callId, tid })
+          pendingArbitration.set(key, { kind: 'threshold', threshold, callId, tid })
         }
       }
     } catch (e) {

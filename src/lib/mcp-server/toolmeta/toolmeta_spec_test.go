@@ -482,7 +482,7 @@ func TestRunMetaLoadNotFound(t *testing.T) {
 	})
 }
 
-// mcp_invoke：强制 async=never、带 work_dir 与 request_id（宿主准入 49 §2.19），单文本项直出。
+// mcp_invoke：强制 async=sync、带 work_dir 与 request_id（宿主准入 49 §2.19），单文本项直出。
 func TestRunMetaInvoke(t *testing.T) {
 	cli := &fakeConn{fn: func(_ context.Context, method string) transport.Result {
 		if method == "plugin/v1/tools.call" {
@@ -508,7 +508,7 @@ func TestRunMetaInvoke(t *testing.T) {
 	call := payloadOf(t, cli.snapshot(), 0)
 	want := map[string]any{
 		"name":         "file_read",
-		"arguments":    map[string]any{"path": "a.txt", "async": "never"},
+		"arguments":    map[string]any{"path": "a.txt", "async": "sync"},
 		"work_dir":     `C:\w`,
 		"instance_id":  "ins-1",
 		"session":      "s-1",

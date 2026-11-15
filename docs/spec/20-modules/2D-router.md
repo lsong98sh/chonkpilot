@@ -43,7 +43,7 @@
 | API | 输入 | 输出 / 语义 |
 |-----|------|------------|
 | `New(Config{HTTPClient})` | 出网客户端（nil = 适配器自建） | `*Router`（已装配 4 个内置适配器） |
-| `Register(Spec)` | `{Name, Protocol, BaseURL, APIKey, DefaultModel}` | 幂等：同名**覆盖**；Name/Protocol 空 → `*Error{invalid}`；**apiKey 只存内存、不落日志** |
+| `Register(Spec)` | `{Name, Protocol, BaseURL, APIKey, DefaultModel, ExtraParams?, ExtraHeaders?}` | 幂等：同名**覆盖**；Name/Protocol 空 → `*Error{invalid}`；**apiKey 只存内存、不落日志**。`ExtraParams` 合并进请求体（保护 `model/messages/input/instructions/system/tools/tool_choice/stream/stream_options` 核心字段）；`ExtraHeaders` 用户值优先 |
 | `Unregister(name)` | provider 名 | 未注册 → `*Error{invalid}` |
 | `Reconcile([]Spec)` | 期望注册集 | `Report{Added,Updated,Removed,Unchanged,Failed}`；逐字段相同者**零副作用**；非法 Spec 计 `Failed` 并返回 `errors.Join` |
 | `Capabilities(provider)` | provider 名 | `Caps`（未注册 / 无适配器 → 零值） |

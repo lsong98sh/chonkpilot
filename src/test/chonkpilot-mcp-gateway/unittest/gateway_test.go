@@ -414,52 +414,33 @@ func callAsync(t *testing.T, bus mq.Bus, payload map[string]any) chan map[string
 	return outCh
 }
 
-// awaitAwaiting 等待 tools/call 返回 awaiting 载荷并按新契约（2026-11-06）校验形状：
-// **超时点立即返回占位**（不等用户裁决），字段 = status/task_id/reason/timeout_s/options，
-// 文本 = 任务等待用户裁决，不置 isError；真实结果此后只经 mcp-tasks-report 交付一次。
-func awaitAwaiting(t *testing.T, outCh chan map[string]any) (string, map[string]any) {
+// awaitThresholdEvent 等待 manual 阈值通知并按新契约（2026-11-15）校验：
+// **blocking=true** 表示 tools/call 仍在同步等待（不是 awaiting 占位），options=[detach,cancel]。
+func awaitThresholdEvent(t *testing.T, evCh <-chan map[string]any) (string, map[string]any) {
 	t.Helper()
-	var res map[string]any
+	var ev map[string]any
 	select {
-	case res = <-outCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("manual/never 到超时点后 tools/call 未立即返回 awaiting（仍在阻塞等裁决）")
+	case ev = <-evCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manual 阈值应发 mcp-tools-timeout")
 	}
-	sc, ok := res["structuredContent"].(map[string]any)
-	if !ok {
-		t.Fatalf("awaiting 返回缺 structuredContent: %v", res)
+	if ev["reason"] != "timeout" || ev["mode"] != "manual" || ev["blocking"] != true {
+		t.Fatalf("mcp-tools-timeout 应为 manual/blocking: %v", ev)
 	}
-	if sc["status"] != "awaiting" {
-		t.Fatalf("structuredContent.status = %v, want awaiting（res=%v）", sc["status"], res)
+	if opts, _ := ev["options"].([]any); len(opts) != 2 || opts[0] != "detach" || opts[1] != "cancel" {
+		t.Fatalf("manual options = %v, want [detach,cancel]", ev["options"])
 	}
-	if sc["reason"] != "timeout" {
-		t.Fatalf("awaiting reason = %v, want timeout (sc=%v)", sc["reason"], sc)
-	}
-	if ts, _ := sc["timeout_s"].(float64); ts != 0.1 {
-		t.Fatalf("awaiting timeout_s = %v, want 0.1 (sc=%v)", sc["timeout_s"], sc)
-	}
-	if opts, _ := sc["options"].([]any); len(opts) != 2 || opts[0] != "detach" || opts[1] != "cancel" {
-		t.Fatalf("manual awaiting options = %v, want [detach,cancel]", sc["options"])
-	}
-	taskID, _ := sc["task_id"].(string)
+	taskID, _ := ev["task_id"].(string)
 	if taskID == "" {
-		t.Fatalf("awaiting 返回缺 task_id: %v", res)
+		t.Fatalf("阈值事件缺 task_id: %v", ev)
 	}
-	if res["isError"] == true {
-		t.Fatalf("awaiting 不是失败，不应置 isError: %v", res)
-	}
-	if got := textOf(t, res); got != "任务等待用户裁决" {
-		t.Fatalf("awaiting 文本 = %q, want 任务等待用户裁决 (res=%v)", got, res)
-	}
-	return taskID, sc
+	return taskID, ev
 }
 
-// TestManualThresholdAwaitsDecision 四模式（2026-11-14）：manual 到转异步阈值 →
-// 发 mcp-tools-timeout{options:[detach,cancel]} 且 tools/call **立即返回 awaiting 占位**
-// （不是最终结果、不置 isError）；真实结果最终经 mcp-tasks-report **恰一次**交付。
-//
-// 旧 never/awaiting 语义已退役（never → sync；manual 取代「到点交用户裁决」）。
-func TestManualThresholdAwaitsDecision(t *testing.T) {
+// TestManualThresholdKeepsWaiting 四模式（2026-11-15）：manual 到转异步阈值 →
+// 发 mcp-tools-timeout{mode:manual, blocking:true, options:[detach,cancel]}，
+// tools/call **继续同步等待**；不操作则完成后返回真实结果（不产生 mcp-tasks-report 双份交付）。
+func TestManualThresholdKeepsWaiting(t *testing.T) {
 	release := make(chan struct{})
 	bus, _ := startTestGW(t, []mockSpec{{
 		name: "tool_slow", desc: "slow",
@@ -480,49 +461,42 @@ func TestManualThresholdAwaitsDecision(t *testing.T) {
 		"name": "tool_slow", "tool_call_id": "call-manual",
 	})
 
-	// ① 阈值点：调用**立即**交付 awaiting 占位，事件同步给出 detach/cancel 选项。
-	taskID, _ := awaitAwaiting(t, outCh)
+	// ① 阈值点：只通知「可转异步」，原调用仍在阻塞。
+	taskID, _ := awaitThresholdEvent(t, evCh)
 	select {
-	case ev := <-evCh:
-		if ev["reason"] != "timeout" {
-			t.Fatalf("event reason = %v, want timeout (ev=%v)", ev["reason"], ev)
-		}
-		if ev["task_id"] != taskID {
-			t.Fatalf("event task_id = %v, want %s（与 awaiting 一致）", ev["task_id"], taskID)
-		}
-		if opts, _ := ev["options"].([]any); len(opts) != 2 || opts[0] != "detach" || opts[1] != "cancel" {
-			t.Fatalf("manual options = %v, want [detach,cancel]", ev["options"])
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("manual 阈值应发 mcp-tools-timeout")
+	case res := <-outCh:
+		t.Fatalf("manual 到阈值后不应返回，却收到: %v", res)
+	case <-time.After(300 * time.Millisecond):
 	}
 
-	// ② manual 不再提供 wait；占位已交付，释放执行体 → 终态经 report 恰一次到达。
+	// ② 不操作 → 放开执行体 → 原调用返回真实结果；终态不再经 report 重复交付。
 	close(release)
-	r := awaitReport(t, reportCh, taskID)
-	if r["state"] != "done" {
-		t.Fatalf("report state = %v, want done (report=%v)", r["state"], r)
+	var res map[string]any
+	select {
+	case res = <-outCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("manual 完成后原调用未返回")
 	}
-	if r["result_summary"] != "slow-ok" {
-		t.Fatalf("result_summary = %v, want slow-ok（结果全文）", r["result_summary"])
+	if got := textOf(t, res); got != "slow-ok" {
+		t.Fatalf("manual 同步结果 = %q, want slow-ok (res=%v)", got, res)
 	}
-	if r["tool"] != "tool_slow" {
-		t.Fatalf("report tool = %v, want tool_slow", r["tool"])
-	}
-	if r["tool_call_id"] != "call-manual" {
-		t.Fatalf("report tool_call_id = %v, want call-manual", r["tool_call_id"])
+	if res["isError"] == true {
+		t.Fatalf("正常完成不应 isError: %v", res)
 	}
 	select {
-	case dup := <-reportCh:
-		t.Fatalf("终态只应回报一次，却收到重复: %v", dup)
+	case r := <-reportCh:
+		if r["task_id"] != taskID {
+			t.Fatalf("report task_id = %v, want %s", r["task_id"], taskID)
+		}
+		t.Fatalf("同步完成不应重复产生 mcp-tasks-report: %v", r)
 	case <-time.After(300 * time.Millisecond):
 	}
 }
 
-// TestManualThresholdCancelDeliversImmediately 负例（manual 选 cancel）：awaiting 后取消 →
-// CancelExec 立即成功回执，执行终态 cancelled 经 mcp-tasks-report **立即**交付（不为等待执行体
-// 响应而阻塞——工具 handler 仍在等外部释放）；不产生 done 回报、也不再有第二次占位交付。
-func TestManualThresholdCancelDeliversImmediately(t *testing.T) {
+// TestManualThresholdCancelReturnsCancelled 负例（manual 选 cancel）：阈值后原调用仍阻塞；
+// CancelExec 立即回执 → 原调用返回 cancelled，执行终态 cancelled 经 mcp-tasks-report
+// **立即**交付（不为等待执行体响应而阻塞）；终态只回报一次。
+func TestManualThresholdCancelReturnsCancelled(t *testing.T) {
 	release := make(chan struct{})
 	var once sync.Once
 	closeRelease := func() { once.Do(func() { close(release) }) }
@@ -546,11 +520,11 @@ func TestManualThresholdCancelDeliversImmediately(t *testing.T) {
 	outCh := callAsync(t, bus, map[string]any{
 		"name": "tool_slow_cancel", "tool_call_id": "call-manual-cancel",
 	})
-	taskID, _ := awaitAwaiting(t, outCh)
+	taskID, _ := awaitThresholdEvent(t, evCh)
 	select {
-	case <-evCh:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("manual 阈值应发 mcp-tools-timeout")
+	case res := <-outCh:
+		t.Fatalf("manual 到阈值后不应返回，却收到: %v", res)
+	case <-time.After(200 * time.Millisecond):
 	}
 
 	// 选 cancel：立即回执（不等待执行体退出）。
@@ -562,6 +536,18 @@ func TestManualThresholdCancelDeliversImmediately(t *testing.T) {
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("CancelExec 耗时 %v（应即时返回）", d)
 	}
+	// 原调用交付取消结果（不再提前返回 awaiting，也不丢结果）。
+	select {
+	case res := <-outCh:
+		if res["isError"] != true {
+			t.Fatalf("取消后原调用应 isError: %v", res)
+		}
+		if sc, _ := res["structuredContent"].(map[string]any); sc == nil || sc["status"] != "cancelled" {
+			t.Fatalf("取消后应带 structuredContent.status=cancelled: %v", res)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("取消后原调用未返回")
+	}
 	// 终态立即经 report 交付（执行体未响应也不拖住回报）。
 	r := awaitReport(t, reportCh, taskID)
 	if r["state"] != "cancelled" {
@@ -571,11 +557,6 @@ func TestManualThresholdCancelDeliversImmediately(t *testing.T) {
 	case dup := <-reportCh:
 		t.Fatalf("取消终态只应回报一次，却收到重复: %v", dup)
 	case <-time.After(300 * time.Millisecond):
-	}
-	select {
-	case res := <-outCh:
-		t.Fatalf("cancel 不应再向原调用交付第二次结果: %v", res)
-	case <-time.After(100 * time.Millisecond):
 	}
 }
 

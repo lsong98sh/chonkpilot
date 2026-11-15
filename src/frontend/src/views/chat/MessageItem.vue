@@ -115,11 +115,13 @@
         </Button>
         <!-- 转后台 / 转异步（**同一动作，单一入口**）：点击发前端内部事件 → mq.emit('task-background', {tool_call_id})。
              原「超时裁决条」的「转异步」按钮与工具行「转后台」箭头语义完全相同（都发 task-background{tool_call_id}），
-             故合并为本按钮：运行中 manual 工具显示（canBackground）；裁决态（options 含 detach）亦复用本按钮，
-             避免同动作双入口。title 按当前语义切换（运行中=转后台 / 裁决态=转异步）。 -->
+             故合并为本按钮。manual 新语义（2026-11-15）：阈值到达后 `message.manualThreshold` 被置位，
+             图标高亮（threshold-hit）提示「现在可转异步」；点击后原同步调用返回 pending，继续后台执行。
+             历史 awaiting（options 含 detach）亦复用本按钮。 -->
         <button
           v-if="canDetach"
           class="background-btn"
+          :class="{ 'threshold-hit': !!message.manualThreshold }"
           :title="detachTitle"
           :disabled="backgrounding"
           v-mq:[EventNames.toolBackground].click.stop="{ id: message.id }"
@@ -138,13 +140,12 @@
         >
           <Icon name="clock" :size="11" />
         </button>
-        <!-- 停止（在飞工具取消）：原「超时裁决条」的取消按钮**移入工具行**，与复制图标同行横向排列（无气泡载体）。
-             2026-09-18：改走统一取消入口 task-stop（arbitrationCancel → mq.emit('task-stop', {tool_call_id})，
-             服务端反查归一 server 节点 id 后级联取消并经层 → sink → gateway 真打断）；不再直发已移除的
-             gateway 取消方法面。显示条件不变 = 裁决态（message.arbitration 存在）；
+        <!-- 停止（在飞工具取消）：**所有 pending/running 工具**（sync/async/auto/manual）统一显示；
+             不再仅限超时裁决态。2026-09-18 起走统一取消入口 task-stop（LLM tool_call_id 优先、
+             无则回退任务节点 id；服务端反查归一后级联取消并经层 → sink → gateway 真打断）。
              hover 仅作提示文字（title），不用气泡承载按钮本体。 -->
         <button
-          v-if="message.arbitration"
+          v-if="canCancel"
           class="background-btn stop-btn"
           :title="$t('chat.tool_stop')"
           :disabled="arbitrating"
@@ -307,8 +308,21 @@ const canBackground = computed(() => {
 // 运行中 manual 工具（canBackground）∪ 裁决态含 detach（hasDetach）；二者动作同为
 // task-background{tool_call_id}，故合并为单一入口。
 const canDetach = computed(() => canBackground.value || (!!props.message.arbitration && hasDetach.value))
-// 箭头提示语：裁决态 = 转异步（原裁决条按钮文案）；运行中 = 转后台。
-const detachTitle = computed(() => (props.message.arbitration ? t('chat.timeout_detach') : t('chat.tool_background')))
+// 箭头提示语：阈值已到 = 转异步（高亮）；裁决态 = 转异步；运行中 = 转后台。
+const detachTitle = computed(() => {
+  if (props.message.manualThreshold || props.message.arbitration) return t('chat.timeout_detach')
+  return t('chat.tool_background')
+})
+
+// 停止（取消）入口：**所有在飞工具**（pending/running）都有，不再只限裁决态。
+// 优先 LLM tool_call_id（服务端反查归一），无则回退 message.task_id（server 任务节点 id）。
+// 历史 awaiting 裁决条仍保留入口（即使状态字段缺失）。
+const canCancel = computed(() => {
+  if (props.message.arbitration) return true
+  const s = props.message.status
+  return (s === 'pending' || s === 'running') &&
+    !!(props.message.task_id || props.message.tool_call_id)
+})
 
 // ── 工具卡「查看任务详情」入口 ────────────────────────────────────
 // 显示判据（避免死点）：该工具调用**确有后台任务** = 消息自带 task_id（DB 落库的任务节点 id，
@@ -591,7 +605,8 @@ async function backgroundTool() {
     // 记下服务端返回的任务节点 id → 本卡「查看任务详情」图标随即可用（转后台前该卡无 task_id）
     detachedTaskId.value = taskId
     uiMessage.success(t('chat.tool_background_ok'))
-    if (props.message.arbitration) hideArbitration()
+    // 转异步成功 → 清除阈值高亮 / 历史裁决条（同一 card 不再提供重复动作）。
+    if (props.message.arbitration || props.message.manualThreshold) hideArbitration()
   } finally {
     backgrounding.value = false
   }
@@ -615,21 +630,22 @@ function arbitrationWait() {
   hideArbitration()
 }
 
-// 取消（manual / never 共用）：统一走 task-stop（**不再直发已移除的 gateway 取消方法面**）。
-// 裁决态气泡只有 LLM tool_call_id（message.arbitration.task_id / message.task_id
-// 均为 **gateway 执行 id**，与 server 任务节点 id 不同源）→ 发 {tool_call_id}
-// （instance_id 由 mq 自动注入）；服务端按 tool_call_id 反查 server 任务节点 → 层判定可取消
-// 集合 → 层 → sink → gateway 真打断在飞调用。失败给出明确提示（不再静默）。
+// 取消（**所有在飞工具**共用）：统一走 task-stop（不再直发已移除的 gateway 取消方法面）。
+// id 优先 LLM `tool_call_id`（服务端 `findByToolCall` 反查归一到 server 任务节点，已证链路），
+// 无则回退 `message.task_id`（server 任务节点 id，task-stop 直取）。
+// 服务端按 id 级联取消 → 层判定 → 层 → sink → gateway 真打断在飞调用。失败给出明确提示。
 async function arbitrationCancel() {
   if (arbitrating.value) return
   const callId = props.message.tool_call_id || ''
-  if (!callId) {
+  const taskId = props.message.task_id || ''
+  if (!callId && !taskId) {
     uiMessage.error(t('chat.timeout_cancel_failed'))
     return
   }
   arbitrating.value = true
   try {
-    const res = await mq.emit(EventNames.taskStop, { tool_call_id: callId })
+    const payload = callId ? { tool_call_id: callId } : { task_id: taskId }
+    const res = await mq.emit(EventNames.taskStop, payload)
     const backend = res && res.backend
     const errs = backend && Array.isArray(backend.errors) ? backend.errors : []
     if (errs.length > 0 || (backend && backend.ok === false)) {
@@ -1182,6 +1198,17 @@ const formattedTime = computed(() => {
 .background-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+/* manual 新语义：到达转异步阈值 → 原调用仍同步等待，仅高亮「转异步」图标提示可切换。
+   动画只跑 3 次（不是常驻闪烁），避免干扰；底色/前景均走主题 token。 */
+.background-btn.threshold-hit {
+  color: var(--accent);
+  background: var(--accent-bg, #ecf5ff);
+  animation: threshold-hit-pulse 1.1s ease-in-out 3;
+}
+@keyframes threshold-hit-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
 }
 
 /* 工具行「查看任务详情」图标按钮（Button size="mini"）：压到与同行内联按钮（.background-btn 16×16）

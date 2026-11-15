@@ -351,7 +351,7 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 		{"task-started", "tasks.started", `{"task_id":"tk","tool":"x","kind":"tool","state":"running","session":"s","turn":"t","work_dir":"/w"}`},
 		{"task-done", "tasks.done", `{"task_id":"tk","tool":"x","kind":"tool","state":"done","session":"s","turn":"t","work_dir":"/w"}`},
 		{"mcp-tasks-report", "mcp-tasks-report", `{"task_id":"tk","tool":"x","state":"done","result_summary":"ok","instance_id":"inst-test"}`},
-		{"mcp-tools-timeout", "mcp-tools-timeout", `{"instance_id":"inst-test","tool_call_id":"tc","task_id":"tk","tool":"x","reason":"timeout","timeout_s":5,"options":["detach","cancel"]}`},
+		{"mcp-tools-timeout", "mcp-tools-timeout", `{"instance_id":"inst-test","tool_call_id":"tc","task_id":"tk","tool":"x","reason":"timeout","timeout_s":5,"options":["detach","cancel"],"mode":"manual","blocking":true}`},
 		// GATEWAY-2 L8（2026-10-28）：工具进度下行事件——原名直通（eventType 兜底），
 		// 载荷键 ⊆ 契约 event 声明（total 可选：缺省 = 前端不显示百分比）。
 		{"mcp-tools-progress", "mcp-tools-progress", `{"instance_id":"inst-test","tool_call_id":"tc","progress":20,"total":100}`},

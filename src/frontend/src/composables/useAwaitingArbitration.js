@@ -1,15 +1,20 @@
 /**
- * useAwaitingArbitration — 任务区「待裁决」判定与动作可用性（I-103）。
+ * useAwaitingArbitration — 任务区「待裁决」判定与动作可用性（I-103；**历史兼容**）。
+ *
+ * 2026-11-15 起 gateway 的 manual 四模式语义改为「到阈值仍继续同步等待、只发可转异步通知」，
+ * **不再进入层 `state=awaiting`**；新的前端入口是工具卡的 `message.manualThreshold` 高亮
+ * （见 `MessageList.onToolTimeout` / `MessageItem.canDetach`）。本模块仅保留给升级前遗留的
+ * awaiting 任务 / 旧快照渲染，新代码不要再据此产生 manual 裁决条。
  *
  * 背景（I-103）：前端工具卡来自 `role=tool` 结果行（`chonkpilot-data/persist/view.go` 的
- * `MessageView`），而到达超时点待裁决（层 `state=awaiting`）时**尚无结果行** → 刷新/切会话后
+ * `MessageView`），而旧版到达超时点待裁决（层 `state=awaiting`）时**尚无结果行** → 刷新/切会话后
  * 无卡可挂 → 裁决条消失（`MessageList.vue` 的 `restoreAwaitingArbitration` 恒 `missing`）。
  * 本模块供**任务区**（`views/tasks/SessionTreeNode.vue`）**直接按 `awaiting` 渲染裁决条**使用，
  * 不依赖消息卡；数据来源 = 层权威 `state=awaiting` + `data-tasktree-tasks` 的
  * `awaiting{reason,timeout_s,options}`（I-99 已补；前端经 `useTaskView.refresh` 读入 `tasks` 快照）。
  *
- * `options` 实际取值（gateway）：`never` = `["wait","cancel"]`；`manual` = `["detach","cancel"]`
- * （见 `chonkpilot-mcp-gateway/gateway/mcpgateway.go:851-853`）。
+ * `options` 历史取值（旧 gateway）：`never` = `["wait","cancel"]`；旧 manual = `["detach","cancel"]`
+ * （均已不再产生；新 manual 只发 `mcp-tools-timeout{blocking:true, options:["detach","cancel"]}`）。
  *
  * 纯函数、不依赖 Vue（同 useTaskStatus 模式）→ 可直接 node:test 单测。
  */

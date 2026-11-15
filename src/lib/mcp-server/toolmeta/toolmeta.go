@@ -364,7 +364,7 @@ func metaLoad(ctx context.Context, cli transport.Conn, in call) (string, bool) {
 	return fmt.Sprintf("unknown kind %q（支持：%s）", kind, findTypeNames()), true
 }
 
-// metaInvoke 经插件桥执行目标工具（async=never 强制同步；request_id 同步等待结果）。
+// metaInvoke 经插件桥执行目标工具（async=sync 强制同步；request_id 同步等待结果）。
 func metaInvoke(ctx context.Context, cli transport.Conn, in call) (string, bool) {
 	name := strArg(in.args, "name")
 	if name == "" {
@@ -374,7 +374,7 @@ func metaInvoke(ctx context.Context, cli transport.Conn, in call) (string, bool)
 	if args == nil {
 		args = map[string]any{}
 	}
-	args["async"] = "never"
+	args["async"] = "sync"
 	reqID := "meta-invoke-" + in.cx.ToolCallID
 	if in.cx.ToolCallID == "" {
 		reqID = fmt.Sprintf("meta-invoke-%d", time.Now().UnixNano())

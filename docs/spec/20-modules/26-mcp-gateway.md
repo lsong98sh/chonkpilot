@@ -20,7 +20,7 @@
 | **Contracts** | `registry.go` / `toolschema.go` / `serverslist.go` | 下游条目、工具暴露名 / 前缀 / 覆盖表、`_meta` 归一 |
 | **Policy** | `provider.go`（purpose 逻辑）/ `subjects.go` / `breaker.go` / `tooloverride.go` / `primitives.go` | 调用准入（`tool.before_call` 钩子）、熔断、异步覆盖、统一 `{status}` 结果封装（**无独立 `purpose.go`**，2026-11-04 核对） |
 | **Dispatcher** | `provider.go` / `registered_provider.go` | 三类下游 provider（`stdio` 自持子进程 / `proxied` 远程 http·sse / `registered` 注册回调）+ `_meta` 注入 |
-| **TaskLayer** | `tasks.go` / `execsink`（窄接口在 `tasks.go:111`，**无独立 execsink 文件**） | 执行四态（同步 / 异步 / pending / awaiting）+ 取消 + 完成回报（**只发 server**） |
+| **TaskLayer** | `tasks.go` / `execsink`（窄接口在 `tasks.go:111`，**无独立 execsink 文件**） | 执行四态（同步 / 异步 / pending / detached）+ 取消 + 完成回报（**只发 server**）；`awaiting` 为历史遗留，manual 新语义不再产生 |
 
 - **① 零工具实现（L5）**：`Params.MCPServer`、self 内存节点（原 `selfnode.go`，已删除）、dir 目录节点（原 `dirnode.go`，已删除）、`ContractScanner`、资产注册表（`mcp_find/mcp_load` 的目录资产面）、`llmToolPick` **全部删除**。**〔2026-11-04 核对〕** `Params` 实际字段 = `Transport` / `Servers` / `NsPrefix` / `CallTimeout` / `PreHookTimeout` / `CBThreshold` / `CBCooldown` / `MaxTasks` / `AsyncMode` / `ExecSink` / `ProgressHandler` / `ElicitHandler` / `Logf` / `Hooks`（`mcpgateway.go:34-73`）；**无** `MCPServer` / `MCPConfig` / `ServersFile` / `ManageAddr`。
 - **② 内置与第三方一视同仁（L5；P0a 2026-10-29 订正）**：全部下游都是**普通 provider**；`Origin=builtin` 仅决定是否注入 `_meta["chonkpilot"]`，**不再有 `builtin` 分支**。`tools/register` 的注册工具经 `registeredProvider` 参与路由，**暴露名 = 原名**（内置 `self` 节点不再加 `self_` 前缀，见 §4.3.1）。
@@ -147,27 +147,25 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
     再 delete(args, `tool_call_display_name`)——gateway 注入的展示参数，不传下游（**剥离逻辑不变**）
     （**不叫 purpose**：避免与工具自有 purpose 冲突，如 mcp_find 的任务目标语义推荐）
 熔断 ps.cb.allow()（open 且未过冷却 → -32601 "circuit open"）
-  → 模式解析：契约 _meta.async（缺省 auto）→ Params.AsyncMode 全局覆盖 → 调用级 async/_async 覆盖（never 不可被覆盖）
-  → 有效超时：**工具 `_meta.timeout` 显式「无上限」（`0`/`-1`）绝对优先、不可被覆盖**；否则 调用级(`>0`) > 条目 TimeoutSec(`>0`) > 工具 meta timeout(`>0`) > 全局；threshold 缺省 = timeout
-  → always 立即转后台；auto 超阈值转后台；**never / manual 到点 → 发 `mcp-tools-timeout` 交用户裁决**（never 可选 `tools/wait` 继续等，manual 无此选项）
-  → 配置⑤ 超时自动取消（usr `tool_async.<暴露名>.cancel_on_timeout > 0`）：never / manual 到点**直接取消**（`tm.cancelRef` → `onTaskCancel` 按执行线终止），**不发 `mcp-tools-timeout`、不等裁决**；**默认 0 = 不取消**；auto 语义不变（阈值命中仍转后台）
-  → `never` / `manual` 超时**均不失败**，任务保持 `running` 待裁决
-  → **例外：工具 `_meta.timeout` 显式 `0` / `-1` = 无上限** → **不设裁决点、不发 `mcp-tools-timeout`**，直接阻塞等待至完成或**用户取消**；且**调用级 / server 级 / 全局超时均不得覆盖**（「无上限」必须是绝对的，[18 §3.8](../10-architecture/18-工具异步超时与取消.md)）
-  → 后台：执行池（`execPool`，原 `TaskManager`）goroutine（pending→running→done|error|cancelled）→ 完成回报 mcp-tasks-report
+  → 模式解析：契约 _meta.async（缺省 auto）→ Params.AsyncMode 全局覆盖 → 调用级 async/_async 覆盖；四模式 = sync|async|auto|manual（旧 never→sync / always→async 仅兼容读取）
+  → 执行硬上限：**工具 `_meta.timeout` 显式「无上限」（`0`/`-1`）绝对优先、不可被覆盖**；否则 调用级(`>0`) > 条目 TimeoutSec(`>0`) > 工具 meta timeout(`>0`) > 全局；`>0` 到点取消，`<=0` 不设上限
+  → 转异步阈值：仅 auto/manual 读取 `async-threshold`（契约 / 界面覆盖）；未声明 = **30s**（**不再回落 timeout**）
+  → async 立即转后台；auto 到阈值自动转后台；**manual 到阈值只发 `mcp-tools-timeout{mode:"manual",blocking:true,options:["detach","cancel"]}` 并继续同步等待**（不进入 awaiting、不提前返回）
+  → manual 后续：不操作 → 真实结果；`detachCh` → `pending`；`cancel` → `cancelled`；执行硬上限先到 → 取消
+  → sync（以及 auto/manual 未到阈值时）阻塞等待；所有在飞执行均可被 `task-stop` → `CancelExec` 取消
+  → 后台：执行池（`execPool`）goroutine（pending→running→done|error|cancelled）→ 完成回报 mcp-tasks-report
 ```
 
-> **说明**：上文 `pending→running→done|error|cancelled` 是 **gateway 内部 goroutine 执行态**（`execPool` 内存池，随进程生灭），**不等于 Task 层的权威状态**。**控制面以层（`src/lib/task`）为权威**：层 `state` 共 **8 态**——除 `pending`/`running`/`done`/`error`/`cancelled`/`interrupted` 外，另含 **执行态** `detached`（已转后台）/ `awaiting`（超时到裁决点、等用户选择）；且**状态优先级 = 终态 > 执行态(`detached`/`awaiting`) > 粗粒度(`pending`/`running`)**，`exec_json` **只增不减（深合并）**。gateway 的 4 类执行态（`started`/`detached`/`awaiting`/`error`）经 **层内 API**上报落库（`ExecSink.OnExecState`，不新增 MQ 主题）。**状态总表（8 态 + `closed` 标记 + 执行态映射 + 优先级）见 [21 §5.3](../10-architecture/21-任务层设计方案.md)**。
-
-- **取消后等待的兜底上限**：配置⑤ 超时自动取消（`cancel_on_timeout > 0`）路径中，`ep.cancel` 已置终态并 `markDone`（`doneCh` 立即关闭）→ 正常**零等待**；执行体极端不响应取消时，**`cancelDeliverWait`（5s）兜底超时后按 `cancelled` 交付**，避免永久占用 mq 同步派发线程。
+> **2026-11-15 订正**：`awaiting` 占位 / `tools/wait` / `cancel_on_timeout` 均为历史；manual 阈值后保持 `running` 并继续同步等待。gateway 执行态上报点 = `started` / `detached` / `error`（`awaiting` 不再产生）；层仍保留 `awaiting` 字段仅作升级前遗留兼容。
 
 - **调用上下文透传边界（R-11，按来源判定）**：`doCall` 的 `req.Context`（`instance_id`/`work_dir`/`data_dir`/`session`/`turn`/`tool_call_id`/`purpose`）经 `withTurnContext` 注入执行 ctx。是否把上下文以 MCP `tools/call` 的 **`params._meta`**（命名空间 `chonkpilot`，`callContextMeta`）透传，**只看来源 `Origin`**：`builtin`（`memNodeProvider`：self/dir 本仓 in-memory 节点；`proxyProvider`：standalone 本仓下游）→ 透传；`user`（第三方，用户定义）→ **不携带任何 `_meta`/`CHONKPILOT_*`**。**不以是否 in-process 为界**；上下文仍**不注入 tool arguments**；gateway 自持工具/域工具的 AddTool 包装经 `execCtxFromMeta` 从 `req.Params.Meta` 恢复 ctx。见 [16 §8.4/§8.8](../10-architecture/16-路径解析规范.md)。
 
-- **执行层定位（任务编排分层）**：gateway 在任务面**只承担单次 `tools/call` 的执行层** —— spawn / 阈值计时 / `autoDetach` / `enterAwaiting`（`mcp-tools-timeout`）/ `tools/wait` / **执行池取消（`CancelExec`）与转后台（`DetachExec`）** → `tm.cancel` / `tm.detach` → `onTaskCancel` → `Provider.Terminate`（**按执行线分派**：spawned = kill + respawn；in-memory = 协作式 no-op；纯远程 = 仅断请求），终态经 `mcp-tasks-report` 回报 llm（`tasks.go` 注释原文：「tasks.done 仅回报 server，不对前端广播——**任务编排提升 server，gateway 纯执行层**」）；**任务树/父子/级联/批量/任务事件由 llm-server 编排**（`src/lib/llm/server/tasks.go`，注释原文「**gateway 是纯执行层，不对前端广播任务事件**」）。故**不得表述为「所有控制都在 gateway」**（应限定为**单次调用执行层**）。详见 [18 §3.6 A](../10-architecture/18-工具异步超时与取消.md)。
+- **执行层定位（任务编排分层）**：gateway 在任务面**只承担单次 `tools/call` 的执行层** —— spawn / 阈值计时 / `autoDetach` / `thresholdNoticeState`（`mcp-tools-timeout`）/ **执行池取消（`CancelExec`）与转后台（`DetachExec`）** → `tm.cancel` / `tm.detach` → `onTaskCancel` → `Provider.Terminate`（**按执行线分派**：spawned = kill + respawn；in-memory = 协作式 no-op；纯远程 = 仅断请求），终态经 `mcp-tasks-report` 回报 llm（`tasks.go` 注释原文：「tasks.done 仅回报 server，不对前端广播——**任务编排提升 server，gateway 纯执行层**」）；**任务树/父子/级联/批量/任务事件由 llm-server 编排**（`src/lib/llm/server/tasks.go`，注释原文「**gateway 是纯执行层，不对前端广播任务事件**」）。故**不得表述为「所有控制都在 gateway」**（应限定为**单次调用执行层**）。详见 [18 §3.6 A](../10-architecture/18-工具异步超时与取消.md)。
 
 - **执行侧控制面**：取消 / 转后台的**传输面**从 MQ 方法面改为**进程内 sink** —— `ExecSink.CancelExec` / `ExecSink.DetachExec`（gateway 包内窄接口，装配方 `src/lib/llm/server` 实现并转调 gateway 公开方法 `(*Gateway).CancelExec` / `(*Gateway).DetachExec`，复用既有 `tm.cancelRef` / `tm.detach`；`CancelExec` 仍**先问层**：层判不可逆终态 → 拒绝）。语义与既有等价：取消 = 级联标终态 + `provider.Terminate` 真打断（含已 detached 后台任务）；转后台 = 解绑在飞调用 + 原同步调用返回 `pending{task_id}` + 终态走 `mcp-tasks-report`。**sink 未注入 / 层未就绪 → 调用方返回明确错误、不动作**（gateway 单体 exe 仍可独立运行，直接调公开方法）。**异步结果 / 状态不再由 gateway 提供**：结果读 message 表（`{call,result,async}`）、状态以任务层为准。
 
 - **异步 / 超时 / 取消（已落地，详见 [18-工具异步超时与取消](../10-architecture/18-工具异步超时与取消.md)）**：gateway 是**唯一裁决点**（模式裁决 + 阈值/超时计时 + 裁决事件 + 取消编排）。取消**按 provider 执行线分派**（`onTaskCancel` → `Provider.Terminate`）：spawned/自持 = `InvalidateScoped`（kill + respawn）、in-memory（预连接 `Session`）/`registered` = 协作式 no-op、纯远程 = 仅断请求；`execCtx` 经 `withTurnContext` 注入，其取消经 in-memory 传输送达执行体（§3.7 探针证「能传递」）→ 执行体侧真停（mcp-server `callTool` + `CommandContext`）。
-  - **工具分类与异步模式约束** —— 分类按「**执行线**」共 **10 类**（**归属按提供方、处理按执行线**：类① gateway 自有 `mcp_find`/`mcp_load`/`mcp_invoke` · 类② `llm_run` · 类③ `tool_result`（`tool_stop` 已删除） · 类④ `ask_user` · 类⑤ mcp-server 执行器 · 类⑥ stdio · 类⑦ http·spawned · 类⑧ http·remote · 类⑨ sse·spawned · 类⑩ sse·remote）；模式约束 = **类①③④ 仅同步 / 类② 仅异步 / 类⑤–⑩ 四档全支持**；配置⑤（超时自动取消 `cancel_on_timeout`，usr 键）**类①③④ 不定义**、**类⑤⑥⑦⑨ 支持**、**类⑧/⑩ 降级「尽力」**；组合数重算 = 10 类 × 5 配置 = 50 → **有效 34（按「不支持」口径 32）· 可用 28 · 缺失 6**。细节见 [18 §3.1/§3.2/§4](../10-architecture/18-工具异步超时与取消.md)。
+  - **异步模式 / 打点（现行）**：四模式 `sync|async|auto|manual`；契约 42 个（`sync` 25 / `auto` 17，`manual` 当前 0 个）。`manual` 到阈值继续同步等待、只通知可转异步；执行硬上限 `timeout` 对四模式统一生效（`>0` 到点取消）。打点 `_meta.touch_files` 随契约透出；前端「涉及文件变动」列 / 工具卡优先读取。旧「10 类 × 5 配置」与 `cancel_on_timeout` 组合矩阵为历史存档。细节见 [18 §3.1/§3.2/§4](../10-architecture/18-工具异步超时与取消.md)。
 
 ### 4.3 路由与隔离（`registry.go`）
 - `toolRoute{Name, Original, Provider, Tool, Hot, Scope}`；`routeKey = scope+"|"+name`。
@@ -185,7 +183,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
   - 实现 = `chonkpilot-plugins/mcp/src/main.go:118-172`；schema = `query`（关键词，缺省空）+ `type`（`tool`（默认）/`prompt`/`resource`/`all`）+ `limit`（缺省 20，上限 200）。**无 `purpose` 参数**（原 LLM 语义推荐已移除），**`query`/`purpose` 均省略 → 返回该类型全部条目**；`type=agent` / `type=skill` 不支持。
   - `query` → 本地关键词检索（name/description 子串、忽略大小写）；`type` → 候选集按工具 / prompt / resource 收敛。
   - 返回 `{ok,type,count,entries}`；每条 entry 含 `name`/`description`/`server`/`inputSchema`（工具）等。**gateway 侧只负责路由与 `_meta` 归一**，排查发现逻辑请到 `mcp` 插件。
-  - `mcp_load`（插件 `main.go`）= 按 `name` 加载条目完整定义（**无 `kind` 参数**；skill/prompt/resource 只返回 `content`）；`mcp_invoke`（插件 `main.go`）= 按 `name` + `arguments` 经 `plugin/v1/tools.call` 同步调用。**`mcp_invoke` 不设自身超时**（契约 `timeout: 0`），等待/超时行为由**目标工具**的契约决定：`on_timeout=fail` → 报错；`auto/always` → 转后台返回 `pending`；`manual/never` → 返回 `awaiting`（可选 wait/cancel）。
+  - `mcp_load`（插件 `main.go`）= 按 `name` 加载条目完整定义（**无 `kind` 参数**；skill/prompt/resource 只返回 `content`）；`mcp_invoke`（插件 `main.go`）= 按 `name` + `arguments` 经 `plugin/v1/tools.call` 同步调用。**`mcp_invoke` 不设自身超时**（契约 `timeout: 0`），等待/超时行为由**目标工具**的契约决定：`sync` → 同步返回；`async` → 立即 pending；`auto` → 到阈值转后台 pending；`manual` → 到阈值继续同步等待、前端出现转异步图标。
   - **`mcp_load` 对 `resource` 的内容承载（2026-10-14 历史口径）**：经 gateway `ReadResource` 实时读取，文本 `content` / 二进制 `blob`；现行 `mcp_load` 由插件返回 entry，内容读取口径以插件实现与 [28-plugins](28-plugins.md) 为准。
 - **调用展示名参数的注入与剥离**：`injectDisplayName` 给**每个**工具注入展示参数 **`tool_call_display_name`**（≤20 字符，UI 展示调用名；写入 `properties` + `required`，除非契约已定义同名）；`doCall` 执行前**统一剥离**，不传下游工具。
   - **为何不叫 `purpose`**：`purpose` 是工具可自有的语义参数（插件工具亦可定义）；旧实现把注入参数命名为 `purpose`，导致 `doCall` 的剥离把工具自身的 `purpose` 一并吞掉。**更名后无需标记**，剥离逻辑无条件。【2026-11-04 核对】现行 `mcp_find` 已无 `purpose` 参数，此条仅解释历史命名与仍存在的注入参数。
@@ -280,7 +278,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 ## 9. 现状与待办
 
 - ✅ **疑似死代码/未接线已清理完毕**（gateway 目录已无 `instanceTracker` / `TaskManager.{cancelByInstance,prune,reportProgress}` / `dirNodeCount` / `handleServersReload` / `handleRegister` / `handleUnregister` 等符号）。
-- ✅ **工具异步 / 超时 / 取消统一议题已落地**（取消按执行线分派 `Provider.Terminate`、⑤ 超时自动取消 `cancel_on_timeout`、executor 真终止）——见 §4.2 末条与 [18-工具异步超时与取消](../10-architecture/18-工具异步超时与取消.md)（B1–B4 已实施）。
+- ✅ **工具异步 / 超时 / 取消统一议题已落地**（四模式 + 两项阈值 + 取消按执行线分派 `Provider.Terminate`）——见 §4.2 末条与 [18-工具异步超时与取消](../10-architecture/18-工具异步超时与取消.md)（2026-11-15 四模式版）。
 - ✅ **已决并已落地**：**删除 `inprocess://` 分支** —— `newProxyProvider` 只认 `stdio` / `http` / `sse`（未知 → `unknown transport`），同进程能力一律走 `entry.Session`（`sdkConn` / memNode）。〔2026-10-28 核对：`gateway/` 目录已无 `inprocess` 字样，无需再改〕
 - ⚠️ heartbeat/instance-exit 不再消费（`subscribeAll` 不含）。
 - 🔵 `callTimeout` 预留（不再设传输层超时）；**另复用为实例建连/重连超时**（`newProxyProvider` 的 `connTimeout`，≤0 → 60s；**不新增配置键**）。**空闲回收 TTL 已随动态池删除**（2026-10-28）。
@@ -311,7 +309,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 ## 10. 关联测试
 
 `src/test/chonkpilot-mcp-gateway/unittest/gateway_test.go`（内存总线 + 自备能力源官方 server → New/Start → 总线驱动）：
-`TestSyncCall` · `TestAsyncByMeta` · `TestAsyncByRequest` · `TestBackgroundManual` · `TestTaskReport` · `TestTaskCancel` · `TestTaskError`；另有 `TestNeverTimeoutAwaitsDecision` · `TestAutoTimeoutConverts` · `TestExecControlRemovedFaces` 等。**〔2026-11-04 核对〕原列的 `TestMCPFindAllNoQuery` / `TestMCPFindPurposeAllTypes` 在 gateway 与主仓均不存在**（`mcp_find` 语义已迁至 `chonkpilot-plugins/mcp`）。
+`TestSyncCall` · `TestAsyncByMeta` · `TestAsyncByRequest` · `TestBackgroundManual` · `TestTaskReport` · `TestTaskCancel` · `TestTaskError`；另有 `TestManualThresholdKeepsWaiting` · `TestManualThresholdCancelReturnsCancelled` · `TestAutoTimeoutConverts` · `TestExecControlRemovedFaces` 等。**〔2026-11-15 核对〕manual 用例已改为「阈值后仍阻塞 / detach→pending / cancel→cancelled / 不操作→真实结果」**；原 `TestNeverTimeoutAwaitsDecision` 已删除（awaiting 语义退役）。
 
 `chonkpilot-agent/gateway/src/pool_test.go`（动态实例池白盒；2026-10-28 改「动态池 · 不保留 free 池」）：
 `TestDynamicPoolQueueHandoffReuse`（同键并发 3 调用 / `maxConcurrent=2` → 峰值 2 实例、第 3 个排队后**复用同一实例**、创建次数=2）· `TestInstanceDestroyedAfterHandoffGrace`（无同键等待 → 1s（±容差）销毁进程，下次调用重新 spawn）· `TestDifferentWorkdirsDoNotQueueEachOther`（不同 workdir 实例数独立、互不排队）· `TestInstanceExitedRemovedAndRespawn`（进程自退 → 立即移出 + 重新 spawn）· `TestInflightCallBindsInstanceAndProgress`（`call_id → inflight{实例}` 精确，progress 归位到该实例）· `TestSameWorkdirInstancesShareKeyAndScopedClear`（同 workdir 不同 instance 共享键；作用域终止整键清且不影响其他 workdir）· `TestIsolateFalseSharesSingleConn` · `TestIsolateMissingWorkdirFallsBackShared` · `TestIsolateDefaultInferredByTransport` · `TestParseServersListIsolateAndInvalidatePool` · `TestRegisterSpecCarriesIsolate` · `TestProxiedTerminateDoesNotRebuildSharedConn`。
