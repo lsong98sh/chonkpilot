@@ -6,7 +6,7 @@
 ```text
 capability/plugins/demo-python/
 ├── manifest.json        # 完整 manifest（插件自读并在 plugin.hello 上报）：runtime / mcp / config / ui / permissions
-├── plugin.json          # 极简启动文件（宿主据此拉起）：id / cmd / enabled / name / icon
+├── plugin.ini           # 启动文件（宿主据此拉起）：[plugin] cmd / args
 ├── plugin.py            # 插件本体：通道 + MCP + RPC + 数据面
 ├── tools/demo_echo.tool.md  # 工具契约：策略（async/timeout/on_timeout/hot）+ `# 摘要` + `# 参数` schema
 ├── llm_bridge_proxy.py  # LLM 桥接入口的 loopback→UDS 字节代理（demo，与插件运行无关）
@@ -15,7 +15,7 @@ capability/plugins/demo-python/
 ```
 
 > `manifest.json` 才是完整 manifest（`ui.views` / `ui.assets` / `permissions` 等都在这里）；
-> `plugin.json` 只是启动参数（`id/cmd/enabled/name/icon`），不是完整 manifest，二者分别维护。
+> `plugin.ini` 只是启动参数（`[plugin] cmd/args`），不是完整 manifest，二者分别维护。
 > 本样例无 exe / 无法 embed，`webui/` 同时作为页面写法参考。
 
 ## 运行前提
@@ -84,7 +84,7 @@ python llm_bridge_proxy.py --listen 127.0.0.1:5669
 
 ## 用这份 demo 写自己的插件
 
-1. 复制本目录 → 改 `manifest.json` 的 `id`/`name`/`runtime`（完整 manifest）与 `plugin.json` 的 `id`/`name`/`cmd`（启动参数）；
+1. 复制本目录 → 改 `manifest.json` 的 `id`/`name`/`runtime`（完整 manifest）与 `plugin.ini` 的 `cmd`/`args`（启动参数）；
 2. `plugin.py` 里替换 `call_tool`（MCP 工具执行）以及 `rpc`（配置页方法）；工具契约放 `tools/<name>.tool.md`（`# 基本信息` YAML + `# 摘要` + `# 参数` JSON），`build_tools()` 会用它覆盖代码里的 fallback 定义；
 3. 需要宿主数据时在 `permissions.data` 声明 `resource.op`（如 `session.snapshot.get`）；
 4. 需要密钥时在 `manifest.json` 的 `config.fields` 标 `"secret": true`；

@@ -166,7 +166,7 @@ func (l *Layer) Apply(subject string, payload []byte) error {
 
 // applyNode 处理 llm 节点快照（tasks.started / updated / done → 快照 upsert）：
 // 载荷**不携带** exec 信息 → 既有 `exec_json` 原样保留；llm 粗粒度状态（pending/running）**不降级**
-// 既有执行态（detached/awaiting），终态（done/error/cancelled）照常覆盖并保留 exec_json
+// 既有执行态（detached），终态（done/error/cancelled）照常覆盖并保留 exec_json
 // （P3 修正，见 commitAgainst ②③）。
 func (l *Layer) applyNode(payload []byte) error {
 	var ev nodeEvent
@@ -519,8 +519,8 @@ func (l *Layer) commit(rec *Record) error {
 //	① 撞号（同 (workdir, task_id) 语义冲突）→ 拒绝并记错误日志，层不覆盖；
 //	② `exec_json` **只增不减**（P3 修正）：incoming 未携带 exec 信息（llm 节点 / 终态快照）→ 保留既有值；
 //	   incoming 携带（gateway 执行态）→ 与既有值深合并（不丢 gw_task_id / provider_key / detail 明细）；
-//	③ 状态优先级（P3 修正）：终态 > 执行态(detached/awaiting) > 粗粒度(pending/running)——incoming
-//	   pending/running 不得把既有 detached/awaiting 降级（保留既有状态，其余字段照常合并）；终态必须覆盖；
+//	③ 状态优先级（P3 修正）：终态 > 执行态(detached) > 粗粒度(pending/running)——incoming
+//	   pending/running 不得把既有 detached 降级（保留既有状态，其余字段照常合并）；终态必须覆盖；
 //	④ 状态回退 / 非法转移（done/error/cancelled 不可逆、pending→running 单向）→ 拒绝并记日志，不 panic；
 //	⑤ 已逻辑删除的节点 → 保留 closed/deleted_at（关闭后不因后续事件复活）；
 //	⑥ 同 (workdir, task_id) 重复事件且内容一致 → 幂等短路，不重复落库；
@@ -747,7 +747,7 @@ func (l *Layer) CancelSubtree(instanceID, rootID, topSession string) []string {
 }
 
 // Recover 启动恢复（21 §8.1-3 / P2 交付物 ⑥，取代既有 llm cleanupStaleTasktree）：
-// 把库中**非终态**（pending / running / awaiting / detached）节点一律标 `interrupted`
+// 把库中**非终态**（pending / running / detached）节点一律标 `interrupted`
 // （可重试；**不自动重跑**），closed 等既有标记原样保留。返回标注节点数。
 // 失败只告警（返回 0）；不新增消息主题（复用 data-tasktree-tasks / -list / -upsert）。
 func (l *Layer) Recover(instanceID string) int {

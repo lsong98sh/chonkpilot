@@ -61,6 +61,7 @@ func New(bus mq.Bus, opts Options) *Server {
 		continuePending: make(map[string]bool),
 		taskTurnIndex:   make(map[string]*turnCtx),
 		inboxIndex:      make(map[string]facade.InboxItem),
+		inboxLoaded:     make(map[string]bool),
 		inboxConsuming:  make(map[string]bool),
 		// 后台任务完成通知挂账（§5.3）
 		notifyQueues:   make(map[string][]completionNotice),
@@ -121,7 +122,7 @@ func New(bus mq.Bus, opts Options) *Server {
 			Servers:   servers,
 			AsyncMode: opts.AsyncMode,
 			SkipTools: externalTools,
-			// P3（21 §9.3）：gateway 执行态（started/detached/awaiting/error）**经层内 API 直调**
+			// P3（21 §9.3）：gateway 执行态（started/detached/error）**经层内 API 直调**
 			// 纳入任务层（不新增 MQ 主题）；2026-09-18 起取消/转后台亦经本 sink 进程内直调。
 			// 层未注入（库内 / gateway 单体）→ gateway 侧全部 no-op。
 			ExecSink: sink,
@@ -152,6 +153,9 @@ func New(bus mq.Bus, opts Options) *Server {
 // Start 启动内嵌数据服务 + gateway + 订阅客户端方法面/通知 + 注册域工具与 agent + 插件。
 func (s *Server) Start(ctx context.Context) error {
 	markStartupBegin() // OP-15：启动分段计时基准（仅插桩）
+	// 易失 lane 的启动清空（2026-11-16 inbox 架构整理）：挂账通知等只存在于内存、重启后不回放；
+	// 用户持久 lane（inbox_items 的 next_turn / insert）不在此清空，按 pending 懒恢复。
+	s.clearEphemeralLanes()
 	// 内嵌 persist 数据服务（应答 data-* 面；先于 gateway/路由，保证数据请求可用）
 	if s.data != nil {
 		if err := s.data.Start(); err != nil {
@@ -252,7 +256,17 @@ func (s *Server) Stop() {
 		s.capWatch.Close()
 	}
 	if s.gw != nil {
-		s.gw.Stop(context.Background())
+		// 第 1 条 C：Stop 预算 —— gateway 停止（含执行池收口）最多等 5s；超时 / 错误只留痕，
+		// 不阻断后续 teardown（否则关停可被单个下游卡死）。
+		stopCtx, cancel := context.WithTimeout(context.Background(), gatewayStopTimeout)
+		begin := time.Now()
+		err := s.gw.Stop(stopCtx)
+		cancel()
+		if err != nil {
+			logf("[chonkpilot-server] gateway.Stop 失败（耗时 %s）: %v\n", time.Since(begin), err)
+		} else {
+			logf("[chonkpilot-server] gateway.Stop 完成（耗时 %s）\n", time.Since(begin))
+		}
 	}
 	// 能力源会话（GATEWAY-2 L5）：gateway 停后再关进程内 MCP 会话（nil = 未建立）。
 	if s.stack != nil && s.stack.Close != nil {
@@ -311,3 +325,6 @@ func (s *Server) Stop() {
 
 // drainTurnsTimeout 是 Stop 等待轮次 loop 收尾的上限（超时只留痕，不阻断关停）。
 const drainTurnsTimeout = 10 * time.Second
+
+// gatewayStopTimeout 是 Stop 等待内嵌 gateway（含执行池收口）的上限（第 1 条 C：Stop 预算）。
+const gatewayStopTimeout = 5 * time.Second

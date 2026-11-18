@@ -70,7 +70,7 @@ func TestRegisterContractsSkipsServerCategory(t *testing.T) {
 	root := t.TempDir()
 	writeToolDocForTest(t, root, "exec_core", "category=core\nruntime=../../executors/core.exe\n")
 	writeToolDocForTest(t, root, "plain_tool", "") // 无 category → 仍注册
-	writeToolDocForTest(t, root, "srv_tool", "category=server\nasync=always\nhot=true\n")
+	writeToolDocForTest(t, root, "srv_tool", "category=server\nasync=async\nhot=true\n")
 
 	ms := mcp.NewServer(&mcp.Implementation{Name: "t", Version: "1.0.0"}, nil)
 	if err := RegisterContracts(ms, root, nil); err != nil {
@@ -88,7 +88,7 @@ func TestServerToolsReturnsServerCategory(t *testing.T) {
 	root := t.TempDir()
 	writeToolDocForTest(t, root, "exec_core", "category=core\nruntime=../../executors/core.exe\n")
 	writeToolDocForTest(t, root, "plain_tool", "")
-	writeToolDocForTest(t, root, "srv_tool", "category=server\nasync=always\nhot=true\n")
+	writeToolDocForTest(t, root, "srv_tool", "category=server\nasync=async\nhot=true\n")
 
 	tools, err := ServerTools(root, nil)
 	if err != nil {

@@ -318,7 +318,7 @@ def wait_plugins_running(client, ids, max_wait=180, interval=1.0):
 
 
 def wait_tools(client, required, max_wait=120, interval=0.5):
-    """有界等待 `tools-list` 含全部 required（按暴露名；`self_` 前缀自动归一）。
+    """有界等待 `tools-list` 含全部 required（按当前暴露名精确判定）。
 
     返回末次工具名列表（去前缀后的判定集合命中即返回）。超时抛 TestError。
     用于消除「ready 早于插件工具注册」的竞争（见上方就绪栅栏说明）。
@@ -332,7 +332,7 @@ def wait_tools(client, required, max_wait=120, interval=0.5):
             last = sorted(t.get("name") or "" for t in raw if isinstance(t, dict))
         except Exception:
             last = []
-        canon = {n[5:] if n.startswith("self_") else n for n in last}
+        canon = set(last)
         if all(r in canon for r in req):
             return last
         time.sleep(interval)
@@ -343,7 +343,7 @@ def wait_tools(client, required, max_wait=120, interval=0.5):
 def ensure_task_panel_open(client, timeout=DEFAULT_PROBE_TIMEOUT):
     """确保任务面板已展开（2026-09-27「首屏减负」后 `MainLayout.vue taskOpen` 默认 false）。
 
-    断言任务区 DOM 的套件（`.session-tree-node` / `.session-chat` / `.node-awaiting` 等）须先展开：
+    断言任务区 DOM 的套件（`.session-tree-node` / `.session-chat` 等）须先展开：
     经**既有** `tasks-toggle` 事件（等价用户点顶部「任务」开关）→ 等 `.session-chat` 挂载。
     幂等：已展开直接返回 True；超时返回 False（由调用方决定是否判红）。
     """

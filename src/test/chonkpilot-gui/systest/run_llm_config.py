@@ -189,7 +189,7 @@ def main():
     c.console(clear=True)
     # 事件捕获注册（mq-only 确权前置）：缺此注册则 events_of 恒空（脚本间隐式依赖已消除）
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
-    c.mq_on_capture(["turn-start", "llm-complete", "llm-token", "llm-error", "error"])
+    c.mq_on_capture(["turn-start", "llm-complete", "llm-receive", "llm-error", "error"])
     total += 1; ok += run_case("三.2a 按所选 LLM 发起调用（请求配置一致）", case_llm_active_verify)
     total += 1; ok += run_case("三.2b 外部修改热重读（改 temperature 无需重启生效）", case_hot_reload)
     errs = c.console()

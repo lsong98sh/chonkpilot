@@ -20,7 +20,7 @@
 | **Contracts** | `registry.go` / `toolschema.go` / `serverslist.go` | 下游条目、工具暴露名 / 前缀 / 覆盖表、`_meta` 归一 |
 | **Policy** | `provider.go`（purpose 逻辑）/ `subjects.go` / `breaker.go` / `tooloverride.go` / `primitives.go` | 调用准入（`tool.before_call` 钩子）、熔断、异步覆盖、统一 `{status}` 结果封装（**无独立 `purpose.go`**，2026-11-04 核对） |
 | **Dispatcher** | `provider.go` / `registered_provider.go` | 三类下游 provider（`stdio` 自持子进程 / `proxied` 远程 http·sse / `registered` 注册回调）+ `_meta` 注入 |
-| **TaskLayer** | `tasks.go` / `execsink`（窄接口在 `tasks.go:111`，**无独立 execsink 文件**） | 执行四态（同步 / 异步 / pending / detached）+ 取消 + 完成回报（**只发 server**）；`awaiting` 为历史遗留，manual 新语义不再产生 |
+| **TaskLayer** | `tasks.go` / `execsink`（窄接口在 `tasks.go:111`，**无独立 execsink 文件**） | 执行四态（同步 / 异步 / pending / detached）+ 取消 + 完成回报（**只发 server**）；`awaiting` 已删除，manual 新语义不再产生 |
 
 - **① 零工具实现（L5）**：`Params.MCPServer`、self 内存节点（原 `selfnode.go`，已删除）、dir 目录节点（原 `dirnode.go`，已删除）、`ContractScanner`、资产注册表（`mcp_find/mcp_load` 的目录资产面）、`llmToolPick` **全部删除**。**〔2026-11-04 核对〕** `Params` 实际字段 = `Transport` / `Servers` / `NsPrefix` / `CallTimeout` / `PreHookTimeout` / `CBThreshold` / `CBCooldown` / `MaxTasks` / `AsyncMode` / `ExecSink` / `ProgressHandler` / `ElicitHandler` / `Logf` / `Hooks`（`mcpgateway.go:34-73`）；**无** `MCPServer` / `MCPConfig` / `ServersFile` / `ManageAddr`。
 - **② 内置与第三方一视同仁（L5；P0a 2026-10-29 订正）**：全部下游都是**普通 provider**；`Origin=builtin` 仅决定是否注入 `_meta["chonkpilot"]`，**不再有 `builtin` 分支**。`tools/register` 的注册工具经 `registeredProvider` 参与路由，**暴露名 = 原名**（内置 `self` 节点不再加 `self_` 前缀，见 §4.3.1）。
@@ -147,7 +147,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
     再 delete(args, `tool_call_display_name`)——gateway 注入的展示参数，不传下游（**剥离逻辑不变**）
     （**不叫 purpose**：避免与工具自有 purpose 冲突，如 mcp_find 的任务目标语义推荐）
 熔断 ps.cb.allow()（open 且未过冷却 → -32601 "circuit open"）
-  → 模式解析：契约 _meta.async（缺省 auto）→ Params.AsyncMode 全局覆盖 → 调用级 async/_async 覆盖；四模式 = sync|async|auto|manual（旧 never→sync / always→async 仅兼容读取）
+  → 模式解析：契约 _meta.async（缺省 auto）→ Params.AsyncMode 全局覆盖 → 调用级 async 覆盖；四模式 = sync|async|auto|manual（旧 never/always 不再接受）
   → 执行硬上限：**工具 `_meta.timeout` 显式「无上限」（`0`/`-1`）绝对优先、不可被覆盖**；否则 调用级(`>0`) > 条目 TimeoutSec(`>0`) > 工具 meta timeout(`>0`) > 全局；`>0` 到点取消，`<=0` 不设上限
   → 转异步阈值：仅 auto/manual 读取 `async-threshold`（契约 / 界面覆盖）；未声明 = **30s**（**不再回落 timeout**）
   → async 立即转后台；auto 到阈值自动转后台；**manual 到阈值只发 `mcp-tools-timeout{mode:"manual",blocking:true,options:["detach","cancel"]}` 并继续同步等待**（不进入 awaiting、不提前返回）
@@ -156,7 +156,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
   → 后台：执行池（`execPool`）goroutine（pending→running→done|error|cancelled）→ 完成回报 mcp-tasks-report
 ```
 
-> **2026-11-15 订正**：`awaiting` 占位 / `tools/wait` / `cancel_on_timeout` 均为历史；manual 阈值后保持 `running` 并继续同步等待。gateway 执行态上报点 = `started` / `detached` / `error`（`awaiting` 不再产生）；层仍保留 `awaiting` 字段仅作升级前遗留兼容。
+> **2026-11-15 订正**：`awaiting` 占位 / `tools/wait` / `cancel_on_timeout` 均为历史；manual 阈值后保持 `running` 并继续同步等待。gateway 执行态上报点 = `started` / `detached` / `error`（`awaiting` 不再产生）；层与数据面已删除 `awaiting` 字段。
 
 - **调用上下文透传边界（R-11，按来源判定）**：`doCall` 的 `req.Context`（`instance_id`/`work_dir`/`data_dir`/`session`/`turn`/`tool_call_id`/`purpose`）经 `withTurnContext` 注入执行 ctx。是否把上下文以 MCP `tools/call` 的 **`params._meta`**（命名空间 `chonkpilot`，`callContextMeta`）透传，**只看来源 `Origin`**：`builtin`（`memNodeProvider`：self/dir 本仓 in-memory 节点；`proxyProvider`：standalone 本仓下游）→ 透传；`user`（第三方，用户定义）→ **不携带任何 `_meta`/`CHONKPILOT_*`**。**不以是否 in-process 为界**；上下文仍**不注入 tool arguments**；gateway 自持工具/域工具的 AddTool 包装经 `execCtxFromMeta` 从 `req.Params.Meta` 恢复 ctx。见 [16 §8.4/§8.8](../10-architecture/16-路径解析规范.md)。
 
@@ -201,7 +201,7 @@ Stop：置 stopped → 退订方法面 → 关闭各 provider（spawned 收尾�
 - **同类条目不重名**：**场景 / skill / resource / tool 一律不允许重名**（场景 id 全局唯一见 [25 §6](../10-architecture/25-MCP与场景分层模型.md)）；**agent 是唯一允许重名者**，其消歧见 [25 §6.1](../10-architecture/25-MCP与场景分层模型.md)（不在本面注册资产）。
 - **暴露名规则（P0a，2026-10-29 用户拍板）**：**内置 `self` 节点（`entry.ID="self"` 且 `Origin=builtin`，且未显式配 `namespace`）→ 暴露名 = 原名**（不再加 `self_`）；`namespace "-"` 的 server（core / 各插件 MCP server）同为原名；其它条目仍按 `namespace`（缺省 `<id>_`）与 `NsPrefix`（dir 节点）规则——**多 server 命名空间语义不变**。`applyPrefix` 是唯一实现点（`gateway/registry.go`），路由键与暴露名一致（`toolRoute.Name` / `Original` 保持原名，调用仍经 `route.Original`）。
 - **第三方（下游 server，`Origin=user`）条目一律加别名（来源前缀）**：暴露名 = `entry.Aliases[原名]` 优先，否则 `applyPrefix`（namespace 覆盖默认；缺省 `<id>_`）；**即使显式 `namespace "-"` 也不得去前缀** → 强制回落 `<id>_`（`entrySourcePrefix`），以保证与内置（原名）、知识库条目**不撞名**。
-- **存量兼容（只读）**：`tool_async` 等按暴露名索引的 usr 配置，历史键 `self_<原名>` 与现键 `<原名>` **两写法都认**（gateway `asyncOverride`、mcp-server `Config.toolAsyncOverride` 先精确匹配再回退历史前缀）；新配置一律写原名。
+- **按暴露名精确索引**：`tool_async` 等 usr 配置的键 = 当前 `tools/list` 暴露名（内置 self 节点 = 原名）；gateway `asyncOverride` 与 mcp-server `Config.toolAsyncOverride` 均为精确匹配，不再回退历史 `self_<原名>` 前缀。历史键须由配置迁移改为现名。
 - **名字往返一致**：`mcp_find` / `mcp_load` 返回的 `name` = `tools/call` / `mcp_invoke` 可直接使用的名字（同一暴露名口径，别名后亦然）。
 
 ### 4.4 下游传输（`provider.go`）

@@ -103,7 +103,8 @@ func TestTaskResultDetailPartialOutput(t *testing.T) {
 	}
 	s.tasks.tree.Progress(n.TaskID, 0.4, "partial-42")
 
-	text, state, partial, found := s.taskResultDetail(nil, n.TaskID)
+	ctx := &turnCtx{req: StartReq{InstanceID: "ins-test", Session: "s-part"}}
+	text, state, partial, found := s.taskResultDetail(ctx, n.TaskID)
 	if !found || state != "running" {
 		t.Fatalf("running 节点应 found 且 state=running：found=%v state=%q text=%q", found, state, text)
 	}
@@ -130,14 +131,14 @@ func TestTaskResultDetailPartialOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tasks.start(llm): %v", err)
 	}
-	_, state, partial, found = s.taskResultDetail(nil, ln.TaskID)
+	_, state, partial, found = s.taskResultDetail(ctx, ln.TaskID)
 	if !found || state != "running" || partial != "子代理已写一半" {
 		t.Fatalf("委派子轮次应返回当前 assistant：found=%v state=%q partial=%q", found, state, partial)
 	}
 
 	// 终态：摘要优先（部分产出不覆盖结果）。
 	s.tasks.done(n.TaskID, TaskStateDone, "final-result", "")
-	text, state, _, found = s.taskResultDetail(nil, n.TaskID)
+	text, state, _, found = s.taskResultDetail(ctx, n.TaskID)
 	if !found || state != "done" || text != "final-result" {
 		t.Fatalf("终态应以摘要为准：found=%v state=%q text=%q", found, state, text)
 	}

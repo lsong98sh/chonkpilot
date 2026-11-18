@@ -85,7 +85,7 @@ def activate(sid, wait_reload=True):
     查询毫秒级）恒绿；批内/高负载时重载可能 >0.6s → 偶发红。
 
     稳定条件 = 重载链**末端**的 `data-tasktree-tasks` 请求（`onSessionChanged` 的顺序为
-    `await loadMessages(newId)` → `await assessContinueState()` → `await restoreAwaitingArbitration(newId)`
+    `await loadMessages(newId)` → `await assessContinueState()`
     → `useTaskView.refresh` → `mq.emit('data-tasktree-tasks', {session_id, top_session})`，
     见 MessageList.vue:490-493 / 837-840）——该请求**严格晚于** `messages.value` 的赋值，
     故「看到本会话的该请求」= 重载已落地，此后注入的通知不会再被覆盖。
@@ -105,7 +105,7 @@ def _wait_reloaded(sid, max_wait=20):
 
     ChatPanel 与 MessageList 在同一个 session-changed 上各发一次（`session_id` 相同、
     载荷无法区分）：ChatPanel 的在 handler 内**立即**发（早于消息重载），MessageList 的在
-    `loadMessages → assessContinueState → restoreAwaitingArbitration` 之后发。只等第一条会
+    `loadMessages → assessContinueState` 之后发。只等第一条会
     在「消息重载尚未完成」时就返回（E5 偶发：通知先 push，随后被整体重载清空）。
     等两条 = 两个来源都已发过，MessageList 的必然在内（不依赖两者先后顺序）。
     """

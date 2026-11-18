@@ -36,7 +36,7 @@ func TestGatewaySandboxRulesDefaults(t *testing.T) {
 	rules := s.gatewaySandboxRules()
 	has := func(dir string) bool {
 		for _, r := range rules {
-			if r.Writable && strings.EqualFold(r.Dir, dir) {
+			if strings.EqualFold(r.Dir, dir) {
 				return true
 			}
 		}
@@ -88,10 +88,10 @@ func TestGatewaySandboxRulesUserEntryKept(t *testing.T) {
 	seen := map[string]int{}
 	for _, r := range rules {
 		seen[strings.ToLower(r.Dir)]++
-		if strings.EqualFold(r.Dir, userA) && r.Writable {
+		if strings.EqualFold(r.Dir, userA) {
 			aFound = true
 		}
-		if strings.EqualFold(r.Dir, userB) && r.Writable {
+		if strings.EqualFold(r.Dir, userB) {
 			bFound = true
 		}
 	}

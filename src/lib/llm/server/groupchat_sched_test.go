@@ -879,14 +879,14 @@ func TestNonSubChatToolFaceExcludesSubchatFinish(t *testing.T) {
 		tc := newTurnCtx(context.Background(), s, StartReq{
 			InstanceID: "ins-test", Session: c.session, Turn: c.turn, Agent: c.agent,
 		})
-		if !tc.toolDenied(subchatFinishTool) || !tc.toolDenied("self_"+subchatFinishTool) {
+		if !tc.toolDenied(subchatFinishTool) {
 			t.Fatalf("%s 应硬拒 subchat_finish", c.session)
 		}
-		if tc.toolAllowed("self_" + subchatFinishTool) {
+		if tc.toolAllowed(subchatFinishTool) {
 			t.Fatalf("%s 调用处应拒绝 subchat_finish", c.session)
 		}
 		for _, d := range tc.llmTools() {
-			if strings.TrimPrefix(d.Name, "self_") == subchatFinishTool {
+			if d.Name == subchatFinishTool {
 				t.Fatalf("%s 下发面不得含 subchat_finish：%s", c.session, d.Name)
 			}
 		}

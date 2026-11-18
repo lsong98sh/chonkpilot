@@ -79,7 +79,7 @@ test('⑱A/B 迁移：上下文页不再承载记忆配置；memory 插件配置
   assert.match(src, /projectConfig\.context_memory_moved/, '须有迁移提示（指向插件配置页）')
 
   // 2) 插件 manifest：配置视图 + 动作面（页面据此调用）
-  const manifest = JSON.parse(readRepo('initdata/capability/plugins/memory/manifest.json'))
+  const manifest = JSON.parse(readRepo('../../chonkpilot-plugins/memory/src/manifest.json'))
   const view = (manifest.ui?.views || []).find((v) => v.id === 'config')
   assert.ok(view && view.entry === 'webui/config.html', 'memory 配置视图须指向 webui/config.html')
   for (const rpc of ['config-load', 'config-save', 'category-content', 'category-save',
@@ -246,7 +246,7 @@ test('⑱ 规范：无 watch/watchEffect；新增样式走主题 token（不硬�
       `${sel} 不得裸写色值（走主题 token）`)
   }
   // 新归属：memory 插件 manifest 声明配置页（插件维护 → 记忆沉淀 → 配置）
-  const manifest = JSON.parse(readRepo('initdata/capability/plugins/memory/manifest.json'))
+  const manifest = JSON.parse(readRepo('../../chonkpilot-plugins/memory/src/manifest.json'))
   assert.equal(manifest.ui.selfServe, true, 'memory 插件须自持 webui 资源')
   const view = (manifest.ui.views || []).find((v) => v.id === 'config')
   assert.ok(view, 'memory 插件须声明 id=config 的配置视图')

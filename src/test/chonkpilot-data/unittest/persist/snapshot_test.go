@@ -32,7 +32,7 @@ func TestSnapshotMQFieldFidelity(t *testing.T) {
 				}},
 			}},
 			map[string]any{"role": "tool", "tool_call_id": "c1", "content": "package main", "_meta": map[string]any{
-				"category": "fs", "async": "never",
+				"category": "fs", "async": "sync",
 			}},
 		},
 	}

@@ -501,35 +501,35 @@ func recvEnvelopeTyp(t *testing.T, ch <-chan string, typ string, d time.Duration
 	}
 }
 
-// TestCompatEmitCarriesInstanceID：compat 兼发的旧协议事件 payload 须带 instance_id
-// （61-消息一览 §0 实例字段必带）——server 事件 session-receive(type=text) → 桥转发
-// llm-receive + 兼发 llm-token，兼发事件注入当前实例 id。
-func TestCompatEmitCarriesInstanceID(t *testing.T) {
+// TestCompatToolCallCarriesInstanceID：compat 兼发的旧协议事件 payload 须带 instance_id
+// （61-消息一览 §0 实例字段必带）——server 事件 session-receive(type=tool-call) → 桥转发
+// llm-receive + 兼发 llm-tool-call，兼发事件注入当前实例 id。
+func TestCompatToolCallCarriesInstanceID(t *testing.T) {
 	evals := make(chan string, 32)
 	br, bus := newTestBridge(t, evalCollect(evals))
 	defer bus.Close()
 	if err := br.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	pubFire(bus, "session-receive", []byte(`{"session":"s1","turn":"t1","type":"text","payload":{"text":"hi"}}`))
+	pubFire(bus, "session-receive", []byte(`{"session":"s1","turn":"t1","type":"tool-call","payload":{"tool":"t","tool_call_id":"c1","arguments":{"x":"y"}}}`))
 
-	env := recvEnvelopeTyp(t, evals, "llm-token", time.Second)
+	env := recvEnvelopeTyp(t, evals, "llm-tool-call", time.Second)
 	var p map[string]any
 	if err := json.Unmarshal([]byte(env.Payload), &p); err != nil {
-		t.Fatalf("llm-token payload 解析失败: %v (%s)", err, env.Payload)
+		t.Fatalf("llm-tool-call payload 解析失败: %v (%s)", err, env.Payload)
 	}
-	// 兼容事件 llm-token 的字段值全部定向断言（来源 = session-receive 的
-	// session/turn/type/payload.text + 兼容层注入 instance_id；见 compat.go）。
+	// 兼容事件 llm-tool-call 的字段值定向断言（来源 = session-receive 的
+	// session/turn/type/payload + 兼容层注入 instance_id；见 compat.go）。
 	want := map[string]any{
-		"instance_id": "inst-test",
-		"session_id":  "s1",
-		"turn_id":     "t1",
-		"type":        "text",
-		"content":     "hi",
+		"instance_id":  "inst-test",
+		"session_id":   "s1",
+		"turn_id":      "t1",
+		"tool":         "t",
+		"tool_call_id": "c1",
 	}
 	for k, v := range want {
 		if p[k] != v {
-			t.Fatalf("兼发 llm-token.%s = %v，want %v（payload=%s）", k, p[k], v, env.Payload)
+			t.Fatalf("兼发 llm-tool-call.%s = %v，want %v（payload=%s）", k, p[k], v, env.Payload)
 		}
 	}
 }

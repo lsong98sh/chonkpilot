@@ -107,7 +107,7 @@ function isolateLabel(s) {
 
 // ── 沙箱开关已移至「设置 → 工具沙箱」页（usr 键 tool_sandbox，按服务器名配置）：
 //    本列表页只保留跨页摘要与空信任目录语义说明，不再提供行内拨动；
-//    MCP 条目上的 sandbox 字段仅由 gateway 读取时迁移。
+//    MCP 条目不再含 sandbox 字段。
 const builtinOptions = computed(() =>
   systemMCPs.value.map((s, i) => ({ label: s.name || ('#' + (i + 1)), value: String(i) }))
 )

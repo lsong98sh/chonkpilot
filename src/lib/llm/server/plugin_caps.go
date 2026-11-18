@@ -588,7 +588,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		}
 		status := strings.TrimSpace(in.Status)
 		if status == "" {
-			status = "done"
+			status = "complete"
 		}
 		instanceID := s.resolveInstanceForWorkDir(in.InstanceID, in.WorkDir)
 		if instanceID == "" {
@@ -654,7 +654,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if err != nil {
 			return nil, &pluginbridge.Error{Code: "message_append_failed", Msg: err.Error()}
 		}
-		if err := st.CompleteTurnInDialog(turnID, dialogID, "done", ""); err != nil {
+		if err := st.CompleteTurnInDialog(turnID, dialogID, "complete", ""); err != nil {
 			return nil, &pluginbridge.Error{Code: "turn_complete_failed", Msg: err.Error()}
 		}
 		s.publish("tool-notify", map[string]any{

@@ -52,23 +52,6 @@ func TestOnExecStateResolvesExistingNode(t *testing.T) {
 		t.Fatalf("exec.provider_key 未回填: %+v ok=%v", exec, ok)
 	}
 
-	// awaiting → awaiting（层状态按口径映射）+ 明细含 timeout_s / options / mode
-	l.OnExecState(ExecState{
-		GWTaskID: "tk-0001", InstanceID: "ins-test", TopSession: "top-1", ToolCallID: "tc-1",
-		Phase: ExecPhaseAwaiting, State: "running",
-		Detail: map[string]any{"mode": "manual", "timeout_s": 1, "options": []string{"detach", "cancel"}},
-	})
-	rec = l.Record("tk-1")
-	if rec == nil || rec.State != StateAwaiting {
-		t.Fatalf("awaiting 应落 awaiting: %+v", rec)
-	}
-	m = execJSONOf(t, rec)
-	detail, _ := m["detail"].(map[string]any)
-	if m["phase"] != ExecPhaseAwaiting || detail == nil || detail["mode"] != "manual" ||
-		detail["timeout_s"] != float64(1) {
-		t.Fatalf("awaiting exec_json 明细错: %v", m)
-	}
-
 	// detached{auto} → detached，明细含 trigger=auto / threshold_s
 	l.OnExecState(ExecState{
 		GWTaskID: "tk-0001", InstanceID: "ins-test", TopSession: "top-1", ToolCallID: "tc-1",
@@ -80,7 +63,7 @@ func TestOnExecStateResolvesExistingNode(t *testing.T) {
 		t.Fatalf("detached 应落 detached: %+v", rec)
 	}
 	m = execJSONOf(t, rec)
-	detail, _ = m["detail"].(map[string]any)
+	detail, _ := m["detail"].(map[string]any)
 	if m["phase"] != ExecPhaseDetached || detail == nil || detail["trigger"] != "auto" ||
 		detail["threshold_s"] != float64(5) {
 		t.Fatalf("detached exec_json 明细错: %v", m)
@@ -261,8 +244,8 @@ func TestOnExecStateBuildsNodeAndSkips(t *testing.T) {
 	}
 }
 
-// TestOnExecStateFrontVisibleStatusUnchanged：P3 **相位门控**（存疑 1 收口）——新增的两类执行态
-// detached / awaiting 只落**库内** `state` 与 `exec_json.phase`，**前端可见 status 恒为 running**
+// TestOnExecStateFrontVisibleStatusUnchanged：P3 **相位门控**（存疑 1 收口）——执行态
+// detached 只落**库内** `state` 与 `exec_json.phase`，**前端可见 status 恒为 running**
 // （与 P3 之前同值：前端只认 running 才显示状态图标）。命中既有节点与执行态建行两条路径都要满足；
 // 层 / 权威一致性校验（Verify，两侧同用前端可见口径）仍须零差异。
 func TestOnExecStateFrontVisibleStatusUnchanged(t *testing.T) {
@@ -272,12 +255,11 @@ func TestOnExecStateFrontVisibleStatusUnchanged(t *testing.T) {
 	}
 	l.BindExec("tk-1", Exec{GWTaskID: "tk-0001", InstanceID: "ins-test", Tool: "core_file_read"})
 
-	// ① 命中既有节点（exec 映射）：awaiting → detached 依次推进
+	// ① 命中既有节点（exec 映射）：detached 落库内执行态
 	for _, tc := range []struct {
 		phase, wantState string
 		detail           map[string]any
 	}{
-		{ExecPhaseAwaiting, StateAwaiting, map[string]any{"mode": "manual", "timeout_s": 1, "options": []string{"detach", "cancel"}}},
 		{ExecPhaseDetached, StateDetached, map[string]any{"trigger": "manual"}},
 	} {
 		l.OnExecState(ExecState{
@@ -293,7 +275,7 @@ func TestOnExecStateFrontVisibleStatusUnchanged(t *testing.T) {
 		}
 		row := fake.row("tk-1")
 		if got := sval(row["status"]); got != StateRunning {
-			t.Fatalf("前端可见 status=%q want %q（phase=%s：detached/awaiting 不得进入前端可见字段）",
+			t.Fatalf("前端可见 status=%q want %q（phase=%s：detached 不得进入前端可见字段）",
 				got, StateRunning, tc.phase)
 		}
 		if got := sval(row["state"]); got != tc.wantState {
@@ -304,9 +286,9 @@ func TestOnExecStateFrontVisibleStatusUnchanged(t *testing.T) {
 	// ② 未命中建行路径（tool_call_id 无匹配）同样门控
 	l.OnExecState(ExecState{
 		GWTaskID: "tk-0002", InstanceID: "ins-test", TopSession: "top-1", Tool: "task_run",
-		ToolCallID: "tc-none", Phase: ExecPhaseAwaiting, State: "running",
+		ToolCallID: "tc-none", Phase: ExecPhaseDetached, State: "running",
 	})
-	if rec := l.Record("tk-0002"); rec == nil || rec.State != StateAwaiting {
+	if rec := l.Record("tk-0002"); rec == nil || rec.State != StateDetached {
 		t.Fatalf("未命中建行状态错: %+v", rec)
 	}
 	if got := sval(fake.row("tk-0002")["status"]); got != StateRunning {
@@ -327,7 +309,7 @@ func TestOnExecStateFrontVisibleStatusUnchanged(t *testing.T) {
 //
 // 缺口（真机复现）：gateway 执行态写入的 `state=detached` + `exec_json` 会被**随后的 llm 节点/终态
 // 快照**（全量 upsert、不带 exec 信息）覆盖为 `pending`/终态并抹空 `exec_json`。以下用例锁定修复口径：
-// 优先级 终态(done/error/cancelled) > 执行态(detached/awaiting) > llm 粗粒度(pending/running)。
+// 优先级 终态(done/error/cancelled) > 执行态(detached) > llm 粗粒度(pending/running)。
 
 // execDetailOf 解出 exec_json.detail（缺失 → nil）。
 func execDetailOf(t *testing.T, rec *Record) map[string]any {
@@ -469,9 +451,9 @@ func TestTerminalOverridesExecStateKeepsExecJSON(t *testing.T) {
 	}
 }
 
-// TestAwaitingNotDowngradedByRunningSnapshot：`awaiting` 之后收到 llm `running` 快照
-// → 仍为 `awaiting`（执行态不被粗粒度降级），exec_json 保留。
-func TestAwaitingNotDowngradedByRunningSnapshot(t *testing.T) {
+// TestDetachedNotDowngradedByRunningSnapshot：`detached` 之后收到 llm `running` 快照
+// → 仍为 `detached`（执行态不被粗粒度降级），exec_json 保留。
+func TestDetachedNotDowngradedByRunningSnapshot(t *testing.T) {
 	l, fake := newLayer(t)
 	if err := l.Apply(subjTaskStarted, nodePayload(nil)); err != nil {
 		t.Fatalf("Apply(started): %v", err)
@@ -479,27 +461,27 @@ func TestAwaitingNotDowngradedByRunningSnapshot(t *testing.T) {
 	l.BindExec("tk-1", Exec{GWTaskID: "tk-0001", InstanceID: "ins-test", Tool: "core_file_read"})
 	l.OnExecState(ExecState{
 		GWTaskID: "tk-0001", InstanceID: "ins-test", TopSession: "top-1", ToolCallID: "tc-1",
-		Phase: ExecPhaseAwaiting, State: "running",
-		Detail: map[string]any{"mode": "manual", "timeout_s": 60, "options": []string{"detach", "cancel"}},
+		Phase: ExecPhaseDetached, State: "running",
+		Detail: map[string]any{"trigger": "manual"},
 	})
 	if err := l.Apply(subjTaskUpdated, nodePayload(map[string]any{"state": "running"})); err != nil {
 		t.Fatalf("Apply(updated/running): %v", err)
 	}
 	rec := l.Record("tk-1")
-	if rec == nil || rec.State != StateAwaiting {
-		t.Fatalf("running 快照把 awaiting 降级了: %+v", rec)
+	if rec == nil || rec.State != StateDetached {
+		t.Fatalf("running 快照把 detached 降级了: %+v", rec)
 	}
-	if m := execJSONOf(t, rec); m["phase"] != ExecPhaseAwaiting {
+	if m := execJSONOf(t, rec); m["phase"] != ExecPhaseDetached {
 		t.Fatalf("exec_json 被改写: %v", m)
 	}
-	if row := fake.row("tk-1"); sval(row["state"]) != StateAwaiting {
-		t.Fatalf("权威行 state=%q want awaiting", sval(row["state"]))
+	if row := fake.row("tk-1"); sval(row["state"]) != StateDetached {
+		t.Fatalf("权威行 state=%q want detached", sval(row["state"]))
 	}
 }
 
 // TestExecJSONDeepMergeAcrossExecEvents：gateway 执行态之间的 `exec_json` **深合并**（只增不减）——
-// started{mode,threshold_s,provider_key} → detached{trigger,threshold_s}（不带 provider_key）→
-// awaiting{timeout_s,options}：三段的字段都在（不丢 gw_task_id / provider_key / detail 明细）。
+// started{mode,threshold_s,provider_key} → detached{trigger,threshold_s}（不带 provider_key）：
+// 各段字段都在（不丢 gw_task_id / provider_key / detail 明细）。
 func TestExecJSONDeepMergeAcrossExecEvents(t *testing.T) {
 	l, fake := newLayer(t)
 	if err := l.Apply(subjTaskStarted, nodePayload(nil)); err != nil { // tk-1 / tc-1 / top-1
@@ -537,34 +519,6 @@ func TestExecJSONDeepMergeAcrossExecEvents(t *testing.T) {
 		t.Fatalf("detached detail 合并错: %v", m)
 	}
 
-	// ③ awaiting（options/timeout_s）→ 两段信息都在（trigger/threshold_s + options/timeout_s）
-	l.OnExecState(ExecState{
-		GWTaskID: "tk-0001", InstanceID: "ins-test", TopSession: "top-1", ToolCallID: "tc-1",
-		Phase: ExecPhaseAwaiting, State: "running",
-		Detail: map[string]any{"timeout_s": 60, "options": []string{"detach", "cancel"}},
-	})
-	rec = l.Record("tk-1")
-	if rec == nil || rec.State != StateAwaiting {
-		t.Fatalf("awaiting 未落: %+v", rec)
-	}
-	m = execJSONOf(t, rec)
-	detail = execDetailOf(t, rec)
-	if m["phase"] != ExecPhaseAwaiting || m["provider_key"] != "self" || m["work_dir"] != "E:/ws" {
-		t.Fatalf("awaiting 更新丢字段: %v", m)
-	}
-	if detail == nil || detail["trigger"] != "auto" || detail["threshold_s"] != float64(5) ||
-		detail["timeout_s"] != float64(60) {
-		t.Fatalf("exec_json 深合并丢 detail: %v", m)
-	}
-	if opts, ok := detail["options"].([]any); !ok || len(opts) != 2 {
-		t.Fatalf("exec_json 深合并丢 options: %v", detail)
-	}
-	// 权威行同步同一份合并结果；无重复行
-	row := fake.row("tk-1")
-	if sval(row["state"]) != StateAwaiting || !strings.Contains(sval(row["exec_json"]), `"provider_key":"self"`) ||
-		!strings.Contains(sval(row["exec_json"]), `"trigger":"auto"`) {
-		t.Fatalf("权威行未同步合并后的 exec_json: %+v", row)
-	}
 	if n := fake.rowCount(); n != 1 {
 		t.Fatalf("权威行数=%d want 1（执行态不得建行）", n)
 	}

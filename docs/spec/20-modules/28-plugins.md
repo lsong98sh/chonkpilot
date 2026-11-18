@@ -39,7 +39,7 @@
 |----|----|
 | 形态 | **进程外 exe 插件（唯一形态）**：`plugin-framework/sdk` 连插件桥（UDS/TCP），工具经 MCP（streamable HTTP）暴露，实例由宿主 `host/mgr` 按 manifest 拉起；**原进程内 lib Hook 已删除**（`plugin-codegraph` / `plugin-vfts` 不存在） |
 | 接口 | `Hook{ Name() string; Start(Deps) error }`；`Deps{ Bus mq.Bus; Logf func(format, ...) }`（另含可选 `Notify func(Notice)`：失败上报，nil = 静默）；**可选** `Stopper{ Stop() }` —— 持可释放资源（后台 goroutine / 引擎子进程 / 订阅 / 实例视图）的插件实现 `Stop()`，宿主退出时按 `Start` **逆序**调用（语义见下） |
-| 启动 | **唯一入口 = 框架 `host/mgr`**（2026-10-25 定稿；**2026-11-02 调整**：取消 `plugin.ini`，改为**直接扫描插件根** `<root>/<id>/plugin.json`）：插件根与 `capability` **同级**（优先级从高到低 = `<prjUsr>/plugins` → `<workDir>/.chonkpilot/plugins` → `~/.chonkpilot/plugins` → `<exeDir>/plugins`），同 id 取第一个命中；启用判定 = `<数据根>/plugins/enabled.json`（无该键时回落极简 `plugin.json` 的 `enabled`，缺省 true）。插件一律由宿主 spawn 并守护（`external` 模式已删除）。插件启动后自己连 UDS 发 `plugin.hello` 自报名字并注册 view / 事件——**拉起后不注册的进程视为无效**。**主仓无进程内 Hook**（原 `src/plugins/plugin-codegraph` / `plugin-vfts` 已删除） |
+| 启动 | **唯一入口 = 框架 `host/mgr`**（2026-10-25 定稿；**2026-11-18 调整**：启动描述 = `<root>/<id>/plugin.ini`（`[plugin] cmd/args`），manifest 由插件**内嵌 exe**（Go `//go:embed`）随 `plugin.hello` 上报）：插件根与 `capability` **同级**（优先级从高到低 = `<prjUsr>/plugins` → `<workDir>/.chonkpilot/plugins` → `~/.chonkpilot/plugins` → `<exeDir>/plugins`），同 id 取第一个命中；启用判定走 DB `plugin_state`。插件一律由宿主 spawn 并守护（`external` 模式已删除）。插件启动后自己连 UDS 发 `plugin.hello` 自报名字并注册 view / 事件——**拉起后不注册的进程视为无效**。**主仓无进程内 Hook**（原 `src/plugins/plugin-codegraph` / `plugin-vfts` 已删除） |
 | 数据访问 | 走 `src/lib/data`（`data.Prj(instanceID)` 或 payload 自带 work_dir/data_dir 自登记）；work_dir 解析走 `instance.Manager` |
 
 **实例视图**（`chonkpilot-framework/plugin/src/runtime/instance/manager.go`）：订阅 `instance-register` / `instance-heartbeat` / `instance-exit`，维护 `instance_id ↔ {ID, WorkDir, DataDir, ClientType, User, ParentInstance, LastBeat}`（`LastBeat` 仅记录最近心跳/注册时间；**`User`（🆕 2026-10-09）= 实例归属 OS 用户名**，`instance-register` 必填字段，供 `instance-bring-to-top` 的跨用户判定；**`ParentInstance`（🆕 2026-10-09）= 子窗口实例的宿主顶层实例 id** —— 由 `instance-register` 的 `parent_instance` 字段解析，非空即子实例，供托盘「列举实例」过滤，见 [61 §4.1](../60-reference/61-消息一览.md)）；提供 `Lookup/List/Count` 与 `ListTopLevel`（仅顶层）。
@@ -50,7 +50,7 @@
 **启动清单与「拉起只属于框架」（2026-10-25 定稿）**：
 
 1. **主仓不持有任何单插件拉起代码**。宿主**先起 server**，再由框架 `host/mgr` 扫描四个插件根（`<prjUsr>/plugins`、`<workDir>/.chonkpilot/plugins`、`~/.chonkpilot/plugins`、`<exeDir>/plugins`，与 `capability` 同级）发现 manifest 并统一 spawn。重启/退避/健康检查/优雅关停全部复用 `host/mgr` 的 manifest 语义。
-2. **发现与启用**：`<root>/<id>/plugin.json` 是**极简启动信息**（`id/cmd/enabled/name/icon`；完整 manifest 由插件在 `plugin.hello` 上报）（同 id 取优先级最高的根）；启用 = `enabled.json`（设置页开关写入）＞ `plugin.json.enabled`（缺省 true）；启动命令取 `cmd`（字符串或数组，相对路径按插件目录解析；缺省 `chonkpilot-plugin-<id>.exe`）。**`plugin.ini` 已于 2026-11-02 取消**（不再有启动清单 / 行序启动）。
+2. **发现与启用**：`<root>/<id>/plugin.ini` 是**启动描述**（`[plugin] cmd` 必填 / `args` 可选；目录名 = 插件 id）；完整 manifest 由插件**内嵌 exe**（Go `//go:embed manifest.json`；Python/Node 自读盘）并在 `plugin.hello` 上报；启用判定走 DB `plugin_state`（设置页开关写入），不再读目录内 `enabled` 字段。
 3. **专用监管层已删除（2026-10-25 落地）**：`src/lib/llm/vftsindexer`、`src/lib/llm/codegraphindexer`、`src/lib/llm/pluginhost`（与 `host/mgr` 重复）、`llm/queuehooks`、`src/lib/core/indexkind`，以及 `gui/host`、`server/main` 各自两处 indexer exe 定位 + Ensure 组装 —— 全部退场（≈1100 行）。
 4. **事件面以 workdir 为单位**：server 把 `instance-register` / `instance-exit` 翻译为 **`workdir-opened` / `workdir-closed`**（[61 §2.5](../60-reference/61-消息一览.md)），插件只管理 workspace；启动时拉一次当前活动 workdir，之后用事件增量维护。
 5. **索引不独立成插件**：索引回路 + 引擎**库内联**在 `codegraph` 插件进程，工具与索引同进程、经 **TCP/IP（MCP）** 暴露；`file`/`codegraph` 这类简单能力**不再起子 exe**。
@@ -62,17 +62,17 @@
 
 ## 2A. 插件清单与加载模型（PLUGIN-LOAD-1；✅ 2026-11-02 已全部落地）
 
-> 权威设计 = [插件加载与UI就绪设计方案](../../plugin-platform/插件加载与UI就绪设计方案.md)。本节为**已落地口径**（✅ 2026-11-02，D1–D18）。
-> 变更摘要：`plugin.json` 极简、manifest 由插件进程上报、新增 `plugin-refresh`、启动并发上限 2、删除 `external`、新增 CK Store。
+> 权威设计 = [插件加载与UI就绪设计方案](../../plugin-platform/插件加载与UI就绪设计方案.md)。本节为**已落地口径**（✅ 2026-11-02，D1–D18；**2026-11-18** 启动描述改回 `plugin.ini`、manifest 内嵌 exe）。
+> 变更摘要：启动描述 = `plugin.ini`、manifest 随 exe 内嵌并由插件进程上报、新增 `plugin-refresh`、启动并发上限 2、删除 `external`、新增 CK Store。
 
 ### 2A.1 清单归属
 
 | 内容 | 载体 | 说明 |
 |---|---|---|
-| `id` / 启动命令 / `enabled`（+可选 `name`/`icon`） | `<root>/<id>/plugin.json`（极简，用户可写） | 发现阶段唯一读取源 |
-| 完整 manifest（`version/description/ui/mcp/permissions`…） | `<root>/<id>/manifest.json`（插件自带；Go SDK 自读，Python/Node 自读） | 插件在 `plugin.hello` 上报（桥方法字段 `manifest`，**非 MQ 主题**） |
-| 校验 | **只校验 ID** | 上报 `id` 必须 == 目录名（`plugin.json` 若写 `id` 亦须一致）；其余字段信任 |
-| 损坏 | **不兜底** | `plugin.json` 缺失/语法错误 → 该插件不加载；上报 `id` 不符 → `status=error` |
+| `id` + 启动命令 | `<root>/<id>/plugin.ini`（`[plugin] cmd/args`；目录名 = 插件 id，用户可写） | 发现阶段唯一读取源 |
+| 完整 manifest（`version/description/ui/mcp/permissions`…） | Go：`//go:embed manifest.json` 进 exe；Python/Node：`<root>/<id>/manifest.json`（自读盘） | 插件在 `plugin.hello` 上报（桥方法字段 `manifest`，**非 MQ 主题**） |
+| 校验 | **只校验 ID** | 上报 `id` 必须 == 目录名；其余字段信任 |
+| 损坏 | **不兜底** | `plugin.ini` 缺失 / 缺 `cmd` → 该插件不加载；上报 `id` 不符 → `status=error` |
 
 ### 2A.2 发现 / 启动 / 刷新
 
@@ -160,7 +160,7 @@
 
 ### 3.3 codegraph（代码语义索引，插件侧）
 
-> **形态（2026-10-27 口径）**：**用户可见插件 = `codegraph`**（进程外 exe，`chonkpilot-plugins/codegraph`；codegraph + vfts 合一的代码知识库，`autostart` 由极简 `plugin.json` 的 `enabled` 承担，工具清单见 `src/initdata/capability/plugins/codegraph/manifest.json`）。本节描述**引擎与工具口径**；主仓原 `src/plugins/plugin-codegraph`（进程内兼容 Hook）**已于 2026-10-27 随 `src/plugins/` 一并删除**，仅保留 `codegraph` 进程外实现。
+> **形态（2026-10-27 口径，2026-11-18 更新）**：**用户可见插件 = `codegraph`**（进程外 exe，`chonkpilot-plugins/codegraph`；codegraph + vfts 合一的代码知识库，autostart 由 DB `plugin_state`（设置页开关）承担，工具清单见 `chonkpilot-plugins/codegraph/src/manifest.json`，随 exe 内嵌）。本节描述**引擎与工具口径**；主仓原 `src/plugins/plugin-codegraph`（进程内兼容 Hook）**已于 2026-10-27 随 `src/plugins/` 一并删除**，仅保留 `codegraph` 进程外实现。
 
 | 项 | 值 |
 |----|----|
@@ -168,7 +168,7 @@
 | 配置键 | prj `plugins.codegraph.enabled` / `.exts` / `.skip-dirs` / `.stack-gitignore`（索引配置，变更即重建）。**运行态不写 prj 键**：`codegraph.status` 已随 PLUGIN-UI-2（2026-10-28）整体退场（宿主零引用），状态经插件动作 `engine-status` / `badge` 现取。旧宿主键（`enable-codegraph` / `codegraph.*`）仅由插件**一次性迁移**读取，写入不再生效 |
 | 引擎 | **〔2026-10-27 已落地〕引擎以库形式编入 `codegraph` 插件进程**（工具与索引同进程；treesitter / vfts 均在 `chonkpilot-plugins/codegraph/src/engines/`）——不 spawn stdio 引擎子进程，也无独立 indexer exe。按 workdir 管理索引状态（每 workdir 独立串行） |
 | 叠加 gitignore 体系 | 插件把 `plugins.codegraph.skip-dirs`（用户规则，`splitRules` **保序且保留重复项**）与 `.stack-gitignore`（布尔）**原样下发**引擎（`codegraph_configure` / `codegraph_initialize` 的 `skip_dirs` + `stack_gitignore`）；**插件不再读/解析 `.gitignore`**。规则来源/优先级/匹配语义/与 git 差异见 [29 §4.1](29-codegraph.md)（实现 = `chonkpilot-util/ignore`，内核 + I/O 同包，与 vfts 引擎/插件**同一实现**） |
-| 注册工具 | **8 个查询工具**（`codegraph_symbol_search` / `_get_symbol_info` / `_callers` / `_callees` / `_get_dependency_graph` / `_find_circular_deps` / `_analyze_complexity` / `_get_module_summary`）+ **1 个 vfts 查询工具** `vfts_query`。8 个 codegraph 查询由插件按 `src/tools/codegraph/*.tool.md` 热注册（hot=true）；`workdir` 可省略（缺省 `_meta.chonkpilot.work_dir`），显式传入时必须是当前项目内绝对路径（`ResolveWorkdirFromMeta`）；**`vfts_query` 由插件自注册，schema 已去掉 `workdir`**（由 `_meta.chonkpilot.work_dir` 注入，见 [2B §3.5](2B-vfts.md)）。工具注册为**静态 MCP hot 清单**（`src/initdata/capability/plugins/codegraph/manifest.json` 的 `hot_tools`），无按 workdir 的动态注册/注销。**（2026-11-10 核对）** |
+| 注册工具 | **8 个查询工具**（`codegraph_symbol_search` / `_get_symbol_info` / `_callers` / `_callees` / `_get_dependency_graph` / `_find_circular_deps` / `_analyze_complexity` / `_get_module_summary`）+ **1 个 vfts 查询工具** `vfts_query`。8 个 codegraph 查询由插件按 `src/tools/codegraph/*.tool.md` 热注册（hot=true）；`workdir` 可省略（缺省 `_meta.chonkpilot.work_dir`），显式传入时必须是当前项目内绝对路径（`ResolveWorkdirFromMeta`）；**`vfts_query` 由插件自注册，schema 已去掉 `workdir`**（由 `_meta.chonkpilot.work_dir` 注入，见 [2B §3.5](2B-vfts.md)）。工具注册为**静态 MCP hot 清单**（`chonkpilot-plugins/codegraph/src/manifest.json` 的 `hot_tools`，随 exe 内嵌），无按 workdir 的动态注册/注销。**（2026-11-10 核对）** |
 | 周期/超时 | data 5s · **MCP 调用超时 = 300s**（manifest `mcp.timeout_sec`；非 60s）· **全量重建 `rebuildTimeout = 15min`** · 配置去抖 400ms · 工作区事件去抖 5s。**无引擎子进程，故无 `childIdle` / `sweepIdleClient` / `clientFor` 空闲回收**（原描述已退场）；心跳能力仅在框架 `runtime/instance`，插件不订阅、不判超时。**（2026-11-04 核对）** |
 | 状态获取 / 自动重建 | 运行态**不回写 prj 键**（`codegraph.status` 已退场）：配置页 / 状态栏 `badge` / L4 门禁均经插件动作 `engine-status`（可选 `engine` 只查一个）现取引擎状态。配置生效后 **400ms 去抖**调度一轮全量重建（`codegraph_initialize`），实例登记「启用且未 ready」亦调度一次（SRCH-004-S01 / SRCH-005-S01，**零新增主题**，无 500ms 进度轮询） |
 | 可见性 | **工具静态注册，无 `refs>0` / `syncTools` 门控**（hot 清单固定，插件启用即注册）。多 workdir 时工具面全局一份，执行按 `_meta.chonkpilot.work_dir` / `context.instance_id` 路由到该 workdir 的**进程内 Workspace**（索引状态按 workdir 独立，非子进程）；工具面差异注册留待 v2。**（2026-11-04 核对）** |
@@ -299,7 +299,7 @@
 
 > **前置**：插件 iframe 与宿主**同源**，且必须带 `allow-same-origin`（`sandbox="allow-scripts allow-forms allow-same-origin"`）——**等价于「插件代码视为可信代码」**（插件本就是本机 exe）。旧 `/plugin-ui/<id>/*`（宿主直读磁盘 `webui/`）**下线**，资源改由插件自己提供。
 >
-> **迁移状态（2026-10-24）**：资源通道 + 动作面骨架 + **全部内置插件自持 webui** 已落地 —— `browser` / `codegraph` / `desktop` / `file` / `mcp` / `task` / `web` 均声明 `ui.selfServe: true`、webui 已搬入插件源码仓 `chonkpilot-plugins/<id>/webui/`（2026-10-24 时在主仓 `src/plugins/<id>/webui/`，后随插件迁出）并 `go:embed`、`src/initdata/capability/plugins/<id>/webui/` 已删除；前端按 `self_serve` 分流到 `/plugins/<id>/…`。**唯一例外 = `demo-python`**（纯 Python 样例、无 exe、不随产物投放 → 仍由宿主直读磁盘，已列入单源测试白名单）。旧 `/plugin-ui/` 路由**保留但已无内置使用者**（`_sdk/plugin.js` 端点仍需保留，下线时只下线磁盘直读分支）。**codegraph 四通道已全部打通**（含配置迁入 `plugins.codegraph.*`、动作面 `save/clear`、未就绪提示页 + 3 次自动重试）。**其余 6 个插件（browser / desktop / file / mcp / task / web）配置链路已收口**：页面 → `/plugins/<id>/api/{load,save,reset}` → 插件校验 → 私有配置存储（键名 `plugins.<id>.*`）；`plugin.json` 的 `config.fields` 已删（**关闭宿主 `plugin-config-set` 第二写入口**），旧键仅作一次性迁移源。✅ **2026-10-31 订正**：`plugin/v1/config.user.{load,set,delete}` 已实现（framework `bridge/configuser.go`，键前缀按插件 id 强制 `plugins.<id>.`），插件配置落 data 层 usr；task / crontab 等插件已直接使用（旧私有 `webui-config.json` 仅作一次性迁移源）。旧 `/plugin-ui/` 磁盘直读分支**已下线**（仅保留 `_sdk/plugin.js`）；`demo-python` 已删 `ui.views/menus/statusbar`（无 exe，页面不随运行时提供）。待做：旧路由/`PluginWebRoot` 残留引用清理、旧 L4 脚本重写。
+> **迁移状态（2026-10-24）**：资源通道 + 动作面骨架 + **全部内置插件自持 webui** 已落地 —— `browser` / `codegraph` / `desktop` / `file` / `mcp` / `task` / `web` 均声明 `ui.selfServe: true`、webui 已搬入插件源码仓 `chonkpilot-plugins/<id>/webui/`（2026-10-24 时在主仓 `src/plugins/<id>/webui/`，后随插件迁出）并 `go:embed`、`src/initdata/capability/plugins/<id>/webui/` 已删除；前端按 `self_serve` 分流到 `/plugins/<id>/…`。**唯一例外 = `demo-python`**（纯 Python 样例、无 exe、不随产物投放 → 仍由宿主直读磁盘，已列入单源测试白名单）。旧 `/plugin-ui/` 路由**保留但已无内置使用者**（`_sdk/plugin.js` 端点仍需保留，下线时只下线磁盘直读分支）。**codegraph 四通道已全部打通**（含配置迁入 `plugins.codegraph.*`、动作面 `save/clear`、未就绪提示页 + 3 次自动重试）。**其余 6 个插件（browser / desktop / file / mcp / task / web）配置链路已收口**：页面 → `/plugins/<id>/api/{load,save,reset}` → 插件校验 → 私有配置存储（键名 `plugins.<id>.*`）；`plugin.json`（2026-11-18 起由 `plugin.ini` 取代）的 `config.fields` 已删（**关闭宿主 `plugin-config-set` 第二写入口**），旧键仅作一次性迁移源。✅ **2026-10-31 订正**：`plugin/v1/config.user.{load,set,delete}` 已实现（framework `bridge/configuser.go`，键前缀按插件 id 强制 `plugins.<id>.`），插件配置落 data 层 usr；task / crontab 等插件已直接使用（旧私有 `webui-config.json` 仅作一次性迁移源）。旧 `/plugin-ui/` 磁盘直读分支**已下线**（仅保留 `_sdk/plugin.js`）；`demo-python` 已删 `ui.views/menus/statusbar`（无 exe，页面不随运行时提供）。待做：旧路由/`PluginWebRoot` 残留引用清理、旧 L4 脚本重写。
 
 ### 3A.1 四条通道
 
@@ -358,7 +358,7 @@
 - **校验归插件**：所有请求都经插件，业务校验（取值范围、互斥、依赖）由插件自己做。
 - **兜底归插件**：插件不一定收到配置刷新广播，缺值时的默认与降级由插件自己提供。
 - **单源**：旧宿主键（`enable-vfts` / `vfts.exts` / `codegraph.exts` …）一次性迁入命名空间后**删除旧键**，不得双写。**插件未启用时的旧键不迁移**（2026-10-31 定：尚未正式上线，不做宿主侧补偿迁移）；残留旧键可用外挂一次性工具清理（`src/tools/cfgclean`，不参与构建）。
-- **字段必须被消费（2026-10-31 审查口径，2026-11-11 更新）**：配置页（`config.html` 的 `fields`）出现的每个键**必须**在插件运行时有读取点，不得只保存 / 回显。审查处置：`task` 移除 `interpreter-go` / `interpreter-rust`（scriptrun 白名单无 go/rust）；`crontab` 移除 `sandbox`（原“预留”开关零消费）；`file.default-encoding` 作为**写入侧默认字符集**注入顶层 `defaultEncoding`：`file_write` 新文件/ANSI 旧文件、`file_patch` 的 ANSI 源使用，`file_read` 仍自动识别（不再逐 target 强制覆盖）；`browser` / `desktop` 的 `screenshot-dir` 增加“绝对路径 / `~/`”校验并在使用时展开 `~`。**`plugin.json` 的 `config.fields` 死字段已删除**（2026-10-31，前端配置面由插件自带 `config.html` 承担）。
+- **字段必须被消费（2026-10-31 审查口径，2026-11-11 更新）**：配置页（`config.html` 的 `fields`）出现的每个键**必须**在插件运行时有读取点，不得只保存 / 回显。审查处置：`task` 移除 `interpreter-go` / `interpreter-rust`（scriptrun 白名单无 go/rust）；`crontab` 移除 `sandbox`（原“预留”开关零消费）；`file.default-encoding` 作为**写入侧默认字符集**注入顶层 `defaultEncoding`：`file_write` 新文件/ANSI 旧文件、`file_patch` 的 ANSI 源使用，`file_read` 仍自动识别（不再逐 target 强制覆盖）；`browser` / `desktop` 的 `screenshot-dir` 增加“绝对路径 / `~/`”校验并在使用时展开 `~`。**`plugin.json`（2026-11-18 起由 `plugin.ini` 取代）的 `config.fields` 死字段已删除**（2026-10-31，前端配置面由插件自带 `config.html` 承担）。
 - **例外**：`history` 无插件配置页，其 `history.*`（如 `history.checkpoint_keep`）属**宿主用户配置**（见 [64-配置项一览](../60-reference/64-配置项一览.md)），不适用 `plugins.<id>.*` 前缀。
 - **memory 例外撤销（MEMORY-UI-1，2026-11-02）**：memory 插件新增**自有配置页**（`webui/config.html`，manifest `ui.selfServe=true` + `ui.views[id=config]`），宿主「项目配置 → 上下文」不再承载记忆配置（只留迁移提示）。该页仍直接读写 **既有 `memory.*` prj 键**（`data-prj-config-{list,save}`）与 `data-memory-*` / prompt 域，**不引入 `plugins.memory.*` 前缀、不新增配置键**；动作面 = `config-load` / `config-save` / `category-{content,save,delete}` / `prompt-{save,reset}` / `flush`。为支撑该页，插件桥新增三条通用方法映射：`plugin/v1/config.prompt.delete → data-prompt-delete`、`plugin/v1/memory.delete → data-memory-delete`、`plugin/v1/session.active.get → data-session-active-get`（[61](../60-reference/61-消息一览.md) 数据面主题均为既有，零新增）。
 

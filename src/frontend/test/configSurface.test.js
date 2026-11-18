@@ -88,13 +88,12 @@ test('③ LogConfig 消费 init-data 的 logDir（无空路径）+ 无 watch', (
 })
 
 // ── ⑤ 沙箱两页状态互见 ───────────────────────────────────
-test('⑤ 摘要计数：executors + mcps 计 true；旧形状读取时迁移', () => {
+test('⑤ 摘要计数：executors + mcps 计 true；旧形状不解析', () => {
   assert.equal(countToolSandboxOn({ executors: { a: true, b: false }, mcps: { c: true } }), 2)
   assert.equal(countToolSandboxOn('{"executors":{"x":true}}'), 1, 'JSON 字符串形态须可解析')
   assert.equal(countToolSandboxOn(null), 0)
-  // 旧形状（executor 类别）→ 迁移：`core` → 仅 `chonkpilot-tools-executor.exe`（单 exe）。
-  // 2026-10-21（GATEWAY-2/L1）：DSL 退役、desktop/browser 改为插件 → 旧键不再产生额外单位。
-  assert.equal(countToolSandboxOn('{"core":true,"desktop":false}'), 1, '旧形状 core 迁移为 tools-executor（单 exe）')
+  // 旧形状已移除：不产生任何计数
+  assert.equal(countToolSandboxOn('{"core":true,"desktop":false}'), 0, '旧形状不解析')
   assert.equal(countMCPsOn({ executors: { a: true }, mcps: { b: true, c: false } }), 1)
   assert.equal(countMCPsOn('{"core":true}'), 0, '旧形状不产生 mcps')
 })
@@ -162,7 +161,7 @@ test('⑤b 字段说明 tooltip：传输方式 ? tooltip + 新 help 图标；「
   assert.doesNotMatch(dlg, /config\.mcp\.category/, '弹窗不应再有「分类」输入')
   const defaults = read('config/defaults.js')
   assert.doesNotMatch(defaults, /category:/, 'DEFAULT_MCP 不应再有 category')
-  assert.match(defaults, /sandbox: null/, 'DEFAULT_MCP 须补 sandbox: null（三态）')
+  assert.doesNotMatch(defaults, /sandbox:/, 'DEFAULT_MCP 不得再有 sandbox 字段')
 })
 
 // ── ⑤c MCP 高频工具（2026-09-27：独立弹窗 → 「工具」页签 + 加载工具按钮）────

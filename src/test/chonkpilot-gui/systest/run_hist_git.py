@@ -189,7 +189,7 @@ def tools():
 
 
 def hist_tool_names(names=None):
-    """工具面里的文件历史工具（按**后缀**匹配：注册名经 self 节点前缀 → `self_history_*`）。"""
+    """工具面里的文件历史工具（按**后缀**匹配：当前暴露名 = 原名）。"""
     names = tools() if names is None else names
     return [n for n in names if any(n == t or n.endswith("_" + t) for t in HIST_TOOLS)]
 
@@ -314,7 +314,7 @@ def case_h3_default_off_no_tools_no_chain():
     # 可能只是因为插件平台整体未拉起（= 假绿）。main 的就绪栅栏已保证，这里再断言一次口径。
     if not names:
         raise TestError("工具面为空（实例/网关未就绪），无法判定 history 工具是否摘除")
-    canon = {n[5:] if n.startswith("self_") else n for n in names}
+    canon = set(names)
     if not ({"file_replace", "task_run"} <= canon):
         raise TestError("工具面未含 file_replace/task_run（插件平台未就绪）→ history 缺席不可判：%r"
                         % names[:20])

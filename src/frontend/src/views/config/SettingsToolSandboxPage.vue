@@ -6,7 +6,7 @@
     管制该执行体下**全部工具**；
   - 外部 MCP：按 **MCP 条目**一行（仅 stdio&spawn 可施加沙箱，http/sse 不可）；
   开关写 usr 自由键 `tool_sandbox`（`{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`，
-  未设置 = 不隔离，默认兼容；旧形状 `{core,desktop,browser}` 读取时迁移）。
+  未设置 = 不隔离，默认兼容；旧形状 `{core,desktop,browser}` 已拒绝）。
 
   手动保存：拨动 Switch / 「恢复未设置」只改本地待保存态（显示「未保存」），点【保存】才落库；
   **无改动时保存按钮禁用**。
@@ -32,7 +32,7 @@
         >{{ $t('common.save') }}</Button>
       </div>
 
-      <!-- 两页状态互见：server 级（mcps[].sandbox，仅 stdio）已开启数 + 一键跳转 -->
+      <!-- 两页状态互见：server 级（tool_sandbox.mcps，仅 stdio）已开启数 + 一键跳转 -->
       <div class="cross-hint">
         <span>{{ $t('config.toolSandbox.serverSummary', { n: serverSandboxOn }) }}</span>
         <Button text size="small" @click="gotoMcp">{{ $t('config.toolSandbox.gotoMcp') }}</Button>

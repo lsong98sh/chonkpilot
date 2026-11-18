@@ -67,6 +67,29 @@ func (s dataConfigStore) Get(table, id string) (map[string]any, bool, error) {
 	return out, found, nil
 }
 
+// List 返回整表（key = 主键，value = 记录）。值过滤与 Get 同口径：剔除 `_key` /
+// `updated_at` 等存储层保留列。用于 `plugin_state` 的差量收敛（新增 / 更新 / 删除）。
+func (s dataConfigStore) List(table string) (map[string]map[string]any, error) {
+	out := map[string]map[string]any{}
+	err := s.withDB(func(db *data.DB) error {
+		return db.Table(table).ForEach(func(key string, rec data.Record) error {
+			row := map[string]any{}
+			for k, v := range rec {
+				if k == data.KeyField || k == "updated_at" {
+					continue
+				}
+				row[k] = v
+			}
+			out[key] = row
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s dataConfigStore) Upsert(table, id string, values map[string]any) error {
 	return s.withDB(func(db *data.DB) error {
 		rec := data.Record{}

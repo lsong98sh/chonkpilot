@@ -211,9 +211,9 @@ def ensure_scenario(env):
 
 
 def _canon(name):
-    """工具名归一（剥离网关自节点前缀 self_）。"""
+    """工具名归一（当前暴露名 = 原名，恒等）。"""
     n = name or ""
-    return n[5:] if n.startswith("self_") else n
+    return n
 
 
 def ensure_demo_file(env, rel):

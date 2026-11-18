@@ -51,7 +51,7 @@ chonkpilot-plugins/remote/
 
 | Web UI | 归属 | 形态 |
 |---|---|---|
-| 插件配置页 / 状态页（`client/webui/*.html`） | **嵌进插件 exe** | Go `//go:embed all:webui`；manifest `ui.selfServe: true`，宿主经 UDS `plugin/v1/ui.asset.get` 取字节；产物目录只有 `plugin.json + exe`，**不带 webui/** |
+| 插件配置页 / 状态页（`client/webui/*.html`） | **嵌进插件 exe** | Go `//go:embed all:webui`；manifest `ui.selfServe: true`（manifest 亦随 exe 内嵌），宿主经 UDS `plugin/v1/ui.asset.get` 取字节；产物目录只有 `plugin.ini + exe`，**不带 webui/** |
 | 手机 H5（`server/web/`） | **嵌进 Server exe** | Vue 构建产物 `dist` 由 `//go:embed` 打进 `chonkpilot-remote-server.exe`，由 Server 直接托管；与插件无关 |
 
 > 插件 webui 另有 `ui.assets.mode=dir`（宿主直读插件目录，供 Python/Node 等无法 embed 的插件）与 `resource`（PE 资源段）两种模式；本工程两个 Go 进程统一用 `bytes`（embed）。
@@ -278,7 +278,7 @@ H5 消费 `message.delta` · `message.reasoning` · `message.tool` · `turn.star
 | S1 | Server：账号 CRUD / 认证 / 设备绑定 / 隧道 / SSE / H5 静态托管 | `chonkpilot-plugins/remote/server` | ✅ 已实现（单测全绿 + 联调） |
 | S2 | 插件：配置页 / 出站连接 / 工作区上报 / 方法转发 / 事件回推 / 状态栏 | `chonkpilot-plugins/remote/client` | ✅ 已实现（单测 + **桌面真机联调通过**） |
 | S3 | H5：登录 / 会话列表（搜索·筛选·新建）/ 聊天 / 任务树 / 文件 | `chonkpilot-plugins/remote/server/web` | ✅ 已实现（真机**手工**联调；无仓内自动化 E2E 资产） |
-| S4 | 构建脚本 + manifest + **`plugin.json`** 登记（2026-11-04 核对，原 `plugin.ini` 不存在） | `build-plugins.ps1`、`src/initdata/capability/plugins/remote/`、`chonkpilot-plugins/remote/build.ps1` | ✅ 已实现 |
+| S4 | 构建脚本 + manifest（嵌入 exe）+ **`plugin.ini`** 登记 | `build-plugins.ps1`、`src/initdata/capability/plugins/remote/`、`chonkpilot-plugins/remote/build.ps1` | ✅ 已实现 |
 | S5 | 测试：Server 单测、插件 L1、H5 端到端 | 各仓 `*_test.go` / `src/test` | ⚠️ **Server / 插件单测存在**（本次未复跑）；**H5 端到端无仓内脚本/记录**（无 Playwright/E2E 资产），仅 §10.1 手工记录 |
 
 ### 10.1 联调记录（2026-11-01，单机；**手工记录，非可复现 E2E**）

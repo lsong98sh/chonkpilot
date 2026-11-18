@@ -59,9 +59,7 @@ func (s *Server) SandboxPolicyForWorkDir(workDir string) ([]string, error) {
 			return nil, fmt.Errorf("sandbox.resolve: 读取 security-* 失败（instance=%s）", info.ID)
 		}
 		for _, r := range rules {
-			if r.Writable {
-				add(r.Dir)
-			}
+			add(r.Dir) // security-* 是只写白名单：列出的目录即可写
 		}
 		break
 	}

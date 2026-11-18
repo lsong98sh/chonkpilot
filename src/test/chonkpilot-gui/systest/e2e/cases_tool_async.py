@@ -5,10 +5,8 @@
 该测试点**需要独立实例**：第三方 stdio MCP（`slow3p`）在 GUI 启动期装配（保存后需重启），
 故在点内自起隔离实例，预写用户级 `capability/mcps/slow3p.json`（调用级 timeout=1s / 条目 timeout=5s → 快速到裁决点）。
 
-* never：到超时点 → `mcp-tools-timeout{reason:timeout, options:[wait,cancel], tool_call_id/task_id/
-  instance_id, timeout_s}`；
-* 等待完成 `mcp-tools-wait` → `{waiting:true,task_id}` → 原调用交付 `tool-result`；
-* manual：超时 → `options:[detach,cancel]`，裁决行 DOM `.arbitration-hint` + `.background-btn` +
+* manual：超时 → `mcp-tools-timeout{reason:timeout, options:[detach,cancel], tool_call_id/task_id/
+  instance_id, timeout_s}`，工具行 `message.manualThreshold` 高亮（`.background-btn.threshold-hit`）+
   `.status-badge.async`；`task-background{tool_call_id}` → 层行 `state=detached`；
   `task-stop{task_id}` → `cancelled` + `tasks.done{state:cancelled,success:false}`。
 """
@@ -73,13 +71,6 @@ def _save_async(c, cfg):
     time.sleep(0.8)
 
 
-def _meta(c, name):
-    for t in ((c.req("tools-list", {}) or {}).get("tools") or []):
-        if isinstance(t, dict) and t.get("name") == name:
-            return t.get("_meta") or {}
-    return {}
-
-
 def _layer(c, sid, tcid, want=None, timeout=25):
     end = time.time() + timeout
     row = None
@@ -95,12 +86,11 @@ def _layer(c, sid, tcid, want=None, timeout=25):
     return row
 
 
-@case("S-TOOL-ASYNC-01", "工具异步", "超时裁决：never 事件契约 / 等待完成 / manual 转后台+取消 / 裁决行 DOM",
-      stage="seeded", order=391, fp="18 工具异步超时与取消 · run_tool_async B/C/E",
-      desc="隔离实例预注册 slow3p（调用级 timeout=1s / 条目 timeout=5s）：never 超时 → mcp-tools-timeout 字段与 "
-           "wait+cancel；mcp-tools-wait → waiting:true 后收到 tool-result；manual → options="
-           "[detach,cancel] 且裁决行 DOM 有 background-btn/async 徽标；task-background → 层行 "
-           "detached；task-stop(task_id) → cancelled + tasks.done。")
+@case("S-TOOL-ASYNC-01", "工具异步", "超时提示：manual 转后台 + 后台取消 / 工具行高亮 DOM",
+      stage="seeded", order=391, fp="18 工具异步超时与取消 · run_tool_async E",
+      desc="隔离实例预注册 slow3p（调用级 timeout=1s / 条目 timeout=5s）：manual 超时 → "
+           "mcp-tools-timeout{options:[detach,cancel]} 且工具行 threshold-hit + async 徽标；"
+           "task-background → 层行 detached；task-stop(task_id) → cancelled + tasks.done。")
 def s_tool_async_01(env):
     home = _h.tmp_home()
     mcps = os.path.join(home, ".chonkpilot", "capability", "mcps")
@@ -137,35 +127,6 @@ def s_tool_async_01(env):
         if "slow3p_slow_sleep" not in names:
             raise AssertionError("slow3p 未装配 → 超时裁决不可测")
 
-        # ── B：never 超时事件契约，然后取消收尾 ──
-        _save_async(c, {"slow3p_slow_sleep": {"mode": "never"}})
-        env.note("slow3p_slow_sleep _meta（never）", _meta(c, "slow3p_slow_sleep"))
-        sid = _start_call(c, "never")
-        _ask(c, sid, "please call slow3p-never")
-        p = _wait_ev(c, "mcp-tools-timeout", lambda x: x.get("reason") == "timeout", 60)
-        env.check("B 超时事件字段（tool/options/ids/timeout_s）",
-                  str(p.get("tool") or "").replace("self_", "") == "slow3p_slow_sleep"
-                  and list(p.get("options") or []) == ["wait", "cancel"]
-                  and all(p.get(k) for k in ("tool_call_id", "task_id", "instance_id"))
-                  and abs(float(p.get("timeout_s") or 0) - TIMEOUT_S) <= 1.5, p)
-        stop = c.req("task-stop", {"tool_call_id": p["tool_call_id"]}) or {}
-        env.check("B task-stop(tool_call_id) → cancelled + task_id",
-                  stop.get("cancelled") is True and bool(stop.get("task_id")), stop)
-
-        # ── C：等待完成 → 继续交付 ──
-        sid2 = _start_call(c, "wait")
-        _ask(c, sid2, "please call slow3p-never")
-        p2 = _wait_ev(c, "mcp-tools-timeout", lambda x: x.get("reason") == "timeout", 60)
-        w = c.req("mcp-tools-wait", {"tool_call_id": p2["tool_call_id"],
-                                     "task_id": p2["task_id"],
-                                     "instance_id": p2["instance_id"]}) or {}
-        env.check("C mcp-tools-wait 回执 {waiting:true,task_id}",
-                  w.get("waiting") is True and bool(w.get("task_id")), w)
-        tr = _wait_ev(c, "tool-result",
-                      lambda x: str(x.get("tool") or "").replace("self_", "") == "slow3p_slow_sleep",
-                      45)
-        env.check("C 等待完成 → 原调用交付 tool-result", bool(tr), str(tr)[:120])
-
         # ── E：manual 超时 → 转后台 → 后台取消 ──
         _save_async(c, {"slow3p_slow_sleep": {"mode": "manual"}})
         sid3 = _start_call(c, "manual")
@@ -185,7 +146,7 @@ def s_tool_async_01(env):
         while time.time() < end:
             dom = _h._plain(c.eval("""(()=>{const rows=[...document.querySelectorAll(
               '.toolpair-section')].filter(e=>e.getBoundingClientRect().width>0);
-              const r=rows.find(e=>e.querySelector('.arbitration-hint'));
+              const r=rows.find(e=>e.querySelector('.background-btn.threshold-hit'));
               if(!r)return {found:false};const b=r.querySelector('.background-btn');
               const g=r.querySelector('.status-badge.async');
               return {found:true,btn:!!b,badge:g?g.textContent.trim():''};})()""")) or {}
@@ -201,7 +162,7 @@ def s_tool_async_01(env):
                 "tag": str(_h._plain(c.eval(
                     "(()=>{const t=document.querySelector('.chat-session-tag');"
                     "return t?(t.getAttribute('title')||t.textContent||''):''})()")) or "")})
-        env.check("E 裁决行 DOM：arbitration-hint + background-btn + async 徽标",
+        env.check("E 工具行 DOM：threshold-hit + background-btn + async 徽标",
                   dom.get("found") is True and dom.get("btn") is True
                   and bool(dom.get("badge")), dom)
 

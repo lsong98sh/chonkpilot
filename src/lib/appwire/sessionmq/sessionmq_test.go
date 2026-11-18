@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lsong98sh/chonkpilot-agent/session/component"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
-	"github.com/lsong98sh/chonkpilot-agent/session/component"
 )
 
 type captured struct {
@@ -59,7 +59,7 @@ func TestEmitMapsExistingTopics(t *testing.T) {
 	// ③ TitleChanged → data-session-title-changed（不带 instance_id）
 	sink.Emit(component.Event{Kind: component.EventTitleChanged, DialogID: "d1", SessionID: "s1", Title: "新标题"})
 	// ④ 内容类事件 → 不投递
-	sink.Emit(component.Event{Kind: component.EventMessageAppended, DialogID: "d1", SessionID: "s1", TurnID: "t1"})
+	sink.Emit(component.Event{Kind: component.EventSnapshotSet, DialogID: "d1", SessionID: "s1"})
 	sink.Emit(component.Event{Kind: component.EventDialogDeleted, DialogID: "d1"})
 
 	seen := make([]captured, 0, 3)

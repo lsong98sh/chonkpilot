@@ -18,7 +18,7 @@
   - `filesys_run` / `browser_run` / `desktop_run` / `dsl_run` 与 `chonkpilot-dsl-executor.exe` **已全部删除**（GATEWAY-2 L1 / PLUGIN-SPLIT-1）。
 - **做**：脚本执行（多 runtime）、HTTP 抓取；统一输出层（`Ok`/`Err` + 200KB 落文件）。
 - **不做（历史）**：**零主仓库依赖**（仅 `src/lib/paths`）；无 DB/NATS；**无路径白名单**（越界读写成败由沙箱承担，见 [14-安全域](../10-architecture/14-安全域-agentbox.md)）；零持久状态。**〔2026-11-04 核对〕** `agentbox` 已删除，现行写隔离 = `chonkpilot-util/sandbox`（gateway spawn stdio 下游时实施）与 `chonkpilot-util/scriptrun` 自带 Low IL/Job 约束。
-- **工具名口径（P0a，2026-10-29 用户拍板）**：本层各工具经 gateway 暴露时**暴露名 = 契约名**——内置 `self` 节点（`tools/register` 的 server 域 / 插件注册工具）与 `namespace "-"` 的 core/插件 server 都不再加 `self_` 前缀；下文条目均以契约名书写，与模型可见的 `tools/list` 名称一致（`tool_async` 等存量 `self_<原名>` 配置键由后端兼容识别，见 [26 §4.3.1](26-mcp-gateway.md)）。
+- **工具名口径（P0a，2026-10-29 用户拍板）**：本层各工具经 gateway 暴露时**暴露名 = 契约名**——内置 `self` 节点（`tools/register` 的 server 域 / 插件注册工具）与 `namespace "-"` 的 core/插件 server 都不再加 `self_` 前缀；下文条目均以契约名书写，与模型可见的 `tools/list` 名称一致；`tool_async` 等配置键按当前暴露名精确匹配（不再识别历史 `self_<原名>`，见 [26 §4.3.1](26-mcp-gateway.md)）。
 - **文件操作参数强约束（R-11）**：所有输入/输出文件与目录参数**必须为绝对路径或以 `~/` / `!/` 开头**，相对路径一律拒绝；规范见 [16-路径解析规范](../10-architecture/16-路径解析规范.md) §8。
 
 ---

@@ -14,7 +14,7 @@ func TestChatToolCatalogTools(t *testing.T) {
 			t.Fatalf("instance 透传错：%q", instanceID)
 		}
 		return []ToolDef{
-			{Name: "core_file_read", Description: "read", Parameters: map[string]any{"type": "object"}, Meta: map[string]any{"async": "never"}},
+			{Name: "core_file_read", Description: "read", Parameters: map[string]any{"type": "object"}, Meta: map[string]any{"async": "sync"}},
 			{Name: "no_schema"},
 		}
 	})
@@ -32,7 +32,7 @@ func TestChatToolCatalogTools(t *testing.T) {
 	if tools[1].InputSchema != nil {
 		t.Fatalf("无参数工具不应产出 schema：%s", tools[1].InputSchema)
 	}
-	if tools[0].Meta["async"] != "never" {
+	if tools[0].Meta["async"] != "sync" {
 		t.Fatalf("_meta 未透传：%+v", tools[0].Meta)
 	}
 	if servers, err := cat.Servers(context.Background(), "ins-test"); err != nil || servers != nil {

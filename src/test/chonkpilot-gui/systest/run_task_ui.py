@@ -378,13 +378,12 @@ def case_closed_readonly():
     tags = deep_loads(c.eval(
         "[...document.querySelectorAll('.session-tree-node .node-closed-tag')].map(e=>e.textContent.trim())"))
     stops = deep_loads(c.eval("document.querySelectorAll('.session-tree-node .node-stop').length"))
-    awaiting = deep_loads(c.eval("document.querySelectorAll('.session-tree-node .node-awaiting').length"))
     btns = deep_loads(c.eval("document.querySelectorAll('.task-detail .td-footer button').length"))
     hint = visible_text(".task-detail .td-footer").strip()
     dtags = deep_loads(c.eval("document.querySelectorAll('.task-detail .td-closed-tag').length"))
-    print("      [evidence] titles=%r nested=%s closed=%s tags=%r stops=%s awaiting=%s "
+    print("      [evidence] titles=%r nested=%s closed=%s tags=%r stops=%s "
           "detailButtons=%s detailTags=%s detailHint=%r"
-          % (titles, nested, closed_n, tags, stops, awaiting, btns, dtags, hint))
+          % (titles, nested, closed_n, tags, stops, btns, dtags, hint))
     # ① 节点仍可见（父 + 级联子）且带闭合态样式与「已关闭」标签
     if "可关闭任务" not in titles or "子任务" not in titles:
         raise TestError("关闭后节点/子节点不应消失：titles=%r" % titles)
@@ -395,11 +394,9 @@ def case_closed_readonly():
         raise TestError("闭合态节点数不足（父+子应均可见）：%r" % closed_n)
     if len(tags) < 2 or any(t not in ("已关闭", "Closed") for t in tags):
         raise TestError("「已关闭」标签缺失/异常（zh-CN/en-US 双语之一）：%r" % tags)
-    # ② 只读：无停止动作（也不渲染裁决条）
+    # ② 只读：无停止动作
     if int(stops) != 0:
         raise TestError("已关闭节点不应有停止动作：.node-stop=%r" % stops)
-    if int(awaiting) != 0:
-        raise TestError("已关闭节点不应渲染裁决条")
     # ③ 详情只读：无动作按钮 + 只读提示 + 「已关闭」标签
     if int(btns) != 0:
         raise TestError("已关闭详情不应有动作按钮：buttons=%r" % btns)

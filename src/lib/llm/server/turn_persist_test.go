@@ -189,7 +189,7 @@ func TestToolRetryBackfillsInterruptedRow(t *testing.T) {
 	makeInterruptedNode(t, s, "s-i176-c", "t-i176-c", "call-r176", "core_file_read", map[string]any{"path": "a.txt"})
 
 	wt := watchTurn(t, s.bus, "t-i176-c")
-	res := retryReply(t, s, map[string]any{"session_id": "s-i176-c", "task_id": "call-r176"})
+	res := retryReply(t, s, map[string]any{"instance_id": "ins-test", "session_id": "s-i176-c", "task_id": "call-r176"})
 	if ok, _ := res["ok"].(bool); !ok {
 		t.Fatalf("tool-retry rejected: %+v", res)
 	}

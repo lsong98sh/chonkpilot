@@ -79,7 +79,7 @@ def s_sess_01(env):
     env.eq("session 插件 running", statuses.get("session"), "running")
 
     names = _h.wait_tools(env.client, SESSION_TOOLS, max_wait=120)
-    canon = {n[5:] if n.startswith("self_") else n for n in names}
+    canon = set(names)
     env.check("9 个 session 工具进入工具面",
               all(t in canon for t in SESSION_TOOLS), sorted(canon))
 

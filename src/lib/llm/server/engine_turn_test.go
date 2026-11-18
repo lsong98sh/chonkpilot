@@ -24,6 +24,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
+	"github.com/lsong98sh/chonkpilot-agent/chat"
 )
 
 // engineReceiveText 拼接一次轮次内 `llm-receive` 的文本增量（type=text；忽略 complete / retry）。
@@ -1023,5 +1024,234 @@ func TestEngineTurnEmptyReply(t *testing.T) {
 		if strings.Contains(m, `role=assistant`) {
 			t.Fatalf("空回复不应落 assistant：%v", rec.msgs)
 		}
+	}
+}
+
+// TestEngineTurnStoreSavePendingToolIdempotent：可选端口 `SavePendingTool` 在**未登记映射**的
+// 独立路径补一行 running；第二次调用不新增行（幂等），行内容 = `{call}` + status=running。
+func TestEngineTurnStoreSavePendingToolIdempotent(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	const session, turn = "s-et-savepending", "t-et-savepending"
+	startTurn(t, s, session, turn)
+	tc := s.lookupTurn(turn)
+	if tc == nil {
+		t.Fatal("turn ctx not found")
+	}
+	store := &engineTurnStore{tc: tc}
+	call := chat.ToolCall{ID: "tc-savepending", Name: "core_file_read", Arguments: `{"path":"a.txt"}`}
+
+	if err := store.SavePendingTool(context.Background(), call, enginePendingPlaceholder); err != nil {
+		t.Fatalf("SavePendingTool: %v", err)
+	}
+	rows := toolRowsOf(t, turn)
+	if len(rows) != 1 {
+		t.Fatalf("补行后 role=tool 行数=%d want 1：%+v", len(rows), rows)
+	}
+	if st := persist.Sval(rows[0]["tool_call_status"]); st != persist.ToolStatusRunning {
+		t.Fatalf("补行状态=%q want running", st)
+	}
+	content := persist.Sval(rows[0]["content"])
+	if !strings.Contains(content, `"tool_call_id":"tc-savepending"`) ||
+		!strings.Contains(content, `"name":"core_file_read"`) ||
+		!strings.Contains(content, `"path":"a.txt"`) {
+		t.Fatalf("补行 content 应为 call 段（tool_call_id/name/arguments）：%s", content)
+	}
+	if !strings.Contains(content, `"call"`) {
+		t.Fatalf("补行 content 应含 call 段：%s", content)
+	}
+	createdAt := persist.Sval(rows[0]["created_at"])
+
+	// 第二次（映射已登记）→ no-op：不新增行、原行不动。
+	if err := store.SavePendingTool(context.Background(), call, "另一段占位"); err != nil {
+		t.Fatalf("SavePendingTool(second): %v", err)
+	}
+	rows = toolRowsOf(t, turn)
+	if len(rows) != 1 {
+		t.Fatalf("幂等失败：第二次调用后行数=%d want 1：%+v", len(rows), rows)
+	}
+	if got := persist.Sval(rows[0]["created_at"]); got != createdAt {
+		t.Fatalf("幂等失败：原行 created_at 被改 %q → %q", createdAt, got)
+	}
+	if st := persist.Sval(rows[0]["tool_call_status"]); st != persist.ToolStatusRunning {
+		t.Fatalf("幂等失败：状态被改为 %q", st)
+	}
+}
+
+// TestEngineTurnStoreSavePendingToolNoopAfterProductionRunning：生产链路已 `persistToolRunning`
+// （Dispatcher 派发前落 running + 登记映射）→ `SavePendingTool` 必须 no-op（不重复插行）。
+func TestEngineTurnStoreSavePendingToolNoopAfterProductionRunning(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	const session, turn = "s-et-savepending-noop", "t-et-savepending-noop"
+	startTurn(t, s, session, turn)
+	tc := s.lookupTurn(turn)
+	if tc == nil {
+		t.Fatal("turn ctx not found")
+	}
+	call := chat.ToolCall{ID: "tc-pending-pre", Name: "core_file_read", Arguments: `{"path":"a.txt"}`}
+	tc.persistToolRunning(call.ID, call.Name, parseArgs(call.Arguments), "")
+
+	rows := toolRowsOf(t, turn)
+	if len(rows) != 1 {
+		t.Fatalf("生产 running 先行落库后行数=%d want 1", len(rows))
+	}
+	createdAt := persist.Sval(rows[0]["created_at"])
+
+	store := &engineTurnStore{tc: tc}
+	if err := store.SavePendingTool(context.Background(), call, enginePendingPlaceholder); err != nil {
+		t.Fatalf("SavePendingTool: %v", err)
+	}
+	rows = toolRowsOf(t, turn)
+	if len(rows) != 1 {
+		t.Fatalf("已有 running 行时不得重复插行：行数=%d：%+v", len(rows), rows)
+	}
+	if got := persist.Sval(rows[0]["created_at"]); got != createdAt {
+		t.Fatalf("已有 running 行应保持原行：created_at %q → %q", createdAt, got)
+	}
+}
+
+// TestEngineTurnToolsCancelForwardsToExecSink：`engineTurnTools.Cancel` 转调执行池
+// `ExecSink.CancelExec(instanceID, opID)`（opID = Pending 时返回的 tool_call_id）。
+func TestEngineTurnToolsCancelForwardsToExecSink(t *testing.T) {
+	testExecSink.reset()
+	t.Cleanup(testExecSink.reset)
+
+	srv := &Server{execSink: testExecSink}
+	tools := engineTurnTools{tc: &turnCtx{server: srv}}
+	ok, err := tools.Cancel(context.Background(), "ins-cancel", "tc-cancel")
+	if err != nil || !ok {
+		t.Fatalf("Cancel=(%v,%v) want (true,nil)", ok, err)
+	}
+	if refs := testExecSink.cancelledRefs(); len(refs) != 1 || refs[0] != "tc-cancel" {
+		t.Fatalf("sink.CancelExec refs=%v want [tc-cancel]", refs)
+	}
+	if insts := testExecSink.cancelInstances(); len(insts) != 1 || insts[0] != "ins-cancel" {
+		t.Fatalf("sink.CancelExec instance=%v want [ins-cancel]", insts)
+	}
+
+	// 空 opID / nil tc / nil server / nil sink → 不动作、不转发。
+	if ok, err := tools.Cancel(context.Background(), "ins-cancel", ""); ok || err != nil {
+		t.Fatalf("空 opID 应 no-op：(%v,%v)", ok, err)
+	}
+	if ok, err := (engineTurnTools{}).Cancel(context.Background(), "ins-cancel", "tc-x"); ok || err != nil {
+		t.Fatalf("nil tc 应 no-op：(%v,%v)", ok, err)
+	}
+	srv.execSink = nil
+	if ok, err := tools.Cancel(context.Background(), "ins-cancel", "tc-x"); ok || err != nil {
+		t.Fatalf("nil execSink 应 no-op：(%v,%v)", ok, err)
+	}
+	if refs := testExecSink.cancelledRefs(); len(refs) != 1 {
+		t.Fatalf("no-op 不应转发到 sink：refs=%v", refs)
+	}
+}
+
+// TestEngineTurnToolsDispatchPending：Pending 只返回 `Pending=true`（chat 层已无 OpID 消费者），
+// 且派发前已落 running 行（与生产 `dispatchToolCall` 同步落库一致）。
+func TestEngineTurnToolsDispatchPending(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	const session, turn = "s-et-opid", "t-et-opid"
+	startTurn(t, s, session, turn)
+	tc := s.lookupTurn(turn)
+	if tc == nil {
+		t.Fatal("turn ctx not found")
+	}
+
+	call := chat.ToolCall{ID: "tc-opid", Name: "core_file_read", Arguments: `{"_inbox_manual":true}`}
+	out, err := engineTurnTools{tc: tc}.Dispatch(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !out.Pending {
+		t.Fatalf("manual（转异步）应 Pending：%+v", out)
+	}
+
+	rows := toolRowsOf(t, turn)
+	if len(rows) != 1 {
+		t.Fatalf("Pending 派发后 DB 应已有 running 行：行数=%d：%+v", len(rows), rows)
+	}
+	if st := persist.Sval(rows[0]["tool_call_status"]); st != persist.ToolStatusRunning {
+		t.Fatalf("Pending 占位状态=%q want running", st)
+	}
+
+	// 等 worker 登记 task_id 后投递回执，避免测试清理与在飞写库竞态。
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		tc.mu.Lock()
+		pending := len(tc.frames.CurrentPending())
+		tc.mu.Unlock()
+		if pending > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("异步 task_id 未登记（pending=0）")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	reportTask(t, s, "tk-"+call.ID, "manual result", session, turn)
+	for {
+		rows = toolRowsOf(t, turn)
+		if len(rows) == 1 && persist.Sval(rows[0]["tool_call_status"]) == "completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("回执未回填 completed：%+v", rows)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestEngineTurnToolsDispatchRejectViaInbox：派发前拒绝 / 建节点失败这类**直接 Result** 也必须
+// 经 engineInbox 的易失 tool_result lane 回喂（不再绕过 inbox 直接返回 Result）：
+//   - 先落事实：dispatchToolCall 已把 failed 结果写进 tool 行；
+//   - 再投递：Dispatch 返回 Pending=true，engineInbox 里恰有一条匹配 callID 的 tool_result（isError）。
+func TestEngineTurnToolsDispatchRejectViaInbox(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+
+	const session, turn = "s-et-reject", "t-et-reject"
+	startTurn(t, s, session, turn)
+	tc := s.lookupTurn(turn)
+	if tc == nil {
+		t.Fatal("turn ctx not found")
+	}
+	// 空白名单 = 不限制 → 显式收窄为不含目标工具的列表，触发「调用处硬拒」。
+	tc.allowedTools = map[string]struct{}{"other_tool": {}}
+
+	const callID = "tc-reject"
+	out, err := engineTurnTools{tc: tc}.Dispatch(context.Background(),
+		chat.ToolCall{ID: callID, Name: "core_file_read", Arguments: `{}`})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !out.Pending {
+		t.Fatalf("直接拒绝结果应经 inbox 投递（Pending=true）：%+v", out)
+	}
+	if got := tc.engineInbox.Len(); got != 1 {
+		t.Fatalf("engineInbox 应恰有 1 条 tool_result（got %d）", got)
+	}
+	item, ok, err := tc.engineInbox.Poll(context.Background())
+	if err != nil || !ok || item.Result == nil {
+		t.Fatalf("engineInbox 取件失败：ok=%v err=%v item=%+v", ok, err, item)
+	}
+	if item.Type != chat.InboxTypeToolResult || item.Result.CallID != callID || !item.Result.IsError {
+		t.Fatalf("应为匹配 callID 的错误 tool_result：%+v", item.Result)
+	}
+
+	// 事实已落库（同一 tool 行 failed）。
+	rows := toolRowsOf(t, turn)
+	if len(rows) != 1 {
+		t.Fatalf("tool 行应恰 1 条：%+v", rows)
+	}
+	if st := persist.Sval(rows[0]["tool_call_status"]); st != persist.ToolStatusFailed {
+		t.Fatalf("tool 行状态=%q want failed", st)
 	}
 }

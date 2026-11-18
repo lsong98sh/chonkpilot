@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -176,30 +177,21 @@ func (tc *turnCtx) engineRuntimeConfig() chat.RuntimeConfig {
 	if maxSteps <= 0 {
 		maxSteps = defaultMaxToolIterations
 	}
-	pendingWait := tc.pendingTaskTimeout
-	if pendingWait <= 0 {
-		pendingWait = defaultPendingTaskTimeout
-	}
 	retryCount := tc.retryCount
 	// 自动续写参数（开关 / 宽限期 / 文案 / 次数上限）由 runner 推导：
 	// 生产语义 `autoContinueDelaySec=0` = 立即续写；引擎的零值表示「未设」→ Delay 折成正的
 	// 最小正时长（`llm-interrupted.auto_continue_delay_ms` 仍为 0，与生产同形）。
 	cont := tc.autoContinueParams()
 	return chat.RuntimeConfig{
-		MaxSteps:      maxSteps,
-		EventLogLevel: chat.TurnEventLogNone, // 生产不写 turn_events
-		RetryCount:    &retryCount,
-		RetryBudget:   tc.retryBudget,
-		// 轮内等待异步回执：上限 = 生产看门狗（prj `pending_task_timeout_sec`，缺省 2h）。
-		// 看门狗在引擎模式下不再单独起（等待循环本身即兜底：超时合成 failed 占位续轮）。
-		PendingWait:        pendingWait,
+		MaxSteps:           maxSteps,
+		EventLogLevel:      chat.TurnEventLogNone, // 生产不写 turn_events
+		RetryCount:         &retryCount,
+		RetryBudget:        tc.retryBudget,
 		PendingPlaceholder: enginePendingPlaceholder,
-		// 轮内等待由 InboxWaiter.Wait 事件驱动（无间隔轮询）；PollInterval 仅为兼容字段。
-		PollInterval:      0,
-		AutoContinue:      cont.Enabled,
-		AutoContinueDelay: cont.EngineDelay(),
-		AutoContinueText:  cont.Text,
-		AutoContinueMax:   cont.Max,
+		AutoContinue:       cont.Enabled,
+		AutoContinueDelay:  cont.EngineDelay(),
+		AutoContinueText:   cont.Text,
+		AutoContinueMax:    cont.Max,
 	}
 }
 
@@ -229,8 +221,8 @@ func (tc *turnCtx) engineFirstInput() (ChatMsg, bool) {
 // 插话意向的投递由**相位事件**驱动（工具派发 / 回执清空 → `flushInsertIntents`），
 // 本循环不再持有任何定时器。
 //
-// 不另起 pending 看门狗：引擎的 `PendingWait` 等待循环对未回填调用合成 failed 占位续轮
-// （阈值同源 = `pending_task_timeout_sec`）。
+// 不另起 pending 超时看门狗：引擎对未回填调用**一直等待**（回执到达或 ctx 取消）；
+// 强制取消只由执行硬上限（gateway `_meta.timeout` / 界面 hard_timeout）负责。
 func (tc *turnCtx) enginePump(stop <-chan struct{}) {
 	for {
 		select {
@@ -250,7 +242,7 @@ func (tc *turnCtx) enginePump(stop <-chan struct{}) {
 
 // engineRouteInput 把输入队列的一条消息转成引擎 Inbox 项（唯一消费者 = 引擎）。
 //   - 工具结果（异步回执 / ask 回答）：已由 FeedToolResultStatus 落库 → 直接投递 tool_result
-//     （同时摘除 inflight 登记，避免 watchdog / 看门狗误判）；
+//     （同时摘除 inflight 登记，避免在飞登记残留）；
 //   - 用户文本：按插话投递（引擎只有 insert 入口；CommitInbox 落库语义同 `tc.persistMessage`）；
 //   - 其余（notify / continue）：引擎模式不消费，留痕（生产仅在轮次首个输入前出现）。
 func (tc *turnCtx) engineRouteInput(msg ChatMsg) {
@@ -323,10 +315,10 @@ func (tc *turnCtx) engineFinish(res chat.TurnResult, err error, text string) {
 		if d.NotifyInterrupted {
 			tc.publishInterrupted("LLM_INCOMPLETE", "", true, 0)
 		}
-		tc.server.complete(tc, d.Status, d.Finish, text)
+		tc.server.complete(tc, string(d.Status), d.Finish, text)
 		return
 	}
-	tc.server.complete(tc, d.Status, d.Finish, text)
+	tc.server.complete(tc, string(d.Status), d.Finish, text)
 }
 
 // ─── 端口实现 ─────────────────────────────────────────────────────────
@@ -565,6 +557,39 @@ func (s *engineTurnStore) SaveMessage(_ context.Context, msg chat.Message) error
 	return s.tc.persistMessage(msg)
 }
 
+// SavePendingTool 是引擎的**可选**落库端口（Pending 工具占位）：幂等确保该 tool_call 已有一
+// 条 running 的 role=tool 行。
+//
+//   - 生产链路 `dispatchToolCall` 已在派发前 `persistToolRunning` 并登记 `toolMsgKeys` → 本方法
+//     命中即 no-op（绝不重复插行）；
+//   - 独立 / 异常路径未登记 → 按生产同形补一行（`{call}` + status=running，ask_id 尽力沿用）。
+//
+// 并发口径：只在 `tc.mu` 内**查/复核**映射；DB IO 全在锁外（先查、解锁、再落）。
+// content 参数（引擎侧占位文本）本实现不写库：行内容必须保持 `{call}` 结构（供终态就地
+// 回填 / 历史重放），占位语义由 status=running 承载。
+// 落库仍失败 → 返回 error（让引擎本轮 fail，占位必须落库）；生产主路径 B-42 的「静默不阻断」
+// 只适用于 `dispatchToolCall` 自有调用，不改变。
+func (s *engineTurnStore) SavePendingTool(_ context.Context, call chat.ToolCall, _ string) error {
+	tc := s.tc
+	if tc == nil {
+		return nil
+	}
+	tc.mu.Lock()
+	_, ok := tc.toolMsgKeys[call.ID]
+	tc.mu.Unlock()
+	if ok {
+		return nil
+	}
+	tc.persistToolRunning(call.ID, call.Name, parseArgs(call.Arguments), tc.askIDOf(call.ID))
+	tc.mu.Lock()
+	_, ok = tc.toolMsgKeys[call.ID]
+	tc.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("工具 Pending 占位落库失败（tool_call_id=%s）", call.ID)
+	}
+	return nil
+}
+
 func (*engineTurnStore) AppendEvent(context.Context, chat.TurnEvent) error { return nil }
 
 // CommitInbox 原子消费一条 inbox 输入：`data-inbox-commit` 在同一事务内落消息 + 置 consumed
@@ -708,20 +733,36 @@ func (a *engineTurnAnswer) text() string {
 
 // engineTurnTools 是引擎的工具端口：直接复用生产 `dispatchToolCall`（策略 / 任务树 / 落库 /
 // 异步登记全部同源）。
+//
+// 结果统一经 engineInbox 的 **tool_result 易失 lane** 回喂（2026-11-16 inbox 架构整理）：
+//   - gateway worker（同步完成 / 失败 / 取消）→ `finishBackgroundTool` 先落 tool 行再 Push；
+//   - 异步回执 / ask 回答 → `handleAsyncDone` 先 `persistToolResult` 再 Push；
+//   - 派发前拒绝（白名单 / mcp_invoke 目标越权）与建节点失败 → 本端口先由 `dispatchToolCall`
+//     落 failed tool 行，再 Push 同一形态的 tool_result（不再直接返回 Result 绕过 inbox）。
 type engineTurnTools struct{ tc *turnCtx }
 
 func (t engineTurnTools) Dispatch(_ context.Context, call chat.ToolCall) (chat.ToolOutcome, error) {
 	msg, pending, derr := t.tc.dispatchToolCall(call)
 	if pending {
-		// ask / 转异步：结果经回执到达（引擎进入 PendingWait）。
+		// ask / 转异步：结果经回执到达（引擎进入轮内等待，回执到达或取消前一直等）。
 		return chat.ToolOutcome{Pending: true}, nil
 	}
-	return chat.ToolOutcome{Result: chat.ToolResult{
-		CallID: call.ID, Content: msg.Content, IsError: derr != nil,
-	}}, nil
+	// 派发前置拒绝 / 建节点失败：dispatchToolCall 已把 failed 事实落进同一 tool 行（先落事实），
+	// 这里只投递易失 tool_result；item 随即入队，引擎的轮内等待会立即取到（顺序 = FIFO）。
+	t.tc.engineInbox.Push(engineToolResultItem(call.ID, msg.Content, derr != nil))
+	return chat.ToolOutcome{Pending: true}, nil
 }
 
-func (engineTurnTools) Cancel(context.Context, string, string) (bool, error) { return false, nil }
+// Cancel 把显式取消接到执行池控制面（`ExecSink.CancelExec`）：opID 为 tool_call_id
+// （或已登记的异步 task_id），执行池按 instance 分桶 + idOrCall 定位。
+// chat 层等待回执不再设超时、不调用本方法；保留本实现供宿主显式取消（用户 `task-stop` /
+// 进程关闭级联）。执行池未注入 / 无引用 → 不动作（与引入前等价）。
+func (t engineTurnTools) Cancel(_ context.Context, instanceID, opID string) (bool, error) {
+	if opID == "" || t.tc == nil || t.tc.server == nil || t.tc.server.execSink == nil {
+		return false, nil
+	}
+	return t.tc.server.execSink.CancelExec(instanceID, opID)
+}
 
 func (engineTurnTools) Detach(context.Context, string, string) (string, error) { return "", nil }
 

@@ -125,7 +125,7 @@ func TestCronSessionAttributionViaPluginCapability(t *testing.T) {
 	}
 	// 不显式带 dialog_id 的收轮路径：宿主应经 rememberDialog 补上（否则 data 面 dialog_required）。
 	if res, err := cli.Call(ctx, "plugin/v1/session.complete-turn", map[string]any{
-		"work_dir": wd, "turn_id": "turn-cron-1", "status": "done",
+		"work_dir": wd, "turn_id": "turn-cron-1", "status": "complete",
 	}); err != nil || !res.OK {
 		t.Fatalf("session.complete-turn: %+v %v", res, err)
 	}
@@ -182,7 +182,7 @@ func TestCronSessionAttributionViaPluginCapability(t *testing.T) {
 		t.Fatalf("应有 1 轮: %+v", hist)
 	}
 	turn, _ := turns[0].(map[string]any)
-	if turn["status"] != "done" || turn["turn_id"] != "turn-cron-1" {
+	if turn["status"] != "complete" || turn["turn_id"] != "turn-cron-1" {
 		t.Fatalf("轮次终态不符: %+v", turn)
 	}
 }
@@ -249,7 +249,7 @@ func TestCronAppendNoticeViaPluginCapability(t *testing.T) {
 		t.Fatalf("应有 1 个通知轮次: %+v", hist)
 	}
 	turn, _ := turns[0].(map[string]any)
-	if turn["status"] != "done" || turn["turn_id"] != val["turn_id"] {
+	if turn["status"] != "complete" || turn["turn_id"] != val["turn_id"] {
 		t.Fatalf("通知轮次终态不符: %+v", turn)
 	}
 }

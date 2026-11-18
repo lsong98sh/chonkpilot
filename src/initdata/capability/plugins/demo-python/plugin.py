@@ -19,7 +19,7 @@
   传输：宿主注入的 CHONKPILOT_PLUGIN_ADDR 决定通道 —— 裸路径 = AF_UNIX（默认）；
   `tcp://127.0.0.1:<port>` = TCP（与 UDS 完全相同的帧协议）。LLM 走的也是这条通道。
 
-运行：由宿主按极简 plugin.json 拉起（cmd=["python","-u","plugin.py"]），
+运行：由宿主按极简 plugin.ini 拉起（cmd=python，args=-u plugin.py），
 也可手工验证：设置 CHONKPILOT_PLUGIN_ADDR 后 `python plugin.py`。
 
 PLUGIN-LOAD-1（D12）：完整 manifest 由插件自读（同目录 manifest.json）并在 plugin.hello 上报。
@@ -34,8 +34,9 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PLUGIN_ID = "demo-python"
-PLUGIN_VERSION = "1.0.0"
+# 身份唯一来源 = manifest.json；此处仅缓存，main() 加载并校验后赋值。
+PLUGIN_ID = ""
+PLUGIN_VERSION = ""
 
 # 工具契约（*.tool.md）目录：与 plugin.py 同级的 tools/。
 TOOL_MD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
@@ -290,7 +291,7 @@ HOT_TOOLS = [t["name"] for t in TOOLS if (t.get("_meta") or {}).get("hot")]
 
 class MCPHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "chonk-demo/" + PLUGIN_VERSION
+    server_version = "chonk-demo"
 
     def log_message(self, fmt, *args):  # 静音默认访问日志
         return
@@ -616,30 +617,40 @@ def start_mcp():
 
 
 def load_plugin_manifest():
-    """读取插件自带的完整 manifest（D12）：<CHONKPILOT_PLUGIN_ROOT>/manifest.json。"""
+    """读取插件自带的完整 manifest（D12）：<CHONKPILOT_PLUGIN_ROOT>/manifest.json。
+
+    身份唯一来源 = manifest；缺失/字段不全 → 明确失败（不回退硬编码）。
+    """
     root = os.environ.get("CHONKPILOT_PLUGIN_ROOT", "")
     if not root:
-        return None
-    return _load_json(os.path.join(root, "manifest.json"), None)
+        raise RuntimeError("CHONKPILOT_PLUGIN_ROOT 未设置")
+    manifest = _load_json(os.path.join(root, "manifest.json"), None)
+    if not isinstance(manifest, dict):
+        raise RuntimeError("manifest.json 缺失或不是 JSON 对象")
+    for key in ("id", "name", "version"):
+        if not str(manifest.get(key) or "").strip():
+            raise RuntimeError("manifest.%s 不能为空" % key)
+    return manifest
 
 
 def main():
-    global _bridge
+    global _bridge, PLUGIN_ID, PLUGIN_VERSION
     addr = os.environ.get("CHONKPILOT_PLUGIN_ADDR", "")
     if not addr:
         log("CHONKPILOT_PLUGIN_ADDR 未设置（应由宿主注入）")
         return 2
+    manifest = load_plugin_manifest()
+    PLUGIN_ID = str(manifest["id"]).strip()
+    PLUGIN_VERSION = str(manifest["version"]).strip()
+    MCPHandler.server_version = "chonk-demo/" + PLUGIN_VERSION
     load_config()
     _bridge = Bridge(addr)
 
-    hello = {
-        "id": PLUGIN_ID, "name": "Python 演示插件", "version": PLUGIN_VERSION,
+    _bridge.call("plugin.hello", {
+        "id": PLUGIN_ID,
         "features": {"mcp": "http", "ui": True, "lang": "python"},
-    }
-    manifest = load_plugin_manifest()
-    if manifest:
-        hello["manifest"] = manifest
-    _bridge.call("plugin.hello", hello)
+        "manifest": manifest,
+    })
     _bridge.call("plugin.register", {
         "features": {"mcp": "http", "ui": True},
         "subscriptions": [{"pattern": "session-complete"}],

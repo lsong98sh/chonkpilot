@@ -1,11 +1,11 @@
 // tool_sandbox（agentbox 沙箱开关）配置解析 / 装配的**规格期望值**测试。
 //
 // 期望值来源：docs/spec/10-architecture/14-安全域-agentbox.md §0.6（`{"executors":{...},
-// "mcps":{...}}` 解析、旧形状读取时迁移）、
+// "mcps":{...}}` 解析、旧形状拒绝）、
 // docs/spec/10-architecture/18-工具异步超时与取消.md §L7（沙箱下沉 gateway，
 // 本模块只保留配置字段与解析）、docs/spec/20-modules/25-mcp-server.md §0④。
 //
-// 断言口径：新旧形状 → **精确 map**；非法 JSON / 非 bool 值 → 拒绝（零配置 + 精确错误类型），
+// 断言口径：`executors`/`mcps` 形状 → **精确 map**；非法 JSON / 非 bool 值 → 拒绝（零配置 + 精确错误类型），
 // 装配层据此**保留原值**；同值（含 key 顺序 / 空白差异）→ 不触发变化。
 package server
 
@@ -73,20 +73,9 @@ func TestParseToolSandboxShapes(t *testing.T) {
 			want: ToolSandboxConfig{Executors: map[string]bool{"x.exe": true}},
 		},
 		{
-			name: "新旧形状并存 → 新形状优先",
+			name: "新形状 + 未知键 → 新形状生效",
 			raw:  `{"core":true,"executors":{"x.exe":true}}`,
 			want: ToolSandboxConfig{Executors: map[string]bool{"x.exe": true}},
-		},
-		{
-			// 2026-10-25（PLUGIN-SPLIT-1）后五迁移表已空：旧类别键读取成功但不产生任何单位键。
-			name: "旧形状（类别键）迁移表已空 → 无键",
-			raw:  `{"core":true,"desktop":true,"browser":false}`,
-			want: ToolSandboxConfig{Executors: map[string]bool{}},
-		},
-		{
-			name: "旧形状未知键同样被忽略",
-			raw:  `{"foo":true}`,
-			want: ToolSandboxConfig{Executors: map[string]bool{}},
 		},
 	}
 	for _, tc := range cases {
@@ -156,13 +145,14 @@ func TestParseToolSandboxRejectsInvalid(t *testing.T) {
 			},
 		},
 		{
-			name:    "旧形状值非 bool",
-			raw:     `{"core":"yes"}`,
-			wantErr: "cannot unmarshal",
-			wantType: func(err error) bool {
-				var ute *json.UnmarshalTypeError
-				return errors.As(err, &ute) && ute.Type.Kind().String() == "bool"
-			},
+			name:    "旧形状拒绝",
+			raw:     `{"core":true,"desktop":true,"browser":false}`,
+			wantErr: "需包含 executors 或 mcps",
+		},
+		{
+			name:    "未知键拒绝",
+			raw:     `{"foo":true}`,
+			wantErr: "需包含 executors 或 mcps",
 		},
 	}
 	for _, tc := range cases {

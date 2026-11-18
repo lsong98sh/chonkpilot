@@ -62,7 +62,7 @@ type ToolDoc struct {
 	Entry      string // meta: entry（已废弃；兼容读取，解释器类遗留）
 	Hot        bool   // meta: hot（吸收原 llm；固定暴露标志）
 	Category   string // meta: category（分类声明；缺省 = 契约根目录名派生）
-	Async      string // meta: async（sync|async|auto|manual；兼容旧 always/never，缺省 auto）
+	Async      string // meta: async（sync|async|auto|manual；缺省 auto）
 	AsyncTh    int    // meta: async-threshold（秒；auto=到点自动转后台 / manual=到点交用户裁决）
 	PolicyLock bool   // meta: policy_lock（true = 界面不可覆盖）
 	// TouchFiles（meta: touch_files）显式声明该工具是否会在**项目工作区**产生文件变动

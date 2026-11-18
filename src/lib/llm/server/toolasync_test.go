@@ -77,9 +77,9 @@ func TestToolAsyncOverrideUserConfigHotReload(t *testing.T) {
 		t.Fatalf("未配置时应保持契约值：%v", base)
 	}
 
-	// ② 保存 usr tool_async（mode=always / threshold=5 / hard_timeout=7）
-	// 键故意用**历史暴露名 `self_ta_tool`**（P0a 前的存量配置形态）→ 断言两写法都认（兼容）。
-	raw := `{"self_ta_tool":{"mode":"always","threshold":5,"hard_timeout":7}}`
+	// ② 保存 usr tool_async（mode=async / threshold=5 / hard_timeout=7）
+	// 键 = 暴露名 ta_tool（精确匹配）。
+	raw := `{"ta_tool":{"mode":"async","threshold":5,"hard_timeout":7}}`
 	saveTestUserConfig(t, s, map[string]any{toolAsyncUserConfigKey: raw})
 
 	// A：落库回读（persist 自由键通道，原样字符串）
@@ -90,7 +90,7 @@ func TestToolAsyncOverrideUserConfigHotReload(t *testing.T) {
 
 	// B：工具面 _meta 秒级变化（保存即生效，无需重启）
 	elapsed, ok := waitToolMeta(t, s, tool, func(m map[string]any) bool {
-		return m["async"] == "always" && m["async-threshold"] == float64(5)
+		return m["async"] == "async" && m["async-threshold"] == float64(5)
 	}, 5*time.Second)
 	if !ok {
 		t.Fatalf("保存后 _meta 未热更新：%v", toolMetaOf(t, s, tool))
@@ -106,15 +106,15 @@ func TestToolAsyncOverrideUserConfigHotReload(t *testing.T) {
 		t.Fatalf("hard_timeout 不应透出到 _meta：%v", got)
 	}
 	// 网关判定源（doCall 的 async 默认族）同步：gwClient 读同一份 tools/list
-	if m := s.gc.AsyncMode(tool); m != "always" {
-		t.Fatalf("gateway 侧 async 判定 = %q，期望 always", m)
+	if m := s.gc.AsyncMode(tool); m != "async" {
+		t.Fatalf("gateway 侧 async 判定 = %q，期望 async", m)
 	}
 	t.Logf("usr tool_async 保存 → tools/list _meta 生效耗时 %v（meta=%v）", elapsed, got)
 
 	// ③ 非法值（JSON 非法）→ 忽略并保留现值，不炸
 	saveTestUserConfig(t, s, map[string]any{toolAsyncUserConfigKey: "{not-json"})
 	time.Sleep(300 * time.Millisecond)
-	if m := toolMetaOf(t, s, tool); m["async"] != "always" {
+	if m := toolMetaOf(t, s, tool); m["async"] != "async" {
 		t.Fatalf("非法 JSON 不应改动既有覆盖：%v", m)
 	}
 

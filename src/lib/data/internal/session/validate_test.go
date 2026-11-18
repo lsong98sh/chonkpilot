@@ -54,7 +54,7 @@ func TestTurnAndMessageValidation(t *testing.T) {
 		t.Fatalf("非法轮次状态应拒绝")
 	}
 	if _, err := s.TurnComplete(facade.TurnCompleteRequest{
-		InstanceID: inst, DialogID: dialogID, TurnID: "t-val", Status: "done", Scope: scope,
+		InstanceID: inst, DialogID: dialogID, TurnID: "t-val", Status: "complete", Scope: scope,
 	}); err != nil {
 		t.Fatalf("合法轮次状态应通过：%v", err)
 	}

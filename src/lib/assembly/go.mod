@@ -11,6 +11,7 @@ require (
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/kr/text v0.1.0 // indirect
+	github.com/lsong98sh/chonkpilot-agent/types v0.0.0 // indirect
 	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3 // indirect
 	github.com/lsong98sh/chonkpilot-util v0.0.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
@@ -26,7 +27,6 @@ require (
 replace github.com/chonkpilot/chonkpilot-gwadapter => ../gwadapter
 
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../mcp-server
-
 
 // 开发期依赖策略（2026-10-29）：同机跨仓依赖一律本地 replace；正式发版时统一切回版本号并删除本节。
 replace github.com/lsong98sh/chonkpilot-plugin-framework => ../../../../chonkpilot-framework/plugin/src
@@ -52,7 +52,4 @@ replace github.com/lsong98sh/chonkpilot-agent/session => ../../../../chonkpilot-
 
 replace github.com/lsong98sh/chonkpilot-agent/types => ../../../../chonkpilot-agent/types/src
 
-require (
-	github.com/lsong98sh/chonkpilot-agent v0.0.0 // indirect
-	github.com/lsong98sh/chonkpilot-agent/gateway v0.0.0-00010101000000-000000000000
-)
+require github.com/lsong98sh/chonkpilot-agent/gateway v0.0.0-00010101000000-000000000000

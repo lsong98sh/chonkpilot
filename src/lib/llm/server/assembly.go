@@ -50,6 +50,9 @@ func (tc *turnCtx) buildAssembly() (session.Result, error) {
 	full := composer.Build(ctx, session.Request{
 		CurrentTurnID: tc.req.Turn, ForceFull: tc.forceFull, Mode: session.ModeFull,
 	})
+	if full.Err != nil {
+		return session.Result{}, full.Err
+	}
 	if tc.forceFull || full.Usage.Total <= trigger {
 		return full, nil
 	}
@@ -67,6 +70,9 @@ func (tc *turnCtx) buildAssembly() (session.Result, error) {
 	simplified := composer.Build(ctx, session.Request{
 		CurrentTurnID: tc.req.Turn, Mode: session.ModeSimplified,
 	})
+	if simplified.Err != nil {
+		return session.Result{}, simplified.Err
+	}
 	if simplified.Usage.Total <= trigger {
 		if !tc.simplified {
 			tc.simplified = true
@@ -93,6 +99,9 @@ func (tc *turnCtx) buildAssembly() (session.Result, error) {
 	tc.simplified, tc.simplifiedFrom, tc.compressed = false, "", true
 
 	compacted := composer.Build(ctx, session.Request{CurrentTurnID: tc.req.Turn, Mode: session.ModeFull})
+	if compacted.Err != nil {
+		return session.Result{}, compacted.Err
+	}
 	if compacted.Usage.Total > trigger {
 		return session.Result{}, tc.compactionError(compacted.Usage.Total, trigger)
 	}

@@ -12,15 +12,13 @@
   script_run 涉及；其余内置不涉及；dir 节点 / 第三方 / 无法判定 → 保守按涉及）；列表内**派生**
   「打点 / 不打点」标记（涉及 = 打点）。
 
-**按实现对齐（2026-10-22）**：GATEWAY-2/L1「工具唯一前门」后，内置工具经 `core-mcp-server`
-以 `namespace=self_` 接入 gateway，`tools-list` 每项的 `_meta.server.alias/node` 已从 `self`
-变为 `core`。故：
-  * 用例 F：展示名规则仍 = `stripToolPrefix(name, _meta.server)`（`utils/toolSource.js`），但
-    `self_` 前缀当前**不会被剥掉**（反解键 = alias/node，非 namespace）→ 用例按现规则断言
-    「展示名 = 规则结果」「`:title`/`data-tool` = 完整暴露名」，并记录该口径现状（TOOLCFG-1）。
-  * 用例 H：`isSelfTool`（`utils/toolTouchFiles.js`）判 `alias/node === 'self'` 已不命中 →
-    全部内置工具缺省为「打点」（与 gateway `resolveTouchFiles` 同向：后端同样回落保守 true）。
-    用例按现规则断言缺省一致性，并严格校验「拨开关 → 落库 / 重置 → 回落缺省 → 键项删除」链路。
+**按实现对齐（2026-11-18）**：内置工具经内嵌 self 节点接入 gateway，`tools-list` 每项
+`_meta.server.alias/node = self`，暴露名 = 原名。故：
+  * 用例 F：展示名规则 = `stripToolPrefix(name, _meta.server)`（`utils/toolSource.js`）；
+    self 节点原名无来源前缀 → 展示名 = 原名（`:title`/`data-tool` 同为原名）。
+  * 用例 H：`isSelfTool`（`utils/toolTouchFiles.js`）判 `alias/node === 'self'` 命中 →
+    内置工具缺省按契约白名单（filesys_run / script_run 涉及，其余不涉及），与后端
+    `resolveTouchFiles` 同向；用例严格校验「拨开关 → 落库 / 重置 → 回落缺省 → 键项删除」链路。
 
 驱动面（**零新增 MQ 主题**）：
   * 工具清单 = 既有客户端能力面 `tools-list`（分组口径 `_meta.server.alias || _meta.server.node || '全局'`）；
@@ -39,7 +37,6 @@
   F 展示口径：列表名按 `stripToolPrefix(_meta.server)` 展示，`data-tool` / `:title` 保留完整暴露名
   G 无上限口径（2026-09-27）：`hard_timeout` 输入 **0 / -1** = 无上限 → 合法、显示保留、落库保留
   H 涉及文件变动（2026-09-28）：缺省规则一致性 + 派生「打点 / 不打点」标记 + 开关保存/回读 + 恢复默认回落
-  I 超时自动取消（2026-10-07，配置⑤）：`cancel_on_timeout` 输入 > 0 → 落库 + 回读；0 = 关闭不写库
 
 前置（本脚本自起，结束自动回收；见 harness.py）：
   `dist/desktop\\chonkpilot.exe --test-port=2345 --work-dir ws`
@@ -65,10 +62,10 @@ WS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ws")
 CFG_KEY = "tool_async"
 KIND = "settings-tool-async"
 ROOT = ".settings-page"
-MODES = ["always", "never", "auto", "manual"]
-MODE_LABELS = ["仅异步", "仅同步", "自动异步", "手动异步"]
+MODES = ["sync", "async", "auto", "manual"]
+MODE_LABELS = ["仅同步", "仅异步", "自动异步", "手动异步"]
 # 契约值 → 界面本地化档名（zh-CN；「恢复默认」tooltip 用 modeLabel 渲染）
-MODE_LABELS_BY_MODE = {"always": "仅异步", "never": "仅同步", "auto": "自动异步", "manual": "手动异步"}
+MODE_LABELS_BY_MODE = {"sync": "仅同步", "async": "仅异步", "auto": "自动异步", "manual": "手动异步"}
 PROBE_KEY = "__l4_probe__"
 # 涉及文件变动：self 节点标识 / 内置白名单（涉及 = 打点）/ 派生标记文案
 # 注：白名单原样镜像**产品现值**（`utils/toolTouchFiles.js DEFAULT_TOUCH_TOOLS`）；其中
@@ -232,7 +229,7 @@ def probe_backend():
     before = user_map()
     try:
         probe = dict(before)
-        probe[PROBE_KEY] = {"mode": "never"}
+        probe[PROBE_KEY] = {"mode": "sync"}
         c.req("data-user-config-save", {"data": {CFG_KEY: probe}})
         time.sleep(0.5)
         ok = PROBE_KEY in user_map()
@@ -591,7 +588,7 @@ def case_d_restore_default():
         open_page()
         tool = pick_tool()
         cur = row_of(tool)["mode"]
-        target = "manual" if cur != "manual" else "never"
+        target = "manual" if cur != "manual" else "sync"
         set_mode(tool, target)
         click_save()
         if not poll(lambda: (user_map().get(tool) or {}).get("mode") == target):
@@ -622,7 +619,7 @@ def case_e_effect_meta_follows_config():
         tool = pick_tool()
         before = (tool_meta(tool).get("async") or "auto")
         cur = row_of(tool)["mode"]
-        target = "manual" if cur != "manual" else "never"
+        target = "manual" if cur != "manual" else "sync"
         set_mode(tool, target)
         click_save()
         if not poll(lambda: (user_map().get(tool) or {}).get("mode") == target):
@@ -638,16 +635,14 @@ def case_f_prefix_display():
     """F 展示口径（按当前实现）：展示名 = `stripToolPrefix(name, _meta.server)`，`:title` /
     `data-tool` 保留**完整暴露名**（重名仍可经 hover 区分）。
 
-    2026-10-22 实况（TOOLCFG-1）：内置工具经 core-mcp-server 前门接入（`_meta.server.alias/node`
-    = `core`，namespace = `self_`）→ 反解键不含 `self`，`self_` 前缀**当前不被剥除**；本用例按
-    现规则校验（不擅自放宽为「必须剥」）。
+    内置工具经内嵌 self 节点接入（`_meta.server.alias/node = self`），暴露名 = 原名；
+    展示名与完整暴露名一致。
     """
     require_page()
     open_page()
     rs = rows()
     if not rs:
         raise TestError("页面无工具行（.tool-name[data-tool]）")
-    kept, stripped = 0, 0
     for r in rs:
         name = r["tool"] or ""
         if r["title"] != name:
@@ -657,13 +652,7 @@ def case_f_prefix_display():
         if r["disp"] != want:
             raise TestError("工具 %s 显示名 %r，期望按剥前缀规则得 %r（server=%r）"
                             % (name, r["disp"], want, srv))
-        if name.startswith("self_"):
-            if want == name:
-                kept += 1
-            else:
-                stripped += 1
-    print("      展示口径：self_ 前缀工具 保留完整名 %d / 剥前缀 %d（:title 均为完整暴露名）"
-          % (kept, stripped), flush=True)
+    print("      展示口径：self 节点工具名 = 原名（:title 均为完整暴露名）", flush=True)
 
 
 def case_g_unlimited_values():
@@ -769,36 +758,6 @@ def case_h3_touch_hint_and_header():
         raise TestError("页头 hint 文案异常：%r" % hint)
 
 
-def case_i_cancel_on_timeout_option():
-    """I 超时自动取消（2026-10-07，配置⑤ · spec 18 §7 B4）：`cancel_on_timeout` 输入秒数（> 0）
-    → 保存 → usr `tool_async.<工具>.cancel_on_timeout` 落库 + 回读；`0` = 关闭（不写该字段）。"""
-    require_page()
-    require_backend()
-    with _h.user_config_guard(c, [CFG_KEY]):
-        reset_key()
-        open_page()
-        tool = pick_tool()
-        if not row_of(tool)["cancelTimeout"]:
-            raise TestError("页面缺「超时自动取消」输入（.cell-cancel-timeout input）：%r" % row_of(tool))
-        set_number(tool, ".cell-cancel-timeout input.b-input", 30)
-        if not unsaved_mark():
-            raise TestError("改「超时自动取消」后应显示「未保存」")
-        click_save()
-        got = poll(lambda: (user_map().get(tool) or {}).get("cancel_on_timeout"))
-        if got != 30:
-            raise TestError("cancel_on_timeout=30 未落库：tool=%s → usr=%r" % (tool, user_map()))
-        # 回读显示（重开页面读 usr → 输入框保留 30）
-        open_page()
-        if str(row_of(tool)["cancelValue"]) != "30":
-            raise TestError("cancel_on_timeout 回读显示不符：%r" % row_of(tool)["cancelValue"])
-        # 0 = 关闭 → 该字段不写库（键项不含 cancel_on_timeout）
-        set_number(tool, ".cell-cancel-timeout input.b-input", 0)
-        click_save()
-        if (user_map().get(tool) or {}).get("cancel_on_timeout") is not None:
-            raise TestError("cancel_on_timeout=0 应为「关闭」不写库：usr=%r" % user_map())
-        print("[I] 超时自动取消：输入 30 → 落库 + 回读显示；输入 0 → 关闭不写库", flush=True)
-
-
 CASES = [
     ("A 入口与分组渲染（分组 + 四档文案/aria + 表头 ? 说明 + 干净态保存禁用）", case_a_entry_and_groups),
     ("B 默认信息移至「恢复默认」tooltip（行内无 badge/contract）", case_b_contract_moved_to_tooltip),
@@ -809,7 +768,6 @@ CASES = [
     ("G 无上限口径：hard_timeout 输入 0 / -1 合法、显示与落库均保留", case_g_unlimited_values),
     ("H 涉及文件变动：缺省规则一致性 + 打点/不打点标记 + 保存/回读 + 恢复默认", case_h_touch_files_option),
     ("H2 新列表头 ? 说明 ≥4（含「涉及文件变动」）", case_h3_touch_hint_and_header),
-    ("I 超时自动取消：cancel_on_timeout 落库 + 回读；0 = 关闭不写库", case_i_cancel_on_timeout_option),
 ]
 
 

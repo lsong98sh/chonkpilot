@@ -1,12 +1,12 @@
 // subchat_test.go — SUBCHAT-2 阶段 D · 单聊端到端黑盒（**MQ 驱动 + MQ 监听断言**，50-测试体系 §1）。
 //
 // 只经**公开总线相对主题**驱动真实 llm server（含**真实内嵌 gateway**），对 payload 断言：
-//   - ① `subchat_open`（LLM 调 `self_subchat_open`）→ 建固定参数子聊天会话 + 发 `subchat-opened`；
-//   - ② 子 agent 自报（LLM 调 `self_subchat_finish`）→ `lifecycle=ready` + 发 `subchat-state`；
+//   - ① `subchat_open`（LLM 调 `subchat_open`）→ 建固定参数子聊天会话 + 发 `subchat-opened`；
+//   - ② 子 agent 自报（LLM 调 `subchat_finish`）→ `lifecycle=ready` + 发 `subchat-state`；
 //   - ③ `subchat-list`（带 / 不带 `parent_id`）结果形状；
 //   - ④ `subchat-finish`（用户拍板）→ `lifecycle=finished` + 发 `subchat-state`；
 //   - ⑤ 新一轮开始把 `ready` 回写 `chatting`（`subchat-state{chatting}`）；
-//   - ⑥ 非主会话（子聊天）工具调用经 `mcp-tools-call` 观测到调用级 `async=never`；主会话不带。
+//   - ⑥ 非主会话（子聊天）工具调用经 `mcp-tools-call` 观测到工具异步模式按契约/界面裁决；主会话不带。
 //
 // 一条连续链路（开 → 自报 → 清单 → 续聊回写 → 用户收口）+ 逐环节 mq 断言；不做「仅存在」断言。
 // 消息面形状只依据 `docs/spec/60-reference/61-消息一览.md`（唯一准则）。不造真实 LLM 依赖：
@@ -91,7 +91,7 @@ func (r *evtRec) wait(t *testing.T, subject string, pred func(map[string]any) bo
 func TestSubChatEndToEndBlackBox(t *testing.T) {
 	const purpose = "需求讨论"
 	const handoff = "我想要一份方案"
-	// mock LLM：主会话首问 → 调 `self_subchat_open`；子聊天轮（含交接内容）→ 调 `self_subchat_finish`；
+	// mock LLM：主会话首问 → 调 `subchat_open`；子聊天轮（含交接内容）→ 调 `subchat_finish`；
 	// 其余（工具结果回填后的收尾）→ 纯文本。避免子聊天首轮再落回开子聊天分支而递归。
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -155,7 +155,7 @@ func TestSubChatEndToEndBlackBox(t *testing.T) {
 	const mainSession, mainTurn = "s-bb-main", "t-bb-main"
 	startTurn(t, bus, mainSession, mainTurn, "ins-bb")
 
-	// ① 主会话首问 → mock LLM 调 self_subchat_open → 建子聊天 + 发 subchat-opened
+	// ① 主会话首问 → mock LLM 调 subchat_open → 建子聊天 + 发 subchat-opened
 	w := watch(t, bus, mainTurn)
 	bus.Emit(context.Background(), "session-send", jb(map[string]any{
 		"instance_id": "ins-bb", "session": mainSession, "turn": mainTurn,
@@ -173,7 +173,7 @@ func TestSubChatEndToEndBlackBox(t *testing.T) {
 		t.Fatalf("subchat-opened title/purpose 应 = 子聊天名字：%+v", opened)
 	}
 
-	// ② 子 agent 自报（子聊天首轮调 self_subchat_finish）→ ready + subchat-state
+	// ② 子 agent 自报（子聊天首轮调 subchat_finish）→ ready + subchat-state
 	// （先等 ready：它证明子聊天首轮已跑到工具调用，后续 ⑥ 方能观测到该工具调用）
 	ready := rec.wait(t, "subchat-state", func(m map[string]any) bool {
 		return str(m, "session_id") == sid && str(m, "lifecycle") == "ready"
@@ -185,7 +185,7 @@ func TestSubChatEndToEndBlackBox(t *testing.T) {
 		t.Fatalf("subchat-state 当前为广播退化路径（不带 instance_id）：%+v", ready)
 	}
 
-	// ⑥ INBOX（2026-10-18）：工具全量强制异步（原 A5「非主会话 async=never」已废止），但
+	// ⑥ INBOX（2026-10-18）：工具全量强制异步（工具异步模式按契约/界面裁决），但
 	// **进程内域工具**（subchat_open / subchat_finish）不注入 async 覆盖（同步编排、契约返回体不变）。
 	subCall := rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m, "session") == sid }, 5*time.Second)
 	if args, _ := subCall["arguments"].(map[string]any); args != nil {

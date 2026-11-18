@@ -146,7 +146,7 @@ func (s *Server) onTaskBackground(_ context.Context, _ string, v *mq.Value) erro
 	// 保证带 gw_task_id 直调执行池时能落到正确桶。
 	inst := req.InstanceID
 	// 硬门控（G-17）：仅 manual（同步运行但任务化、可解绑）允许转后台；
-	// auto/always/never 无在飞可解绑任务（auto 超阈值自动转），直接 errors、不下发执行侧。
+	// sync/async/auto 无在飞可解绑任务（auto 超阈值自动转），直接 errors、不下发执行侧。
 	// 工具名由任务节点反查；节点缺失或工具不在 tools/list 缓存（无法判定）→ 放行交执行侧判定。
 	if node := s.tasks.findByToolCall(req.InstanceID, req.ToolCallID); node != nil {
 		inst = node.InstanceID
@@ -194,6 +194,13 @@ func (s *Server) onGatewayTaskDone(_ string, payload []byte) {
 		InstanceID    string `json:"instance_id"`
 	}
 	_ = json.Unmarshal(payload, &ev)
+	// 关停闸门（第 1 条 C）：Stop 已置位 → 直接忽略（不写库、不续轮、不发明停止后的完成通知）。
+	// gateway 侧 stop 期间同样抑制回报；此处是第二道防线（守跨进程 / 时序竞态）。
+	if s.isStopped() {
+		logf("[chonkpilot-server] onGatewayTaskDone: server stopped → ignore task=%s state=%s turn=%s\n",
+			ev.TaskID, ev.State, ev.Turn)
+		return
+	}
 	// 2026-11-08：tool_result 已删除（结果读取走 task_status）；core 不再持有长跑域工具
 	// 执行体，取消回报无需再反向中断 handler。
 	node := s.tasks.findByGwTask(ev.InstanceID, ev.TaskID)

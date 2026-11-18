@@ -1,7 +1,10 @@
-// chat Inbox 宿主适配器（MOD-1 A4-P1）：per-turn 内存 FIFO。
+// engine_inbox.go —— chat Inbox 宿主适配器（MOD-1 A4-P1）：per-turn 内存 FIFO。
 //
-// **本文件不改生产路径**：生产 `turnCtx` 的中途输入仍走 `inboxCh` / `facade.InboxItem`；
-// `chatInbox` 供引擎驱动时使用（生产投递点 = `engineRouteInput` / `engineRouteInsert`）。
+// 生产路径（A4-P4b 起引擎为唯一执行路径）：`turnCtx.engineInbox` 就是本文件实现的 FIFO，
+// 所有中途输入统一经它进入引擎：
+//   - 用户插入意向 → `engineRouteInsert` → `chat.InboxTypeInsert`；
+//   - 同步 / 异步 / ask 回执 / 派发前拒绝 → `chat.InboxTypeToolResult`（先落 tool 行，再投递）；
+//   - 易失（tool_result / notify / control / runtime）不落 `inbox_items`，启动时清空不回放。
 package server
 
 import (
@@ -11,7 +14,7 @@ import (
 	"github.com/lsong98sh/chonkpilot-agent/chat"
 )
 
-// chatInbox 是 chat.Inbox 的宿主实现：per-turn 内存 FIFO（生产投递点在 P3 切换时接入）。
+// chatInbox 是 chat.Inbox 的宿主实现：per-turn 内存 FIFO。
 //
 // 并发模型：Push 入队并**广播**唤醒（关闭当前通知 channel）；Wait 无输入时阻塞在通知
 // channel 或 ctx；Poll 保持非阻塞（step 边界取件 / 兼容旧调用点）。两者共用同一队列，
@@ -34,7 +37,8 @@ func (i *chatInbox) wakeLocked() {
 	}
 }
 
-// Push 入队一条待处理发送（生产 FeedInsert / FeedToolResult 调用）。
+// Push 入队一条待处理输入（`engineRouteInsert` / `engineTurnTools.Dispatch` /
+// `finishBackgroundTool` / `handleAsyncDone` 调用）。
 func (i *chatInbox) Push(item chat.InboxItem) {
 	i.mu.Lock()
 	i.q = append(i.q, item)
@@ -79,6 +83,15 @@ func (i *chatInbox) Wait(ctx context.Context) (chat.InboxItem, bool, error) {
 	}
 }
 
+// Requeue 把已出队但未消费的项放回队首（ctx 取消竞态不丢用户输入）。
+func (i *chatInbox) Requeue(_ context.Context, item chat.InboxItem) error {
+	i.mu.Lock()
+	i.q = append([]chat.InboxItem{item}, i.q...)
+	i.wakeLocked()
+	i.mu.Unlock()
+	return nil
+}
+
 // Len 返回当前积压条数（诊断 / 测试用）。
 func (i *chatInbox) Len() int {
 	i.mu.Lock()
@@ -86,8 +99,5 @@ func (i *chatInbox) Len() int {
 	return len(i.q)
 }
 
-// 编译期断言：内存 FIFO 满足 chat 的输入端口与阻塞取件扩展。
-var (
-	_ chat.Inbox       = (*chatInbox)(nil)
-	_ chat.InboxWaiter = (*chatInbox)(nil)
-)
+// 编译期断言：内存 FIFO 满足 chat 的输入端口（Poll + Wait）。
+var _ chat.Inbox = (*chatInbox)(nil)

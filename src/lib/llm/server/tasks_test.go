@@ -366,7 +366,7 @@ func TestTaskStopCascadeCancel(t *testing.T) {
 	})
 
 	f := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
-		"req_id": "r-stop", "task_id": parent.TaskID,
+		"req_id": "r-stop", "instance_id": "ins-test", "task_id": parent.TaskID,
 	}))
 	v := f.Wait()
 	res, _ := v.Result.(map[string]any)
@@ -431,7 +431,7 @@ func TestTaskStopCascadeFalseOnlyTarget(t *testing.T) {
 	})
 
 	v := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
-		"req_id": "r-stop-nc", "task_id": parent.TaskID, "cascade": false,
+		"req_id": "r-stop-nc", "instance_id": "ins-test", "task_id": parent.TaskID, "cascade": false,
 	})).Wait()
 	if err := v.Err(); err != nil {
 		t.Fatalf("task-stop(cascade=false): %v", err)

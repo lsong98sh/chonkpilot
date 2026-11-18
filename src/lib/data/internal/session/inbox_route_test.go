@@ -48,10 +48,23 @@ func TestInboxRoutingInDialog(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InboxCommit: %v", err)
 	}
+	// 已 consumed 不可再撤回（状态迁移白名单：仅 pending → consumed/discarded）。
 	if _, err := svc.InboxUpdate(facade.InboxUpdateRequest{
 		InstanceID: instID, DialogID: dlgID, ID: app.ID, Status: "discarded",
+	}); err == nil {
+		t.Fatal("consumed → discarded 应被拒绝")
+	}
+	// 另建一条 pending 再撤回，验证撤回路径本身可用。
+	pending, err := svc.InboxAppend(facade.InboxAppendRequest{
+		InstanceID: instID, DialogID: dlgID, SessionID: "m1", Type: "insert", Content: "待撤回",
+	})
+	if err != nil {
+		t.Fatalf("InboxAppend(pending): %v", err)
+	}
+	if _, err := svc.InboxUpdate(facade.InboxUpdateRequest{
+		InstanceID: instID, DialogID: dlgID, ID: pending.ID, Status: "discarded",
 	}); err != nil {
-		t.Fatalf("InboxUpdate: %v", err)
+		t.Fatalf("InboxUpdate(pending → discarded): %v", err)
 	}
 
 	sdb, release, err := data.OpenExistingDialog(prjUsr, dlgID)
@@ -60,7 +73,7 @@ func TestInboxRoutingInDialog(t *testing.T) {
 	}
 	defer release()
 	var rec data.Record
-	if ok, _ := sdb.Table("inbox_items").Get(app.ID, &rec); !ok {
+	if ok, _ := sdb.Table("inbox_items").Get(pending.ID, &rec); !ok {
 		t.Fatal("对话库缺 inbox 行")
 	}
 	if rec["status"] != "discarded" {

@@ -42,12 +42,12 @@ type contractField struct {
 }
 
 type contractTopic struct {
-	Topic    string                   `json:"topic"`
-	Face     string                   `json:"face"`
-	Direction string                  `json:"direction"`
-	Payload  map[string]contractField `json:"payload"`
-	Result   map[string]contractField `json:"result"`
-	Event    map[string]contractField `json:"event"`
+	Topic     string                   `json:"topic"`
+	Face      string                   `json:"face"`
+	Direction string                   `json:"direction"`
+	Payload   map[string]contractField `json:"payload"`
+	Result    map[string]contractField `json:"result"`
+	Event     map[string]contractField `json:"event"`
 }
 
 type contractDoc struct {
@@ -348,15 +348,15 @@ func TestDataSessionKeysSubsetOfContract(t *testing.T) {
 	})
 	assertDataResult(t, c, bus, "data-session-append-message", map[string]any{
 		"req_id": "r3", "instance_id": "ins-test",
-		"turn_id":    "smoke-t1",
-		"dialog_id":  dlg,
-		"msg":        map[string]any{"role": "user", "content": "hi", "session_id": "smoke-s1"},
+		"turn_id":   "smoke-t1",
+		"dialog_id": dlg,
+		"msg":       map[string]any{"role": "user", "content": "hi", "session_id": "smoke-s1"},
 	})
 	assertDataResult(t, c, bus, "data-session-set-summary", map[string]any{
 		"req_id": "r4", "instance_id": "ins-test", "turn_id": "smoke-t1", "dialog_id": dlg, "summary": "摘要",
 	})
 	assertDataResult(t, c, bus, "data-session-complete-turn", map[string]any{
-		"req_id": "r5", "instance_id": "ins-test", "turn_id": "smoke-t1", "dialog_id": dlg, "status": "done",
+		"req_id": "r5", "instance_id": "ins-test", "turn_id": "smoke-t1", "dialog_id": dlg, "status": "complete",
 	})
 	assertDataResult(t, c, bus, "data-session-cleanup-stale", map[string]any{"req_id": "r6", "instance_id": "ins-test"})
 	assertDataResult(t, c, bus, "data-session-load-messages", map[string]any{
@@ -385,7 +385,7 @@ func TestDataSessionKeysSubsetOfContract(t *testing.T) {
 	assertDataResult(t, c, bus, "data-session-active-get", map[string]any{"req_id": "r15", "instance_id": "ins-test"})
 	assertDataResult(t, c, bus, "data-session-title", map[string]any{
 		"req_id": "r16", "instance_id": "ins-test",
-		"data":   map[string]any{"id": "smoke-s1", "title": "冒烟标题", "dialog_id": dlg},
+		"data": map[string]any{"id": "smoke-s1", "title": "冒烟标题", "dialog_id": dlg},
 	})
 	assertDataEvent(t, c, "data-session-title-changed", waitEvent(t, titleChanged, "data-session-title-changed"))
 
@@ -424,15 +424,15 @@ func TestDataTasktreeKeysSubsetOfContract(t *testing.T) {
 	})
 	assertDataResult(t, c, bus, "data-tasktree-list", map[string]any{
 		"req_id": "r2", "instance_id": "ins-test",
-		"data":   map[string]any{"top_session": "smoke-top", "dialog_id": d1},
+		"data": map[string]any{"top_session": "smoke-top", "dialog_id": d1},
 	})
 	assertDataResult(t, c, bus, "data-tasktree-tasks", map[string]any{
 		"req_id": "r3", "instance_id": "ins-test",
-		"data":   map[string]any{"session_id": "smoke-top", "dialog_id": d1},
+		"data": map[string]any{"session_id": "smoke-top", "dialog_id": d1},
 	})
 	assertDataResult(t, c, bus, "data-tasktree-delete", map[string]any{
 		"req_id": "r4", "instance_id": "ins-test",
-		"data":   map[string]any{"node_id": "smoke-n1", "dialog_id": d1},
+		"data": map[string]any{"node_id": "smoke-n1", "dialog_id": d1},
 	})
 	assertDataEvent(t, c, "task-deleted", waitEvent(t, deleted, "task-deleted"))
 }

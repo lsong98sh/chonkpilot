@@ -495,10 +495,6 @@ var frontMethodSubjects = map[string]string{
 	msgkeys.MsgClientTopicsToolsList:     msgkeys.TopicMcpToolsList,
 	msgkeys.MsgClientTopicsPromptsList:   msgkeys.TopicMcpPromptsList,
 	msgkeys.MsgClientTopicsResourcesList: msgkeys.TopicMcpResourcesList,
-	// 2026-09-13 统一异步模型：超时「等待完成」裁决（前端 type 与下行事件 mcp-tools-timeout 对称）。
-	// 注意：gateway 方法面相对主题 = methodSubject("tools/wait") = **mcp-tools-wait**
-	// （subjects.go:63-65 `mcp-` + `/`→`-`），**不是** `tools/wait` —— 写成错主题会静默丢弃。
-	msgkeys.TopicMcpToolsWait: msgkeys.TopicMcpToolsWait,
 	// 2026-09-18：超时裁决条「取消」不再直发 gateway 方法面——`mcp-tasks-cancel`（及
 	// `mcp-tasks-status|result|list`、`mcp-tools-background`）方法面已移除；「停止」统一走
 	// **task-stop**（见上表；服务端按 tool_call_id / task_id 归一后经层 → sink → gateway

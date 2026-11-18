@@ -536,7 +536,7 @@ class Runner:
         env = self.env
         sid = session_id or ("e2e-turn-%d-%d" % (int(time.time() * 1000), self.gui_starts))
         env.req("data-session-ensure-session", {"data": {"session_id": sid}})
-        env.capture(["turn-start", "llm-token", "llm-tool-call", "tool-pair",
+        env.capture(["turn-start", "llm-tool-call", "tool-pair",
                      "tool-result", "llm-receive", "llm-complete", "error",
                      "tasks.started", "tasks.updated", "tasks.done"])
         env.emit("llm-start", {"session_id": sid, "turn": "t-" + sid, "q": q,

@@ -35,7 +35,7 @@ from chonk_client import TestError, run_case  # noqa: E402
 c = run_llm.c
 
 # 会话消息重载链**末端**主题（run_chat_ui.py 同法）：session-changed → loadMessages
-# → assessContinueState → restoreAwaitingArbitration → data-tasktree-tasks（两次：
+# → assessContinueState → data-tasktree-tasks（两次：
 # ChatPanel 即时一次 + MessageList 重载后一次）。等到两次 = 新会话的消息列表已落定。
 RELOAD_TOPIC = "data-tasktree-tasks"
 # 一次注册全部所需主题（mq_on_capture 每次调用都会清空旧事件并重置 handler）。

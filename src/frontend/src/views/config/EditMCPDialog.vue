@@ -77,8 +77,7 @@
               <Input v-model="localData.cwd" :maxlength="MAX_PATH" :placeholder="$t('config.mcp.cwdPlaceholder')" />
             </div>
             <!-- 「按实例隔离」+ 沙箱说明：紧跟「运行时|工作目录」行，同排两列。
-                 沙箱开关已移出本对话框（见 设置 → 工具沙箱，usr 键 tool_sandbox）：
-                 `mcps[].sandbox` 仅保留旧配置的读取时迁移，不再作为开关来源。 -->
+                 沙箱开关在 设置 → 工具沙箱（usr 键 tool_sandbox）；`mcps[].sandbox` 已移除。 -->
             <div class="form-item form-item-12">
               <label class="form-label">
                 <span>{{ $t('config.mcp.isolate') }}</span>
@@ -445,8 +444,7 @@ function handleSave() {
   // （stdio → 隔离、http/sse → 共享），保持旧配置兼容。
   if (isolateExplicit.value) localData.isolate = !!isolateValue.value
   else delete localData.isolate
-  // 沙箱开关已移至「设置 → 工具沙箱」（usr 键 tool_sandbox）：本对话框**不再写** localData.sandbox
-  // （旧字段仅由 gateway/data 侧读取时迁移，不在此处增删）。
+  // 沙箱开关在「设置 → 工具沙箱」（usr 键 tool_sandbox）：MCP 条目不含 sandbox 字段。
   // 级别：保存落对应级 `capability/mcps/<名>.json`（app/user/project/prjusr）
   localData.level = level.value
   emit('save', { ...localData }, props.editIndex)

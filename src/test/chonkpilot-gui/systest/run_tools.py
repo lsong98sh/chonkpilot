@@ -7,7 +7,7 @@
 
 注意：事件经 test-port deferral 批量推送，同批事件会被一次 clear 全部清走；
 所有 llm-tool-call 断言采用"累积去重集合"，避免批次共享丢失（C16 同款教训）。
-工具名按**暴露名**路由（P0a 2026-10-29：内置/插件工具均无 self_ 前缀），断言侧仍剥离 self_ 归一（_canon，兼容存量）。
+工具名按**暴露名**路由（内置/插件工具均 = 原名），断言侧同样使用原名。
 """
 
 import json
@@ -26,9 +26,9 @@ EVENTS = run_llm.EVENTS + ["task-started", "task-ended"]
 
 
 def _canon(tool):
-    """工具名归一：剥离网关自节点前缀 self_（暴露名 → 契约名）。"""
+    """工具名归一（当前暴露名 = 原名）。"""
     t = tool or ""
-    return t[5:] if t.startswith("self_") else t
+    return t
 
 
 def _wait_tool(expect_tool, max_wait=60):

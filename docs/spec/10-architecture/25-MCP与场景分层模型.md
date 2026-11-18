@@ -68,7 +68,7 @@ chat 面：prompt                                     ← 用户在输入框选�
 >
 > 依据 = self 节点 `entry` **无 `HotTools`**，`isHot` 不会自动补 → meta 工具必须**显式**置 `_meta.hot=true`（否则 LLM 连工具发现入口都拿不到）。**本规格须写明"两者都要"**，防后人只改 `HotTools`、漏掉 meta。
 >
-> **落点已迁移（2026-11-04 核对）**：`registerMetaTools` / `gateway/meta_tools.go` 全仓不存在；当前 `mcp_find`/`mcp_load`/`mcp_invoke` 由 **`mcp` 插件**提供（`src/initdata/capability/plugins/mcp/manifest.json` 的 `hot_tools`，gateway `isHot` 按 manifest 打 `_meta.hot`），见 §5 的目标/现状说明。
+> **落点已迁移（2026-11-04 核对；2026-11-18 manifest 迁入插件仓并内嵌）**：`registerMetaTools` / `gateway/meta_tools.go` 全仓不存在；当前 `mcp_find`/`mcp_load`/`mcp_invoke` 由 **`mcp` 插件**提供（`chonkpilot-plugins/mcp/src/manifest.json` 的 `hot_tools`，随 exe 内嵌由 `plugin.hello` 上报；gateway `isHot` 按 manifest 打 `_meta.hot`），见 §5 的目标/现状说明。
 >
 > **① 的下游 `HotTools` UI**：`EditMCPDialog` 独立「**工具**」页签 —— 点【**加载工具**】按别名列出该 server 工具并逐项勾选；写库为**契约原名**列表（`"*"` = 全部 hot），**零新增消息面**（数据源 = 既有 `tools-list`）。原「运行信息」页签的「高频工具」行与独立弹窗 `SetMCPHotToolsDialog.vue` 均已摘除。
 

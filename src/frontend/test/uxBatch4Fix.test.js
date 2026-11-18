@@ -75,7 +75,7 @@ test('A1/A1b 迁移：类别内容与提示词编辑由 memory 插件配置页�
     assert.ok(!src.includes(gone), `上下文页不应再含记忆类别 UI：${gone}`)
   }
   // 新承载：插件配置页（webui）+ RPC（内容/提示词读写与恢复默认）
-  const manifest = JSON.parse(readRepo('initdata/capability/plugins/memory/manifest.json'))
+  const manifest = JSON.parse(readRepo('../../chonkpilot-plugins/memory/src/manifest.json'))
   for (const rpc of ['category-content', 'category-save', 'prompt-save', 'prompt-reset']) {
     assert.ok((manifest.ui.rpc || []).includes(rpc), `插件须注册 RPC：${rpc}`)
   }

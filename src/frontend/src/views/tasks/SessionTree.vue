@@ -50,22 +50,14 @@ const selection = useSelectionStore()
 const { activeSession } = storeToRefs(selection)
 const currentTopId = computed(() => activeSession.value.sessionId || null)
 const selectedId = ref(null)
-const { loadTree, refresh, nodeTree, nodeTimeOf, nodes } = useTaskView()
+const { loadTree, refresh, nodeTree, nodeTimeOf, childIndex } = useTaskView()
 
 // 完全层级树：顶层 = parent 为空（主会话直接派生物），递归展开在 SessionTreeNode 内
 const treeData = computed(() => (currentTopId.value ? nodeTree(currentTopId.value) : []))
 
-// 子级索引（node_id → 直接子节点数组）：由 store 按 parent_node_id 派生，与 SessionTreeNode 同口径。
+// 子级索引：由 useTaskView 按 parent_node_id 一次遍历派生（与 SessionTreeNode 同一份，
+// 导航/展开/自动选中直接复用，避免每次临时重建 O(N) 索引）。
 // nodeTree 不再把 children 写回响应式节点对象（computed 内改 store 是反模式）。
-function buildChildIndex() {
-  const idx = new Map()
-  for (const [, n] of nodes) {
-    const list = idx.get(n.parent_node_id)
-    if (list) list.push(n)
-    else idx.set(n.parent_node_id, [n])
-  }
-  return idx
-}
 
 // ── 定位（滚动到可见 + 一次性高亮）──────────────────────────────
 // 触发源 = 既有事件的定位载荷：subsession-changed（会话身份）与 task-detail-open（任务节点 id，
@@ -140,7 +132,7 @@ function setSelected(node) {
 
 /** 展开某节点的父级链路，使新出现的节点无需手动展开即可见。 */
 function expandTo(nodeId) {
-  const idx = buildChildIndex()
+  const idx = childIndex.value
   const map = new Map()
   const walk = (list) => {
     for (const n of list) {
@@ -161,14 +153,13 @@ async function loadTreeFor(topId) {
   loading.value = true
   try {
     // full 模式：初始化即显示全部节点（含已完成工具调用），不做 llm/running 过滤。
-    // 并行拉任务快照（data-tasktree-tasks）→ 待裁决明细 awaiting{options,timeout_s}（I-103：
-    // 任务区据此**直接按 awaiting 渲染裁决条**，不依赖消息卡 —— 刷新/切会话后仍可见可操作）。
+    // 并行拉任务快照（data-tasktree-tasks）→ 运行态（badge / 详情 / 耗时）。
     await Promise.all([loadTree(topId, 'full'), refresh('', topId)])
   } finally {
     loading.value = false
   }
   // 保留仍存在的当前选中；否则自动选中全树 created_at 最新的 session 节点
-  const idx = buildChildIndex()
+  const idx = childIndex.value
   const cur = findNode(treeData.value, selectedId.value, idx)
   if (cur) {
     mq.emit(EventNames.subsessionChanged, { session_id: cur.session_id || '' })
@@ -191,7 +182,7 @@ function shouldAutoSelectNew() {
   // selection is not running. Keep the selection unchanged while the currently
   // selected node is still running.
   if (!selectedId.value) return true
-  const cur = findNode(treeData.value, selectedId.value, buildChildIndex())
+  const cur = findNode(treeData.value, selectedId.value, childIndex.value)
   return !cur || cur.status !== 'running'
 }
 
@@ -220,7 +211,7 @@ onMounted(() => {
   // Keep selectedId (node_id) in sync with user clicks / external selection changes
   // （外部 subsession-changed 载荷为 session_id，经 session 节点反查 node_id）
   unsubs.push(mq.on(EventNames.subsessionChanged, ({ session_id }) => {
-    const n = session_id ? findNodeBySession(treeData.value, session_id, buildChildIndex()) : null
+    const n = session_id ? findNodeBySession(treeData.value, session_id, childIndex.value) : null
     selectedId.value = n ? n.node_id : null
     if (n) focusRow(n.node_id) // 定位：滚动到可见 + 一次性高亮
   }))
@@ -241,7 +232,7 @@ onMounted(() => {
     if (!parent_session_id) return // 主会话：树已随 session-changed 重载，此处仅确保刷新
     reload.then(() => { // 子会话：重载后自动选中新节点（保留既有 newestSessionNode 兜底）
       if (shouldAutoSelectNew() && session_id) {
-        const n = findNodeBySession(treeData.value, session_id, buildChildIndex())
+        const n = findNodeBySession(treeData.value, session_id, childIndex.value)
         if (n) setSelected(n)
       }
     })

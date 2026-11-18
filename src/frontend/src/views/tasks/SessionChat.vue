@@ -12,9 +12,10 @@
         v-if="runningTurn"
         size="small"
         type="danger"
+        :disabled="stopping"
         @click="stopSession"
       >
-        {{ $t('taskView.stop_session') }}
+        {{ stopping ? $t('taskView.stopping_session') : $t('taskView.stop_session') }}
       </Button>
     </div>
     <div class="session-chat">
@@ -33,7 +34,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
@@ -76,24 +77,57 @@ const runningTurn = computed(() => {
   return running.find((t) => !!t.turn_id) || running.find((t) => (t.kind || t.type) === 'llm') || null
 })
 
+// 停止按钮乐观置态：点击立即置 stopping（按钮禁用 + 文案「停止中…」），不等待后端
+// （后端可能还要最多 5s 清理工具）。复位走本会话终态事件回调（不新增 watch）：
+//   - llm-complete / tasks.done（本会话）→ 立即复位；
+//   - 5s 兜底（终态事件缺失/被过滤）→ 强制复位，onUnmounted 清理。
+const stopping = ref(false)
+let stopFallbackTimer = null
+function clearStopFallback() {
+  if (stopFallbackTimer) { clearTimeout(stopFallbackTimer); stopFallbackTimer = null }
+}
+function resetStopping() {
+  stopping.value = false
+  clearStopFallback()
+}
+
+// 终态回调：只认本会话（事件缺 session 归属 → 交由 5s 兜底，不误复位其它会话）。
+function onStopSessionTerminal(d) {
+  if (!stopping.value) return
+  const sid = sessionId.value
+  if (!sid) return
+  const esid = d && (d.session || d.session_id)
+  if (!esid || esid !== sid) return
+  resetStopping()
+}
+
 // 终止会话 = 现有 llm-cancel{session,turn}：停当前轮并级联取消在飞工具（零新增 MQ 主题）。
 function stopSession() {
   const t = runningTurn.value
-  if (!t) return
+  if (!t || stopping.value) return
+  stopping.value = true
+  clearStopFallback()
+  stopFallbackTimer = setTimeout(resetStopping, 5000)
   confirmTurnCancel({ sessionId: sessionId.value, turnId: t.turn_id || '' })
 }
 
 // 选中子会话（payload = session_id）：store 写入由订阅者承担，本组件只补任务快照。
 function onSubSessionChanged({ session_id: newId }) {
+  resetStopping() // 切会话：停止态不跨会话保留
   refreshTasks(newId || '', '', { initOnly: true })
 }
 
 onMounted(() => {
   mq.on(EventNames.subsessionChanged, onSubSessionChanged)
+  mq.on(EventNames.llmComplete, onStopSessionTerminal)
+  mq.on(EventNames.taskEnded, onStopSessionTerminal)
 })
 
 onUnmounted(() => {
   mq.off(EventNames.subsessionChanged, onSubSessionChanged)
+  mq.off(EventNames.llmComplete, onStopSessionTerminal)
+  mq.off(EventNames.taskEnded, onStopSessionTerminal)
+  clearStopFallback()
 })
 </script>
 

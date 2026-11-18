@@ -1,7 +1,0 @@
-{
-  "id": "codegraph",
-  "cmd": ["chonkpilot-plugin-codegraph.exe"],
-  "enabled": true,
-  "name": "代码知识库",
-  "icon": "code"
-}

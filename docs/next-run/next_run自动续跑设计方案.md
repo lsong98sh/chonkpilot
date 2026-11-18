@@ -301,7 +301,7 @@ llm-server 已直调 `s.cfg`（如 `SessionGet`），沿用同一方式，在 `f
 | 7 | 进程外：~~executor + 插件桥能力 `plugin/v1/next.run` + 构建脚本~~ → **2026-11-04 核对：`plugin/v1/next.run` 已落；`cmd/next-run-exec` / executor exe / `servertools/exec` 已删除；改为 builtin 控制面路由** | 🟡 | `src/lib/llm/server/plugin_caps.go` · `src/lib/mcp-server/toolmeta/toolmeta.go` |
 | 8 | 配置：`nextRunMax` 默认 30 + 设置页 UI + i18n + `configIO` + 镜像测试 | 🔵 | `src/lib/data/internal/config/userconfig.go` · `SettingsParamsPage.vue` · `configIO.js` · locales |
 | 9 | 文档同步：21 / 22 / 3A / 61（md + schema）/ 64 / 03 | 🔵 | `docs/spec/**` |
-| 10 | 测试：L1（计数器原子 / mq 驱动的 next_run 全矩阵）+ L2（`self_next_run` 注册 / 默认值镜像） | 🔵 | `src/lib/llm/server/next_run_test.go` · `src/lib/data/internal/session/session_nextrun_test.go` · `src/test/chonkpilot-llm/unittest/llm_test.go` |
+| 10 | 测试：L1（计数器原子 / mq 驱动的 next_run 全矩阵）+ L2（`next_run` 注册 / 默认值镜像） | 🔵 | `src/lib/llm/server/next_run_test.go` · `src/lib/data/internal/session/session_nextrun_test.go` · `src/test/chonkpilot-llm/unittest/llm_test.go` |
 | 11 | 收尾构建：`.\build-desktop.ps1` 即可（**2026-11-04 核对：`next_run` 无独立 executor，`build-mcp-server.ps1` 不再产出该 exe**） | 🔵 | 构建脚本 |
 
 ### 7.1 测试用例（L1，mq 驱动 + mq 断言）

@@ -1,6 +1,6 @@
 # 插件加载与 UI 就绪设计方案（PLUGIN-LOAD-1）
 
-> 状态：✅ **D1–D18 均有实现**（2026-11-02；**2026-11-04 核对**）：`plugin-refresh` 差量刷新、启动并发闸门 2、先登记后拉起、就绪态文案、刷新遮罩 / 失败关闭；`plugin.json` 极简化（`id/cmd/enabled/name/icon`）+ 完整 manifest 由插件在 `plugin.hello` 上报（Go SDK 读 `<插件目录>/manifest.json`，Python/Node 自读）；只校验 ID；`external` 模式与 `channel.*` 删除；CK Store（`window.ckStore` getter 仓库 + 状态栏抽屉）。
+> 状态：✅ **D1–D18 均有实现**（2026-11-02；**2026-11-04 核对**）：`plugin-refresh` 差量刷新、启动并发闸门 2、先登记后拉起、就绪态文案、刷新遮罩 / 失败关闭；完整 manifest 由插件在 `plugin.hello` 上报；只校验 ID；`external` 模式与 `channel.*` 删除；CK Store（`window.ckStore` getter 仓库 + 状态栏抽屉）。**2026-11-18 收口**：启动描述 = `<root>/<id>/plugin.ini`（`[plugin] cmd/args`），Go 插件 manifest 改为 `//go:embed` 进 exe（Python/Node 仍自读盘），启停开关走 DB `plugin_state`。
 > 2026-11-04 核对偏差：**D5 遮罩可见**（旧审计“不可达”系误判，实为 Teleport 内 `v-if=refreshing` 兄弟节点；仅单行卡片，无双行/并发进度、无 Esc 处理）。
 > 2026-11-05 收口：**D11 已统一**（插件页/维护页共用 `layoutFree.plugin.status*` 六词表，维护页不再硬编码中文、不渲染 detail 行）；**D13 已收紧**（`manifest.id` 必须等于插件 id，空值不再接受）；**D14 数据面已清理**（12 份 `manifest.json` 的 `channel`/`runtime.mode` 死字段已删）。
 > 关联：[28-plugins](../spec/20-modules/28-plugins.md)（插件体系，权威）· [2C-UI插件](../spec/20-modules/2C-UI插件.md)（插件 UI 四通道）· [61-消息一览](../spec/60-reference/61-消息一览.md)（§7.2 `plugin-*`）· [41-未决项登记](../spec/40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决) · [49-待实现项](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04)
@@ -25,7 +25,7 @@
 
 ### 1.2 目标（可验收）
 
-1. `plugin.json` 极简：只承载**启动所需**信息；插件能力/UI 元数据由插件进程上报。
+1. `plugin.ini` 极简：只承载**启动命令**（`[plugin] cmd/args`）；插件能力/UI 元数据由插件进程上报（Go：manifest 嵌入 exe）。
 2. 打开布局编辑框 / 新建布局对话框前触发一次**重扫描 + 差量收敛**，新放插件可被加载、删掉的插件被注销并停进程。
 3. 启动并发受控（上限 2），入口先可见、页面用“加载中/启动中”占位，**不出现白屏或假正常**。
 4. 卡死的插件**如实显示 `starting`**，用户可感知并去 disable；不做启动预算、不做自动判失败。
@@ -57,8 +57,8 @@
 | D9 | 启动并发上限 2 | 闸门只约束 `spawn → hello` 段，进程起来后不占槽 |
 | D10 | 先扫描 → 先登记 → 再并发拉起 | 扫描同步全量；登记后入口即可见（仅 `id/name/icon`）；拉起按 D9 分批 |
 | D11 | 失败文案统一「插件未安装」 | 只显示状态文字（`运行中` / `启动中` / `启动失败` / `已停止` / `已禁用` / `未安装`），**不加 detail 行**。**2026-11-05 已统一**：插件页 `PluginPageHost.vue` 与维护页 `PluginManagerPage.vue` 共用 `layoutFree.plugin.status*`（discovered/registering/starting→启动中，degraded/error→启动失败，stopping/stopped→已停止）；维护页原硬编码「失败/降级/注册中」与 detail 行已删；回归 `test/pluginStatusCopy.test.js`。 |
-| D12 | `plugin.json` 极简 | `{ id, cmd(exe+args), enabled, name?, icon? }`；manifest（`version/description/ui/mcp/permissions`…）由插件进程上报。**2026-11-04 核对：Go SDK 读 `<插件目录>/manifest.json`（文件，非 embed）**；Python/Node 自读同一文件 |
-| D13 | 只校验 ID | 上报 `id` 必须等于目录名（`plugin.json` 若写 `id` 也须一致）；其余字段一律信任。**2026-11-05 已收紧**——`manifest.id` 为空或不等即报错（`mgr/api.go` `registerManifest`；回归 `mgr/discover_test.go`）。 |
+| D12 | `plugin.ini` 启动描述 | `[plugin] cmd`（必填）+ `args`（可选）；manifest（`version/description/ui/mcp/permissions`…）由插件进程上报。**2026-11-18：Go 插件 `//go:embed manifest.json` 进 exe**；Python/Node 仍读同目录 `manifest.json` |
+| D13 | 只校验 ID | 目录名 = 插件 id；上报 `id` 必须等于目录名，其余字段一律信任。**2026-11-05 已收紧**——`manifest.id` 为空或不等即报错（`mgr/api.go` `registerManifest`；回归 `mgr/discover_test.go`）。 |
 | D14 | 删除 `external` | 去掉 `runtime.mode`、`channel.{transport,addr}`、「等待外部进程连接」分支；插件一律由宿主 spawn。**2026-11-05 已收口**：框架代码此前已删；12 份 `manifest.json` 的 `channel`/`runtime.mode` 死字段本次清除。 |
 | D15 | 监管参数宿主默认 + 上报可选覆盖 | `restart` / `health` / `stop.grace_ms` / `mcp.timeout` 宿主内置默认；插件上报后以上报值为准（hello 之后生效） |
 | D16 | CK Store | 前端全局 getter 仓库：组件注册 `key → () => value`；只提供 `get`；未注册返回空；**仅 iframe 可读**（`window.top.ckStore`）；无权限白名单、无 key 登记表 |
@@ -73,30 +73,26 @@
 
 ```text
 <插件根>/<id>/
-  plugin.json                 # 极简：id / cmd / enabled（+ name/icon 可选）
-  chonkpilot-plugin-<id>.exe  # canonical（cmd 缺省时按此约定）
-  webui/*.html                # 插件页面（iframe 拉取）
+  plugin.ini                  # 启动描述：[plugin] cmd / args
+  chonkpilot-plugin-<id>.exe  # 由 plugin.ini 的 cmd 指向（目录名 = 插件 id）
+  webui/*.html                # 插件页面（iframe 拉取；Go 插件 embed 进 exe）
+  manifest.json               # 仅构建期（Go //go:embed 进 exe）；Python/Node 运行期自读
 ```
 
 | 内容 | 载体 | 读取方 | 缺失/损坏 |
 |---|---|---|---|
-| `id` / `cmd` / `enabled` / `name` / `icon` | `plugin.json` | 宿主（发现阶段） | 该插件不加载（不猜、不兜底） |
-| 完整 manifest | Go：SDK 读 `<插件目录>/manifest.json`（随 `plugin.hello` 上报）；Python/Node：插件自读同一文件 | 插件进程 → `plugin.hello` 上报 | `id` 不符 → 该插件 `error`，不登记 |
+| 启动命令 | `plugin.ini`（`[plugin] cmd/args`） | 宿主（发现阶段） | 该插件不加载（不猜、不兜底） |
+| 完整 manifest | Go：`//go:embed manifest.json` 进 exe（随 `plugin.hello` 上报）；Python/Node：插件自读同目录文件 | 插件进程 → `plugin.hello` 上报 | `id` 不符 → 该插件 `error`，不登记 |
 | 页面资源 | `ui.assets.mode = bytes/dir/resource` | 宿主按请求读 | 按资源语义 404 |
 
-`plugin.json` 字段（唯一）：
+`plugin.ini` 字段（唯一）：
 
-```json
-{
-  "id": "remote",
-  "cmd": ["chonkpilot-plugin-remote.exe"],   // 或运行时字符串形式
-  "enabled": true,
-  "name": "远程接入",
-  "icon": "link"
-}
+```ini
+[plugin]
+cmd=chonkpilot-plugin-remote.exe
 ```
 
-> `cmd` 缺省 = 目录内 `chonkpilot-plugin-<id>.exe`；`enabled` 缺省 = `true`，且仍以 `<数据根>/plugins/enabled.json`（设置页开关）为准。
+> `cmd` 必填（相对路径按插件目录解析）；`args` 支持空白分隔，含空格参数用 JSON 字符串数组。启停开关走 DB `plugin_state`（设置页写入）。
 
 ### 3.2 发现 / 启动 / 刷新
 
@@ -104,7 +100,7 @@
 前端打开布局编辑框 / 新建布局对话框
   → 先 close() 菜单弹层，置 refreshing=true（遮罩「正在刷新插件」仍在 Teleport 内可见、禁操作）
   → plugin-refresh
-        宿主：scan 四个插件根（读 plugin.json）
+        宿主：scan 四个插件根（读 plugin.ini）
               → 差量：新增登记（id/name/icon）/ 消失 unregistered + stop / 未变不动
               → 对新增：按并发闸门 2 拉起（spawn → 等 hello → 放槽 → 下一个）
               → 等本批新增插件全部 hello 上报（10s 超时兜底）
@@ -114,7 +110,7 @@
 
 | 环节 | 约束 |
 |---|---|
-| 扫描 | 同步全量；只读 `plugin.json`（不读 exe 内 manifest） |
+| 扫描 | 同步全量；只读 `plugin.ini`（不读 exe 内 manifest） |
 | 登记 | 扫描后立刻登记并广播 `plugin-registered`（此时 `views` 为空，仅有 `id/name/icon/status=starting`） |
 | 拉起 | 并发上限 **2**；槽位 = `spawn` 到 `hello` 之间；进程退出/报错同样释放 |
 | 上报 | `plugin.hello` 携带 manifest → 校验 `id == 目录名` → 合并进插件台账 → 再发 `plugin-registered`（含 views/statusbar/actions/version） |
@@ -185,7 +181,7 @@ await ckStore.get('chat.currentSession')   // 未注册 → 空
 
 | 现状 | 目标 | 迁移动作 |
 |---|---|---|
-| `plugin.json` = 完整 manifest | 极简五字段 | 已改造：`src/initdata/capability/plugins/<id>/plugin.json`（极简）+ `manifest.json`（完整，随插件目录投放、插件自读上报）；`plugin.json` 缺 `cmd` 时按 `chonkpilot-plugin-<id>.exe` 约定 |
+| `plugin.json` = 完整 manifest | `plugin.ini` 只存启动命令 | 已改造：`src/initdata/capability/plugins/<id>/plugin.ini`（`[plugin] cmd/args`）+ 插件仓内嵌 `manifest.json`（2026-11-18：Go `//go:embed` 进 exe；demo-python 仍随目录保留 manifest.json） |
 | `runtime.mode=managed/external` | 删除 mode | 删除校验分支、`channel.addr`、「等待外部进程连接」 |
 | `noChrome` / 启动顺序等 | 不变 | — |
 | `plugin-list` 是唯一清单入口 | 增加 `plugin-refresh` | 前端只在窗口启动时 `plugin-list`；编辑器打开前 `plugin-refresh` |
@@ -200,7 +196,7 @@ await ckStore.get('chat.currentSession')   // 未注册 → 空
 
 | 场景 | 行为 |
 |---|---|
-| `plugin.json` 缺失 / 语法错误 / 缺 `id` | 该插件不加载，记错误日志；不影响其它插件 |
+| `plugin.ini` 缺失 / 缺 `cmd` | 该插件不加载，记错误日志；不影响其它插件 |
 | 上报 `id` ≠ 目录名 | 该插件 `status=error`，不登记 UI/MCP；停进程 |
 | 上报 manifest 字段非法（views 为空 / entry 异常） | 不校验，按上报内容使用；资源请求侧做路径越界防护（`..`/绝对路径归一化） |
 | 插件 spawn 失败 | `status=error`，释放并发槽，继续下一个 |
@@ -247,7 +243,7 @@ await ckStore.get('chat.currentSession')   // 未注册 → 空
 | 框架 `plugin/bridge` | `control.go`（hello 接 `manifest` 并校验 id）、`plugins.go`（按需） |
 | 宿主 | `src/lib/gui/host/main.go`（装配 CK Store 端口 / 抽屉内置 view）、`src/lib/gui/pluginassets.go`（越界防护确认） |
 | 前端 | `packages/plugin-ui/src/{usePlugins,usePluginReadiness,PluginPageHost,PluginManagerPage}.{js,vue}`、新增 `ckStore.js` 与抽屉组件、`src/frontend/src/{pluginHost.js,layout/view-registry.js,layout/views.registry.js,views/codeview/CodeView.vue}`、`framework/host/web/src/layout-free/views/LfViewHost.vue` |
-| 插件仓 | 各 `plugin.json` 瘦身；Go 插件 manifest embed；SDK `hello` 带 manifest |
+| 插件仓 | 各插件 `plugin.ini` 启动描述；Go 插件 manifest `//go:embed` 进 exe；SDK `hello` 带 manifest |
 | 文档 | 本文 · `28-plugins` · `2C-UI插件` · `61-消息一览 §7.2` · `41`/`49` |
 
 ---

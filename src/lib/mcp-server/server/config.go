@@ -23,7 +23,7 @@ import (
 // "threshold": 30, "hard_timeout": 300, "touch_files": true}}`。
 //
 //   - mode → 暴露 `_meta.async`（四档：sync=仅同步 / async=仅异步 / auto=自动异步 /
-//     manual=手动异步；旧值 never→sync / always→async 读取时别名映射）；
+//     manual=手动异步）；
 //   - threshold（秒）→ 暴露 `_meta.async-threshold`（**仅 auto/manual 有意义**：到该秒数自动转后台
 //     / 交用户裁决）；
 //   - hard_timeout（秒）→ **不透出**，仅作执行硬杀上限（executor 见 executor.go resolveExecTimeout；
@@ -112,9 +112,8 @@ func optIntField(raw json.RawMessage) (int, bool) {
 	return 0, false
 }
 
-// toolAsyncModes 是合法 mode 取值（sync/async/auto/manual 四档；兼容旧 always/never；
-// 其它值 = 非法 → 丢字段）。UI 不再写 always/never，仅保留读取别名。
-var toolAsyncModes = map[string]bool{"always": true, "never": true, "auto": true, "manual": true, "sync": true, "async": true}
+// toolAsyncModes 是合法 mode 取值（sync/async/auto/manual 四档；其它值 = 非法 → 丢字段）。
+var toolAsyncModes = map[string]bool{"auto": true, "manual": true, "sync": true, "async": true}
 
 // Defaults 是注入 tools/call 的默认参数（server 级配置，不依赖 NATS）。
 // 客户端显式传入的同名参数优先（覆盖默认）。
@@ -144,9 +143,9 @@ type Config struct {
 	Defaults  Defaults          `json:"defaults"`
 	// ToolAsync 是**工具级异步配置覆盖**（usr 键 `tool_async`，装配层读后注入；见
 	// chonkpilot-llm/server/server.go loadExecConfig）：key = tools/list 暴露名
-	// （P0a 2026-10-29 起内置 self 节点 = 契约名，历史 `self_<契约名>` 键仍兼容；
-	// `servers/register` 下游且 namespace "-" = 契约名，如 core / 各插件 server），value = 四档
-	// mode + 可选 threshold / hard_timeout。空表 = 全部按契约现值（默认行为不变）。
+	// （内置 self 节点 = 契约名；`servers/register` 下游且 namespace "-" = 契约名，
+	// 如 core / 各插件 server），value = 四档 mode + 可选 threshold / hard_timeout。
+	// 空表 = 全部按契约现值（默认行为不变）。
 	ToolAsync map[string]ToolAsyncOverride `json:"-"`
 
 	// SkipTools（P6 2026-10-19）为 true 时 RegisterContracts 只注册资产（prompts/skills/resources），
@@ -164,7 +163,7 @@ type Config struct {
 	//   - Executors：内置 executor，key = executor **exe 基名**（见 ExecutorExe* 常量）；
 	//   - MCPs：外部 MCP，key = MCP 条目名。
 	// value = 是否对该执行体施加限制（越界读写一律拒绝）。**未配置 / false = 不启用
-	// 隔离**（缺省与现状一致）。**旧形态（按 executor 类别 core/desktop/browser）读取时迁移**，
+	// 隔离**（缺省与现状一致）；旧形状已移除，只接受 `executors` / `mcps`。
 	// 见 ParseToolSandbox。
 	// 2026-10-21：沙箱改由 gateway 在 spawn 时以进程级 Low IL 施加；本开关暂保留待 L6 迁移。
 	ToolSandbox ToolSandboxConfig `json:"-"`
@@ -379,18 +378,11 @@ func sameToolAsync(a, b map[string]ToolAsyncOverride) bool {
 }
 
 // toolAsyncOverride 取某工具的有效覆盖（读锁保护）。
-// name = **契约名**（buildTool 的原语名 / ToolDoc.Name）；查找顺序：
-// 历史暴露名 `<self_><契约名>`（P0a 前的 UI 存量键）→ 契约名精确匹配（P0a 后的现键）。
+// name = **契约名**（buildTool 的原语名 / ToolDoc.Name），按暴露名精确匹配。
 // 未配置（含孤儿键/第三方工具键）→ ok=false（调用点维持契约现值）。
 func (c *Config) toolAsyncOverride(name string) (ToolAsyncOverride, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	if len(c.ToolAsync) == 0 {
-		return ToolAsyncOverride{}, false
-	}
-	if ov, ok := c.ToolAsync["self_"+name]; ok {
-		return ov, true
-	}
 	ov, ok := c.ToolAsync[name]
 	return ov, ok
 }
@@ -398,7 +390,7 @@ func (c *Config) toolAsyncOverride(name string) (ToolAsyncOverride, bool) {
 // ─── 工具沙箱开关（决策 42 §2 (104)/(109)）────────────────
 
 // 内置 executor 已全部退场（2026-10-31 D-72：`src/lib/mcp-tools` 整体删除；web 三工具随 `web` 插件）。
-// 沙箱开关仅剩外部 MCP（`mcps`）维度；历史 `executors` 键保留读取兼容（见 ToolSandboxConfig）。
+// 沙箱开关仅剩外部 MCP（`mcps`）维度；`executors` 键位保留（当前无内置 executor）。
 
 // ToolSandboxConfig 是 agentbox 沙箱开关（usr 键 `tool_sandbox`，**管理单位 = 被 spawn 的执行体**）：
 //   - Executors：内置 executor，key = executor **exe 基名**（chonkpilot-*-executor.exe）；
@@ -410,18 +402,10 @@ type ToolSandboxConfig struct {
 	MCPs      map[string]bool `json:"mcps"`
 }
 
-// legacySandboxCategoryMap 把**旧形状**（按 executor 类别 core/desktop/browser，2026-09-26 形态）
-// 迁移到**新形状**的单位键（exe 基名）。2026-10-21（GATEWAY-2/L1）DSL 退役后：
-// `desktop` / `browser` 已改为插件（非 executor），迁移为空；
-// 2026-10-25（PLUGIN-SPLIT-1）`core`（= file 域）随 file 插件迁出主仓 → 亦迁移为空
-// （旧配置里这些项被忽略，插件自身不接 gateway、不受 agentbox 开关约束）。
-var legacySandboxCategoryMap = map[string][]string{}
-
-// ParseToolSandbox 解析 usr `tool_sandbox` 值（JSON 对象字符串），**兼容新旧两种形状**：
-//   - 新形状：`{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`；
-//   - 旧形状：`{"core":bool,"desktop":bool,"browser":bool}`（2026-09-26 executor 类别形态）→
-//     **读取时迁移**（见 legacySandboxCategoryMap），不报错、不停机；
-//   - 空串 → 空配置（= 全部不隔离）；非法 JSON → 返回错误（调用方保留现值、不误清空）。
+// ParseToolSandbox 解析 usr `tool_sandbox` 值（JSON 对象字符串）：
+//   - 唯一形状：`{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`；
+//   - 空串 / `{}` → 空配置（= 全部不隔离）；旧形状或非法 JSON → 返回错误
+//     （调用方保留现值、不误清空）。
 func ParseToolSandbox(raw string) (ToolSandboxConfig, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -437,18 +421,10 @@ func ParseToolSandbox(raw string) (ToolSandboxConfig, error) {
 	if _, ok := probe["mcps"]; ok {
 		return decodeNewToolSandbox([]byte(s))
 	}
-	// 旧形状 → 迁移为单位键（未知键按旧—旧形态忽略）。
-	var legacy map[string]bool
-	if err := json.Unmarshal([]byte(s), &legacy); err != nil {
-		return ToolSandboxConfig{}, err
+	if len(probe) == 0 {
+		return ToolSandboxConfig{}, nil
 	}
-	ex := map[string]bool{}
-	for cat, on := range legacy {
-		for _, exe := range legacySandboxCategoryMap[strings.ToLower(strings.TrimSpace(cat))] {
-			ex[exe] = on
-		}
-	}
-	return ToolSandboxConfig{Executors: ex}, nil
+	return ToolSandboxConfig{}, fmt.Errorf("tool_sandbox: 需包含 executors 或 mcps（旧形状已移除）")
 }
 
 // decodeNewToolSandbox 解析新形状 `{"executors":{...},"mcps":{...}}`。

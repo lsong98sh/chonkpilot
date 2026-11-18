@@ -14,8 +14,6 @@
         "call retry-exhaust" → 每次 500（RETRY-1 重试耗尽 → 终态错误）
         "call cancel" → task_run 长命令（Start-Sleep；testplan 五.8）
         "call slow-stream" → 慢速流式（~10s；流式期入队 → next_turn，取消后写回输入区；五.9）
-        "call slow-never" → task_run 慢命令（call-level async=never + timeout=1s；
-                            run_tool_async.py 断言 mcp-tools-timeout options=[wait,cancel]）
         "call loop-limit" → task_run 快命令（maxToolIterations 用例）
         "call py" / "call py-async" / "call async-cmd" → task_run 快/异步命令（run_tools H/runtime 链）
       **任务/工具面（GATEWAY-2 L1 起）**：`dsl_run` 与 DSL 作业根 `kind=dsl_job` **已整体删除**，
@@ -27,7 +25,7 @@
         "call delegate-slow"   → task_run 慢命令（长任务占位）
       文件历史检查点链（run_hist_git.py，2026-09-27 批次③语义；参数由提示词携带）：
         "call hist-write"         + histabs=<绝对路径> histfrom=<旧> histval=<新>
-                                  → `file_replace`（file 插件工具，无 self_ 前缀；精确替换真实改文件 → 置脏 → 打点）
+                                  → `file_replace`（file 插件工具，原名；精确替换真实改文件 → 置脏 → 打点）
         "call hist-dirty-write"   → `history_restore` + 紧随 `task_run` 改文件
                                   （H6「涉及文件变动」：task_run 属插件工具，缺省即涉及）
         "call hist-restore"       + histrel=<workdir 相对路径> [histto=<负整数|commit id>]
@@ -37,7 +35,7 @@
                                   → history_restore（目录，应被拒绝）
       **工具名一律用网关暴露名**（P0a 2026-10-29 口径）：插件工具 = manifest 原名（`file_*` /
       `task_run` / `mcp_*` / `ask_user` / `desktop_run`），内置 self 节点工具（`history_*`）同样
-      **无 `self_` 前缀**。未按暴露名调用无法路由（I-20）。
+      **原名**。未按暴露名调用无法路由（I-20）。
       **场景化 E2E（run_e2e.py，2026-11-11）**：
         `e2eplan=<base64 JSON [{path,content,...}]>` → 一次 `file_write`（批量 targets，
                                   空工程 → 有数据工程幂等预置）
@@ -314,21 +312,14 @@ def route_tool_calls(text):
         return [("task_run", {"command": "Start-Sleep -Seconds 6",
                               "tool_call_display_name": "层落库"})]
     # ── 统一异步模型 L4（run_tool_async.py）：超时交用户裁决 ──
-    # 调用级 async=never + timeout=1s（gateway 执行前剥离）→ 慢工具到超时点发 mcp-tools-timeout
-    # {reason:"timeout", options:["wait","cancel"]}；第三方软缺省 never 同理（本路由用 builtin 工具
-    # 复现 never 分支，使 GUI 端可断言超时事件与 options）。
     # INBOX（2026-10-18 · run_inbox.py）：慢工具须**立即 pending**，为「工具执行中插话」留出
     # 口径变更（GATEWAY-2 L1）：原用 `dsl_run`（契约 async:always、无 _meta.timeout），
-    # DSL 退役后改 `task_run`（任务插件工具，无 `self_` 前缀）+ **调用级 `async=always`**
+    # DSL 退役后改 `task_run`（任务插件工具，原名）+ **调用级 `async`**
     # （turn.gatewayArgs 显式调用级 async 优先 → 派发即 pending）。
     if "call slow-insert" in t:
         return [("task_run", {"command": "Start-Sleep -Seconds 6",
-                              "async": "always",
+                              "async": "async",
                               "tool_call_display_name": "插话慢工具"})]
-    if "call slow-never" in t:
-        return [("task_run", {"command": "Start-Sleep -Seconds 11",
-                              "async": "never", "timeout": 1,
-                              "tool_call_display_name": "超时裁决"})]
     # 统一异步模型 L4-E（run_tool_async.py）：「转后台后再取消」——script_run 契约软缺省即
     # manual（core/script_run.tool.md:7 async=manual），显式给出 async=manual + timeout=1s，
     # 到超时点发 mcp-tools-timeout{options:[detach,cancel]}；20s 长命令给「转后台」与后续
@@ -342,31 +333,12 @@ def route_tool_calls(text):
                               "async": "manual", "timeout": 1,
                               "tool_call_display_name": "转后台"})]
     # ── 第三方 spawned 夹具（slow3p，经四级文件化 MCP 注册后网关拉起；run_tool_async.py D）──
-    # 快工具（回显 pid，供取消前后比对 respawn）；慢工具 call-level async=never + timeout=1
-    #（夹具软缺省 never，等价；显式给出保证 1s 到超时点）。
+    # 快工具（回显 pid，供取消前后比对 respawn）；慢工具 call-level async=manual + timeout=1。
     if "call slow3p-echo" in t:
         return [("slow3p_fast_echo", {"text": "ping", "tool_call_display_name": "夹具"})]
-    if "call slow3p-never" in t:
-        return [("slow3p_slow_sleep", {"seconds": 5, "async": "never", "timeout": 1,
-                                       "tool_call_display_name": "夹具"})]
     if "call slow3p-manual" in t:
         return [("slow3p_slow_sleep", {"seconds": 5, "async": "manual", "timeout": 1,
                                        "tool_call_display_name": "夹具"})]
-    # ── 配置⑤ 超时自动取消（run_tool_async.py 新增用例）──
-    # 第三方 stdio 夹具：async=never + timeout=1s，配合 usr
-    # `tool_async.slow3p_slow_sleep.cancel_on_timeout` → 到 1s **自动取消**（不等裁决）
-    # → gateway `Terminate` = kill + respawn（下次快工具 pid 变化可观测「真被杀」）。
-    if "call cancel-on-timeout-3p" in t:
-        return [("slow3p_slow_sleep", {"seconds": 5, "async": "never", "timeout": 1,
-                                       "tool_call_display_name": "自动取消夹具"})]
-    # 内置执行体（`task_run`）：async=never + timeout=1s，配合 usr
-    # `tool_async.task_run.cancel_on_timeout` → 到 1s 自动取消 → 执行体侧真停
-    # （callTool 继承请求 ctx + exec.CommandContext）→ 无孤儿进程（`ping` 子进程随之被杀；
-    # 用唯一地址 127.0.0.99 作进程命令行探针哨兵）。
-    if "call cancel-on-timeout-self" in t:
-        return [("task_run", {"command": "ping -n 20 127.0.0.99",
-                              "async": "never", "timeout": 1,
-                              "tool_call_display_name": "自动取消"})]
     # ── 任务/工具面（GATEWAY-2 L1：`dsl_run` + DSL 作业根已删除）──
     # 原 dsl_run 的 `LLM "<agent>" "<prompt>" "<目的>"` 委派步骤 / LOOP 批量 / 执行器子会话
     # 一并退役；现行等价能力 = **普通工具调用的任务节点**（kind=tool）：展示名取
@@ -446,14 +418,14 @@ def route_tool_calls(text):
         script = "'%s' | Set-Content -LiteralPath '%s'" % (val, p)
         return [
             ("history_restore", rargs),
-            ("task_run", {"command": script, "timeoutSec": 60, "async": "never",
+            ("task_run", {"command": script, "timeoutSec": 60, "async": "sync",
                           "tool_call_display_name": "历史打点"}),
         ]
     if "call hist-write" in t:
         p = _prompt_arg(text, "histabs")
         frm = _prompt_arg(text, "histfrom")
         to = _prompt_arg(text, "histval")
-        # 口径变更（2026-10-23）：file 域工具由 file 插件提供、暴露名**无 self_ 前缀**。
+        # 口径变更（2026-10-23）：file 域工具由 file 插件提供、暴露名**即原名**。
         return [("file_replace", {"targets": [{"path": p, "find": frm, "replace": to}],
                                   "tool_call_display_name": "历史打点"})]
     if "call hist-restore-nopath" in t:
@@ -525,7 +497,7 @@ def route_tool_calls(text):
     # 故用 ws 绝对路径（与 run_llm.py 期望的 "hello from a.txt" 对应）。
     # 口径变更（GATEWAY-2 L2 / 2026-11-08）：文件域已拆为 11 个独立工具，统一参数 `{targets[]}`
     # （单文件也写成 1 元素数组）；调用展示名由 gateway 注入的 `tool_call_display_name` 承担
-    # （契约已移除 `purpose`）→ 直接调 `file_read`（file 插件工具，无 `self_` 前缀），
+    # （契约已移除 `purpose`）→ 直接调 `file_read`（file 插件工具，原名），
     # 读取结果（含 content）随工具结果回填，供 mock 回显断言。
     if "call tool" in t and "without" not in t:
         a_abs = os.path.join(SCRIPTS_WS, "a.txt").replace("\\", "/")
@@ -537,7 +509,7 @@ def route_tool_calls(text):
         return [("task_run", {"command": "Start-Sleep -Seconds 19",
                               "_async": True, "tool_call_display_name": "测试"})]
     if "call py-async" in t:
-        # task_run 异步（async=always 转后台）；结果回填 = turn 挂起等后台完成回报
+        # task_run 异步（async 转后台）；结果回填 = turn 挂起等后台完成回报
         # （run_tools.py 断言 tool-pair async + tool-result 终态，不再由 LLM 主动轮询取结果）
         return [("task_run", {"command": "Write-Output py-slow",
                               "_async": True, "tool_call_display_name": "测试"})]

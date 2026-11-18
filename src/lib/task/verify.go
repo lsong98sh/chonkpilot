@@ -205,7 +205,7 @@ func (l *Layer) VerifyPayload(req *VerifyRequest) *VerifyResult {
 // layerRow 把层记录映射为**可比字段视图**（键 = 权威行同名字段；node_id 与 task_id 同值；
 // node_type 与落库派生同源：kind=llm → session，其余 → tool）。
 // status 与落库同一口径（`frontVisibleStatus`，P3 相位门控）→ 两侧比较的仍是**前端可见状态**，
-// 不会因 detached / awaiting 而误报差异。
+// 不会因 detached 而误报差异。
 func layerRow(rec *Record) map[string]any {
 	nodeType := NodeTypeTool
 	if rec.NodeType == NodeTypeLLM {

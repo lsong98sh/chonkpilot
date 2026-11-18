@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -87,9 +86,8 @@ func TestEmbeddedGatewayDomainToolsHot(t *testing.T) {
 	want := map[string]bool{}
 	for _, d := range defs {
 		if d.Hot {
-			// P0a 2026-10-29：暴露名 = 原名（内置 self 节点不再加前缀）；TrimPrefix 仅为兼容
-			// 存量历史名（本轮已不再产生 self_*）。
-			want[strings.TrimPrefix(d.Name, "self_")] = true
+			// 网关暴露名 = 原名（内置 self 节点不再加前缀）。
+			want[d.Name] = true
 		}
 	}
 	for _, n := range []string{"ask_user", "next_run", "subchat_open", "subchat_finish"} {

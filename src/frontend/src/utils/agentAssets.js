@@ -56,7 +56,7 @@ export async function loadToolGroups(kind, t) {
       byServer.get(groupKey).tools.push({
         name: tl.name,
         desc: (meta.hot ? '[hot] ' : '') + (tl.description || ''),
-        // 展示用：网关为暴露名加的前缀（self_/dir_ 等）剥掉后显示（`name` 仍作配置键 / 勾选键）
+        // 展示用：dir/第三方暴露名的来源前缀剥掉后显示（`name` 仍作配置键 / 勾选键）
         server: srv,
       })
     }

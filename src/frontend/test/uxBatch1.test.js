@@ -5,7 +5,7 @@
  *     内置 `echo` 视为可用 LLM → 门槛改为**本回合失败即提示**，`isLLMSetupMissing` 删除）
  *   B 深色主题可读性（inline code / 工具卡头 / 状态徽标 / .td-error / --text-muted）
  *   C 文件树删除/移动失败回显（不再只 console.error，且不呈现"已成功"）
- *   D 批 1 收口（2026-09-20）：残留硬编码浅色清零（.arbitration-hint / .stop-btn:hover /
+ *   D 批 1 收口（2026-09-20）：残留硬编码浅色清零（.stop-btn:hover /
  *     SessionTreeNode 裁决条与停止按钮 / TaskDetailView 状态圆点）+ 全仓扫描
  *   ⑤ 批 1 残留小项收口（2026-09-20）：A `echo` 算可用（失败即提示）/ B 配置刷新即清除提示
  *     / C 插件失败提示前端按 key 映射 i18n（I-117，zh-CN + en-US）
@@ -327,28 +327,6 @@ test('③ i18n：失败回显键 zh-CN / en-US 齐备且含 {name}/{error}', () 
 //      · `#67c23a` / `#bfbfbf`（`useTaskStatus.js` 的 4 态映射，既有单测「逐值不变」锁定）
 //      · `rgba(0,0,0,·)` / `rgba(255,193,7,·)` 一类装饰性叠底与色条（不承载文字对比度）
 // ═══════════════════════════════════════════════════════════════
-test('④ .arbitration-hint 走 --warning token（三主题 ≥4.5:1，且优于改前 #e65100）', () => {
-  const msg = read('views/chat/MessageItem.vue')
-  const rule = msg.match(/\.arbitration-hint\s*\{[\s\S]*?\n\}/)
-  assert.ok(rule, '未找到 .arbitration-hint 规则')
-  assert.match(rule[0], /color:\s*color-mix\(in srgb,\s*var\(--warning\)/, '须复用 --warning 语义 token')
-  assert.doesNotMatch(rule[0], /^\s*color:\s*(#|rgb)/m, '.arbitration-hint 不得硬编码文字色')
-  assert.match(msg, /\[data-theme="dark"\]\s*\.arbitration-hint/, 'dark 须覆写回 --warning 原色')
-  assert.match(msg, /\[data-theme="nord"\]\s*\.arbitration-hint/, 'nord 须覆写回 --warning 原色')
-
-  const nums = {}
-  for (const [name, tk] of Object.entries(THEMES)) {
-    // light = --warning 55% + --text-primary 45%（压深）；dark/nord = --warning 原色
-    const fg = name === 'light' ? mixSrgb(tk['--warning'], tk['--text-primary'], 0.55) : tk['--warning']
-    const c = contrast(fg, tk['--bg-primary'])
-    const before = contrast('#e65100', tk['--bg-primary'])
-    nums[name] = c.toFixed(2)
-    assert.ok(c >= 4.5, `${name} arbitration-hint 对比度 ${c.toFixed(2)} < 4.5`)
-    assert.ok(c > before, `${name} 须优于改前（${before.toFixed(2)} → ${c.toFixed(2)}）`)
-  }
-  console.log('[contrast] arbitration-hint =', JSON.stringify(nums))
-})
-
 test('④ .stop-btn:hover 走 --danger token（图标 ≥3:1，三主题）', () => {
   const msg = read('views/chat/MessageItem.vue')
   const rule = stripComments(msg).match(/\.stop-btn:hover\s*\{[\s\S]*?\n\}/)
@@ -369,15 +347,10 @@ test('④ .stop-btn:hover 走 --danger token（图标 ≥3:1，三主题）', ()
   console.log('[contrast] stop-btn:hover icon =', JSON.stringify(nums))
 })
 
-test('④ SessionTreeNode：裁决条取消键（文字 ≥4.5）与停止图标（≥3）走 --danger token', () => {
+test('④ SessionTreeNode：停止图标（≥3）走 --danger token', () => {
   const raw = read('views/tasks/SessionTreeNode.vue')
   const src = stripComments(raw)
   assert.doesNotMatch(src, /#(ff4d4f|f5222d|e65100|52c41a)/i, '不得再硬编码浅色')
-
-  const dangerBtn = src.match(/\.await-btn-danger\s*\{[\s\S]*?\n\}/)
-  assert.ok(dangerBtn, '未找到 .await-btn-danger 规则')
-  assert.match(dangerBtn[0], /color:\s*color-mix\(in srgb,\s*var\(--danger\)/, '取消键文字须走 --danger 混合')
-  assert.doesNotMatch(dangerBtn[0], /^\s*color:\s*(#|rgb)/m, '取消键不得硬编码文字色')
 
   const stop = src.match(/\.node-stop\s*\{[\s\S]*?\n\}/)
   assert.ok(stop, '未找到 .node-stop 规则')
@@ -385,15 +358,12 @@ test('④ SessionTreeNode：裁决条取消键（文字 ≥4.5）与停止图标
 
   const nums = {}
   for (const [name, tk] of Object.entries(THEMES)) {
-    const textFg = mixSrgb(tk['--danger'], tk['--text-primary'], 0.7)
-    const ct = contrast(textFg, tk['--bg-primary'])
     const ci = contrast(tk['--danger'], tk['--bg-primary'])
-    nums[name] = { 文字: ct.toFixed(2), 图标: ci.toFixed(2) }
-    assert.ok(ct >= 4.5, `${name} 取消键文字对比度 ${ct.toFixed(2)} < 4.5`)
+    nums[name] = ci.toFixed(2)
     assert.ok(ci >= 3, `${name} 停止图标对比度 ${ci.toFixed(2)} < 3`)
-    assert.ok(ct > contrast('#ff4d4f', tk['--bg-primary']), `${name} 须优于改前 #ff4d4f`)
+    assert.ok(ci > contrast('#ff4d4f', tk['--bg-primary']), `${name} 须优于改前 #ff4d4f`)
   }
-  console.log('[contrast] session-tree danger =', JSON.stringify(nums))
+  console.log('[contrast] session-tree stop =', JSON.stringify(nums))
 })
 
 test('④ TaskDetailView 状态圆点走主题 token（图形 ≥3:1，三主题）', () => {

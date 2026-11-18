@@ -5,10 +5,10 @@
 主轮不提前 complete；工具回执后主轮续轮。
 设计：docs/agent-chat/中途插话设计方案.md §3.1（S1）/ §7（INS-001）。
 驱动：`llm-start`（mock 关键词 "call slow-insert" → `task_run` + 调用级
-      `async=always` + `Start-Sleep 6`：派发即 pending，工具执行中留出插话窗口）
+      `async` + `Start-Sleep 6`：派发即 pending，工具执行中留出插话窗口）
       → `llm-inbox-add`；断言：`llm-receive`（插话回显）先于 `llm-complete`。
       口径变更（GATEWAY-2 L1 → 2026-10-23）：原用 `dsl_run`，DSL 删除后曾用 `script_run`；
-      `script_run` 亦随 core 契约退役 → 现行 `task_run` 显式 `async=always`（同一 pending 语义）。
+      `script_run` 亦随 core 契约退役 → 现行 `task_run` 显式 `async`（同一 pending 语义）。
 前置：usr llms 含 name="mock" 条目（套件级快照-还原；usr 主库不受 work-dir 隔离）。
 """
 

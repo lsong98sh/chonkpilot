@@ -93,10 +93,10 @@ func TestToolWhitelistHardReject(t *testing.T) {
 
 	agSaveScenario(t, s, "ag-wl", []any{
 		map[string]any{"name": "main", "isMain": true, "prompt": "主"},
-		// 白名单两种写法都认（P0a 2026-10-29：暴露名 = 原名；历史 `self_<原名>` 存量配置兼容）：
-		// sub-deny 用历史写法（本工具不在白名单 → 拒绝），sub-allow 亦用历史写法（放行 = 兼容生效）。
-		agSubAgent("sub-deny", "子", map[string]any{"tools": []string{"self_next_run"}}),
-		agSubAgent("sub-allow", "子", map[string]any{"tools": []string{"self_subchat_open"}}),
+		// 白名单按暴露名精确匹配（网关暴露名 = 原名）：
+		// sub-deny 用不含被调工具的原名白名单（→ 拒绝），sub-allow 用允许工具原名（→ 放行）。
+		agSubAgent("sub-deny", "子", map[string]any{"tools": []string{"next_run"}}),
+		agSubAgent("sub-allow", "子", map[string]any{"tools": []string{"subchat_open"}}),
 		agSubAgent("sub-free", "子", map[string]any{"tools": []string{}}), // `[]` = 不限制
 	})
 	parentReq := StartReq{InstanceID: "ins-test", Session: "s-wl", Turn: "t-wl", ScenarioID: "ag-wl"}
@@ -261,8 +261,8 @@ func TestToolWhitelistLevelMatrix(t *testing.T) {
 		sort.Strings(out)
 		return out
 	}
-	// all 含一个**不存在**的工具名（self_no_such_tool）—— 应被静默剔除。
-	all := []string{appTool, userTool, prjTool, prjUsrTool, "self_no_such_tool"}
+	// all 含一个**不存在**的工具名（no_such_tool）—— 应被静默剔除。
+	all := []string{appTool, userTool, prjTool, prjUsrTool, "no_such_tool"}
 
 	check := func(scenarioLevel string, want ...string) {
 		t.Helper()

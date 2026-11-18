@@ -39,7 +39,7 @@ type Options struct {
 	// PRODSIM-1：已移除管理 REST 入口（`--manage-addr`）——gateway 健康检查/资产查询
 	// 统一走插件桥（`plugin/v1/gateway.check` + `mcp_find`/`mcp_load`），不再单开 TCP 口。
 
-	// AsyncMode 工具异步模式（"" = 默认"auto"；"never" = 强制同步，用于 CLI）。
+	// AsyncMode 工具异步模式（"" = 默认 "auto"；CLI 显式传 sync 强制同步）。
 	// 透传给内嵌 gateway 的 Params.AsyncMode。
 	AsyncMode string
 
@@ -140,6 +140,10 @@ type Server struct {
 	inboxIndex    map[string]facade.InboxItem
 	inboxPending  map[string]map[string]string // session_id → (inbox_id → type)：仅 pending 项
 	inboxTerminal []string                     // 终态项 id 的 FIFO（上限 inboxTerminalKeep，超出淘汰最旧）
+	// inboxLoaded：已完成「持久 lane 懒恢复」的 instKey(instance, session)。
+	// 重启后内存索引为空，首次访问某会话时从 DB 只装载 durable pending（next_turn / insert）；
+	// 易失项不装载、不回放。与 inboxIndex 同锁（inboxMu）。
+	inboxLoaded map[string]bool
 	// inboxConsuming：正在消费 next_turn 的会话（单会话单消费者；防两个 goroutine 各起一轮、
 	// 重复携带同一批输入）。与 inboxIndex 同锁（inboxMu）。
 	inboxConsuming map[string]bool

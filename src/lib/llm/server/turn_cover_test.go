@@ -160,7 +160,7 @@ func numEq(v any, want int) bool {
 // ① 每次失败发一条 session-retry（计数递增），终态错误只发一次且携带真实计数；
 // ② 重试后成功 → 只有中间态 + complete，无错误终态；
 // ③ retryCount=0 → 无中间态，直接终态（attempt=0）；
-// ④ 等待值 = router.RetryWait（Retry-After 优先）。
+// ④ 等待值 = router.DefaultPolicy（Retry-After 优先）。
 func TestTurnVisibleRetryEvents(t *testing.T) {
 	t.Run("每次失败发中间态且计数递增/终态仅一次", func(t *testing.T) {
 		calls := &llmCallCounter{}

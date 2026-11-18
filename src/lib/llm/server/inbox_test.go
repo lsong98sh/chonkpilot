@@ -18,6 +18,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
+	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
@@ -1106,5 +1107,139 @@ func TestInboxConsumeNoPendingNoBroadcast(t *testing.T) {
 	}
 	if n := rec.count("session-turn-start", nil); n != 0 {
 		t.Fatalf("无待消费项不得起轮（session-turn-start=%d）", n)
+	}
+}
+
+// TestInboxLazyRestoreOnlyDurable：模拟重启（内存索引清空）后，首次 `llm-inbox-list`：
+//   - 只恢复 / 只返回持久 lane（next_turn / insert）；直接落库的易失行（tool_result）不返回；
+//   - 恢复后空闲会话自动消费 durable pending（用户消息不得搁死）；
+//   - 易失行不被 `consumeNextTurn` 回放（DB 状态保持 pending，仅忽略）。
+func TestInboxLazyRestoreOnlyDurable(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+	rec := newInboxRec(t, s.bus)
+	const sess = "s-ins-restore"
+	ensureInboxSession(t, s, sess)
+
+	idNext := appendNextTurn(t, s, sess, "【RESTORE】排队")
+	ires, err := dataRequest(s.bus, "data-inbox-append", withDialog(s, sess, map[string]any{
+		"instance_id": "ins-test",
+		"data": map[string]any{
+			"session": sess, "type": "insert", "content": "【RESTORE】插话", "llm": "mock",
+		},
+	}))
+	if err != nil {
+		t.Fatalf("append insert: %v", err)
+	}
+	idInsert := str(ires["id"])
+
+	// 直接写一条易失类型行（生产写侧拒绝此类写入；仅模拟历史 / 异常遗留）。
+	const idEphemeral = "I-ephemeral-legacy"
+	inserted := false
+	for _, db := range allDialogDBs(t) {
+		if err := db.Table("inbox_items").Insert(idEphemeral, data.Record{
+			"session_id": sess, "type": "tool_result", "content": "不应回放",
+			"status": "pending", "created_at": "2026-11-16T00:00:00.000000000Z",
+		}); err != nil {
+			continue
+		}
+		inserted = true
+	}
+	if !inserted {
+		t.Fatalf("未能写入易失遗留行（找不到会话对话库）")
+	}
+
+	// 模拟进程重启：清空内存索引 / 恢复标记（DB 事实保留）。
+	s.inboxMu.Lock()
+	s.inboxIndex = map[string]facade.InboxItem{}
+	s.inboxPending = map[string]map[string]string{}
+	s.inboxTerminal = nil
+	s.inboxLoaded = map[string]bool{}
+	s.inboxMu.Unlock()
+
+	lv := s.bus.Emit(context.Background(), "inbox-list", jb(map[string]any{
+		"instance_id": "ins-test", "session": sess,
+	})).Wait()
+	if lv.Err() != nil {
+		t.Fatalf("inbox-list: %v", lv.Err())
+	}
+	lres, _ := lv.Result.(map[string]any)
+	got := map[string]string{}
+	switch raw := lres["items"].(type) {
+	case []any:
+		for _, v := range raw {
+			m, _ := v.(map[string]any)
+			got[str(m["id"])] = str(m["type"])
+		}
+	case []map[string]any:
+		for _, m := range raw {
+			got[str(m["id"])] = str(m["type"])
+		}
+	}
+	if got[idEphemeral] != "" {
+		t.Fatalf("易失类型不得出现在 inbox-list：%+v", got)
+	}
+	if got[idNext] != "next_turn" || got[idInsert] != "insert" {
+		t.Fatalf("持久 pending 应全部返回：%+v", got)
+	}
+
+	// 恢复后空闲会话自动消费：起新一轮并带上两条用户输入（LLM 回显最后一条；两条均已消费）。
+	rec.wait(t, "session-turn-start", func(m map[string]any) bool {
+		return str(m["session"]) == sess
+	}, 8*time.Second)
+	rec.wait(t, "session-receive", textContains("【RESTORE】插话"), 8*time.Second)
+	rec.wait(t, "session-complete", func(m map[string]any) bool {
+		return str(m["session"]) == sess
+	}, 8*time.Second)
+	if pending := s.mustPending(sess); len(pending) != 0 {
+		t.Fatalf("恢复的 durable pending 应已全部消费，仍有 %+v", pending)
+	}
+
+	// 易失行未被消费 / 改写（只忽略，不复活）。
+	var eph data.Record
+	for _, db := range allDialogDBs(t) {
+		var row data.Record
+		if ok, _ := db.Table("inbox_items").Get(idEphemeral, &row); ok {
+			eph = row
+			break
+		}
+	}
+	if persist.Sval(eph["status"]) != "pending" {
+		t.Fatalf("易失行不应被消费（status=%q）", persist.Sval(eph["status"]))
+	}
+	if s.inboxHasPending(sess) {
+		t.Fatalf("恢复的 durable pending 应已消费完")
+	}
+}
+
+// TestClearEphemeralLanesOnStartup：启动清空只作用于易失 lane（通知挂账 / 进程内去重），
+// 不得清空用户持久 lane 的内存索引。
+func TestClearEphemeralLanesOnStartup(t *testing.T) {
+	llm, _ := newInboxLLM(t)
+	s := newTestServer(t, llm)
+
+	const sess = "s-ins-clear"
+	s.inboxRemember(facade.InboxItem{ID: "i-clear", SessionID: sess, Type: "next_turn", Status: "pending"})
+
+	s.notifyMu.Lock()
+	s.notifyQueues["k"] = []completionNotice{{taskID: "tk"}}
+	s.notifyHandled["h"] = true
+	s.notifyConsumed["c"] = true
+	s.notifyOrigin["o"] = true
+	s.notifyTurns["t"] = "turn-x"
+	s.notifyProcessing["p"] = true
+	s.notifyMu.Unlock()
+
+	s.clearEphemeralLanes()
+
+	s.notifyMu.Lock()
+	empty := len(s.notifyQueues) == 0 && len(s.notifyHandled) == 0 && len(s.notifyConsumed) == 0 &&
+		len(s.notifyOrigin) == 0 && len(s.notifyTurns) == 0 && len(s.notifyProcessing) == 0
+	s.notifyMu.Unlock()
+	if !empty {
+		t.Fatal("易失 lane 的内存状态应在启动时清空")
+	}
+	if !s.inboxHasPending(sess) {
+		t.Fatal("持久 lane（用户 pending）不得被启动清空")
 	}
 }

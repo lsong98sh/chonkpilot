@@ -43,7 +43,7 @@ PERSIST_KEY = "e2e.persist"
 
 def _canon(tool):
     t = tool or ""
-    return t[5:] if t.startswith("self_") else t
+    return t
 
 
 def _tools(env):

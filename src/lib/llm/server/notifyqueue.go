@@ -6,6 +6,13 @@
 //	③ text-notify 续轮：idle 落库后起一个内部通知轮（llm-start + llm-send{type:text-notify}）；
 //	④ 结果已被结果读取（task_status）取走 → 不发通知；通知轮内派生的任务完成 → 只落库/广播，不再级联。
 //
+// 生命周期（2026-11-16 inbox 架构整理）：本节整条链路属于**易失 lane**（`sessioninbox.TypeNotify`）：
+//   - 挂账队列 `notifyQueues` 只在内存 → 启动时 `clearEphemeralLanes` 清空，**不回放**；
+//   - 「先落事实，再作为 notify lane」：冲刷路径先 `persistNotice`（落 role=user/kind=notify 消息）
+//     再广播 `tool-notify` / 起通知轮；落库失败也不回滚任务终态事实（tasktree 已由任务层写入）；
+//   - **迟到的完成回报不复活原 turn**：通知只落消息行 + 起**新**通知轮（`startNotifyTurn`），
+//     绝不重启 / 续跑任务归属的原 turn。
+//
 // 状态与锁：
 //   - 全部字段由 `notifyMu` 保护；需要在锁内读运行轮时按固定锁序 notifyMu → s.mu；
 //   - 落库/广播/起轮一律在锁外执行（总线 Emit 同步派发，持锁 Emit 会自锁）。
@@ -68,6 +75,27 @@ func (s *Server) ensureNotifyMapsLocked() {
 	if s.notifyProcessing == nil {
 		s.notifyProcessing = make(map[string]bool)
 	}
+}
+
+// clearEphemeralLanes 在进程启动时清空**易失 lane** 的内存状态（2026-11-16 inbox 架构整理）：
+//
+//   - notifyQueues：后台任务完成通知的挂账队列 → 丢弃、不回放（任务终态事实已在 tasktree 里，
+//     消息也已由 tool 行承载；挂账通知本身已过期）；
+//   - notifyHandled / notifyConsumed / notifyOrigin / notifyTurns / notifyProcessing：
+//     进程内去重 / 归属 / 串联状态，重启后必须从零建立（consumed 的可靠兜底是 message 表）。
+//
+// 持久 lane（用户 `inbox_items` 的 next_turn / insert）**不受影响**：那部分按 pending 恢复。
+// 其余易失项（tool_result / control / runtime）只存在于引擎内存 / 轮次状态里，本就没有可清空
+// 的持久行。
+func (s *Server) clearEphemeralLanes() {
+	s.notifyMu.Lock()
+	s.notifyQueues = make(map[string][]completionNotice)
+	s.notifyHandled = make(map[string]bool)
+	s.notifyConsumed = make(map[string]bool)
+	s.notifyOrigin = make(map[string]bool)
+	s.notifyTurns = make(map[string]string)
+	s.notifyProcessing = make(map[string]bool)
+	s.notifyMu.Unlock()
 }
 
 // enqueueCompletionNotice 受理一条完成通知：重复 message_id 幂等丢弃；会话忙碌时入队，

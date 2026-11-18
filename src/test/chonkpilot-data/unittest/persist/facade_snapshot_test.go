@@ -45,7 +45,7 @@ func seedSnapshot(turn string) data.Snapshot {
 				}(),
 			}},
 			{Role: "tool", ToolCallID: "c1", Content: "package main",
-				Meta: map[string]any{"category": "fs", "async": "never"}},
+				Meta: map[string]any{"category": "fs", "async": "sync"}},
 		},
 	}
 }

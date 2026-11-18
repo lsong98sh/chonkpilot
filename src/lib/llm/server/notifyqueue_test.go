@@ -202,6 +202,44 @@ func TestNotifyCompletionBusyFlushesAtTurnEnd(t *testing.T) {
 	}
 }
 
+// TestNotifyLateCompletionDoesNotReviveOriginalTurn：任务归属 turn 早已结束（无运行轮）时到达的
+// 完成回报 → 只落事实（role=user/kind=notify 消息）+ 起**新**通知轮；绝不重启 / 续跑原 turn。
+func TestNotifyLateCompletionDoesNotReviveOriginalTurn(t *testing.T) {
+	llm := mockLLMServer()
+	defer llm.Close()
+	s := newTestServer(t, llm)
+	registerTestInstance(t, s)
+
+	const sess, origTurn = "s-nc-late", "t-nc-late"
+	store := newSessionStore(s.bus, "ins-test")
+	if err := store.EnsureSession(sess); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+	if err := store.EnsureTurn(origTurn, sess); err != nil {
+		t.Fatalf("EnsureTurn: %v", err)
+	}
+	node := newNotifyNode(t, s, sess, origTurn, "script_run", "tc-nc-late")
+	mid := "msg-notify-" + node.TaskID
+
+	notify := newToolNotifyRec(t, s.bus)
+	rec := newInboxRec(t, s.bus)
+
+	s.notifyTaskCompletion(node, sess, origTurn, "ins-test", "script_run", node.TaskID, "done")
+
+	notify.waitID(t, mid)
+	row := waitMsgRow(t, mid)
+	if str(row["turn_id"]) != origTurn {
+		t.Fatalf("通知事实应落在任务归属 turn（只落消息、不续跑）：%+v", row)
+	}
+	// 新通知轮（turn != 原 turn）→ 有 turn-start；原 turn 不得被重新拉起。
+	rec.wait(t, "session-turn-start", func(m map[string]any) bool {
+		return str(m["session"]) == sess && str(m["turn"]) != origTurn
+	}, 5*time.Second)
+	if n := rec.count("session-turn-start", byTurn(origTurn)); n != 0 {
+		t.Fatalf("迟到完成回报不得复活原 turn（turn-start=%d）", n)
+	}
+}
+
 // TestNotifyCompletionSkippedWhenResultConsumed：结果已被读取（task_status → task.result）→ 不再发通知。
 func TestNotifyCompletionSkippedWhenResultConsumed(t *testing.T) {
 	llm := mockLLMServer()
@@ -213,7 +251,7 @@ func TestNotifyCompletionSkippedWhenResultConsumed(t *testing.T) {
 	node := newNotifyNode(t, s, sess, turn, "script_run", "tc-nc-used")
 	s.tasks.done(node.TaskID, TaskStateDone, "result-body", "")
 	// 模拟结果被取走（生产路径：task_status → plugin/v1/task.result → taskResultDetail 登记 consumed）。
-	if text, state, found := s.taskResult(nil, node.TaskID); !found || state != "done" || text != "result-body" {
+	if text, state, found := s.taskResult(&turnCtx{req: StartReq{InstanceID: "ins-test", Session: sess}}, node.TaskID); !found || state != "done" || text != "result-body" {
 		t.Fatalf("taskResult: text=%q state=%q found=%v", text, state, found)
 	}
 

@@ -209,7 +209,7 @@ func TestToolRetryLocateByFrontendPayload(t *testing.T) {
 	node := makeInterruptedNode(t, s, "s-retry1", "t-retry1", "call-r1", "core_file_read", map[string]any{"path": "a.txt"})
 
 	wt := watchTurn(t, s.bus, "t-retry1") // 先订阅，再触发重试，等续轮 complete
-	res := retryReply(t, s, map[string]any{"session_id": "s-retry1", "task_id": "call-r1"})
+	res := retryReply(t, s, map[string]any{"instance_id": "ins-test", "session_id": "s-retry1", "task_id": "call-r1"})
 	if ok, _ := res["ok"].(bool); !ok {
 		t.Fatalf("tool-retry rejected: %+v", res)
 	}

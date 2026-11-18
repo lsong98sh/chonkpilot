@@ -1,6 +1,6 @@
 // 实例隔离白盒测试（2026-09-19 第一批：缺口 3 / 缺口 5）：
-// 同进程多 instance 的任务池与轮次运行态**互不可见、互不取消**；instance 为空时保持旧语义
-// （全桶回退）；单 instance 行为与此前逐字节等价（既有测试全绿）。
+// 同进程多 instance 的任务池与轮次运行态**互不可见、互不取消**；instance 归属须精确匹配
+// （空只命中空归属，不作全桶回退）。
 package server
 
 import (
@@ -37,15 +37,15 @@ func TestTaskPoolIsolationAcrossInstances(t *testing.T) {
 		t.Fatal("两个 instance 的任务应各自建节点")
 	}
 
-	// ① 互不可见：按 tool_call_id / gw_task_id 反查只命中本 instance；instance 空 → 全桶（旧语义）
+	// ① 互不可见：按 tool_call_id / gw_task_id 反查只命中本 instance；空归属不作通配
 	if n := s.tasks.findByToolCall("ins-a", "tc-shared"); n == nil || n.TaskID != a.TaskID {
 		t.Fatalf("ins-a 反查应命中 A：%+v", n)
 	}
 	if n := s.tasks.findByToolCall("ins-b", "tc-shared"); n == nil || n.TaskID != b.TaskID {
 		t.Fatalf("ins-b 反查应命中 B：%+v", n)
 	}
-	if n := s.tasks.findByToolCall("", "tc-shared"); n == nil {
-		t.Fatal("instance 为空应回退全桶（旧语义）")
+	if n := s.tasks.findByToolCall("", "tc-shared"); n != nil {
+		t.Fatalf("instance 为空不应跨归属命中：%+v", n)
 	}
 	if n := s.tasks.nodeIn("ins-a", b.TaskID); n != nil {
 		t.Fatalf("ins-a 不应看到 ins-b 的节点：%+v", n)
@@ -84,12 +84,18 @@ func TestTaskPoolIsolationAcrossInstances(t *testing.T) {
 		t.Fatalf("ins-b 不应命中 ins-a 的 llm 节点：%+v", n)
 	}
 
-	// ④ instance 空 = 旧语义（全桶）：B 仍非终态 → 仍被取消
-	if got := s.tasks.cancelByTurn("", "t-shared"); got != 1 {
-		t.Fatalf("cancelByTurn(\"\") 旧语义应命中 B，got %d want 1", got)
+	// ④ 空归属不作通配：不命中任何 instance 节点；B 须经自己的 ins-b 取消
+	if got := s.tasks.cancelByTurn("", "t-shared"); got != 0 {
+		t.Fatalf("cancelByTurn(\"\") 不应跨归属命中，got %d want 0", got)
+	}
+	if n := s.tasks.get(b.TaskID); n == nil || n.State != TaskStateRunning {
+		t.Fatalf("B 不应被空归属取消影响：%+v", n)
+	}
+	if got := s.tasks.cancelByTurn("ins-b", "t-shared"); got != 1 {
+		t.Fatalf("cancelByTurn(ins-b) = %d, want 1", got)
 	}
 	if n := s.tasks.get(b.TaskID); n == nil || n.State != TaskStateCancelled {
-		t.Fatalf("B 应被全桶取消取消：%+v", n)
+		t.Fatalf("B 应被 ins-b 取消：%+v", n)
 	}
 }
 

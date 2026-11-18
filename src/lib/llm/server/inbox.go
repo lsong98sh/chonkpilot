@@ -8,6 +8,12 @@
 //
 // 消息面（61 冻结）：仅 `llm-inbox-add/list/discard/promote` 四条方法面；持久化经
 // `data-inbox-append/list/update` 内部面（llm-server 不直连 prjusr 库）。
+//
+// lane 分类（2026-11-16 inbox 架构整理，见 `session/inbox.LaneOfType`）：
+//   - 持久 lane：用户意图 `next_turn` / `insert` → 落 `inbox_items`；重启后按 pending 只恢复
+//     user 类型（按会话懒加载），空闲会话恢复后继续消费；
+//   - 易失 lane：`tool_result` / `notify` / `control` / `runtime` → 不落本表；事实已在 messages /
+//     turn / task 状态里（或已过期），启动清空、不回放。
 package server
 
 import (
@@ -60,7 +66,13 @@ type inboxListReq struct {
 // ── 数据面助手（data-inbox-*）────────────────────────────────────────────
 
 // inboxAppend 写入一条待处理发送，返回 id。
+//
+// 只允许持久 lane（`next_turn` / `insert`）：`inbox_items` 是用户意图队列；工具回执 / 通知 /
+// 控制 / 运行时事件属于易失 lane，不得持久化（启动不回放）。数据面也会校验，这里是服务层防线。
 func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (string, error) {
+	if !sessioninbox.IsDurableType(req.Type) {
+		return "", fmt.Errorf("inbox: type must be durable（next_turn|insert），got %q", req.Type)
+	}
 	req.InstanceID = instanceID
 	req.DialogID = s.dialogForWrite(instanceID, req.SessionID)
 	if s.cfg != nil {
@@ -97,6 +109,9 @@ func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (
 }
 
 // inboxList 读 inbox 项（status 缺省 = pending，按 created_at 升序）。
+//
+// 只返回**持久 lane**（`next_turn` / `insert`，见 session/inbox.LaneOfType）：`inbox_items`
+// 是用户意图的唯一持久队列；工具回执 / 通知 / 控制 / 运行时事件均不落本表（易失，启动清空）。
 func (s *Server) inboxList(instanceID, sessionID, status string) ([]facade.InboxItem, error) {
 	req := facade.InboxListRequest{
 		InstanceID: instanceID,
@@ -112,7 +127,7 @@ func (s *Server) inboxList(instanceID, sessionID, status string) ([]facade.Inbox
 			}
 			return nil, err
 		}
-		return res.Items, nil
+		return durableInboxItems(res.Items), nil
 	}
 	payload := map[string]any{"session": sessionID, "status": status}
 	if req.DialogID != "" {
@@ -153,7 +168,18 @@ func (s *Server) inboxList(instanceID, sessionID, status string) ([]facade.Inbox
 		}
 		items = append(items, item)
 	}
-	return items, nil
+	return durableInboxItems(items), nil
+}
+
+// durableInboxItems 只保留持久 lane 类型（未知 / 易失类型不进入用户队列视图）。
+func durableInboxItems(items []facade.InboxItem) []facade.InboxItem {
+	out := make([]facade.InboxItem, 0, len(items))
+	for _, it := range items {
+		if sessioninbox.IsDurableType(it.Type) {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // inboxUpdate 更新 inbox 项（空字段 = 不改；content 非空 = 就地覆盖正文，
@@ -218,7 +244,9 @@ func (s *Server) inboxRemember(item facade.InboxItem) {
 func (s *Server) inboxRememberLocked(item facade.InboxItem) {
 	prev, existed := s.inboxIndex[item.ID]
 	s.inboxIndex[item.ID] = item
-	if item.Status == sessioninbox.StatusPending {
+	// 只有持久 lane（next_turn / insert）进入 pending 桶：易失项（tool_result / notify /
+	// control / runtime）不参与「用户队列是否有待消费项」判定，也永不被 next_turn 消费。
+	if item.Status == sessioninbox.StatusPending && sessioninbox.IsDurableType(item.Type) {
 		bucket := s.inboxPending[item.SessionID]
 		if bucket == nil {
 			bucket = map[string]string{}
@@ -282,12 +310,48 @@ func (s *Server) inboxSetStatus(id, status string) {
 	s.inboxMu.Unlock()
 }
 
-// inboxHasPending 报告该会话是否有待消费的 inbox 项（next_turn 或 insert 意向）。
+// inboxHasPending 报告该会话是否有待消费的**持久 lane** inbox 项（next_turn 或 insert 意向）。
 // 内存索引分桶直取；避免无项时也发起数据面请求（测试/关停期间不必要地打开 prjusr 库）。
 func (s *Server) inboxHasPending(sessionID string) bool {
 	s.inboxMu.Lock()
 	defer s.inboxMu.Unlock()
 	return len(s.inboxPending[sessionID]) > 0
+}
+
+// inboxEnsureDurableLoaded 是启动后的**按会话懒恢复**：把该会话的 durable pending
+// （next_turn / insert）从 prjusr `inbox_items` 读回内存索引。每个 (instance, session) 只加载一次
+// （失败 → 撤销标记，留待下次重试）：
+//   - 只恢复用户意图（持久 lane）；工具回执 / 通知 / 控制 / 运行时事件均为易失项，**不恢复、不回放**；
+//   - 按会话懒加载，避免启动时全库扫描所有对话；
+//   - 恢复后由调用方按需触发 `consumeNextTurn`（空闲会话不得把用户消息搁死）。
+func (s *Server) inboxEnsureDurableLoaded(instanceID, sessionID string) {
+	if sessionID == "" || (s.bus == nil && s.cfg == nil) {
+		return // 无数据面（纯单测的最小 Server）→ 无可恢复来源
+	}
+	key := instKey(instanceID, sessionID)
+	s.inboxMu.Lock()
+	if s.inboxLoaded == nil {
+		s.inboxLoaded = map[string]bool{}
+	}
+	if s.inboxLoaded[key] {
+		s.inboxMu.Unlock()
+		return
+	}
+	s.inboxLoaded[key] = true // 先占位：并发调用只加载一次
+	s.inboxMu.Unlock()
+
+	items, err := s.inboxList(instanceID, sessionID, sessioninbox.StatusPending)
+	if err != nil {
+		// 读取失败（锁 / 损坏）→ 允许下次重试；本次不从内存索引误判「无 pending」。
+		s.inboxMu.Lock()
+		delete(s.inboxLoaded, key)
+		s.inboxMu.Unlock()
+		logf("[chonkpilot-server] inbox 懒恢复失败（session=%s）: %v\n", sessionID, err)
+		return
+	}
+	for _, it := range items {
+		s.inboxRemember(it) // inboxList 已过滤：这里只会是 durable 类型
+	}
 }
 
 // ── 方法面 handler ──────────────────────────────────────────────────────
@@ -369,12 +433,17 @@ func (s *Server) onInboxAdd(_ context.Context, _ string, v *mq.Value) error {
 }
 
 // onInboxList 读回 inbox 项（队列指示器 / 重启拉回）。
+//
+// 启动后首次读到某会话时**懒恢复** durable pending（next_turn / insert）；易失项（工具回执 /
+// 通知 / 控制 / 运行时事件）不落本表、不恢复。恢复后若会话空闲且仍有 pending，立即触发消费
+// （否则重启前的用户消息会永远停在队列里）。
 func (s *Server) onInboxList(_ context.Context, _ string, v *mq.Value) error {
 	var req inboxListReq
 	if err := json.Unmarshal(v.Payload, &req); err != nil {
 		v.Result = map[string]any{"ok": false, "items": []any{}}
 		return nil
 	}
+	s.inboxEnsureDurableLoaded(req.InstanceID, req.Session)
 	items, err := s.inboxList(req.InstanceID, req.Session, req.Status)
 	if err != nil {
 		logf("[chonkpilot-server] llm-inbox-list 失败（session=%s）: %v\n", req.Session, err)
@@ -404,6 +473,12 @@ func (s *Server) onInboxList(_ context.Context, _ string, v *mq.Value) error {
 		out = append(out, m)
 	}
 	v.Result = map[string]any{"ok": true, "items": out}
+	// 恢复 / 打开会话后，空闲会话继续消费 durable pending（运行中的轮次由轮末消费接手；
+	// 子会话 / 群聊由各自调度器驱动，consumeNextTurnPass 内部会按 kind 跳过）。
+	if (req.Status == "" || req.Status == sessioninbox.StatusPending) &&
+		s.inboxHasPending(req.Session) && !s.sessionBusy(req.InstanceID, req.Session) {
+		go s.consumeNextTurn(req.InstanceID, req.Session)
+	}
 	return nil
 }
 
@@ -655,6 +730,9 @@ func (s *Server) consumeNextTurnPass(instanceID, sessionID string) (again bool) 
 		s.inboxMu.Unlock()
 		again = progress && s.inboxHasPending(sessionID) && !s.sessionBusy(instanceID, sessionID)
 	}()
+	// 重启后内存索引为空：先做一次按会话懒恢复（只装载 durable pending），再判是否有待消费项。
+	// 否则 `inboxHasPending` 会把「库里有用户消息」误判为「无 pending」而搁死。
+	s.inboxEnsureDurableLoaded(instanceID, sessionID)
 	// 无待消费项（内存索引）→ 不发起数据面请求（避免无谓打开 prjusr 库 / 关停期噪音）。
 	if !s.inboxHasPending(sessionID) {
 		return false

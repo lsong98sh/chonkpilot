@@ -57,8 +57,6 @@ type McpServer struct {
 	Timeout int `json:"timeout,omitempty"`
 	// Isolate 按 (实例, workdir) 隔离连接（三态：nil = 未设置 → gateway 按 transport 推断）。
 	Isolate *bool `json:"isolate,omitempty"`
-	// Sandbox agentbox 沙箱开关（三态：nil/未设置 = 不隔离；仅 stdio 的 spawn 生效）。
-	Sandbox *bool `json:"sandbox,omitempty"`
 	// Extra 文件里本 DTO 未声明的其余字段（**只写不读**）：Save 时并入落盘 JSON 的顶层，
 	// 使外部定义 round-trip 不丢字段；未知字段与已知字段同名 → 已知字段优先、未知侧丢弃。
 	// JSON 序列化不出现（`json:"-"`）→ Get/List/refresh 载荷形状与改前逐字节一致。

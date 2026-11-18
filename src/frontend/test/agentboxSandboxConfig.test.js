@@ -4,7 +4,7 @@
  * 覆盖三条硬要求（2026-11-14 起沙箱开关来源收敛到「设置 → 工具沙箱」页 usr `tool_sandbox`）：
  *   ① MCP 编辑弹窗**不再提供沙箱 Switch**、保存也不再写 usr `mcps[].sandbox`（旧字段仅由
  *      gateway 读取时迁移）；原位只留「请到工具沙箱页按服务器名配置」提示；
- *   ② 页签「工具沙箱配置」→ 按 **executor 类别**（core/desktop/browser）写 usr `tool_sandbox`
+ *   ② 页签「工具沙箱配置」→ 按执行体（executor exe 基名 / MCP 条目名）写 usr `tool_sandbox`
  *      （未设 = 不隔离）；拨动只改本地待保存态，点【保存】才落库，无改动时保存按钮禁用；
  *   ③ 对话框仅保留「按实例隔离」（isolate）三态开关；http/sse 的 stdio-only 判定已随沙箱开关移除。
  *
@@ -80,8 +80,7 @@ test('新页签：useToolSandbox composable 按「被 spawn 的执行体」写 u
   assert.match(js, /const dirty = computed\(/, '须派生「未保存改动」')
   assert.match(js, /if \(!dirty\.value\) return false/, '无改动须短路（不落库）')
   assert.match(js, /resetUserKey\(TOOL_SANDBOX_KEY\)/, '全部未设置须删整键')
-  // 旧形状读取时迁移（core → tools exe）
-  assert.match(js, /parseToolSandboxMap/, '须经 parseToolSandboxMap 解析（含旧形状迁移）')
+  assert.match(js, /parseToolSandboxMap/, '须经 parseToolSandboxMap 解析')
 })
 
 test('新页签：页面用 composable + Switch，手动保存按钮，且不出现 watch（项目规范）', () => {

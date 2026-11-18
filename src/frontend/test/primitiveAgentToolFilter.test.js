@@ -67,9 +67,9 @@ test('无工具智能体：勾选开关保持开（状态机纯逻辑，回弹�
   assert.equal(agent.tools.length > 0, false, '旧派生口径 = false（回弹）——新本地态口径 = true（保持）')
 
   // 勾选首个工具（AgentEditor.toggleTool → updateField('tools', [...])）→ 候选保留、开关仍开
-  agent = { ...agent, tools: [...agent.tools, 'self_file_read'] }
+  agent = { ...agent, tools: [...agent.tools, 'file_read'] }
   agentFilterTools = !!agent.filterTools
-  assert.deepEqual(agent.tools, ['self_file_read'])
+  assert.deepEqual(agent.tools, ['file_read'])
   assert.equal(agentFilterTools, true)
   // 保存后重载：tools 非空 → 载入回填为开（行为与现状一致）
   assert.equal(filterToolsLoadPatch({ tools: agent.tools }).filterTools, true)

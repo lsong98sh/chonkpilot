@@ -3,8 +3,8 @@
  *
  * 覆盖：
  *   ① 既有 4 态（running/error/done/stopped）图标/配色/动画逐值不变；
- *   ② detached / awaiting 由层权威 `state` 细化（list 载荷 `status` 已塌缩为 running）；
- *   ③ 8 态均有图标且 tooltip i18n key 在 zh-CN / en-US 双语均存在且非空；
+ *   ② detached 由层权威 `state` 细化（list 载荷 `status` 已塌缩为 running）；
+ *   ③ 7 态均有图标且 tooltip i18n key 在 zh-CN / en-US 双语均存在且非空；
  *   ④ 未知 / 空闲态不渲染图标；
  *   ⑤ 非 running 的 status 不被陈旧 state 覆盖（避免事件增量合并误判）。
  *
@@ -26,8 +26,8 @@ function loadLocale(locale) {
 const zh = loadLocale('zh-CN')
 const en = loadLocale('en-US')
 
-// 后端（chonkpilot-task/task.go）认可的 8 态
-const ALL_STATES = ['pending', 'running', 'awaiting', 'detached', 'done', 'error', 'cancelled', 'interrupted']
+// 后端（chonkpilot-task/task.go）认可的 7 态
+const ALL_STATES = ['pending', 'running', 'detached', 'done', 'error', 'cancelled', 'interrupted']
 
 test('既有 4 态：图标 / 配色 / 动画逐值不变', () => {
   assert.deepEqual(
@@ -48,26 +48,19 @@ test('既有 4 态：图标 / 配色 / 动画逐值不变', () => {
   )
 })
 
-test('detached / awaiting：status 塌缩为 running 时回读层权威 state', () => {
-  // list 载荷形态：status=frontVisibleStatus(state)（detached/awaiting → running），state=细态
+test('detached：status 塌缩为 running 时回读层权威 state', () => {
+  // list 载荷形态：status=frontVisibleStatus(state)（detached → running），state=细态
   assert.equal(resolveTaskState({ status: 'running', state: 'detached' }), 'detached')
-  assert.equal(resolveTaskState({ status: 'running', state: 'awaiting' }), 'awaiting')
 
   const detached = stateMetaFor(resolveTaskState({ status: 'running', state: 'detached' }))
   assert.equal(detached.icon, 'arrow-right')
   assert.equal(detached.pulse, false)
 
-  const awaiting = stateMetaFor(resolveTaskState({ status: 'running', state: 'awaiting' }))
-  assert.equal(awaiting.icon, 'warning-filled')
-  assert.equal(awaiting.color, 'var(--warning)')
-  assert.equal(awaiting.pulse, true, 'awaiting 应有脉冲提示')
-
   // 事件增量节点形态：status 直接是细态
   assert.equal(resolveTaskState({ status: 'detached' }), 'detached')
-  assert.equal(resolveTaskState({ status: 'awaiting' }), 'awaiting')
 })
 
-test('8 态均有图标，且 tooltip 文案 zh-CN / en-US 双语存在且非空', () => {
+test('7 态均有图标，且 tooltip 文案 zh-CN / en-US 双语存在且非空', () => {
   for (const state of ALL_STATES) {
     const meta = stateMetaFor(state)
     assert.ok(meta.icon, `${state} 应有图标`)
@@ -94,7 +87,7 @@ test('未知 / 空闲态不渲染图标', () => {
 test('非 running 的 status 不被陈旧 state 覆盖', () => {
   // 事件合并可能留下旧的 state，但 status 已是终态 → 以 status 为准
   assert.equal(resolveTaskState({ status: 'done', state: 'detached' }), 'done')
-  assert.equal(resolveTaskState({ status: 'cancelled', state: 'awaiting' }), 'cancelled')
-  assert.equal(resolveTaskState({ status: 'interrupted', state: 'awaiting' }), 'interrupted')
+  assert.equal(resolveTaskState({ status: 'cancelled', state: 'detached' }), 'cancelled')
+  assert.equal(resolveTaskState({ status: 'interrupted', state: 'detached' }), 'interrupted')
   assert.equal(resolveTaskState({ status: 'pending', state: 'running' }), 'pending')
 })

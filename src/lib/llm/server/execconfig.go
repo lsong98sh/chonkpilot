@@ -134,8 +134,7 @@ var prjExecConfigKeys = map[string]bool{
 // 对象字符串（persist 自由键通道，与 recent_dirs 同形态），形状 =
 // `{"<工具暴露名>": {"mode": "sync|async|auto|manual", "threshold": 30, "hard_timeout": 300,
 // "touch_files": true}}`。
-// key = tools/list 暴露名（P0a 2026-10-29 起内置 self 节点 = 契约名，历史 `self_<契约名>` 键仍兼容；
-// 第三方 = <节点名>_<原名>，天然消歧）；
+// key = tools/list 暴露名（内置 self 节点 = 契约名；第三方 = <节点名>_<原名>，天然消歧）；
 // threshold（秒，可选，**仅 auto/manual**：到点自动转后台 / 交用户裁决；sync/async 不写）、
 // hard_timeout（秒，可选，执行硬上限；**仅 >0 写库/生效**，<=0 = 不处理）、
 // touch_files（bool，可选，是否涉及文件变动；与契约缺省一致时不写）。
@@ -198,8 +197,8 @@ func toGatewayAsyncOverrides(in map[string]mcpms.ToolAsyncOverride) map[string]m
 //   - executors：内置 executor，key = executor exe 基名（chonkpilot-{core,desktop,browser,dsl}-executor.exe）；
 //   - mcps：外部 MCP，key = MCP 条目名（gateway stdio spawn 时按 name 查）。
 //
-// **未配置 / false = 不启用隔离（默认兼容）**。**旧形状（按 executor 类别 core/desktop/browser、
-// 及 usr `mcps[].sandbox`）读取时迁移**（见 mcpms.ParseToolSandbox / gateway mergeLegacySandboxMCP）。
+// **未配置 / false = 不启用隔离**。旧 usr `mcps[].sandbox` 载体已删除（不再读取/迁移）；
+// 沙箱开关唯一来源 = 本表。
 // 消费链：loadExecConfig/reloadToolAsyncOverrides → gateway SetSandboxOverrides → mcp-server
 // Config.SetToolSandbox → gateway stdio spawn / mcp-server callTool 按单位键查开关。
 // 2026-10-21：应用层路径校验已废弃，沙箱改由 gateway 在 spawn 时以进程级 Low IL 施加；
@@ -209,7 +208,7 @@ const toolSandboxUserConfigKey = "tool_sandbox"
 // applyToolSandbox 解析 usr `tool_sandbox` 并写入执行配置（SetToolSandbox；gateway 在场时
 // 另同步其外部 MCP 侧开关，见函数体 L5 说明）。
 // raw 为空/键缺失 → 清空全部开关（= 全部执行体不隔离，保守默认）；非法 JSON → 忽略并记日志、
-// 保留现值；**旧形状 → 读取时迁移为新形状**（ParseToolSandbox）。
+// 保留现值；只接受新形状（ParseToolSandbox；旧形状明确报错）。
 // 开关表变化无需重注册工具（开关在每次 tools/call 的 spawn 时读取，秒级生效）。
 func (s *Server) applyToolSandbox(raw string) {
 	if s.mcpCfg == nil {
@@ -262,7 +261,7 @@ func (s *Server) securityRules(instanceID string) ([]mcpgateway.SandboxRule, boo
 			logf("[chonkpilot-server] securityRules: 条目 %s 解析失败（跳过）: %q\n", k, raw)
 			continue
 		}
-		r.Writable = true // C1：白名单即"可写"，旧值 writable 一律忽略
+		// C1：security-* 是只写白名单，列出的目录即可写；旧 `writable` 字段忽略。
 		rules = append(rules, r)
 	}
 	return rules, true
@@ -283,42 +282,38 @@ func (s *Server) securityRules(instanceID string) ([]mcpgateway.SandboxRule, boo
 func (s *Server) gatewaySandboxRules() []mcpgateway.SandboxRule {
 	seen := map[string]bool{}
 	var out []mcpgateway.SandboxRule
-	add := func(dir string, writable bool) {
+	add := func(dir string) {
 		d := strings.TrimSpace(dir)
-		if d == "" {
+		if d == "" || seen[d] {
 			return
 		}
-		key := d + "\x00" + strconv.FormatBool(writable)
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		out = append(out, mcpgateway.SandboxRule{Dir: d, Writable: writable})
+		seen[d] = true
+		out = append(out, mcpgateway.SandboxRule{Dir: d})
 	}
 	for _, info := range s.im.List() {
 		rules, ok := s.securityRules(info.ID)
 		if ok {
 			for _, r := range rules {
-				add(r.Dir, r.Writable)
+				add(r.Dir)
 			}
 		}
 		// G-75 默认项：项目自身路径默认可写。
 		if wd := strings.TrimSpace(info.WorkDir); wd != "" {
-			add(wd, true)
+			add(wd)
 			dd := strings.TrimSpace(info.DataDir)
 			if dd == "" {
 				dd = filepath.Join(wd, lockfile.ProjectDataDirName)
 			}
-			add(dd, true)
+			add(dd)
 			if pr, err := data.PrjUsrDir(wd, strings.TrimSpace(info.DataDir)); err == nil {
-				add(pr, true)
+				add(pr)
 			} else {
 				logf("[chonkpilot-server] gatewaySandboxRules: prjusr 数据根解析失败（跳过该默认项）: instance=%s workdir=%s err=%v\n", info.ID, wd, err)
 			}
 		}
 	}
 	// G-75 默认项：系统 temp（%TEMP%/%TMP%），进程级只加一次。
-	add(os.TempDir(), true)
+	add(os.TempDir())
 	return out
 }
 

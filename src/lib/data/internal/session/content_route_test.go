@@ -23,7 +23,7 @@ func TestTurnRoutingInDialog(t *testing.T) {
 		t.Fatalf("TurnSetSummary: %v", err)
 	}
 	if _, err := svc.TurnComplete(facade.TurnCompleteRequest{
-		InstanceID: instID, DialogID: dlgID, TurnID: "t2", Status: "done", FinishReason: "stop",
+		InstanceID: instID, DialogID: dlgID, TurnID: "t2", Status: "complete", FinishReason: "stop",
 	}); err != nil {
 		t.Fatalf("TurnComplete: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestTurnRoutingInDialog(t *testing.T) {
 	if ok, _ := sdb.Table("turns").Get("t2", &rec); !ok {
 		t.Fatal("对话库缺 turn 行")
 	}
-	if rec["status"] != "done" || rec["summary"] != "摘要" || rec["finish_reason"] != "stop" {
+	if rec["status"] != "complete" || rec["summary"] != "摘要" || rec["finish_reason"] != "stop" {
 		t.Fatalf("turn 字段不符: %+v", rec)
 	}
 	prj, _ := data.PrjUsr(instID)

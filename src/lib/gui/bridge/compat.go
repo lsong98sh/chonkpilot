@@ -4,8 +4,9 @@ package bridge
 //
 // server 保持定稿协议（llm-receive / llm-complete / tasks.*，见 61-消息一览 §4.3），
 // 不在 server 侧为旧事件名加发。gui 桥在把 server 事件转发给前端（新协议名原样）的同时，
-// 兼发旧 IDE 事件名（llm-started/llm-token/llm-tool-call/complete/llm-error/task-started/task-ended/
+// 兼发旧 IDE 事件名（llm-started/llm-tool-call/complete/llm-error/task-started/task-ended/
 // tool-pair/tool-result），供旧回归脚本（run_llm.py 等，基于 testplan 旧协议）与旧订阅方使用。
+// 文本增量不再兼发 llm-token：唯一权威路径 = llm-receive{type:text,payload.text}（2026-11-16）。
 //
 // llm-started 语义（I-33）：由 server-starting（插件全部加载完成 = 服务就绪）兼发，作**服务就绪 ack**。
 // 旧 llm-start.reply 无发布方（llm-start 走 promise result，无 -reply 广播），该死分支已删除；
@@ -43,14 +44,8 @@ func (b *Bridge) compatEmit(typ string, raw []byte) {
 			"session_id": sid, "turn_id": tid, "sub": false, "notify": false,
 		}))
 	case "llm-receive":
-		// 流内容单主题 → 旧协议拆分流事件（llm-token / llm-tool-call）
+		// 流内容单主题 → 旧协议工具事件（llm-tool-call）；文本/推理不再兼发。
 		switch sval(m["type"]) {
-		case "text":
-			p := payloadMap(m)
-			emit("llm-token", mustJSON(map[string]any{
-				"session_id": sid, "turn_id": tid, "type": "text",
-				"content": sval(p["text"]),
-			}))
 		case "tool-call":
 			p := payloadMap(m)
 			emit("llm-tool-call", mustJSON(map[string]any{

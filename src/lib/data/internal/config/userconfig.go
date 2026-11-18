@@ -91,8 +91,8 @@ var userConfigFreeKeys = map[string]bool{
 	// llm server applyToolSandbox → gateway SetSandboxOverrides → mcp-server Config.SetToolSandbox
 	// → callTool 按**解析后的 runtime exe 基名**查开关 / gateway stdio spawn 按 MCP 名查开关
 	// → 开启时注入 CHONKPILOT_SANDBOX（允许目录 = prj `security-*`）；**保存即生效**（既有
-	// data-user-config-refresh 订阅，零新增主题）。**未配置 = 不隔离**（默认兼容）。**旧形状
-	// （按 executor 类别 core/desktop/browser）与 usr `mcps[].sandbox` 读取时迁移**为新形状。
+	// data-user-config-refresh 订阅，零新增主题）。**未配置 = 不隔离**（默认兼容）。
+	// 只接受 `{executors,mcps}`；旧类别形状与 usr `mcps[].sandbox` 已移除（明确拒绝/不读取）。
 	// 「恢复未设置」= 删该执行体键项（整表覆盖写 / 末项删整键）。
 	"tool_sandbox": true,
 	// 注（OP-04，2026-10-06）：原 `memory_prompts`（用户级记忆类别沉淀提示词）自由键**已移除**

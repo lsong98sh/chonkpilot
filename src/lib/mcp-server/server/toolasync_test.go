@@ -31,15 +31,15 @@ func toolDocForTest(name, async string, asyncTh, timeout int) *ToolDoc {
 func TestToolAsyncOverrideMeta(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.SetToolAsync(map[string]ToolAsyncOverride{
-		"self_core_file_read": {Mode: "always", Threshold: 5},
+		"core_file_read": {Mode: "async", Threshold: 5},
 	})
 
 	tool, err := buildTool(toolDocForTest("core_file_read", "auto", 30, 60), cfg)
 	if err != nil {
 		t.Fatalf("buildTool: %v", err)
 	}
-	if got := tool.Meta["async"]; got != "always" {
-		t.Fatalf("_meta.async = %v，期望 always（键 = 暴露名 self_core_file_read）", got)
+	if got := tool.Meta["async"]; got != "async" {
+		t.Fatalf("_meta.async = %v，期望 async（键 = 暴露名 core_file_read）", got)
 	}
 	if got := tool.Meta["async-threshold"]; got != 5 {
 		t.Fatalf("_meta.async-threshold = %v，期望 5（覆盖契约 30）", got)
@@ -121,11 +121,11 @@ func TestToolAsyncOverrideModeMatrix(t *testing.T) {
 		// 契约 manual（script_run）+ 覆盖 auto → 须显式写 auto 才能压回自动档
 		{"manual 覆盖 auto：显式透出", "manual", "auto", true, "auto"},
 		// 四档直接覆盖
-		{"auto 覆盖 always", "auto", "always", true, "always"},
-		{"auto 覆盖 never", "auto", "never", true, "never"},
+		{"auto 覆盖 async", "auto", "async", true, "async"},
+		{"auto 覆盖 sync", "auto", "sync", true, "sync"},
 		{"auto 覆盖 manual", "auto", "manual", true, "manual"},
-		// 仅异步：契约 never 覆盖 always
-		{"never 覆盖 always", "never", "always", true, "always"},
+		// 仅异步：契约 sync 覆盖 async
+		{"sync 覆盖 async", "sync", "async", true, "async"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -155,9 +155,9 @@ func TestToolAsyncOverrideModeMatrix(t *testing.T) {
 func TestToolAsyncUnconfiguredKeepsContract(t *testing.T) {
 	for _, keys := range []map[string]ToolAsyncOverride{
 		nil,
-		{"self_no_such_tool": {Mode: "always", Threshold: 1}},   // 孤儿键（配置引用的工具不存在）
-		{"slow3p_fast_echo": {Mode: "always"}},                  // 第三方暴露名 → 内嵌 mcp-server 无此工具
-		{"self_core_file_find": {Mode: "always", Threshold: 1}}, // 其它工具的键
+		{"no_such_tool": {Mode: "async", Threshold: 1}},   // 孤儿键（配置引用的工具不存在）
+		{"slow3p_fast_echo": {Mode: "async"}},             // 第三方暴露名 → 内嵌 mcp-server 无此工具
+		{"core_file_find": {Mode: "async", Threshold: 1}}, // 其它工具的键
 	} {
 		cfg := DefaultConfig()
 		if keys != nil {
@@ -182,7 +182,7 @@ func TestToolAsyncInvalidValuesIgnored(t *testing.T) {
 	cfg := DefaultConfig()
 	// 仅非法 mode（无数值）→ 归一为无覆盖（表未变化）
 	if cfg.SetToolAsync(map[string]ToolAsyncOverride{
-		"self_core_file_read": {Mode: "sometimes"},
+		"core_file_read": {Mode: "sometimes"},
 	}) {
 		t.Fatal("仅非法 mode 应归一为无覆盖（表未变化）")
 	}
@@ -193,14 +193,14 @@ func TestToolAsyncInvalidValuesIgnored(t *testing.T) {
 	// 非法 mode 与合法 threshold 混用 → 只丢 mode
 	cfg2 := DefaultConfig()
 	cfg2.SetToolAsync(map[string]ToolAsyncOverride{
-		"self_core_file_read": {Mode: "  Async ", Threshold: 7, HardTimeout: 0},
+		"core_file_read": {Mode: "  Async ", Threshold: 7, HardTimeout: 0},
 	})
-	if ov := cfg2.ToolAsync["self_core_file_read"]; ov.Mode != "async" || ov.Threshold != 7 {
+	if ov := cfg2.ToolAsync["core_file_read"]; ov.Mode != "async" || ov.Threshold != 7 {
 		t.Fatalf("mode 应去空白并小写、threshold 保留：%+v", ov)
 	}
 	cfg3 := DefaultConfig()
-	cfg3.SetToolAsync(map[string]ToolAsyncOverride{"self_core_file_read": {Mode: "bogus", Threshold: 7}})
-	if ov := cfg3.ToolAsync["self_core_file_read"]; ov.Mode != "" || ov.Threshold != 7 {
+	cfg3.SetToolAsync(map[string]ToolAsyncOverride{"core_file_read": {Mode: "bogus", Threshold: 7}})
+	if ov := cfg3.ToolAsync["core_file_read"]; ov.Mode != "" || ov.Threshold != 7 {
 		t.Fatalf("非法 mode 应丢字段且不影响 threshold：%+v", ov)
 	}
 	tool, err := buildTool(toolDocForTest("core_file_read", "auto", 30, 60), cfg3)
@@ -214,17 +214,17 @@ func TestToolAsyncInvalidValuesIgnored(t *testing.T) {
 	// threshold=-1（不设点）**保留**；hard_timeout=-1（<=0 = 不处理）→ 等同未设置（丢弃 Set）。
 	cfg5 := DefaultConfig()
 	if !cfg5.SetToolAsync(map[string]ToolAsyncOverride{
-		"self_core_file_read": {Mode: "sometimes", Threshold: -1, HardTimeout: -1},
+		"core_file_read": {Mode: "sometimes", Threshold: -1, HardTimeout: -1},
 	}) {
 		t.Fatal("非法 mode + 显式 threshold=-1 应保留数值字段（有效覆盖）")
 	}
-	if ov := cfg5.ToolAsync["self_core_file_read"]; ov.Mode != "" || !ov.ThresholdSet || ov.Threshold != -1 || ov.HardTimeoutSet {
+	if ov := cfg5.ToolAsync["core_file_read"]; ov.Mode != "" || !ov.ThresholdSet || ov.Threshold != -1 || ov.HardTimeoutSet {
 		t.Fatalf("threshold=-1 应保留（不设点）；hard_timeout<=0 应等同未设置：%+v", ov)
 	}
 
 	// 空表 = 清空全部覆盖（前端「恢复默认」= 删该工具键项）
 	cfg4 := DefaultConfig()
-	cfg4.SetToolAsync(map[string]ToolAsyncOverride{"self_core_file_read": {Mode: "always"}})
+	cfg4.SetToolAsync(map[string]ToolAsyncOverride{"core_file_read": {Mode: "async"}})
 	if !cfg4.SetToolAsync(nil) {
 		t.Fatal("清空覆盖应报告变化")
 	}
@@ -236,7 +236,7 @@ func TestToolAsyncInvalidValuesIgnored(t *testing.T) {
 // TestToolAsyncOverrideJSONSetFlags：JSON 解析区分「未设置（null/空/非数字）」与「显式 0/-1」。
 func TestToolAsyncOverrideJSONSetFlags(t *testing.T) {
 	var m map[string]ToolAsyncOverride
-	raw := `{"a":{"mode":"never","hard_timeout":0,"threshold":null},
+	raw := `{"a":{"mode":"sync","hard_timeout":0,"threshold":null},
 	         "b":{"mode":"manual","hard_timeout":-1,"threshold":""},
 	         "c":{"mode":"auto","hard_timeout":"30","threshold":"x"}}`
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
@@ -258,7 +258,7 @@ func TestToolAsyncOverrideJSONSetFlags(t *testing.T) {
 func TestToolAsyncOverrideTouchFiles(t *testing.T) {
 	var m map[string]ToolAsyncOverride
 	raw := `{"a":{"touch_files":false},"b":{"touch_files":true},"c":{"touch_files":"false"},
-	         "d":{"touch_files":null},"e":{"mode":"never"}}`
+	         "d":{"touch_files":null},"e":{"mode":"sync"}}`
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -279,18 +279,18 @@ func TestToolAsyncOverrideTouchFiles(t *testing.T) {
 	}
 
 	norm := NormalizeToolAsync(map[string]ToolAsyncOverride{
-		"self_file_read":   {TouchFilesSet: true, TouchFiles: false},
-		"self_filesys_run": {TouchFilesSet: true, TouchFiles: true},
-		"":                 {TouchFilesSet: true},
+		"file_read":   {TouchFilesSet: true, TouchFiles: false},
+		"filesys_run": {TouchFilesSet: true, TouchFiles: true},
+		"":            {TouchFilesSet: true},
 	})
 	if len(norm) != 2 {
 		t.Fatalf("归一后应保留 2 项（空键丢弃）：%v", norm)
 	}
-	if ov, ok := norm["self_file_read"]; !ok || !ov.TouchFilesSet || ov.TouchFiles {
-		t.Fatalf("self_file_read 应保留 touch_files=false：%+v", norm)
+	if ov, ok := norm["file_read"]; !ok || !ov.TouchFilesSet || ov.TouchFiles {
+		t.Fatalf("file_read 应保留 touch_files=false：%+v", norm)
 	}
-	if ov, ok := norm["self_filesys_run"]; !ok || !ov.TouchFilesSet || !ov.TouchFiles {
-		t.Fatalf("self_filesys_run 应保留 touch_files=true：%+v", norm)
+	if ov, ok := norm["filesys_run"]; !ok || !ov.TouchFilesSet || !ov.TouchFiles {
+		t.Fatalf("filesys_run 应保留 touch_files=true：%+v", norm)
 	}
 }
 
@@ -312,8 +312,8 @@ func TestResolveExecTimeoutPriority(t *testing.T) {
 		t.Fatalf("prj timeout_sec 不改「契约优先」语义，got %d want 60（I-79 口径保持）", got)
 	}
 	cfg.SetToolAsync(map[string]ToolAsyncOverride{
-		"self_t":      {HardTimeout: 5, HardTimeoutSet: true}, // 用户显式硬上限 → 最高
-		"self_t_deep": {HardTimeout: 9, HardTimeoutSet: true}, // 孤儿键不影响 t
+		"t":      {HardTimeout: 5, HardTimeoutSet: true}, // 用户显式硬上限 → 最高
+		"t_deep": {HardTimeout: 9, HardTimeoutSet: true}, // 孤儿键不影响 t
 	})
 	if got, nl := resolveExecTimeout(cfg, toolDocForTest("t", "auto", 0, 60)); got != 5 || nl {
 		t.Fatalf("hard_timeout 应压过契约 timeout，got (%d,%v) want (5,false)", got, nl)
@@ -330,7 +330,7 @@ func TestResolveExecTimeoutPriority(t *testing.T) {
 		t.Fatalf("契约 timeout=-1 应无上限，got (%d,%v) want (0,true)", got, nl)
 	}
 	cfg6 := DefaultConfig()
-	cfg6.SetToolAsync(map[string]ToolAsyncOverride{"self_zz": {HardTimeoutSet: true, HardTimeout: 0}})
+	cfg6.SetToolAsync(map[string]ToolAsyncOverride{"zz": {HardTimeoutSet: true, HardTimeout: 0}})
 	if got, nl := resolveExecTimeout(cfg6, toolDocForTest("zz", "auto", 0, 60)); got != 60 || nl {
 		t.Fatalf("usr hard_timeout=0 = 不处理（回落契约 60），got (%d,%v) want (60,false)", got, nl)
 	}
@@ -368,7 +368,7 @@ func TestToolAsyncHardTimeoutKills(t *testing.T) {
 	// ② hard_timeout=1s → 子进程在 1s 被杀，调用在 5s 脚本结束前返回
 	t.Setenv("CK_SLEEP_MS", "5000")
 	cfg := DefaultConfig()
-	cfg.SetToolAsync(map[string]ToolAsyncOverride{"self_core_file_read": {HardTimeout: 1}})
+	cfg.SetToolAsync(map[string]ToolAsyncOverride{"core_file_read": {HardTimeout: 1}})
 	start := time.Now()
 	_, err = callTool(context.Background(), cfg, slow, map[string]any{}, nil, CallContext{InstanceID: "ins-1"})
 	elapsed := time.Since(start)
@@ -387,7 +387,7 @@ func TestToolAsyncHardTimeoutKills(t *testing.T) {
 	t.Setenv("CK_SLEEP_MS", "1500")
 	cfgZero := DefaultConfig()
 	cfgZero.SetToolAsync(map[string]ToolAsyncOverride{
-		"self_core_file_read": {HardTimeoutSet: true, HardTimeout: 0},
+		"core_file_read": {HardTimeoutSet: true, HardTimeout: 0},
 	})
 	if _, err := callTool(context.Background(), cfgZero, slow, map[string]any{}, nil, CallContext{InstanceID: "ins-1"}); err != nil {
 		t.Fatalf("hard_timeout=0（无上限）不应被杀: %v", err)
@@ -397,13 +397,13 @@ func TestToolAsyncHardTimeoutKills(t *testing.T) {
 // TestToolAsyncSetReturnsChangedOnDifference：覆盖表比较口径（无变化 → 不触发重注册）。
 func TestToolAsyncSetReturnsChangedOnDifference(t *testing.T) {
 	cfg := DefaultConfig()
-	if !cfg.SetToolAsync(map[string]ToolAsyncOverride{"a": {Mode: "always"}}) {
+	if !cfg.SetToolAsync(map[string]ToolAsyncOverride{"a": {Mode: "async"}}) {
 		t.Fatal("首次写入应报告变化")
 	}
-	if cfg.SetToolAsync(map[string]ToolAsyncOverride{"a": {Mode: "always"}}) {
+	if cfg.SetToolAsync(map[string]ToolAsyncOverride{"a": {Mode: "async"}}) {
 		t.Fatal("同值重复写入不应报告变化")
 	}
-	if !cfg.SetToolAsync(map[string]ToolAsyncOverride{"a": {Mode: "never", HardTimeout: 3}}) {
+	if !cfg.SetToolAsync(map[string]ToolAsyncOverride{"a": {Mode: "sync", HardTimeout: 3}}) {
 		t.Fatal("取值变化应报告变化")
 	}
 	if !cfg.SetToolAsync(map[string]ToolAsyncOverride{"b": {Threshold: 3}}) {

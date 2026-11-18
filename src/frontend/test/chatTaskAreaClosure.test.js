@@ -15,7 +15,7 @@
  *   ④ 截图失败必须提示（catch / 上传失败 → `message.error`，debug 日志保留）。
  *
  * 前端无组件级测试运行器（`npm test` = node:test 直跑，见 package.json）→ 沿用**源码守卫**法
- * （与 toolStopWiring / awaitingTaskBar 同法）；L4 行为面见 `src/test/chonkpilot-gui/systest/`。
+ * （与 toolStopWiring 同法）；L4 行为面见 `src/test/chonkpilot-gui/systest/`。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

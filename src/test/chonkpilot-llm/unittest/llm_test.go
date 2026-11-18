@@ -27,6 +27,7 @@ import (
 
 // writeSSE 以 OpenAI 流式 chunk 写响应（delta/finish_reason），以 [DONE] 结束。
 func writeSSE(w http.ResponseWriter, chunks []map[string]any, finish string) {
+	w.Header().Set("Content-Type", "text/event-stream")
 	fl, _ := w.(http.Flusher)
 	for _, d := range chunks {
 		ev, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": d, "finish_reason": ""}}})

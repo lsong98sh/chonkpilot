@@ -25,14 +25,14 @@ const read = (rel) => readSrc(rel)
 
 // ① 关闭过滤开关 → tools 被清空（空数组 = 后端「不限制」语义）
 test('① 关闭过滤开关 → tools 清空为空数组', () => {
-  const agent = { filterTools: true, tools: ['self_file_read', 'self_shell_run'] }
+  const agent = { filterTools: true, tools: ['file_read', 'shell_run'] }
   const patch = filterToolsTogglePatch(agent)
   assert.deepEqual(patch, { filterTools: false, tools: [] })
   const next = { ...agent, ...patch }
   assert.equal(next.filterTools, false)
   assert.deepEqual(next.tools, [])
   // 纯函数：不改入参
-  assert.deepEqual(agent.tools, ['self_file_read', 'self_shell_run'])
+  assert.deepEqual(agent.tools, ['file_read', 'shell_run'])
 })
 
 // ② 打开过滤开关 → 不清空（补丁不含 tools 键；既有残留选择也不丢）
@@ -65,9 +65,9 @@ test('③ 保存载荷中 tools 为空数组', () => {
 
 // ④ 载入回填（G-45 ⑤c）：tools 非空 → filterTools 载入为 true（显示态 = 后端白名单）
 test('④ 载入回填：tools 非空 → filterTools 载入为 true', () => {
-  const persisted = { name: 'x', tools: ['self_file_read', 'self_shell_run'] } // filterTools 不持久化 → 无该键
+  const persisted = { name: 'x', tools: ['file_read', 'shell_run'] } // filterTools 不持久化 → 无该键
   const patch = filterToolsLoadPatch(persisted)
-  assert.deepEqual(patch, { tools: ['self_file_read', 'self_shell_run'], filterTools: true })
+  assert.deepEqual(patch, { tools: ['file_read', 'shell_run'], filterTools: true })
   const loaded = { ...persisted, ...patch }
   assert.equal(loaded.filterTools, true)
   // 纯函数：不改入参（仍无 filterTools 键）

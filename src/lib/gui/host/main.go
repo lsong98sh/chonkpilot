@@ -608,7 +608,7 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 			if home, err := os.UserHomeDir(); err == nil {
 				userRoot = filepath.Join(home, ".chonkpilot")
 			}
-			// 插件根（2026-11-02）：直接扫描 `<root>/<id>/plugin.json`，插件与 capability 同级。
+			// 插件根（2026-11-02）：直接扫描 `<root>/<id>/plugin.ini`，插件与 capability 同级。
 			// 优先级：项目用户数据 → 工作目录 .chonkpilot → 用户级 ~/.chonkpilot → 随产物 exeDir。
 			roots := []string{
 				filepath.Join(prjUsrRoot, "plugins"),

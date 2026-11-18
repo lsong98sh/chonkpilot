@@ -11,7 +11,7 @@
 
 ## 0. 结论速览
 
-**一句话**：插件 = `<插件根>/plugins/<id>/` 下的 **极简 `plugin.json`（启动）+ 完整 `manifest.json`（插件自报）+ 可执行体 + 可选 webui**；宿主新增一个 `PluginManager` 负责发现 / 拉起 / 守护 / 注册；插件与宿主只走 **一条 UDS（可配 TCP）控制通道**；MCP 是插件**在该通道上向 gateway 登记的工具面**（插件内可自带 MCP server，但**不走 stdio**）；UI 是 manifest 声明的 **iframe view**，作为普通 view 参与布局、页签、抽屉、对话框与状态栏。
+**一句话**：插件 = `<插件根>/plugins/<id>/` 下的 **`plugin.ini`（启动命令）+ 完整 manifest（Go 内嵌 exe / Python·Node 自读上报）+ 可执行体 + 可选 webui**；宿主新增一个 `PluginManager` 负责发现 / 拉起 / 守护 / 注册；插件与宿主只走 **一条 UDS（可配 TCP）控制通道**；MCP 是插件**在该通道上向 gateway 登记的工具面**（插件内可自带 MCP server，但**不走 stdio**）；UI 是 manifest 声明的 **iframe view**，作为普通 view 参与布局、页签、抽屉、对话框与状态栏。
 
 需求 → 设计落点：
 
@@ -26,7 +26,7 @@
 | 5-3 | 插件状态页经 statusbar 按钮 / 命令显示 | §7.5 状态栏条目注入（`ui.statusbar[]`） |
 | 5-4 | UILayout 支持 iframe 页签 / 抽屉 / 对话框；**更优 = 注册 iframe view** | §7.1 评估：**采纳「注册 view」**（机制层零改动），预览区另设专用宿主；不再新增三条开 iframe 的命令 |
 | 5-5 | 插件管理页可查看 view、可禁用插件 | §7.4 列表 + 「打开视图 / 配置 / 启停」 |
-| 6 | manifest 放 `capability/plugins` | §4.1 四级 `capability/plugins/<id>/plugin.json` |
+| 6 | manifest 放 `capability/plugins` | §4.1 四级 `capability/plugins/<id>/plugin.ini`（manifest 内嵌 exe / 自读上报） |
 | 7 | 制定插件规范 + 插件↔server 交互规范 | §4（manifest）/ §5（通道）/ §6（能力面） |
 | 8 | 仅设计规范，不管插件内部实现 | §1.3 非目标 |
 | 9 | server 提供：业务数据读写 / hook / LLM / 会话 | §6.1–§6.4（全部落到既有 MQ / 门面能力，不新开物理面） |
@@ -109,7 +109,7 @@
 
 ```text
  capability/plugins/<id>/            ┌──────────── 宿主进程 chonkpilot.exe ─────────────┐
-   plugin.json  ────────────────────▶│ PluginManager                                     │
+   plugin.ini   ────────────────────▶│ PluginManager                                     │
    *.exe        ──(spawn)──────────▶ │   ├─ 发现/四级合并/校验                           │
    webui/                            │   ├─ 生命周期：spawn / health / backoff / stop     │
                                       │   ├─ 注册表：status / views / bar / mcp / config   │
@@ -163,7 +163,7 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 2  pluginbridge.Start（UDS 前门）→ server-ready
 3  core-mcp-server / 用户 MCP 对账（既有）
 4  PluginManager.Start：
-     4.1 扫四级 capability/plugins/*/plugin.json → 校验 → 合并（最具体级整条覆盖）
+     4.1 扫四级 capability/plugins/*/plugin.ini → 校验 → 合并（最具体级整条覆盖）
      4.2 读启用表 + UI 快照 → 立即广播 plugin-registered（**菜单/视图先于进程就绪**）
      4.3 对 enabled 且 autostart 的插件 spawn（并发，受上限约束）
      4.4 每插件：hello/register → MCP 注册 → status=running
@@ -190,9 +190,9 @@ running ──▶ degraded（MCP 断开 / UI RPC 连续失败；仍可打开配�
 
 ```text
 <插件根>/plugins/<id>/          # 2026-11-04 核对：实际路径（旧稿 capability/plugins）
-  plugin.json          # 极简启动信息（id/cmd/enabled/name/icon）
-  manifest.json        # 完整 manifest（插件自读，plugin.hello 上报）
-  <exe>                # 缺省按 chonkpilot-plugin-<id>.exe
+  plugin.ini           # 启动描述（[plugin] cmd/args）
+  manifest.json        # 完整 manifest（Go：//go:embed 进 exe；Python/Node：随目录自读，plugin.hello 上报）
+  <exe>                # plugin.ini 的 cmd 指向（目录名 = 插件 id）
   webui/               # 可选：iframe 页面静态资源（只读）
   README.md            # 可选
 ```
@@ -748,7 +748,7 @@ manifest `ui.views[]` 是**主路径**；`plugin.ui.register` 用于运行时增
 
 ```text
 src/initdata/capability/plugins/websearch/
-  plugin.json
+  plugin.ini
   chonkpilot-websearch.exe        # Go：通道客户端 + Streamable HTTP MCP（:0）+ 配置监听
   webui/config.html               # 配置页（Key + 检索参数 + 测试连接）
   webui/status.html               # 状态页（最近调用、错误、Key 状态）
@@ -862,7 +862,7 @@ src/initdata/capability/plugins/websearch/
 
 ### 9.3 构建与产物
 
-- 新增 `build-plugins.ps1`：编译产品插件 → `dist/desktop/capability/plugins/<id>/`（exe + webui + plugin.json）；由 `build-desktop.ps1` 调用。
+- 新增 `build-plugins.ps1`：编译产品插件 → `dist/desktop/capability/plugins/<id>/`（exe + webui + plugin.ini；manifest 内嵌 exe）；由 `build-desktop.ps1` 调用。
 - `src/initdata/capability/plugins/` = 出厂源（manifest + webui；**exe 由构建产出，不入库**）。
 - 卸载 = 删目录；内置插件目录随产物覆盖式同步（与 `capability/scenarios` 同口径）。
 
@@ -1056,10 +1056,10 @@ src/initdata/capability/plugins/websearch/
 
 ### 16.3 与本文旧口径的偏差（按代码为准）
 
-1. 插件根 = `<root>/plugins/<id>/`（非 `capability/plugins`）；`plugin.json` 极简 + `manifest.json` 完整（PLUGIN-LOAD-1 D12）。
-2. `runtime.mode` / `channel.*` 已删（D14）；12 份 `manifest.json` 的死字段已于 2026-11-05 清除。
+1. 插件根 = `<root>/plugins/<id>/`（非 `capability/plugins`）；`plugin.ini` 启动描述 + manifest 完整（Go `//go:embed` 进 exe；PLUGIN-LOAD-1 D12 / 2026-11-18）。
+2. `runtime.mode` / `channel.*` 已删（D14）；12 份 `manifest.json` 的死字段已于 2026-11-05 清除（manifest 现随 exe 内嵌）。
 3. `mcp.namespace` 缺省 `-`（非 `self_`）。
-4. 宿主只校验 `id`：`plugin.json/meta.id` 须等于目录名，`manifest.id` 为空或不等均报错（2026-11-05 收紧），§4.3 其余规则未实现。
+4. 宿主只校验 `id`：目录名 = 插件 id，`manifest.id` 为空或不等均报错（2026-11-05 收紧），§4.3 其余规则未实现。
 5. 权限仅 `permissions.data` 有校验，且空数组放行；`hooks/llm/session/network` 无消费点。
 6. iframe 为**同源**（`allow-same-origin`）；`config.get` 无 `dirty`；`ui.rpc` 白名单已于 2026-11-05 生效（未声明方法拒绝）。
 7. 静态资源路由 `/plugins/<id>/…`（非 `/plugin-ui/<id>/…`）。

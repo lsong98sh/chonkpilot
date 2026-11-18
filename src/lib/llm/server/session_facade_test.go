@@ -61,7 +61,7 @@ func TestSessionStoreFacadeDirect(t *testing.T) {
 	if hist, _ := st.BuildContextTokens("s-direct", "", false); len(hist) == 0 {
 		t.Fatalf("BuildContextTokens 应含已落消息")
 	}
-	if err := st.CompleteTurnTokens("t-direct", "done", "stop", nil, nil); err != nil {
+	if err := st.CompleteTurnTokens("t-direct", "complete", "stop", nil, nil); err != nil {
 		t.Fatalf("CompleteTurnTokens: %v", err)
 	}
 	if got := st.LatestTurnID("s-direct"); got != "t-direct" {

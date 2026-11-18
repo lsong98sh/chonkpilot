@@ -139,20 +139,20 @@ func TestFacadeTasktreeInlineEqualsMQPath(t *testing.T) {
 	eqWire(t, wire.TasktreeListResult(lr.Nodes),
 		mqResult(t, bus, "data-tasktree-list", map[string]any{"top_session": "top1", "dialog_id": d1}), "list")
 
-	// ② MQ upsert（tool 子节点，含 tool_call_id + exec_json 待裁决明细 + closed=false）→ 门面读
+	// ② MQ upsert（tool 子节点，含 tool_call_id + exec_json 执行态明细 + closed=false）→ 门面读
 	closedFalse := false
 	mqResult(t, bus, "data-tasktree-upsert", map[string]any{"data": map[string]any{
 		"task_id": "n2", "top_session": "top1", "session_id": "s1", "parent_node_id": "n1",
 		"kind": "tool", "title": "子工具", "status": "running", "created_at": now,
-		"tool_call_id": "tc-n2", "state": "awaiting", "closed": closedFalse,
-		"exec_json": `{"phase":"awaiting","detail":{"timeout_s":30,"options":["detach","cancel"]}}`,
+		"tool_call_id": "tc-n2", "state": "detached", "closed": closedFalse,
+		"exec_json": `{"phase":"detached","detail":{"trigger":"manual","threshold_s":30}}`,
 		"dialog_id": d1,
 	}})
 	tr, err := api.TasktreeTasks(facade.TasktreeTasksRequest{InstanceID: facadeInstance, DialogID: d1, SessionID: "s1"})
 	if err != nil || len(tr.List) != 2 {
 		t.Fatalf("facade TasktreeTasks=%+v err=%v", tr, err)
 	}
-	if tr.List[1].ID != "n2" || tr.List[1].ToolCallID != "tc-n2" || tr.List[1].Awaiting == nil {
+	if tr.List[1].ID != "n2" || tr.List[1].ToolCallID != "tc-n2" || tr.List[1].State != "detached" {
 		t.Fatalf("门面 tasks 未读到 MQ 写入：%+v", tr.List[1])
 	}
 	eqWire(t, wire.TasktreeTasksResult(tr.List),

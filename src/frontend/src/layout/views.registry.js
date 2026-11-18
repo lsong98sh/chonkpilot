@@ -8,7 +8,7 @@
  *     （`plugin:<id>:<view>`，iframe 承载）接到同一 API。**不再有静态组件映射表**。
  *
  * 新增区块 = `view-definitions.js` 加一条元数据 + 这里 `registerViews` 加一条
- * `{ key, component }`；新增插件视图 = 插件 `plugin.json` 的 `ui.views`（无需改本文件）。
+ * `{ key, component }`；新增插件视图 = 插件 manifest 的 `ui.views`（随 exe 内嵌，经 `plugin.hello` 上报；无需改本文件）。
  */
 import { defineAsyncComponent, defineComponent, h } from 'vue'
 import ExplorerPane from '../views/filetree/ExplorerPane.vue'

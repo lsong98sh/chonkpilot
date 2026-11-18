@@ -16,13 +16,14 @@
  *
  * 本 composable 是**模块级单例**：多个入口共享同一份快照与事件订阅。
  */
-import { reactive } from 'vue'
+import { computed, reactive } from 'vue'
 import mq from '@ckfw/utils/mq.js'
 import { eventBelongsToInstance } from '../utils/instanceScope'
 import { EventNames } from '../events/event-names'
 import { copyDslFields } from '../utils/dslView'
 import { resolvePublishError } from '../utils/publishError'
 import { sessionDialogOf } from '../api/session'
+import { buildChildIndex, buildSessionNodeIndex, nodeTimeOf } from '../utils/taskTreeIndex'
 
 // data-tasktree-* 辅助：发送并等待回复。
 function tasktreeReq(action, body = {}) {
@@ -50,6 +51,19 @@ const tasks = reactive(new Map())
 
 // node_id → TaskTreeNode（tasktree 节点，task/session 统一；parent_node_id 表达层级）
 const nodes = reactive(new Map())
+
+// 派生索引（评审第 11 条 · 长会话性能）：一次遍历得出「父 → 子列表」与「session_id → 会话节点」，
+// 所有树组件共享同一份 computed，避免每个节点各自扫全量 nodes（O(N²) → 摊还 O(N log N)）。
+const childIndex = computed(() => buildChildIndex(nodes))
+const sessionNodeIndex = computed(() => buildSessionNodeIndex(nodes))
+
+// 无子级时复用同一空数组，避免模板/调用方拿到新引用造成无谓重算。
+const NO_CHILDREN = []
+
+/** 某节点的直接子级（时间倒序，新在前）；索引未命中 → 空数组。 */
+function childrenOf(parentId) {
+  return childIndex.value.get(parentId) || NO_CHILDREN
+}
 
 // 用户显式移除的 node_id 集合（`removeNode` 能力保留；「关闭任务」自 42 §2 (126) 起改为
 // 逻辑删除 + 只读展示，不再走本地移除）
@@ -127,13 +141,11 @@ function upsertNode(node) {
 /**
  * 按 session_id 取会话节点（llm 节点主键 = task_id，会话身份存 session_id 字段）。
  * 命中一个 kind=llm 的 session 节点；未加载 → null。
+ * 走共享 `sessionNodeIndex`（O(1)），不再每次事件扫全量 nodes。
  */
 function nodeBySession(sessionId) {
   if (!sessionId) return null
-  for (const [, n] of nodes) {
-    if (n.node_type === 'session' && n.session_id === sessionId) return n
-  }
-  return null
+  return sessionNodeIndex.value.get(sessionId) || null
 }
 
 /**
@@ -188,19 +200,6 @@ function removeNode(id) {
   dismissed.add(id)
 }
 
-/**
- * 清除某任务的待裁决明细（I-103）：用户裁决动作成功后本地即时消隐，避免「刷新前残留」。
- * `awaiting` 随 `data-tasktree-tasks` 读入 `tasks` 快照（I-99），`upsert` 为增量合并
- * （`{...prev, ...payload}`）→ 后续无 awaiting 的快照不会自动抹掉旧值，故须显式删除。
- */
-function clearAwaiting(taskId) {
-  if (!taskId) return
-  const t = tasks.get(taskId)
-  if (t && t.awaiting) delete t.awaiting
-  const n = nodes.get(taskId)
-  if (n && n.awaiting) delete n.awaiting
-}
-
 /** 手动关闭节点：后端级联**逻辑删除**（标 `closed`/`deleted_at`，行保留），本地同步把整棵
  * 子树标为 `closed` 并**保留展示**（口径见 42 §2 (126)：已关闭节点同列表内灰色只读展示，
  * 级联子节点一并显示，不提供恢复/重开入口）。 */
@@ -222,9 +221,8 @@ async function deleteTreeNode(nodeId) {
     if (n) n.closed = true
     const t = tasks.get(cur)
     if (t) t.closed = true
-    for (const [id, m] of nodes) {
-      if (m.parent_node_id === cur) stack.push(id)
-    }
+    // 共享子级索引（O(子数)）：不再为每个栈元素扫全量 nodes
+    for (const child of childrenOf(cur)) stack.push(child.node_id)
   }
 }
 
@@ -259,8 +257,8 @@ function nodeTree(topSession) {
   // 顶层按时间倒序：created_at 优先，缺失回退 node_id（rt-* unix nano）与 seq
   items.sort((a, b) => nodeTimeOf(b) - nodeTimeOf(a))
   // 局部「有子级」集合：仅用于根节点判定，**不写回响应式节点对象**
-  //（在 computed 内改 store 是反模式）。子级关系由消费方按 parent_node_id 自 store 派生
-  //（与 SessionTreeNode 同口径，见 SessionTree.buildChildIndex）。
+  //（在 computed 内改 store 是反模式）。子级关系由共享索引 childrenOf / childIndex 派生
+  //（见 utils/taskTreeIndex.js）。
   const parentIds = new Set()
   for (const n of items) {
     if (n.parent_node_id) parentIds.add(n.parent_node_id)
@@ -274,26 +272,11 @@ function nodeTree(topSession) {
   return roots
 }
 
-/** 节点时间戳：created_at 优先；缺失回退 node_id（rt-* unix nano）与 seq。 */
-function nodeTimeOf(n) {
-  const t = n.created_at ? new Date(n.created_at).getTime() : NaN
-  if (Number.isFinite(t) && t > 0) return t
-  const m = /rt-(\d{10,19})/.exec(n.node_id || '')
-  if (m) return Math.floor(Number(m[1]) / 1e6) // unix nano → ms
-  return n.seq || 0
-}
+/** 节点时间戳（created_at → node_id(rt-*) → seq 回退）：唯一实现见 utils/taskTreeIndex.js。 */
 
 /** 按 node_id 取树节点。 */
 function getNode(nodeId) {
   return nodeId ? nodes.get(nodeId) : null
-}
-
-/** 节点运行态：节点主键 = task_id，直接取该 task_id 的运行时快照。 */
-function nodeRuntime(nodeId) {
-  const node = nodes.get(nodeId)
-  if (!node) return null
-  const tid = node.task_id || node.node_id
-  return tid ? tasks.get(tid) || null : null
 }
 
 /** 只注册一次全局事件订阅（tasks.* 编排事件 + 关闭/三选取消）。 */
@@ -444,12 +427,14 @@ export function useTaskView() {
   return {
     tasks,
     nodes,
+    // 共享派生索引（父子关系唯一口径）
+    childIndex,
+    childrenOf,
     refresh,
     loadTree,
     nodeTree,
     nodeTimeOf,
     getNode,
-    nodeRuntime,
     deleteTreeNode,
     activeTasks,
     tasksOfSession,
@@ -459,6 +444,5 @@ export function useTaskView() {
     cancelWithChoice,
     confirmTurnCancel,
     removeNode,
-    clearAwaiting,
   }
 }

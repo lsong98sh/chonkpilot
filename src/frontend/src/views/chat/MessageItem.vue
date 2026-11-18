@@ -114,10 +114,8 @@
           <Icon name="list" :size="13" />
         </Button>
         <!-- 转后台 / 转异步（**同一动作，单一入口**）：点击发前端内部事件 → mq.emit('task-background', {tool_call_id})。
-             原「超时裁决条」的「转异步」按钮与工具行「转后台」箭头语义完全相同（都发 task-background{tool_call_id}），
-             故合并为本按钮。manual 新语义（2026-11-15）：阈值到达后 `message.manualThreshold` 被置位，
-             图标高亮（threshold-hit）提示「现在可转异步」；点击后原同步调用返回 pending，继续后台执行。
-             历史 awaiting（options 含 detach）亦复用本按钮。 -->
+             manual：阈值到达后 `message.manualThreshold` 被置位，图标高亮（threshold-hit）提示
+             「现在可转异步」；点击后原同步调用返回 pending，继续后台执行。 -->
         <button
           v-if="canDetach"
           class="background-btn"
@@ -129,17 +127,6 @@
           <Icon name="arrow-right" :size="12" />
         </button>
         <span class="header-spacer" />
-        <!-- 等待完成（never 裁决，mcp-tools-wait）：原「超时裁决条」按钮**移入工具行**，仅图标 + 原生 title（无气泡载体）。
-             事件与语义不变 = mq.emit(EventNames.toolsWait, {tool_call_id})；显示条件不变 = 裁决 options 含 wait。 -->
-        <button
-          v-if="hasWait"
-          class="background-btn"
-          :title="$t('chat.timeout_wait')"
-          :disabled="arbitrating"
-          @click.stop="arbitrationWait"
-        >
-          <Icon name="clock" :size="11" />
-        </button>
         <!-- 停止（在飞工具取消）：**所有 pending/running 工具**（sync/async/auto/manual）统一显示；
              不再仅限超时裁决态。2026-09-18 起走统一取消入口 task-stop（LLM tool_call_id 优先、
              无则回退任务节点 id；服务端反查归一后级联取消并经层 → sink → gateway 真打断）。
@@ -148,8 +135,8 @@
           v-if="canCancel"
           class="background-btn stop-btn"
           :title="$t('chat.tool_stop')"
-          :disabled="arbitrating"
-          @click.stop="arbitrationCancel"
+          :disabled="stopping"
+          @click.stop="stopTool"
         >
           <Icon name="stop" :size="11" />
         </button>
@@ -158,11 +145,6 @@
         </Tooltip>
         <span v-if="loadingMore" class="loading-icon">...</span>
       </div>
-      <!-- 调用超时待裁决（mcp-tools-timeout）提示：原「裁决条」整条去除（不放气泡/浮层），
-           三个动作（转异步 = 工具行箭头 / 等待完成 / 停止）全部移入上方工具行；
-           此处仅保留等待态小字文案。显示条件不变 = 裁决态（message.arbitration 存在）；
-           裁决后清除（arbitration=null）→ 提示与三个按钮同时隐藏，同一 tool_call_id 不再弹。 -->
-      <div v-if="message.arbitration" class="arbitration-hint">{{ arbitrationText }}</div>
       <div v-if="!collapsed" class="section-body">
         <div class="brief-line">
           <span class="brief-text">{{ message.brief || message.simplified || message.tool }}</span>
@@ -231,6 +213,7 @@ import { MsgTopics, FieldKeys } from '../../events/msgkeys'
 import { useToolAsyncMode } from '../../composables/useToolAsyncMode'
 import { useToolProgress } from '../../composables/useToolProgress'
 import { useTaskView } from '../../composables/useTaskView'
+import { registerMessageActions } from '../../composables/useMessageActions'
 import { stateMetaFor } from '../../composables/useTaskStatus'
 import { getFileUrl } from '../../api/file'
 import { classifyError } from '../../utils/errorMessage'
@@ -252,8 +235,8 @@ const props = defineProps({
   findActive: { type: Boolean, default: false },
 })
 
-// 清除裁决：message 由 MessageList 持有 → 子组件只发事件，不直改 props 内部属性（E-08）。
-const emit = defineEmits(['clear-arbitration'])
+// 清除超时提示：message 由 MessageList 持有 → 子组件只发事件，不直改 props 内部属性（E-08）。
+const emit = defineEmits(['clear-timeout'])
 
 
 // 折叠初始值：来自 DB 的历史消息（fromHistory，切换 session / 翻页加载）默认折叠；
@@ -263,32 +246,10 @@ const loadingMore = ref(false)
 const contentComplete = ref(false)
 const showingFull = ref(false)
 const backgrounding = ref(false) // 「转后台」请求进行中（防重复点击）
-const arbitrating = ref(false) // 超时裁决请求进行中（防重复点击）
-
-// 超时裁决（mcp-tools-timeout）：信息由 MessageList 挂载到 message.arbitration。
-// 注：裁决条本体已去除，动作全部移入工具行（转异步=工具行箭头 / 等待完成 / 停止）。
-const hasDetach = computed(() => {
-  const opts = (props.message.arbitration && props.message.arbitration.options) || []
-  return opts.includes('detach')
-})
-const hasWait = computed(() => {
-  const opts = (props.message.arbitration && props.message.arbitration.options) || []
-  return opts.includes('wait')
-})
-// 等待态文案（原裁决条文字）：工具名 + 已等待时长（timeout_s 秒；≥60s 显示 m/s），
-// 现降级为工具行下方小字提示（无气泡/浮层载体）。
-const arbitrationText = computed(() => {
-  const a = props.message.arbitration || {}
-  const n = Number(a.timeout_s)
-  let seconds
-  if (!Number.isFinite(n)) seconds = ''
-  else if (n < 60) seconds = Math.floor(n) + 's'
-  else seconds = Math.floor(n / 60) + 'm ' + Math.floor(n % 60) + 's'
-  return t('chat.timeout_arbitrate', { tool: a.tool || props.message.tool || 'tool', seconds })
-})
+const stopping = ref(false) // 停止请求进行中（防重复点击）
 
 // tool_pair 转后台（G-17）：仅 async=manual 工具（同步运行但任务化、可解绑）显示按钮；
-// auto 超阈值自动转、always 已转、never 不可转 → 均无手动入口。
+// auto 超阈值自动转、async 已转、sync 不可转 → 均无手动入口。
 const { isManualTool } = useToolAsyncMode()
 
 // 工具 _meta.async（I-60）：随消息（DB 历史 / llm-receive 实时）回带，本地优先判断裁决能力。
@@ -304,21 +265,18 @@ const canBackground = computed(() => {
     (localManual || isManualTool(props.message.tool))
 })
 
-// 工具行「转后台 / 转异步」箭头：两个既有判定取并集（**不放宽也不收紧**）——
-// 运行中 manual 工具（canBackground）∪ 裁决态含 detach（hasDetach）；二者动作同为
-// task-background{tool_call_id}，故合并为单一入口。
-const canDetach = computed(() => canBackground.value || (!!props.message.arbitration && hasDetach.value))
-// 箭头提示语：阈值已到 = 转异步（高亮）；裁决态 = 转异步；运行中 = 转后台。
+// 工具行「转后台 / 转异步」箭头：运行中 manual 工具（canBackground）。
+// 动作 = task-background{tool_call_id}。
+const canDetach = computed(() => canBackground.value)
+// 箭头提示语：阈值已到 = 转异步（高亮）；运行中 = 转后台。
 const detachTitle = computed(() => {
-  if (props.message.manualThreshold || props.message.arbitration) return t('chat.timeout_detach')
+  if (props.message.manualThreshold) return t('chat.timeout_detach')
   return t('chat.tool_background')
 })
 
-// 停止（取消）入口：**所有在飞工具**（pending/running）都有，不再只限裁决态。
+// 停止（取消）入口：**所有在飞工具**（pending/running）都有。
 // 优先 LLM tool_call_id（服务端反查归一），无则回退 message.task_id（server 任务节点 id）。
-// 历史 awaiting 裁决条仍保留入口（即使状态字段缺失）。
 const canCancel = computed(() => {
-  if (props.message.arbitration) return true
   const s = props.message.status
   return (s === 'pending' || s === 'running') &&
     !!(props.message.task_id || props.message.tool_call_id)
@@ -381,9 +339,7 @@ const toolPairTitle = computed(() => {
 // 全部用图标 + title，文字 badge 保留作可读性。
 const toolStatusKey = computed(() => {
   const s = String(props.message.status || '').toLowerCase()
-  if (props.message.arbitration) return 'awaiting'
   if (s === 'detached' || props.message.state === 'detached') return 'detached'
-  if (props.message.state === 'awaiting') return 'awaiting'
   if (s === 'failed' || s === 'error') return 'error'
   if (s === 'pending' || s === 'running' || s === 'done' || s === 'cancelled' || s === 'interrupted') return s
   return 'running'
@@ -430,10 +386,12 @@ function toggleCollapse() {
   collapsed.value = !collapsed.value
 }
 
-// 列表项交互事件化：模板 v-mq 触发 → 本地按 message.id 分发到本实例
+// 列表项交互事件化：模板 v-mq 触发 → 动作总线按 message.id 分发到本实例
 // （多实例列表：只有 id 匹配的实例执行），同时经 /publish 通知后端。
-// O(N) 缓解（E-28）：按本消息 type **仅订阅其 DOM 实际存在的交互**，避免每条消息恒注册 6 个全局订阅。
-const _msgUnsubs = []
+// O(N) 缓解（E-28 / 长会话性能）：按本消息 type **仅登记其 DOM 实际存在的交互**；
+// topic 级订阅由 registerMessageActions 全局复用（每个 topic 全应用仅 1 个 mq.on），
+// 不再每条消息各注册订阅。
+let cleanupMessageActions = null
 onMounted(() => {
   // 各交互与模板分支一一对应（见 <template>）：
   //   reasoning       → 折叠 / 复制文本 / 加载更多
@@ -466,14 +424,16 @@ onMounted(() => {
     [EventNames.msgShowFull]: () => showFull(),
     [EventNames.toolBackground]: () => backgroundTool(),
   }
-  for (const topic of need) {
-    const fn = handlers[topic]
-    _msgUnsubs.push(mq.on(topic, ({ id }) => {
-      if (id === props.message.id) fn()
-    }))
+  const handlersForNeed = {}
+  for (const topic of need) handlersForNeed[topic] = handlers[topic]
+  cleanupMessageActions = registerMessageActions(props.message.id, handlersForNeed)
+})
+onUnmounted(() => {
+  if (cleanupMessageActions) {
+    cleanupMessageActions()
+    cleanupMessageActions = null
   }
 })
-onUnmounted(() => _msgUnsubs.forEach(fn => fn()))
 
 // 统一内容拉取：动态 import api/session 并按 key 拉取完整内容。
 // 四段重复（showFull/loadMore/copyTextContent/copyToolContent）收敛于此。
@@ -605,44 +565,34 @@ async function backgroundTool() {
     // 记下服务端返回的任务节点 id → 本卡「查看任务详情」图标随即可用（转后台前该卡无 task_id）
     detachedTaskId.value = taskId
     uiMessage.success(t('chat.tool_background_ok'))
-    // 转异步成功 → 清除阈值高亮 / 历史裁决条（同一 card 不再提供重复动作）。
-    if (props.message.arbitration || props.message.manualThreshold) hideArbitration()
+    // 转异步成功 → 清除阈值高亮（同一 card 不再提供重复动作）。
+    if (props.message.manualThreshold) hideTimeout()
   } finally {
     backgrounding.value = false
   }
 }
 
-// ── 超时裁决动作（mcp-tools-timeout）──
-// 三个动作均在工具行：「转异步」复用工具行箭头（task-background，见 backgroundTool）、
-// 「等待完成」发 mcp-tools-wait、「停止」走统一取消入口 task-stop。
-// 裁决后清除 message.arbitration → 提示文案与工具行裁决按钮同时隐藏；MessageList 侧 timeoutShown 保证不再弹。
-function hideArbitration() {
-  // 交由持有方（MessageList）清除 message.arbitration（子组件不直改 props 内部属性；E-08）。
-  emit('clear-arbitration', props.message)
-}
-
-// 等待完成（never）：发 mcp-tools-wait{tool_call_id}，撤销超时、继续等待原同步调用返回。
-function arbitrationWait() {
-  if (arbitrating.value) return
-  const toolCallId = props.message.tool_call_id
-  if (!toolCallId) return
-  mq.emit(EventNames.toolsWait, { tool_call_id: toolCallId })
-  hideArbitration()
+// ── 超时提示 / 停止（mcp-tools-timeout）──
+// 「转异步」复用工具行箭头（task-background，见 backgroundTool）；「停止」走 task-stop。
+// 动作后清除 message.manualThreshold → 箭头高亮隐藏；MessageList 侧 timeoutShown 保证不再弹。
+function hideTimeout() {
+  // 交由持有方（MessageList）清除 message.manualThreshold（子组件不直改 props 内部属性；E-08）。
+  emit('clear-timeout', props.message)
 }
 
 // 取消（**所有在飞工具**共用）：统一走 task-stop（不再直发已移除的 gateway 取消方法面）。
 // id 优先 LLM `tool_call_id`（服务端 `findByToolCall` 反查归一到 server 任务节点，已证链路），
 // 无则回退 `message.task_id`（server 任务节点 id，task-stop 直取）。
 // 服务端按 id 级联取消 → 层判定 → 层 → sink → gateway 真打断在飞调用。失败给出明确提示。
-async function arbitrationCancel() {
-  if (arbitrating.value) return
+async function stopTool() {
+  if (stopping.value) return
   const callId = props.message.tool_call_id || ''
   const taskId = props.message.task_id || ''
   if (!callId && !taskId) {
     uiMessage.error(t('chat.timeout_cancel_failed'))
     return
   }
-  arbitrating.value = true
+  stopping.value = true
   try {
     const payload = callId ? { tool_call_id: callId } : { task_id: taskId }
     const res = await mq.emit(EventNames.taskStop, payload)
@@ -652,9 +602,9 @@ async function arbitrationCancel() {
       uiMessage.error(t('chat.tool_stop_failed', { error: errs[0] || 'no ack' }))
       return
     }
-    hideArbitration()
+    hideTimeout()
   } finally {
-    arbitrating.value = false
+    stopping.value = false
   }
 }
 
@@ -1176,7 +1126,7 @@ const formattedTime = computed(() => {
   color: var(--accent);
 }
 
-/* 工具行内联图标按钮（转后台/转异步、等待完成、停止）：hover 高亮 */
+/* 工具行内联图标按钮（转后台/转异步、停止）：hover 高亮 */
 .background-btn {
   display: inline-flex;
   align-items: center;
@@ -1230,26 +1180,6 @@ const formattedTime = computed(() => {
 .stop-btn:disabled:hover {
   background: transparent;
   color: var(--text-muted);
-}
-
-/* 超时裁决提示（mcp-tools-timeout）：原内联裁决条已整条去除，此处仅为工具行下方的小字文案
-   （无气泡/浮层/背景块），与工具行内联按钮（.stop-btn 等）同处一个卡片。 */
-.arbitration-hint {
-  padding: 0 8px 4px 20px;
-  font-size: 11px;
-  line-height: 1.5;
-  /* 告警语义走主题 token（原硬编码 #e65100：三主题在 --bg-primary 上 3.60/4.33/3.30，均 <4.5）。
-     light 的 --warning（#e8a317）本身仅 2.06:1 → 向 --text-primary 压深 55%（#8e6a1f，4.71:1）；
-     dark/nord 的 --warning 已达标（12.91 / 8.00），下方覆写回原色以保住琥珀语义（见 20-gui §12.8）。 */
-  color: color-mix(in srgb, var(--warning) 55%, var(--text-primary));
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-/* 暗色主题 --warning 直接可用，勿压深（压深后偏白、丢失"告警"色相） */
-[data-theme="dark"] .arbitration-hint,
-[data-theme="nord"] .arbitration-hint {
-  color: var(--warning);
 }
 
 .section-body {

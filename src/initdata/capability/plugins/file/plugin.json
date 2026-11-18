@@ -1,7 +1,0 @@
-{
-  "id": "file",
-  "cmd": ["chonkpilot-plugin-file.exe"],
-  "enabled": true,
-  "name": "文件工具",
-  "icon": "file"
-}

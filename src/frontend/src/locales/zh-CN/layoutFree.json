@@ -103,6 +103,12 @@
       "publishMqEmpty": "发布 MQ（未填写主题）"
     }
   },
+  "panel": {
+    "minimize": "最小化（坍缩为标题条）",
+    "maximize": "最大化",
+    "restore": "还原",
+    "close": "关闭面板"
+  },
   "plugin": {
     "title": "插件",
     "manager": "插件管理",

@@ -157,3 +157,21 @@ test('layout-free G-57：配置 sizes 变化 → 幂等重量测（判据门控 
   assert.match(updated[0], /!ratiosEqual\(ratios\.value, knownRatios\)/, 'onUpdated 须用占比判据门控重量测')
   assert.match(updated[0], /if \(sig !== lastChildSig\) \{/, 'onUpdated 须保留结构签名分支')
 })
+
+/**
+ * WIN-025 显隐回归（2026-11-17）：隐藏子区后**剩余区域必须当场扩展**。
+ *
+ * 曾经的故障：显隐分支只在 `!snapped` 时 `measure(true)`；`captureHideSnapshot` 写回占比后
+ * 指望「配置 sizes 变化 → 第二次 onUpdated → 权威重量测」。但像素尺寸已知时模板不读
+ * `node.sizes`，配置变化**不会触发重渲染** → 剩余子区保持旧像素（隐藏后只剩空白）。
+ */
+test('layout-free 显隐：隐藏后剩余子区当场重量测（不得依赖配置 sizes 二次渲染）', () => {
+  const src = read(join(ROOT, 'components', 'layout', 'LfLayoutSplit.vue'))
+  const updated = src.match(/onUpdated\(\(\)\s*=>\s*\{[\s\S]*?\n\}\)/)
+  assert.ok(updated, '未找到 onUpdated')
+  const branch = updated[0].match(/if \(sig !== lastChildSig\) \{[\s\S]*?\n  \}/)
+  assert.ok(branch, '未找到结构签名分支')
+  assert.match(branch[0], /captureHideSnapshot\(nextVisible\)/, '显隐分支须保留隐藏瞬间占比快照')
+  assert.match(branch[0], /measure\(true\)/, '显隐分支须当场重量测')
+  assert.ok(!/if \(!snapped\)/.test(branch[0]), '显隐测量不得以 snapped 为条件跳过')
+})

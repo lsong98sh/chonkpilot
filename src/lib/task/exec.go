@@ -1,11 +1,11 @@
 // 执行态纳入（21-任务层设计方案 §9.3 P3-① · exec.go）：gateway 的执行态
-// （started / detached / awaiting / error）经**层内 API 直调**（`Layer.OnExecState`，同进程同步调用、
+// （started / detached / error）经**层内 API 直调**（`Layer.OnExecState`，同进程同步调用、
 // **不新增 MQ 主题** → 61 消息面零变更，21 §8.1-7）解析到已有节点并同步写权威表：
-//   - `state` 按口径映射（21 §9.3 P3）：started→running、detached→detached、awaiting→awaiting、
-//     error→error；均属**既有状态枚举**（`task.go`：awaiting/detached 为 gateway 侧执行态，
+//   - `state` 按口径映射（21 §9.3 P3）：started→running、detached→detached、
+//     error→error；均属**既有状态枚举**（`task.go`：detached 为 gateway 侧执行态，
 //     `resumableState` 已含二者 → 启动恢复一律标 interrupted，21 §8.1-3）；
-//   - 明细（`workdir` / `provider_key` / detached 的 trigger+threshold_s / awaiting 的
-//     timeout_s+options / error 的 message）写入 **`exec_json`**（前端 `data-tasktree-tasks` 可读）
+//   - 明细（`workdir` / `provider_key` / detached 的 trigger+threshold_s / error 的
+//     message）写入 **`exec_json`**（前端 `data-tasktree-tasks` 可读）
 //     ——此前该项为空缺（21 §9.3 P3）；
 //   - 终态 done/cancelled 不经本通道（仍走既有 `mcp-tasks-report`，见 layer.applyReport）。
 //
@@ -83,7 +83,6 @@ func mergeJSONMap(dst, src map[string]any) map[string]any {
 const (
 	ExecPhaseStarted   = "started"   // 执行启动（doCall spawn 后）
 	ExecPhaseDetached  = "detached"  // 转后台（auto 阈值 / manual tools/background）
-	ExecPhaseAwaiting  = "awaiting"  // 超时待用户裁决
 	ExecPhaseDone      = "done"      // 终态：成功
 	ExecPhaseError     = "error"     // 终态：失败
 	ExecPhaseCancelled = "cancelled" // 终态：取消
@@ -92,7 +91,7 @@ const (
 // ExecState 是 gateway 执行态上报载荷（宿主适配 gateway 侧同名结构后直调 `Layer.OnExecState`）：
 // `GWTaskID` = gateway 执行 id（`tk-0001`）；`State` = gateway 执行池状态；`WorkDir` / `ProviderKey`
 // = 隔离键来源与归属 provider；`Message` = 异常摘要（error 路径，简短、不含堆栈）；`Detail` =
-// 上报点明细（detached 的 trigger/threshold_s、awaiting 的 timeout_s/options）→ 落 `exec_json`。
+// 上报点明细（detached 的 trigger/threshold_s）→ 落 `exec_json`。
 type ExecState struct {
 	GWTaskID    string         `json:"gw_task_id"`
 	InstanceID  string         `json:"instance_id,omitempty"`
@@ -109,7 +108,7 @@ type ExecState struct {
 }
 
 // execPhaseState 执行态 → 层状态（**只用既有枚举**，不发明新状态；21 §9.3 P3-①）：
-// started→running、detached→detached、awaiting→awaiting、error→error、done/cancelled 同名；
+// started→running、detached→detached、error→error、done/cancelled 同名；
 // 未知 phase → ""（不改状态，仅写 exec_json）。
 func execPhaseState(phase string) string {
 	switch phase {
@@ -117,8 +116,6 @@ func execPhaseState(phase string) string {
 		return StateRunning
 	case ExecPhaseDetached:
 		return StateDetached
-	case ExecPhaseAwaiting:
-		return StateAwaiting
 	case ExecPhaseDone:
 		return StateDone
 	case ExecPhaseError:

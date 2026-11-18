@@ -11,8 +11,8 @@
 
 ```text
 plugins/hello/
-  plugin.json              # 极简启动信息
-  manifest.json            # 完整 manifest（插件自读上报）
+  plugin.ini               # 启动描述（[plugin] cmd/args）
+  manifest.json            # 完整 manifest（Go 用 //go:embed 打进 exe 后上报）
   chonkpilot-hello.exe
   webui/config.html        # 可选
 ```
@@ -23,6 +23,7 @@ package main
 
 import (
     "context"
+    _ "embed"
     "fmt"
     "log/slog"
     "os"
@@ -30,9 +31,15 @@ import (
     pluginsdk "github.com/lsong98sh/chonkpilot-plugin-framework/sdk"
 )
 
+// manifest 构建期嵌入 exe，随 `plugin.hello` 上报给宿主。
+//
+//go:embed manifest.json
+var embeddedManifest []byte
+
 func main() {
     p, err := pluginsdk.New(pluginsdk.Options{
         ID: "hello", Name: "Hello", Version: "1.0.0",
+        Manifest: embeddedManifest,
     })
     if err != nil {
         slog.Error("hello: 连接插件桥失败", "err", err)
@@ -74,19 +81,14 @@ func main() {
 > `OnRequest(name, fn)` 处理 `plugin.ui.rpc` / `plugin.command` · `Call` / `CallInto` 调宿主能力面 ·
 > `DataRead` / `DataWrite` 业务数据面 · `ReportStatus(state, detail)` · `Config()` 读配置 · `Run(ctx)` 主循环。
 
-`plugin.json`（极简启动信息，PLUGIN-LOAD-1 D12）：
+`plugin.ini`（启动描述；宿主发现期唯一读取源）：
 
-```json
-{
-  "id": "hello",
-  "cmd": ["chonkpilot-hello.exe"],
-  "enabled": true,
-  "name": "Hello",
-  "icon": "plug"
-}
+```ini
+[plugin]
+cmd=chonkpilot-hello.exe
 ```
 
-`manifest.json`（完整 manifest：由插件进程自读并在 `plugin.hello` 上报；宿主只校验 `id`）：
+`manifest.json`（完整 manifest：Go 插件 `//go:embed` 进 exe、随 `plugin.hello` 上报；宿主只校验 `id`）：
 
 ```json
 {
@@ -116,10 +118,10 @@ func main() {
 
 ```text
 <级别根>/plugins/<id>/
-  plugin.json      # 必填：极简启动信息（id / cmd / enabled / name / icon）
-  manifest.json    # 必填：完整 manifest（插件自读，hello 上报）
-  <exe>            # 可选：缺省按 chonkpilot-plugin-<id>.exe 约定
-  webui/           # 可选：iframe 页面（只读静态资源）
+  plugin.ini       # 必填：启动描述（[plugin] cmd / args）
+  manifest.json    # Go：构建期 //go:embed 进 exe；Python/Node：随目录自读
+  <exe>            # 必填：plugin.ini 的 cmd 指向它（目录名 = 插件 id）
+  webui/           # 可选：iframe 页面（Go 插件 embed；仅 demo-python 样例留盘）
   README.md        # 可选
 ```
 
@@ -136,16 +138,16 @@ func main() {
 
 ### 2.2 字段
 
-**`plugin.json`（极简；宿主发现期唯一读取源，只校验 ID）**
+**`plugin.ini`（宿主发现期唯一读取源；只校验目录名 = 插件 id）**
 
-| 字段 | 必填 | 说明 |
+| 键 | 必填 | 说明 |
 |------|------|------|
-| `id` | | 目录名；写了必须一致 |
-| `cmd` | | 启动命令：字符串或数组（exe + args）；缺省 `chonkpilot-plugin-<id>.exe` |
-| `enabled` | | 缺省 true；仍以 `<数据根>/plugins/enabled.json`（设置页开关）为最终开关 |
-| `name` / `icon` | | 上报前 UI 展示用（上报后以 manifest 为准） |
+| `[plugin].cmd` | ✅ | 启动命令（可执行体，相对路径按插件目录解析） |
+| `[plugin].args` | | 启动参数；空白分隔，也兼容 JSON 字符串数组（含空格参数用 JSON 数组） |
 
-**`manifest.json`（完整 manifest；插件进程自读，`plugin.hello.manifest` 上报）**
+启用判定走 DB `plugin_state`（设置页开关写入），不在插件目录内声明。
+
+**`manifest.json`（完整 manifest；Go 插件 `//go:embed` 进 exe，`plugin.hello.manifest` 上报）**
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
@@ -175,7 +177,7 @@ func main() {
 
 **硬规则**
 
-1. `plugin.json` 若写 `id` 必须等于目录名（宿主只校验 ID）；上报的 `manifest.id` 必须等于插件 id，否则 hello 失败、进程退出。
+1. 插件目录名 = 插件 id（宿主只校验 ID）；上报的 `manifest.id` 必须等于插件 id，否则 hello 失败、进程退出。
 2. `mcp.mode` **不得为 `stdio`**：插件进程由宿主独占管理，stdlib 会再 spawn 一份并独立 kill。
 3. `mcp.mode=http` 上报的 `url` 必须是 `http://127.0.0.1:<port>`，并带 token。
 4. `webui` 资源只从插件目录 `webui/` 读取；`entry` 不得含 `..`。
@@ -185,12 +187,11 @@ func main() {
 
 ## 3. 生命周期与环境变量
 
-宿主按 `plugin.json` 的 `cmd` spawn，注入：
+宿主按 `plugin.ini` 的 `cmd` / `args` spawn，注入：
 
 | 环境变量 | 说明 |
 |----------|------|
 | `CHONKPILOT_PLUGIN_ADDR` | 插件桥地址（UDS 路径 / `tcp://host:port`） |
-| `CHONKPILOT_PLUGIN_ID` | 插件 id |
 | `CHONKPILOT_PLUGIN_ROOT` | 插件目录（只读资源根） |
 | `CHONKPILOT_PLUGIN_DATA_DIR` | 私有数据目录（可写，`<dataDir>/plugins/<id>/`） |
 | `CHONKPILOT_PLUGIN_CONFIG` | 非密配置 JSON（`<DATA_DIR>/config.json`，宿主写、插件只读） |
@@ -522,7 +523,7 @@ parent.postMessage({ ckPlugin: 1, id: "r1", type: "call", method: "config.get", 
 ### 7.4 插件维护卡片（`ui.actions`）
 
 插件维护视图（工具栏「插件」按钮 / 设置菜单「插件维护」→ `preview-tab-open{kind:'plugin-manager'}`）
-为每个插件渲染一张卡片：**名称 / 版本 / 状态**、**启动命令**（`plugin.json.cmd`），
+为每个插件渲染一张卡片：**名称 / 版本 / 状态**、**启动命令**（`plugin.ini` 的 `cmd`），
 **说明**（`description`）、**启用开关**、**配置按钮**（仅当注册了 `ui.views` 中 `id=config` 的视图）、
 以及插件自己注册的**动作按钮**（如「索引进度」打开进度详情）。
 
@@ -640,15 +641,15 @@ iframe config.set
 
 ```text
 dist/plugins/<id>/
-  plugin.json          # 源：src/initdata/capability/plugins/<id>/plugin.json（极简）
-  manifest.json        # 源：src/initdata/capability/plugins/<id>/manifest.json（完整，插件自读）
+  plugin.ini           # 源：src/initdata/capability/plugins/<id>/plugin.ini（启动命令）
   chonkpilot-<id>.exe  # 源：build/plugin-apps/<id>/（build-plugins.ps1 产出）
-  webui/               # 源：src/initdata/capability/plugins/<id>/webui/
   zvec_c_api.dll       # 仅 codegraph：必须与 exe 同目录（vfts 引擎运行时加载）
 ```
 
+- manifest 已 `//go:embed` 进 exe（唯一源 = `chonkpilot-plugins/<id>/src/manifest.json`）→ 产物**不带** manifest.json；
+  webui 同样 embed 进 exe（`//go:embed all:webui`）→ 产物**不带** webui/。
 - `build-plugins.ps1` → staging `build/plugin-apps/<id>/`；`build-desktop.ps1` **`[4/7] stage plugins`**（2026-11-04 核对，旧称“步骤 4.5”）先复制
-  plugin.json / manifest.json / webui 到 `dist/plugins/<id>/`，再调 `build-plugins.ps1` 把 exe 覆盖进去。
+  `plugin.ini` 到 `dist/plugins/<id>/`（并清掉任何残留 webui/），再调 `build-plugins.ps1` 把 exe 覆盖进去。
 - codegraph 插件 = codegraph 引擎 + vfts 引擎合并（CGO：tree-sitter + zvec），构建脚本已注入 zvec 头/库路径。
 - 禁止把插件私有数据 / 密钥写入产物目录。
 
@@ -749,13 +750,13 @@ dist/plugins/<id>/
 典型插件骨架（≈30 行）：
 
 ```go
-p, _ := pluginsdk.New(pluginsdk.Options{ID: "x", Name: "X", Version: "1.0.0"})
+p, _ := pluginsdk.New(pluginsdk.Options{Manifest: embeddedManifest}) // 身份唯一来源 = 内嵌 manifest（id/name/version）
 p.Tool("x_do", "做事", schema, func(ctx context.Context, args map[string]any, cx pluginsdk.CallContext) (any, error) {
     text, err := p.LLM(ctx, pluginsdk.Str(args["prompt"]), "", 2*time.Minute)
     return map[string]any{"text": text}, err
 })
 p.HotTool("x_do")
-p.OnRequest("ping", pluginsdk.PingHandler("1.0.0"))
+p.OnRequest("ping", pluginsdk.PingHandler(p.Version()))
 p.Run(context.Background())
 ```
 

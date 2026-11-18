@@ -204,7 +204,6 @@ export const MsgTopics = {
   toolNotify: 'tool-notify',
   mcpToolsList: 'mcp-tools-list',
   mcpToolsCall: 'mcp-tools-call',
-  mcpToolsWait: 'mcp-tools-wait',
   mcpToolsRegister: 'mcp-tools-register',
   mcpToolsUnregister: 'mcp-tools-unregister',
   mcpPromptsList: 'mcp-prompts-list',
@@ -250,7 +249,6 @@ export const MsgTopics = {
 /** 客户端 topic（schema clientTopic；前端 type ↔ 总线相对主题 的键）。 */
 export const MsgClientTopics = {
   toolsList: 'tools-list',
-  mcpToolsWait: 'mcp-tools-wait',
   promptsList: 'prompts-list',
   resourcesList: 'resources-list',
 }
@@ -525,7 +523,6 @@ export const FieldKeys = {
   user_dict: 'user_dict',
   user_dict_path: 'user_dict_path',
   values: 'values',
-  waiting: 'waiting',
   widget_id: 'widget_id',
   window: 'window',
   window_id: 'window_id',
@@ -2460,13 +2457,6 @@ export const McpToolsCallKeys = {
   structuredContent: 'structuredContent',
 }
 
-/** mcp-tools-wait 字段键（payload/result/event 合并去重）。 */
-export const McpToolsWaitKeys = {
-  task_id: 'task_id',
-  tool_call_id: 'tool_call_id',
-  waiting: 'waiting',
-}
-
 /** mcp-tools-register 字段键（payload/result/event 合并去重）。 */
 export const McpToolsRegisterKeys = {
   async: 'async',
@@ -2607,11 +2597,15 @@ export const McpGatewayReloadKeys = {
 
 /** mcp-tasks-report 字段键（payload/result/event 合并去重）。 */
 export const McpTasksReportKeys = {
+  content: 'content',
   instance_id: 'instance_id',
+  isError: 'isError',
   parent: 'parent',
+  resultType: 'resultType',
   result_summary: 'result_summary',
   session: 'session',
   state: 'state',
+  structuredContent: 'structuredContent',
   task_id: 'task_id',
   tool: 'tool',
   tool_call_id: 'tool_call_id',

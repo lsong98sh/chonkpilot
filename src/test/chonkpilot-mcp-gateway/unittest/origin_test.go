@@ -18,8 +18,8 @@ import (
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	mcpgw "github.com/lsong98sh/chonkpilot-agent/gateway"
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
+	mcpgw "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // metaEcho 是回显 `_meta["chonkpilot"]` 的下游 server（记录最近一次收到的命名空间）。
@@ -152,7 +152,7 @@ func TestServersRegisterOrigin(t *testing.T) {
 	bus := startOriginGW(t, nil) // 无静态下游，经消息面动态接入
 
 	// 缺省（不带 origin）→ user
-	callMethod(t, bus, "servers/register", map[string]any{"name": "u1", "url": echo.ts.URL})
+	callMethod(t, bus, "servers/register", map[string]any{"name": "u1", "mcp_server": map[string]any{"url": echo.ts.URL}})
 	res := callWithCtx(t, bus, "u1_echo_meta")
 	if res["isError"] == true {
 		t.Fatalf("u1 调用失败: %v", textOf(t, res))
@@ -163,7 +163,7 @@ func TestServersRegisterOrigin(t *testing.T) {
 	callMethod(t, bus, "servers/unregister", map[string]any{"name": "u1"})
 
 	// 显式 builtin → 注入
-	callMethod(t, bus, "servers/register", map[string]any{"name": "b1", "url": echo.ts.URL, "origin": "builtin"})
+	callMethod(t, bus, "servers/register", map[string]any{"name": "b1", "mcp_server": map[string]any{"url": echo.ts.URL}, "origin": "builtin"})
 	res = callWithCtx(t, bus, "b1_echo_meta")
 	if res["isError"] == true {
 		t.Fatalf("b1 调用失败: %v", textOf(t, res))

@@ -73,7 +73,7 @@ def s_tool_cfg_01(env):
             env.note("手动异步档位未提供", "task_run 当前只提供 3 档（旧套件期望四档）")
         env.check("干净态保存按钮禁用", _save_disabled(env) is True, _save_disabled(env))
 
-        cfg = {"mode": "always", "threshold": 5, "hard_timeout": 0, "touch_files": True}
+        cfg = {"mode": "async", "threshold": 5, "hard_timeout": 0, "touch_files": True}
         env.req("data-user-config-save", {"data": {"tool_async": json.dumps(
             {tool: cfg}, ensure_ascii=False)}})
         env.js("window.mq.emit('config-refresh'); 'ok'")
@@ -82,12 +82,12 @@ def s_tool_cfg_01(env):
                         "usr tool_async 回读", timeout=20)
         env.check("tool_async 逐字段回读",
                   (back.get("mode"), back.get("threshold"), back.get("hard_timeout"),
-                   back.get("touch_files")) == ("always", 5, 0, True), back)
+                   back.get("touch_files") ) == ("async", 5, 0, True), back)
         meta = next((t for t in ((env.req("tools-list", {}) or {}).get("tools") or [])
                      if isinstance(t, dict) and t.get("name") == tool), {})
         cur = ((meta.get("_meta") or {}).get("async") or "")
         if cur:
-            env.check("tools-list._meta.async 跟随配置", cur == "always", cur)
+            env.check("tools-list._meta.async 跟随配置", cur == "async", cur)
         else:
             env.note("tool_async 效果 PENDING", "tools-list 未提供 _meta.async（旧套件同样登记 PENDING）")
         env.req("data-user-config-delete", {"id": "tool_async"})

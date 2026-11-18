@@ -132,7 +132,6 @@ func mergeGatewayServers(system, entries []facade.McpServer) []mcpgateway.Server
 			Cwd:         e.Cwd,
 			HotTools:    e.HotTools,
 			Isolate:     e.Isolate, // nil = 未设置 → gateway 按 transport 推断
-			Sandbox:     e.Sandbox, // nil/未设置 = 不隔离（默认兼容）；仅 stdio 的 spawn 下发策略
 			Scope:       "",        // global（D-18 ①）
 			Origin:      originByName[name],
 		})
@@ -170,7 +169,6 @@ func userMCPServerSpec(e mcpgateway.ServerEntry) map[string]any {
 		"hot_tools":    e.HotTools,
 		"timeout":      e.TimeoutSec,
 		"isolate":      e.Isolate,     // nil = 未设置（JSON null）→ gateway 按 transport 推断
-		"sandbox":      e.Sandbox,     // nil = 未设置（JSON null）→ 不隔离（仅 stdio spawn 下发策略）
 		"sandbox_dirs": e.SandboxDirs, // 可写白名单快照（security-* → {dir}；C1 起只写，递归）
 		"origin":       mcpgateway.OriginUser,
 	}

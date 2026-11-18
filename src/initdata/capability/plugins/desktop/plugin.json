@@ -1,7 +1,0 @@
-{
-  "id": "desktop",
-  "cmd": ["chonkpilot-plugin-desktop.exe"],
-  "enabled": true,
-  "name": "桌面操作",
-  "icon": "window"
-}

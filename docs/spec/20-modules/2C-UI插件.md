@@ -49,8 +49,8 @@
 
 ## 2. manifest 契约（`manifest.json` 的 `ui` 段；PLUGIN-LOAD-1 D12）
 
-> `plugin.json` 只保留启动信息（`id/cmd/enabled/name/icon`）；完整 manifest（含本节的 `ui` 段）
-> 在 `manifest.json`，由插件进程在 `plugin.hello` 上报给宿主。
+> `plugin.ini` 只保留启动命令（`[plugin] cmd/args`）；完整 manifest（含本节的 `ui` 段）
+> 随插件 exe 内嵌（Go `//go:embed`）或由插件自读盘，由插件进程在 `plugin.hello` 上报给宿主。
 
 > 校验实现：`chonkpilot-framework/plugin/src/mgr/manifest.go`（发现期只校验 ID；上报 manifest 的 `id` 必须严格等于插件 id，为空/不等即拒绝——2026-11-05 收紧，其余字段只合并不校验）；运行时增补：UDS `plugin.ui.register`（`mgr.registerUI` → 覆盖 `p.ui` 并重播 `plugin-registered`）。
 

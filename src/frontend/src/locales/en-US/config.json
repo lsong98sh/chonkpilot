@@ -234,7 +234,7 @@
     "sandboxEmptyHint": "Server-level sandbox: effective only when the switch is on + transport is stdio + the trust-dir list is non-empty; an empty trust-dir config means NO isolation is applied (it is NOT an all-reject) and is independent of per-instance isolation (no need to enable it first); executor-level directory isolation is pending L6 (not applied yet, so empty dirs impose no restriction either).",
     "sandboxStdioOnly": "Only stdio & spawn MCP servers can be sandboxed; http/sse point at a fixed port — neither isolation nor sandboxing is possible",
     "sandboxMovedHint": "Configure this server's sandbox switch under Settings → Tool Sandbox",
-    "sandboxMovedTip": "This dialog no longer exposes a sandbox switch: the effective switch is the per-server setting in Settings → Tool Sandbox (usr key tool_sandbox). The sandbox field on the MCP entry is kept only as migration input for legacy configs.",
+    "sandboxMovedTip": "This dialog does not expose a sandbox switch: configure it per server in Settings → Tool Sandbox (usr key tool_sandbox). MCP entries no longer contain a sandbox field.",
     "toolSandboxSummary": "Plus {n} sandbox switches (built-in executors / external MCPs)",
     "gotoToolSandbox": "Go to tool sandbox config",
     "hotToolsAllLabel": "All tools (every tool is hot)",

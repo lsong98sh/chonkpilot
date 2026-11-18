@@ -50,6 +50,11 @@ func (s *Server) onToolRetry(_ context.Context, _ string, v *mq.Value) error {
 		v.Result = map[string]any{"ok": false, "error": "tool not found"}
 		return nil
 	}
+	// 重跑前把 interrupted 节点复位为 running（复用原节点；非 interrupted 不可重跑）。
+	if !s.tasks.retryReset(node.TaskID) {
+		v.Result = map[string]any{"ok": false, "error": "tool not found（目标节点不是 interrupted）"}
+		return nil
+	}
 	// 上下文按节点归属还原（work_dir/data_dir 取 instance 绑定）；树归属同下发（I-90：
 	// top_session = 节点所属主会话，parent = 被重试的 llm 侧节点本身）。
 	ctxMsg := mcpgateway.Context{
@@ -81,7 +86,7 @@ func (s *Server) onToolRetry(_ context.Context, _ string, v *mq.Value) error {
 		return nil
 	}
 	if gwTaskID != "" {
-		// 转异步 / 待裁决（pending 或 awaiting）：节点挂 gateway 任务等待完成回报
+		// 转异步（pending）：节点挂 gateway 任务等待完成回报
 		// （onGatewayTaskDone 续轮/广播）；不得在此落 done 终态（结果仍经 mcp-tasks-report 交付）。
 		s.tasks.setGwTask(node.TaskID, gwTaskID)
 		s.tasks.setState(node.TaskID, TaskStatePending)
@@ -122,6 +127,9 @@ func (s *Server) retryTarget(req retryReq) *TaskNode {
 		}
 		if req.Session != "" && n.SessionID != req.Session {
 			return nil // 会话归属校验
+		}
+		if n.State != TaskStateInterrupted {
+			return nil // 只允许重试 interrupted；done/error/cancelled/running 均不可重跑
 		}
 		return n
 	}
@@ -361,8 +369,6 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 		denyTools:         denyTools,
 		maxToolIterations: llmMaxIter,
 		compressTrigger:   compressTriggerTokensOf(s.prjConfigValues(instanceID, compressTriggerTokensKey)),
-		// 异步看门狗超时同源加载（否则恢复轮回落缺省、忽略 prj 键 pending_task_timeout_sec）。
-		pendingTaskTimeout: pendingTaskTimeoutOf(s.prjConfigValues(instanceID, pendingTaskTimeoutKey)),
 		// 重试/恢复的 turn 强制全量拼接（即使落在"非完整区"范围）。
 		forceFull: true,
 		// 恢复轮标记（A4-P4b-0：恢复轮由引擎执行；断链由

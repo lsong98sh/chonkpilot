@@ -3,7 +3,7 @@
 
 驱动：POST /eval 执行 window.mq.emit('llm-start', {session_id, turn, q, llm, think, effort, scenario_id})
 轮次确权：主会话 turn-start（mq-only；llm-started 兼容事件已无源，不再等待）。
-断言：window.mq.on 捕获 turn-start / llm-token / llm-tool-call / tool-pair / tool-result /
+断言：window.mq.on 捕获 turn-start / llm-tool-call / tool-pair / tool-result /
       llm-receive / complete / llm-complete 事件链；DOM 断言消息落点（.message-item）。
       原 G-11 的 dsl_run 委派/批量/子会话/级联取消用例（五.4/5/6/7 + C13/C18）**随 GATEWAY-2 L1
       删除 DSL 而退役**，现改断言现行等价能力 = 普通工具调用的任务节点（tasks.started/updated/
@@ -55,7 +55,7 @@ _ensure_mock_llm()
 _SEQ = [0]
 
 
-EVENTS = ["turn-start", "llm-started", "llm-token", "llm-tool-call", "tool-pair", "tool-result",
+EVENTS = ["turn-start", "llm-started", "llm-tool-call", "tool-pair", "tool-result",
           "llm-receive", "complete", "llm-complete", "error"]
 
 # 工具任务节点场景（原 dsl_run 委派/编排）额外断言的任务树 / 轮次事件。
@@ -195,6 +195,18 @@ def poll_find(topic, pred, max_wait=60, interval=0.4):
         time.sleep(interval)
 
 
+def wait_receive_text(max_wait=60):
+    """等首条 llm-receive(type=text)（唯一权威流式正文；旧 llm-token 已删除）。"""
+    def _is_text(p):
+        body = p.get("payload") if isinstance(p.get("payload"), dict) else {}
+        return p.get("type") == "text" and bool(body.get("text"))
+
+    p = poll_find("llm-receive", _is_text, max_wait=max_wait)
+    if not p:
+        raise TestError("未收到 llm-receive(type=text)")
+    return p
+
+
 def wait_until(pred, desc, max_wait=90, interval=0.4):
     deadline = time.time() + max_wait
     while time.time() < deadline:
@@ -205,9 +217,9 @@ def wait_until(pred, desc, max_wait=90, interval=0.4):
 
 
 def _canon_tool(p):
-    """任务/工具事件载荷的工具名按契约名归一（剥离网关自节点前缀 self_）。"""
+    """任务/工具事件载荷的工具名（当前暴露名 = 原名）。"""
     t = p.get("tool") or ""
-    return t[5:] if t.startswith("self_") else t
+    return t
 
 
 def _wait_main_turn_start(sid, max_wait=60):
@@ -230,7 +242,7 @@ def _start_and_main_session(sid, q):
 
 
 def case_plain_chat():
-    """五.2 普通对话：llm-started → llm-token → llm-complete；DOM 有 user/assistant 气泡。"""
+    """五.2 普通对话：llm-receive → llm-complete；DOM 有 user/assistant 气泡。"""
     c.eval('if(!window.__chonkEvents) window.__chonkEvents={events:[],map:{}};')
     c.mq_on_capture(EVENTS)
     sid = create_session()
@@ -239,10 +251,8 @@ def case_plain_chat():
     ts = confirm_turn(sid)  # mq-only 轮次确权（llm-started 兼容事件已无源）
     if not ts.get("turn"):
         raise TestError("turn-start 缺 turn")
-    # 流式 token
-    tokens = wait_event("llm-token", n=1, max_wait=60)
-    if not tokens:
-        raise TestError("未收到 llm-token")
+    # 流式正文（llm-receive 是唯一权威路径；旧 llm-token 兼容事件已删除）
+    wait_receive_text()
     # 终结 ack（status 兼容新旧协议枚举：complete/completed/ok/success）
     done = wait_event("llm-complete", max_wait=60)
     if done[0]["payload"].get("status") not in (None, "ok", "success", "completed", "complete"):
@@ -378,8 +388,8 @@ def case_queue():
     # 启动一个忙碌 turn（慢速流式 ≈10s）
     start_turn(sid, "please call slow-stream")
     confirm_turn(sid)
-    # 等流式真正开始（首个 llm-token）→ 此时相位 = 流式（不可插入）
-    wait_event("llm-token", max_wait=60)
+    # 等流式正文真正开始（首个 llm-receive type=text）→ 此时相位 = 流式（不可插入）
+    wait_receive_text()
     # 忙碌中入队 3 条
     for i in range(1, 4):
         c.mq_emit("message-queue", {

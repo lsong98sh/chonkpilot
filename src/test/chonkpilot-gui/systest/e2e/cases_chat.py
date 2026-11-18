@@ -15,7 +15,7 @@ from .workspace import SEED, ensure_demo_file
 
 def _canon(tool):
     t = tool or ""
-    return t[5:] if t.startswith("self_") else t
+    return t
 
 
 def _payloads(env, topic):
@@ -44,9 +44,13 @@ def s_chat_01_turn_roundtrip(env):
     env.check("llm-complete 终态 ok", (result.get("complete") or {}).get("status")
               in (None, "", "ok", "success", "completed", "complete"), result.get("complete"))
 
+    receives = _payloads(env, "llm-receive")
     tokens = []
-    for p in _payloads(env, "llm-token") + _payloads(env, "llm-receive"):
-        txt = p.get("text") or p.get("delta") or p.get("content") or ""
+    for p in receives:
+        if p.get("type") != "text":
+            continue
+        body = p.get("payload") if isinstance(p.get("payload"), dict) else {}
+        txt = body.get("text") or p.get("text") or ""
         if isinstance(txt, str) and txt:
             tokens.append(txt)
     # 传输形态（逐 token 流式 / 一次性 llm-receive）取决于 provider 配置；本测试点判据放在
@@ -56,7 +60,7 @@ def s_chat_01_turn_roundtrip(env):
     final_text = complete.get("text") or ""
     env.check("llm-complete 携带回复正文", bool(final_text), repr(final_text)[:80])
     env.check("回复正文含用户哨兵（mock 回显）", mark in final_text, final_text[:160])
-    stream_blob = json.dumps({"events": _payloads(env, "llm-token") + _payloads(env, "llm-receive"),
+    stream_blob = json.dumps({"events": receives,
                               "complete": complete}, ensure_ascii=False)
     env.check("事件/终态合并文本含哨兵", mark in stream_blob, stream_blob[:200])
 

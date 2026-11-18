@@ -27,12 +27,11 @@ import (
 )
 
 // 任务节点状态（与 21-llm-server §4.3 同口径）；终态 = done/error/cancelled/interrupted。
-// awaiting / detached 为 gateway 侧执行态（P3 纳入）；启动恢复对它们与 pending/running 一视同仁
+// detached 为 gateway 侧执行态（P3 纳入）；启动恢复对它与 pending/running 一视同仁
 // （一律标 interrupted，21 §8.1-3）。
 const (
 	StatePending     = "pending"     // 已提交未执行（gateway 返回 pending）
 	StateRunning     = "running"     // 执行中
-	StateAwaiting    = "awaiting"    // 超时待用户裁决（gateway 执行态，P3 落库）
 	StateDetached    = "detached"    // 已转后台（gateway 执行态，P3 落库）
 	StateDone        = "done"        // 成功（终态）
 	StateError       = "error"       // 失败（终态）
@@ -66,7 +65,7 @@ type Record struct {
 	Title        string `json:"title"`         // 展示名（simplified 优先，回落 name）；与 tasktree.title 同源
 	ArgsDigest   string `json:"args_digest"`   // 参数摘要（sha256 前 16 hex；空 = 无）
 	ResultDigest string `json:"result_digest"` // 结果 / 错误摘要（sha256 前 16 hex）
-	ExecJSON     string `json:"exec_json"`     // 执行态扩展（P3-① 起写：phase/state/detail（detached 的 mode/threshold_s、awaiting 的 timeout_s/options）/at）
+	ExecJSON     string `json:"exec_json"`     // 执行态扩展（P3-① 起写：phase/state/detail（detached 的 mode/threshold_s）/at）
 	CreatedAt    string `json:"created_at"`    // 创建时刻（= 事件 started_at，与 tasktree.created_at 同源）
 	StartedAt    string `json:"started_at"`    // 开始时刻
 	UpdatedAt    string `json:"updated_at"`    // 层内最近写入时刻
@@ -97,12 +96,12 @@ type Exec struct {
 // frontVisibleStatus 是**前端可见状态**口径（P3 相位门控）：权威行 `status` 字段 = 前端渲染用
 // 状态（前端只读它：`SessionTreeNode.vue` 仅对 running 显示 spinner、`SessionTree.vue` /
 // `TaskDetailView.vue` / `useTaskView.js` 亦按 running 判定在飞）；`state` = 层内**权威状态**（真实相位）。
-// P3 新增的两类执行态 detached / awaiting 在前端**没有对应取值** → 直接写入 status 会让节点由「转圈」
+// P3 新增的执行态 detached 在前端**没有对应取值** → 直接写入 status 会让节点由「转圈」
 // 变为「无状态图标」（前端可见行为变化，违反 P3「前端零改动」）→ 一律呈现为在飞 running（与 P3 之前
 // 同值：此前这两类相位不会进入层）。真实相位只落 `state` 与 `exec_json.phase/detail`。
 func frontVisibleStatus(state string) string {
 	switch state {
-	case StateDetached, StateAwaiting:
+	case StateDetached:
 		return StateRunning
 	}
 	return state
@@ -130,7 +129,7 @@ func immutableState(state string) bool {
 // resumableState 判断状态是否属于「重启遗留、需标 interrupted」（21 §8.1-3 的非终态集合）。
 func resumableState(state string) bool {
 	switch state {
-	case StatePending, StateRunning, StateAwaiting, StateDetached:
+	case StatePending, StateRunning, StateDetached:
 		return true
 	}
 	return false
@@ -139,7 +138,7 @@ func resumableState(state string) bool {
 // knownState 判断状态是否是层认可的状态（未知状态一律拒绝，避免脏值入库）。
 func knownState(state string) bool {
 	switch state {
-	case StatePending, StateRunning, StateAwaiting, StateDetached,
+	case StatePending, StateRunning, StateDetached,
 		StateDone, StateError, StateCancelled, StateInterrupted:
 		return true
 	}
@@ -169,8 +168,8 @@ func legalTransition(from, to string) bool {
 // execStateDowngrade 判定一次写入是否**把既有执行态降级为粗粒度状态**（P3 修正 ②；
 // I-100 收严：interrupted 纳入受保护集合）。
 //
-// 状态优先级格：**终态(done/error/cancelled/interrupted) > 执行态(detached/awaiting) > 粗粒度(pending/running)**。
-// incoming pending/running 落在既有 detached/awaiting 上即为降级 → 调用方**保留既有状态**
+// 状态优先级格：**终态(done/error/cancelled/interrupted) > 执行态(detached) > 粗粒度(pending/running)**。
+// incoming pending/running 落在既有 detached 上即为降级 → 调用方**保留既有状态**
 // （其余字段照常合并/落库；不返回错误，避免丢掉同载荷的字段补全）。终态**不在本规则之列**：
 // 终态必须覆盖执行态（覆盖时 exec_json 由 commitAgainst 的合并语义保留）。
 //
@@ -179,7 +178,7 @@ func legalTransition(from, to string) bool {
 // 见 legalTransition 与 layer_test.TestInterruptedResumable），故对 interrupted 仅拦 `pending`。
 func execStateDowngrade(oldState, newState string) bool {
 	switch oldState {
-	case StateDetached, StateAwaiting:
+	case StateDetached:
 		return newState == StatePending || newState == StateRunning
 	case StateInterrupted:
 		return newState == StatePending

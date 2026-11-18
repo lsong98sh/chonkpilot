@@ -53,7 +53,7 @@
 
 - 保存 prj `security-*` 后，llm server 订阅既有主题 `data-prj-security-refresh` → 重跑 `loadExecConfig` + `reconcileUserMCPs`（`src/lib/llm/server/subscribe.go`、`execconfig.go`、`boot.go`）；**零新增 MQ 主题**。
 - 外部 MCP 的沙箱开关变化 → `Gateway.SetSandboxOverrides` 异步作废/重连（`chonkpilot-agent/gateway/src/tooloverride.go`）；仅 stdio 下游。
-- usr `tool_sandbox` 仍按 `{"executors":{...},"mcps":{...}}` 解析，但**内置 executor 行已全部退场**（`src/frontend/src/composables/useToolSandbox.js` 的 `EXECUTOR_UNITS = []`），当前只剩 `mcps` 维度；旧形状读取时迁移。usr `mcps[].sandbox` 仅为写入口兼容，开关来源已收敛到 `tool_sandbox.mcps`。
+- usr `tool_sandbox` 仍按 `{"executors":{...},"mcps":{...}}` 解析，但**内置 executor 行已全部退场**（`src/frontend/src/composables/useToolSandbox.js` 的 `EXECUTOR_UNITS = []`），当前只剩 `mcps` 维度；旧形状拒绝。usr `mcps[].sandbox` 已移除，开关来源唯一 = `tool_sandbox.mcps`。
 
 ### 0.7 符号链接与审计
 

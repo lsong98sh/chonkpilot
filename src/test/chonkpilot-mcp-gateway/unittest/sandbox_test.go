@@ -35,10 +35,7 @@ func TestSandboxRuleParseAndWritableRoots(t *testing.T) {
 	if rules[0].Dir != `C:\work\proj` {
 		t.Fatalf("首条规则解析不符：%+v", rules[0])
 	}
-	// 旧值 writable=false 不再产生约束（只写白名单：列出即可写）。
-	if rules[1].Writable {
-		t.Fatalf("旧值 writable 字段应按原样解析（不参与过滤）：%+v", rules[1])
-	}
+	// 旧值 writable 字段已移除；只写白名单：列出即可写（全部目录进 WritableRoots）。
 
 	roots := mcpgw.WritableRoots(rules)
 	if len(roots) != 2 || roots[0] != `C:\work\proj` || roots[1] != `C:\work\proj2` {

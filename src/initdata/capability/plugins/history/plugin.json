@@ -1,7 +1,0 @@
-{
-  "id": "history",
-  "cmd": ["chonkpilot-history.exe"],
-  "enabled": true,
-  "name": "文件历史",
-  "icon": "clock"
-}

@@ -6,9 +6,9 @@
  * 锁定接线契约，防回归到已移除的 gateway 方法面 `mcp-tasks-cancel`（该主题已删 → 总线上无订阅方、
  * 静默丢弃 = 操作点了没反应，正是本次要修的断点）。覆盖：
  *   ① 事件名：event-names.js `taskStop = 'task-stop'`，不再声明 `mcp-tasks-cancel`；
- *   ② 停止动作：MessageItem.vue `arbitrationCancel` 发 EventNames.taskStop；
+ *   ② 停止动作：MessageItem.vue `stopTool` 发 EventNames.taskStop；
  *      载荷优先 `{task_id}`（server 任务节点 id），无则回退 `{tool_call_id}`；
- *   ③ 显示条件：`canCancel` 覆盖所有 pending/running 工具（不再只限裁决态）；
+ *   ③ 显示条件：`canCancel` 覆盖所有 pending/running 工具；
  *   ④ i18n：停止失败提示 `chat.tool_stop_failed` 双语存在且含 {error} 占位。
  *
  * 注：本文件放在 src 之外（frontend/test/），以免 node 内置模块导入进入 tsconfig 对 src 下
@@ -33,8 +33,8 @@ test('event-names：taskStop = task-stop，且不再声明已移除的 mcp-tasks
 
 test('MessageItem：停止动作发 task-stop（tool_call_id 优先 / task_id 回退）', () => {
   const vue = read('views/chat/MessageItem.vue')
-  const m = vue.match(/async function arbitrationCancel\s*\(\)\s*\{[\s\S]*?\n\}/)
-  assert.ok(m, '未找到 arbitrationCancel')
+  const m = vue.match(/async function stopTool\s*\(\)\s*\{[\s\S]*?\n\}/)
+  assert.ok(m, '未找到 stopTool')
   assert.match(
     m[0],
     /const payload = callId \? \{ tool_call_id: callId \} : \{ task_id: taskId \}/,

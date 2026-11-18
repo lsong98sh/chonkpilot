@@ -1,7 +1,0 @@
-{
-  "id": "browser",
-  "cmd": ["chonkpilot-plugin-browser.exe"],
-  "enabled": true,
-  "name": "浏览器",
-  "icon": "globe"
-}

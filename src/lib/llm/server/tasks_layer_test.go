@@ -138,7 +138,7 @@ func TestTaskLayerCancelAuthority(t *testing.T) {
 	}
 
 	f := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
-		"req_id": "r-layer-stop", "task_id": node.TaskID,
+		"req_id": "r-layer-stop", "instance_id": "ins-test", "task_id": node.TaskID,
 	}))
 	v := f.Wait()
 	if res, _ := v.Result.(map[string]any); res != nil {
@@ -162,96 +162,6 @@ func TestTaskLayerCancelAuthority(t *testing.T) {
 	// 终态后层判定为不可取消 → 二次 task-stop 不重复广播
 	if st, ok := s.taskLayer.State(node.TaskID); !ok || st != TaskStateCancelled {
 		t.Fatalf("层状态应为 cancelled: %q ok=%v", st, ok)
-	}
-}
-
-// TestTaskStopDuringAwaiting：I-106 回归 —— **待裁决（awaiting）中取消** → 层权威行终态 `cancelled`
-// （不残留 `awaiting`）。症状路径（41 I-106，2026-09-19）：manual 工具到超时点 → 层 `state=awaiting`
-// （exec 句柄已绑）→ 前端任务区裁决条「取消」发 `task-stop{task_id}` → 层判定可取消（awaiting 非
-// 不可逆终态）→ 层回调经进程内 sink `CancelExec(gw_task_id)` 真打断 + 广播 `tasks.done{cancelled}`
-// → 层/库行终态 `cancelled`，`data-tasktree-tasks` 不再输出 `awaiting` 明细（裁决条消隐）。
-//
-// 定性依据（I-106）：本用例锁定「取消在 awaiting 下必须生效」的产品契约；L4 用例 G 的偶发失败
-// 已定为**测试资产时序**（读快照与 task-stop 请求并发），非本契约失效（见 42 §2 (120)）。
-func TestTaskStopDuringAwaiting(t *testing.T) {
-	llm := mockLLMServer()
-	defer llm.Close()
-	s := newTestServer(t, llm)
-	startTurn(t, s, "s-aw", "t-aw")
-	te := watchTasks(t, s.bus)
-	resetExecControl()
-
-	node, err := s.tasks.start(&TaskNode{
-		Tool: "core_file_read", Kind: TaskKindTool, SessionID: "s-aw", TurnID: "t-aw",
-		InstanceID: "ins-test", TopSession: "s-aw", Name: "转后台", ToolCallID: "tc-aw",
-	})
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	te.wait(t, "started", func() bool {
-		te.mu.Lock()
-		defer te.mu.Unlock()
-		return len(te.started) == 1
-	})
-
-	// gateway 执行态上报（真实装配 = taskExecSink → Layer.OnExecState）：started → awaiting（manual 超时点）。
-	sink := &taskExecSink{layer: s.taskLayer}
-	sink.OnExecState(mcpgateway.ExecState{
-		GWTaskID: "tk-aw-1", InstanceID: "ins-test", TopSession: "s-aw", Tool: "core_file_read",
-		ToolCallID: "tc-aw", Phase: mcpgateway.ExecPhaseStarted, State: "running",
-	})
-	sink.OnExecState(mcpgateway.ExecState{
-		GWTaskID: "tk-aw-1", InstanceID: "ins-test", TopSession: "s-aw", ToolCallID: "tc-aw",
-		Phase: mcpgateway.ExecPhaseAwaiting, State: "running",
-		Detail: map[string]any{"mode": "manual", "timeout_s": 1, "options": []string{"detach", "cancel"}},
-	})
-
-	// 前置：层权威行 = awaiting，且前端任务区（data-tasktree-tasks）输出 awaiting 明细。
-	row := waitTaskRow(t, s, "s-aw", node.TaskID, func(row map[string]any) bool {
-		return str(row["state"]) == tasklayer.StateAwaiting
-	})
-	if str(row["state"]) != tasklayer.StateAwaiting {
-		t.Fatalf("前置：层行应为 awaiting: %+v", row)
-	}
-	if st, ok := s.taskLayer.State(node.TaskID); !ok || st != tasklayer.StateAwaiting {
-		t.Fatalf("前置：层热视图应为 awaiting: %q ok=%v", st, ok)
-	}
-	if aw := tasksViewItem(t, s, "s-aw", node.TaskID)["awaiting"]; aw == nil {
-		t.Fatalf("前置：data-tasktree-tasks 应输出 awaiting 明细: %+v",
-			tasksViewItem(t, s, "s-aw", node.TaskID))
-	}
-
-	// 取消（前端裁决条「取消」同一入口）：task-stop{task_id}。
-	v := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
-		"req_id": "r-aw-stop", "instance_id": "ins-test", "task_id": node.TaskID,
-	})).Wait()
-	res, _ := v.Result.(map[string]any)
-	if v.Err() != nil || res == nil {
-		t.Fatalf("task-stop(awaiting) 失败: err=%v res=%+v", v.Err(), v.Result)
-	}
-	if ok, _ := res["cancelled"].(bool); !ok || str(res["task_id"]) != node.TaskID {
-		t.Fatalf("task-stop ack=%+v want cancelled=true task_id=%s", res, node.TaskID)
-	}
-	// 真打断：层 → 进程内 sink CancelExec(gw_task_id)
-	if got := execCancelledRefs(); len(got) != 1 || got[0] != "tk-aw-1" {
-		t.Fatalf("sink.CancelExec=%v want [tk-aw-1]", got)
-	}
-	// 终态收敛：层权威行 cancelled（不残留 awaiting）+ 广播 tasks.done{cancelled}
-	row = waitTaskRow(t, s, "s-aw", node.TaskID, func(row map[string]any) bool {
-		return str(row["state"]) == tasklayer.StateCancelled
-	})
-	if str(row["state"]) != tasklayer.StateCancelled {
-		t.Fatalf("取消后层行应为 cancelled: %+v", row)
-	}
-	te.wait(t, "cancelled", func() bool {
-		te.mu.Lock()
-		defer te.mu.Unlock()
-		d := te.done[node.TaskID]
-		return d != nil && d["state"] == TaskStateCancelled
-	})
-	// 前端任务区：awaiting 明细随终态消失（裁决条不再渲染）
-	if item := tasksViewItem(t, s, "s-aw", node.TaskID); item["awaiting"] != nil {
-		t.Fatalf("取消后 data-tasktree-tasks 不应再输出 awaiting: %+v", item)
 	}
 }
 
@@ -451,7 +361,7 @@ func TestTaskVerifyMethod(t *testing.T) {
 }
 
 // TestTaskExecSinkExecDetailReadable：P3-①/② llm 侧接线 —— 装配注入的 `taskExecSink`
-// （= gateway `Params.ExecSink` 的实现）把执行态落层权威表（exec_json 含 detached/awaiting 明细）：
+// （= gateway `Params.ExecSink` 的实现）把执行态落层权威表（exec_json 含 detached 明细）：
 //
 //	① 执行态命中既有节点（tool_call_id 补登记 exec 映射）→ 状态按既有枚举映射、**无重复行**；
 //	② `data-tasktree-tasks`（前端任务区）可读到 `state` / `exec_json` 明细（此前该项为空缺）；
@@ -483,16 +393,11 @@ func TestTaskExecSinkExecDetailReadable(t *testing.T) {
 	})
 	sink.OnExecState(mcpgateway.ExecState{
 		GWTaskID: "tk-0001", InstanceID: "ins-test", TopSession: "s-p3", ToolCallID: "tc-p3",
-		Phase: mcpgateway.ExecPhaseAwaiting, State: "running",
-		Detail: map[string]any{"mode": "manual", "timeout_s": 1, "options": []string{"detach", "cancel"}},
-	})
-	sink.OnExecState(mcpgateway.ExecState{
-		GWTaskID: "tk-0001", InstanceID: "ins-test", TopSession: "s-p3", ToolCallID: "tc-p3",
 		Phase: mcpgateway.ExecPhaseDetached, State: "running",
 		Detail: map[string]any{"mode": "manual"},
 	})
 
-	// ③ 层权威状态（P3-②；awaiting → awaiting、detached → detached，均为层既有枚举）
+	// ③ 层权威状态（P3-②；detached 为层既有枚举）
 	if st, ok := sink.ExecStateOf("tk-0001"); !ok || st != "detached" {
 		t.Fatalf("ExecStateOf = %q ok=%v want detached", st, ok)
 	}
@@ -527,8 +432,8 @@ func TestTaskExecSinkExecDetailReadable(t *testing.T) {
 	}
 }
 
-// TestTaskExecPhaseFrontVisibleUnchanged：P3 **相位门控**（存疑 1 收口）——detached / awaiting 两类
-// 新增执行态不得改变**前端可见状态**，经前端可见路径（`data-tasktree-tasks` / `data-tasktree-list`
+// TestTaskExecPhaseFrontVisibleUnchanged：P3 **相位门控**（存疑 1 收口）——detached
+// 执行态不得改变**前端可见状态**，经前端可见路径（`data-tasktree-tasks` / `data-tasktree-list`
 // 的输出）验证：
 //
 //	① 两个路径读到的 `status` **恒为 running**（与 P3 之前同值；前端只认 running 显示 spinner）；
@@ -559,8 +464,6 @@ func TestTaskExecPhaseFrontVisibleUnchanged(t *testing.T) {
 		phase, wantState string
 		detail           map[string]any
 	}{
-		{mcpgateway.ExecPhaseAwaiting, "awaiting",
-			map[string]any{"mode": "manual", "timeout_s": 1, "options": []string{"detach", "cancel"}}},
 		{mcpgateway.ExecPhaseDetached, "detached", map[string]any{"trigger": "manual"}},
 	} {
 		sink.OnExecState(mcpgateway.ExecState{
@@ -760,7 +663,7 @@ func TestTaskStopByIdAndToolCall(t *testing.T) {
 
 	// ① tool_call_id → 反查 task_id → 层 → sink.CancelExec(gw_task_id)（真打断）+ 标终态
 	v := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
-		"tool_call_id": "tc-stop",
+		"instance_id": "ins-test", "tool_call_id": "tc-stop",
 	})).Wait()
 	if v.Err() != nil {
 		t.Fatalf("task-stop(tool_call_id): %v", v.Err())
@@ -783,7 +686,7 @@ func TestTaskStopByIdAndToolCall(t *testing.T) {
 	}
 
 	// ② 已终态 → 明确报错 + 不重复下发执行侧取消
-	v = s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{"task_id": node.TaskID})).Wait()
+	v = s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{"instance_id": "ins-test", "task_id": node.TaskID})).Wait()
 	if err := v.Err(); err == nil || !strings.Contains(err.Error(), "已结束") {
 		t.Fatalf("已终态应回明确错误, got %v", err)
 	}
@@ -795,7 +698,7 @@ func TestTaskStopByIdAndToolCall(t *testing.T) {
 	if err := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{})).Wait().Err(); err == nil {
 		t.Fatal("缺 task_id/tool_call_id 应报错")
 	}
-	if err := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{"tool_call_id": "tc-none"})).Wait().Err(); err == nil {
+	if err := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{"instance_id": "ins-test", "tool_call_id": "tc-none"})).Wait().Err(); err == nil {
 		t.Fatal("tool_call_id 未命中应报错")
 	}
 
@@ -809,7 +712,7 @@ func TestTaskStopByIdAndToolCall(t *testing.T) {
 	}
 	s.tasks.setGwTask(node2.TaskID, "tk-stop-gw2")
 	s.execSink = nil
-	err = s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{"task_id": node2.TaskID})).Wait().Err()
+	err = s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{"instance_id": "ins-test", "task_id": node2.TaskID})).Wait().Err()
 	s.execSink = testExecSink
 	if err == nil || !strings.Contains(err.Error(), "执行池不可用") {
 		t.Fatalf("sink 未注入应回明确错误, got %v", err)

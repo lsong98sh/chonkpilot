@@ -161,10 +161,6 @@ func tasksFrom(recs []store.Record) []facade.Task {
 			ReturnFile:   kernel.Sval(r["return_file"]),
 			ReturnSize:   ival(r["return_size"]),
 		}
-		// 待裁决明细（I-99）：仅当层权威 state == awaiting 且执行态携带 options 时给出。
-		if item.State == "awaiting" {
-			item.Awaiting = awaitingView(item.ExecJSON)
-		}
 		out = append(out, item)
 	}
 	return out
@@ -333,38 +329,4 @@ func boolVal(v any) bool {
 		return b == "true"
 	}
 	return false
-}
-
-// awaitingView 从执行态明细解析待裁决明细（I-99）：返回 nil = 未携带 options（不输出 awaiting
-// 字段）。options / timeout_s 优先取顶层、回落 detail 子对象（gateway 执行态上报格式 =
-// `{..., "detail":{"timeout_s","options"}}`）。reason 固定 "timeout"（到超时点的待裁决）。
-func awaitingView(execJSON string) map[string]any {
-	if execJSON == "" {
-		return nil
-	}
-	var m map[string]any
-	if json.Unmarshal([]byte(execJSON), &m) != nil {
-		return nil
-	}
-	src := m
-	if d, ok := m["detail"].(map[string]any); ok {
-		if _, ok := m["options"]; !ok {
-			src = d
-		}
-	}
-	raw, _ := src["options"].([]any)
-	opts := make([]string, 0, len(raw))
-	for _, o := range raw {
-		if s, ok := o.(string); ok {
-			opts = append(opts, s)
-		}
-	}
-	if len(opts) == 0 {
-		return nil // 无 options → 无裁决选项，不输出（存在即带、缺省不加）
-	}
-	aw := map[string]any{"reason": "timeout", "options": opts}
-	if ts, ok := src["timeout_s"]; ok && ts != nil {
-		aw["timeout_s"] = ts
-	}
-	return aw
 }

@@ -92,7 +92,7 @@ def main():
 
     def canon_tool(p):
         t = p.get("tool") or ""
-        return t[5:] if t.startswith("self_") else t
+        return t
 
     def tree_nodes(include_closed=False):
         pl = {"top_session": SID}

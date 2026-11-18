@@ -858,9 +858,9 @@ func startedNodeNamed(te *taskEvents, tool, name string) bool {
 	return false
 }
 
-// TestTaskNodeTitleFromInjectedDisplayName（I-38，端到端）：主会话工具节点（历史暴露名 `self_*` 兼容）
+// TestTaskNodeTitleFromInjectedDisplayName（I-38，端到端）：主会话工具节点
 // 的 title/name 取「调用参数注入的展示名 tool_call_display_name」（委派就是工具调用）；无注入时回退
-// 「工具契约名」（剥历史 `self_` 前缀；P0a 2026-10-29 起暴露名 = 原名，剥前缀仅为存量兼容）。
+// 「工具契约名」（网关暴露名 = 原名）。
 func TestTaskNodeTitleFromInjectedDisplayName(t *testing.T) {
 	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -874,12 +874,12 @@ func TestTaskNodeTitleFromInjectedDisplayName(t *testing.T) {
 			if strings.Contains(text, "inject please") {
 				args["tool_call_display_name"] = "读取配置"
 			}
-			// 工具名用网关暴露名（self_ 前缀）：display 取值须按契约名归一。
+			// 工具名 = 网关暴露名（原名）。
 			llmSSE(w, []string{
 				sseChunk(map[string]any{"content": ""}, ""),
 				sseChunk(map[string]any{"tool_calls": []any{map[string]any{
 					"index": 0, "id": "tc-title", "type": "function",
-					"function": map[string]any{"name": "self_core_file_read", "arguments": string(jb(args))},
+					"function": map[string]any{"name": "core_file_read", "arguments": string(jb(args))},
 				}}}, "tool_calls"),
 			})
 		default:
@@ -899,9 +899,9 @@ func TestTaskNodeTitleFromInjectedDisplayName(t *testing.T) {
 	if lastComplete(collectTurn(t, s.bus, "t-title-inj", 10*time.Second)) == nil {
 		t.Fatal("注入轮次未完成")
 	}
-	te.wait(t, "注入展示名节点", func() bool { return startedNodeNamed(te, "self_core_file_read", "读取配置") })
+	te.wait(t, "注入展示名节点", func() bool { return startedNodeNamed(te, "core_file_read", "读取配置") })
 
-	// ② 无注入（新会话）→ 回退工具契约名（剥 self_）
+	// ② 无注入（新会话）→ 回退工具契约名
 	startTurn(t, s, "s-title-plain", "t-title-plain")
 	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-title-plain", "turn": "t-title-plain",
@@ -910,7 +910,7 @@ func TestTaskNodeTitleFromInjectedDisplayName(t *testing.T) {
 	if lastComplete(collectTurn(t, s.bus, "t-title-plain", 10*time.Second)) == nil {
 		t.Fatal("无注入轮次未完成")
 	}
-	te.wait(t, "回退契约名节点", func() bool { return startedNodeNamed(te, "self_core_file_read", "core_file_read") })
+	te.wait(t, "回退契约名节点", func() bool { return startedNodeNamed(te, "core_file_read", "core_file_read") })
 }
 
 // TestLLMRuntimeConfigWiring：usr 超时/重试配置 → newTurnCtx 实际生效（T-27 接线白盒）。

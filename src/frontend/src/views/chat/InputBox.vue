@@ -124,6 +124,9 @@
         :data-placeholder="$t('chat.input_placeholder')"
         @input="onEdit"
         @keydown="handleKeydown"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
+        @blur="onCompositionEnd"
         @paste="onPaste"
         @drop.prevent="onDrop"
         @dragover.prevent
@@ -206,6 +209,10 @@ const emit = defineEmits(['send', 'cancel', 'queue', 'open-config'])
 const text = ref('')
 const attachments = ref([])
 const editRef = ref(null)
+// IME 组合输入状态：中文/日文选词时 Enter 是「确认候选」，不得触发送出。
+// WebView2/Chromium 的 KeyboardEvent.isComposing 在部分输入法下会滞后，故显式记录
+// composition 生命周期，并在 keydown 同时看 keyCode 229（IME 处理键）。
+const composing = ref(false)
 
 // 输入框上沿的小猫（静态图，源 `image/cat1.png` / `image/cat2.png`，构建前投放 public）：
 // cat1 = 睁眼、cat2 = 闭眼 → 定时切到闭眼 160ms 再切回 = 眨眼。
@@ -341,8 +348,18 @@ function clearEdit() {
 }
 
 // Enter 发送；Shift/Ctrl/Alt/Meta+Enter 换行（contenteditable 中 Ctrl/Alt/Meta+Enter 需手动插行）
+// IME 组合输入中（选词 / 候选确认）一律不处理：Enter 属于输入法，不属于发送。
+function onCompositionStart() {
+  composing.value = true
+}
+
+function onCompositionEnd() {
+  composing.value = false
+}
+
 function handleKeydown(e) {
   if (e.key !== 'Enter') return
+  if (e.isComposing || e.keyCode === 229 || composing.value) return
   if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) {
     if (!e.shiftKey) {
       e.preventDefault()

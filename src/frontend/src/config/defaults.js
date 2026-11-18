@@ -55,7 +55,5 @@ export const DEFAULT_MCP = {
   hot_tools: [],
   // 按项目（workdir）隔离连接：null = 未设置（gateway 按 transport 推断：stdio → 隔离 / http|sse → 共享）
   isolate: null,
-  // agentbox 沙箱（仅 stdio 的 spawn 子进程生效）：null = 未设置（缺键 = 不隔离）
-  sandbox: null,
 }
 

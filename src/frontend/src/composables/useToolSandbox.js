@@ -13,7 +13,6 @@
  * 存储形态：usr 自由键 `tool_sandbox` = JSON 对象
  *   `{"executors":{"<exe基名>":bool},"mcps":{"<mcp名>":bool}}`
  *   - 未配置 / `false` = **不隔离**（缺省与引入前行为一致）；
- *   - 兼容旧形状 `{"core":bool,"desktop":bool,"browser":bool}`（读取时迁移，见 sandboxSummary）。
  *
  * 读写面（**零新增 MQ 主题**）：
  *   - 工具清单 = 既有能力面 `tools-list`（每项 `_meta.category` / `_meta.server`）。
@@ -165,7 +164,7 @@ export function useToolSandbox() {
         const item = {
           name: tl.name,
           description: tl.description || '',
-          // 展示用：网关为暴露名加的前缀（self_ 等）剥掉后显示（`name` 仍作完整暴露名 / title）
+          // 展示用：dir/第三方暴露名的来源前缀剥掉后显示（`name` 仍作完整暴露名 / title）
           server: srv || {},
         }
         // 内置 executor 工具：按契约 category 归组。

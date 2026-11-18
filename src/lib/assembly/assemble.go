@@ -27,10 +27,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	mcpgateway "github.com/lsong98sh/chonkpilot-agent/gateway"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // Options 是装配参数（缺省口径与改前 `llm/server.New` 内联装配一致）。
@@ -41,7 +41,7 @@ type Options struct {
 	Root string
 	// Servers 额外下游（外部 proxied / usr mcps 转成的 ServerEntry，与 self 并存）。
 	Servers []mcpgateway.ServerEntry
-	// AsyncMode 工具异步模式（"" = 默认 auto；"never" = 强制同步，用于 CLI）。
+	// AsyncMode 工具异步模式（"" = 默认 auto；CLI 显式传 sync 强制同步）。
 	AsyncMode string
 	// SkipTools（P6 2026-10-19）true = 系统级 app 根**只注册资产**（prompts/skills/resources），
 	// 工具改由外部进程（chonkpilot-core-mcp-server，经 `--stdio`/http 端点）注册/执行。
@@ -95,7 +95,7 @@ func Build(opts Options) (*Stack, error) {
 	// 能力源接入（GATEWAY-2 L5 收口）：把进程内 mcp.Server 经内存传输连成一个**标准 MCP
 	// ClientSession**，作为普通下游 ServerEntry（ID=self）交给 gateway —— gateway 只走
 	// 标准 client（ListTools/Call/prompts/resources），不持有能力源/契约扫描；
-	// 暴露名 = 原名（P0a 2026-10-29：内置 self 节点不再加 `self_` 前缀），app 根热重扫
+	// 暴露名 = 原名，app 根热重扫
 	// （reloadAppContracts + gateway/reload）
 	// 经同一会话重拉 list 即可生效。
 	servers := append([]mcpgateway.ServerEntry{}, opts.Servers...)

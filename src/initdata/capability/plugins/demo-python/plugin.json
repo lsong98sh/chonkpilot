@@ -1,7 +1,0 @@
-{
-  "id": "demo-python",
-  "cmd": ["python", "-u", "plugin.py"],
-  "enabled": false,
-  "name": "Python 演示插件",
-  "icon": "terminal"
-}

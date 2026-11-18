@@ -9,8 +9,7 @@
 //	DialogCreated  → session-new{instance_id, session_id, dialog_id}
 //	SessionCreated → session-new{instance_id, session_id, parent_session_id, dialog_id}
 //	TitleChanged   → data-session-title-changed{session_id, title, dialog_id?}（不带 instance_id = 全局）
-//	其余事件        → 内部事件（MessageAppended / TurnOpened / TurnClosed / SnapshotSet / Finished /
-//	                DialogDeleted）当前**无对应对外主题**（61 未定义）→ 不投递。
+//	其余事件        → 内部事件（SnapshotSet / DialogDeleted）当前**无对应对外主题**（61 未定义）→ 不投递。
 //
 // 事件丢失不影响一致性（数据面为准，2G §4.3）；本包不 panic、不阻塞。
 package sessionmq
@@ -19,9 +18,9 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/lsong98sh/chonkpilot-agent/session/component"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
-	"github.com/lsong98sh/chonkpilot-agent/session/component"
 )
 
 // Sink 是 component.Sink 的 MQ 实现（每实例一个：`instance_id` 随事件载荷下发）。

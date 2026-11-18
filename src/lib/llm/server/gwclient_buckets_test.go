@@ -13,13 +13,13 @@ func TestGWClientToolsForBuckets(t *testing.T) {
 	// 模拟一次 tools/list 结果（listTools 的落点：tools=全量 + buckets=按 scope 分组）
 	g.mu.Lock()
 	g.tools = []ToolDef{
-		{Name: "self_a", Scope: ""},
+		{Name: "global_a", Scope: ""},
 		{Name: "ins1_x", Scope: "ins-1"},
-		{Name: "self_b", Scope: ""},
+		{Name: "global_b", Scope: ""},
 		{Name: "ins2_y", Scope: "ins-2"},
 	}
 	g.buckets = map[string][]ToolDef{
-		"":      {{Name: "self_a", Scope: ""}, {Name: "self_b", Scope: ""}},
+		"":      {{Name: "global_a", Scope: ""}, {Name: "global_b", Scope: ""}},
 		"ins-1": {{Name: "ins1_x", Scope: "ins-1"}},
 		"ins-2": {{Name: "ins2_y", Scope: "ins-2"}},
 	}
@@ -34,15 +34,15 @@ func TestGWClientToolsForBuckets(t *testing.T) {
 	}
 
 	// ins-1 可见 = global ∪ 自身（global 在前）；ins-2 的桶不可见
-	if got := names("ins-1"); len(got) != 3 || got[0] != "self_a" || got[1] != "self_b" || got[2] != "ins1_x" {
-		t.Fatalf("ToolsFor(ins-1) = %v want [self_a self_b ins1_x]（global 在前 + 不越 instance）", got)
+	if got := names("ins-1"); len(got) != 3 || got[0] != "global_a" || got[1] != "global_b" || got[2] != "ins1_x" {
+		t.Fatalf("ToolsFor(ins-1) = %v want [global_a global_b ins1_x]（global 在前 + 不越 instance）", got)
 	}
 	if got := names("ins-2"); len(got) != 3 || got[2] != "ins2_y" {
 		t.Fatalf("ToolsFor(ins-2) = %v want 3 项且末项 ins2_y", got)
 	}
 	// instance 为空 → 仅 global（旧口径 scope==""）
-	if got := names(""); len(got) != 2 || got[0] != "self_a" || got[1] != "self_b" {
-		t.Fatalf("ToolsFor(\"\") = %v want [self_a self_b]", got)
+	if got := names(""); len(got) != 2 || got[0] != "global_a" || got[1] != "global_b" {
+		t.Fatalf("ToolsFor(\"\") = %v want [global_a global_b]", got)
 	}
 	// 全量缓存不受分桶影响（UI/管理面按名反查用）
 	if got := g.Tools(); len(got) != 4 {

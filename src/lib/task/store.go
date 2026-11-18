@@ -187,7 +187,7 @@ func (s *store) listTasks(instanceID string, includeClosed bool) ([]map[string]a
 // 另附 task 层扩展字段 workdir / instance_id / state / 摘要 / exec_json / started_at / done_at /
 // closed / deleted_at —— 前端只读已知字段，扩展字段为**增补**、不改既有语义）。
 //
-// status 走 **前端可见状态口径**（`frontVisibleStatus`，P3 相位门控）：detached / awaiting 落到 status
+// status 走 **前端可见状态口径**（`frontVisibleStatus`，P3 相位门控）：detached 落到 status
 // 会让前端节点丢失状态图标（行为变化）→ status 恒为 running，真实相位只落 `state` / `exec_json`。
 func row(rec *Record) map[string]any {
 	data := map[string]any{

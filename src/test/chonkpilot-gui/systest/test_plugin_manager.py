@@ -75,7 +75,7 @@ def main():
 
         # 后端真值（经消息面）：插件清单（含 command / config_view / actions）
         # 就绪栅栏（2026-11-07）：插件进程 `plugin.hello` 上报完整 manifest 之前，
-        # `plugin-list` 快照只有极简 plugin.json 骨架（views/actions/config_view 全空、
+        # `plugin-list` 快照只有极简启动骨架（plugin.ini：id/cmd；views/actions/config_view 全空、
         # status=starting）。断言「动作按钮与 manifest 一致」必须以**完整清单**为期望值 →
         # 先轮询到目标插件 source-of-truth 就绪（status=running 且 manifest 字段已上报）。
         def wait_plugin_manifest(gui, plugin_id, timeout=40.0):

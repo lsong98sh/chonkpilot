@@ -1,7 +1,0 @@
-{
-  "id": "task",
-  "cmd": ["chonkpilot-plugin-task.exe"],
-  "enabled": true,
-  "name": "任务工具",
-  "icon": "play"
-}

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"unicode"
 	"unicode/utf8"
+
+	llmtypes "github.com/lsong98sh/chonkpilot-agent/types"
 )
 
 // 字段上限（与 config 包同源基线：标题 128 / 正文 256 KB）。
@@ -29,14 +31,12 @@ func validateSessionTitle(title string) error {
 	return nil
 }
 
-// turnStatusValid 判定轮次状态是否属既定集合（running / done / complete / incomplete /
-// error / interrupted / cancelled）。
+// turnStatusValid 判定轮次状态是否属唯一词表（types.TurnStatus）。
+//
+// running 仅用于显式重开轮次（`ReopenTurn` 复用 complete-turn 面）；其余必须为终态。
 func turnStatusValid(st string) bool {
-	switch st {
-	case "running", "done", "complete", "incomplete", "error", "interrupted", "cancelled":
-		return true
-	}
-	return false
+	s := llmtypes.TurnStatus(st)
+	return s == llmtypes.TurnStatusRunning || llmtypes.TurnStatusValidTerminal(s)
 }
 
 // messageRoleValid 判定消息角色（system / user / assistant / tool）。

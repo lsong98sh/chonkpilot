@@ -249,7 +249,7 @@ test('契约已收录 §4 服务端 / §5 网关面主题（B2）', () => {
     'task-started', 'task-updated', 'task-done', 'server-starting', 'prompt-optimised', 'tool-notify',
     'instance-claim', 'instance-register', 'instance-heartbeat', 'instance-exit',
     // login-register / login-in / login-out 已删除（PRODSIM-1：本地 auth 全删，认证归 registry）
-    'mcp-tools-list', 'mcp-tools-call', 'mcp-tools-wait', 'mcp-tools-register', 'mcp-tools-unregister',
+    'mcp-tools-list', 'mcp-tools-call', 'mcp-tools-register', 'mcp-tools-unregister',
     'mcp-prompts-list', 'mcp-prompts-get', 'mcp-resources-list', 'mcp-resources-read',
     'mcp-servers-list', 'mcp-servers-get', 'mcp-gateway-check', 'mcp-gateway-reload',
     'mcp-tasks-report', 'mcp-tools-timeout', 'mcp-tools-progress', 'mcp-gateway-changed',

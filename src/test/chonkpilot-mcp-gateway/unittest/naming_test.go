@@ -68,10 +68,10 @@ func TestNamingDuplicateRejected(t *testing.T) {
 	bus, _ := startTestGW(t, nil)
 
 	// 工具：同 (scope, 名) 重复注册 → 报错
-	if err := callMethodErr(t, bus, "tools/register", map[string]any{"name": "dup_tool", "description": "首个"}); err != nil {
+	if err := callMethodErr(t, bus, "tools/register", map[string]any{"name": "dup_tool", "description": "首个", "handler_subject": "dup-noop"}); err != nil {
 		t.Fatalf("首次 tools/register 应成功: %v", err)
 	}
-	if err := callMethodErr(t, bus, "tools/register", map[string]any{"name": "dup_tool", "description": "第二个"}); err == nil {
+	if err := callMethodErr(t, bus, "tools/register", map[string]any{"name": "dup_tool", "description": "第二个", "handler_subject": "dup-noop"}); err == nil {
 		t.Fatal("同名工具重复注册应报错（不得静默覆盖）")
 	}
 
@@ -109,13 +109,13 @@ func TestThirdPartyAliasUnique(t *testing.T) {
 
 	// 内置自注册工具（P0a 2026-10-29 起暴露名 = 原名 dup_probe）
 	if err := callMethodErr(t, bus, "tools/register", map[string]any{
-		"name": "dup_probe", "description": "内置同名工具", "hot": true,
+		"name": "dup_probe", "description": "内置同名工具", "hot": true, "handler_subject": "dup-noop",
 	}); err != nil {
 		t.Fatalf("tools/register(内置) 应成功: %v", err)
 	}
 	// 第三方下游（origin=user），**显式 namespace "-"（试图去前缀）** → 仍须带来源别名
 	callMethod(t, bus, "servers/register", map[string]any{
-		"name": "probe", "url": probe.ts.URL, "origin": "user", "namespace": "-",
+		"name": "probe", "mcp_server": map[string]any{"url": probe.ts.URL}, "origin": "user", "namespace": "-",
 	})
 
 	names := toolsListNames(t, bus)

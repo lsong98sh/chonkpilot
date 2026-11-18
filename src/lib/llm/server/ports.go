@@ -39,6 +39,16 @@ type execController interface {
 	DetachExec(instanceID, idOrCall string) (string, error)
 }
 
+// turnCanceller 是执行池**可选**的 turn 级取消面（第 1 条：turn 取消快速终态）。
+//
+// 单列而非并入 `execController` / `gwRuntime`：旧 gateway / 测试桩不强制实现该方法，调用方
+// 经类型断言探测（未实现 → no-op，行为与引入前等价）。实现方 =
+// `chonkpilot-agent/gateway.(*Gateway).CancelTurn(instanceID, turnID) (int, error)`：
+// 只做 O(任务数) 扫描 + 终态迁移，provider 取消阶梯在 gateway 后台串行（不阻塞发布线程）。
+type turnCanceller interface {
+	CancelTurn(instanceID, turnID string) (int, error)
+}
+
 // taskStateReader 是 llm 对任务层**只读状态**的窄接口（RB-5 L4；turn 内 `tool_task.go` 用）。
 // 实现方 = `chonkpilot-task.(*Layer)`。
 type taskStateReader interface {

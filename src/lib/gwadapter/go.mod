@@ -12,6 +12,7 @@ require github.com/modelcontextprotocol/go-sdk v1.7.0
 
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
+	github.com/lsong98sh/chonkpilot-agent/types v0.0.0 // indirect
 	github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3 // indirect
 	github.com/lsong98sh/chonkpilot-util v0.0.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
@@ -47,7 +48,4 @@ replace github.com/lsong98sh/chonkpilot-agent/session => ../../../../chonkpilot-
 
 replace github.com/lsong98sh/chonkpilot-agent/types => ../../../../chonkpilot-agent/types/src
 
-require (
-	github.com/lsong98sh/chonkpilot-agent v0.0.0 // indirect
-	github.com/lsong98sh/chonkpilot-agent/gateway v0.0.0-00010101000000-000000000000
-)
+require github.com/lsong98sh/chonkpilot-agent/gateway v0.0.0-00010101000000-000000000000

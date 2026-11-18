@@ -507,10 +507,6 @@ func ValidateConfigKV(domain string, entries map[string]string) error {
 			if n, ok := parseIntString(val); !ok || n < 0 || n > 1000000000 {
 				return fmt.Errorf("%s: 必须为 0–1000000000 的整数", key)
 			}
-		case "pending_task_timeout_sec":
-			if n, ok := parseIntString(val); !ok || n < 1 {
-				return fmt.Errorf("%s: 必须为正整数", key)
-			}
 		case "ask_timeout_sec":
 			// ask_user 缺省超时：0 = 不超时；>0 = 秒（LLM 工具参数可覆盖）。
 			if n, ok := parseIntString(val); !ok || n < 0 {

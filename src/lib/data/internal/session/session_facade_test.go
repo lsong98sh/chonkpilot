@@ -189,7 +189,7 @@ func TestTurnSetSummaryCompleteNoOrphanRow(t *testing.T) {
 		t.Fatalf("TurnSetSummary(ghost): %v", err)
 	}
 	if _, err := s.TurnComplete(facade.TurnCompleteRequest{
-		InstanceID: inst, Scope: scope, DialogID: dialogID, TurnID: "ghost2", Status: "done",
+		InstanceID: inst, Scope: scope, DialogID: dialogID, TurnID: "ghost2", Status: "complete",
 	}); err != nil {
 		t.Fatalf("TurnComplete(ghost2): %v", err)
 	}
@@ -215,14 +215,14 @@ func TestTurnSetSummaryCompleteNoOrphanRow(t *testing.T) {
 	}
 	done := 7
 	if _, err := s.TurnComplete(facade.TurnCompleteRequest{
-		InstanceID: inst, Scope: scope, DialogID: dialogID, TurnID: "t1", Status: "done", FullTokens: &done,
+		InstanceID: inst, Scope: scope, DialogID: dialogID, TurnID: "t1", Status: "complete", FullTokens: &done,
 	}); err != nil {
 		t.Fatalf("TurnComplete(t1): %v", err)
 	}
 	if ok, err := tb.Get("t1", &rec); err != nil || !ok {
 		t.Fatalf("get t1: ok=%v err=%v", ok, err)
 	}
-	if kernel.Sval(rec["session_id"]) != "s1" || kernel.Sval(rec["summary"]) != "summary" || kernel.Sval(rec["status"]) != "done" {
+	if kernel.Sval(rec["session_id"]) != "s1" || kernel.Sval(rec["summary"]) != "summary" || kernel.Sval(rec["status"]) != "complete" {
 		t.Fatalf("行存在时更新异常：%v", rec)
 	}
 }

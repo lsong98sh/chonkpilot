@@ -140,7 +140,7 @@ func TestGatewayResultKeysSubsetOfContract(t *testing.T) {
 	}{
 		{"mcp-tools-list", "tools/list", map[string]any{}},
 		{"mcp-tools-call", "tools/call", map[string]any{"name": "tool_cr"}},
-		{"mcp-tools-register", "tools/register", map[string]any{"name": "cr_reg_tool", "description": "d"}},
+		{"mcp-tools-register", "tools/register", map[string]any{"name": "cr_reg_tool", "description": "d", "handler_subject": "cr-noop"}},
 		{"mcp-tools-unregister", "tools/unregister", map[string]any{"name": "cr_reg_tool"}},
 		{"mcp-prompts-list", "prompts/list", map[string]any{}},
 		{"mcp-prompts-register", "prompts/register", map[string]any{"name": "cr_prompt", "description": "d", "content": "x"}},
@@ -174,7 +174,7 @@ func TestGatewayTaskReportEventSubsetOfContract(t *testing.T) {
 		t.Fatal("契约未收录 mcp-tasks-report")
 	}
 	bus, _ := startTestGW(t, []mockSpec{{
-		name: "tool_cr_async", desc: "async cr", meta: map[string]any{"async": "always"},
+		name: "tool_cr_async", desc: "async cr", meta: map[string]any{"async": "async"},
 		handle: func(_ context.Context) (*mcp.CallToolResult, error) { return mockResult("cr-async-ok"), nil },
 	}})
 	ch := subReport(t, bus)
@@ -208,7 +208,7 @@ func TestGatewayChangedEventSubsetOfContract(t *testing.T) {
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
-	callMethod(t, bus, "tools/register", map[string]any{"name": "cr_changed_tool", "description": "d"})
+	callMethod(t, bus, "tools/register", map[string]any{"name": "cr_changed_tool", "description": "d", "handler_subject": "cr-noop"})
 	select {
 	case m := <-ch:
 		crAssertKeys(t, "mcp-gateway-changed", "event", ts.Event, m)
@@ -294,9 +294,8 @@ func TestGatewayNotDrivenRegistry(t *testing.T) {
 		{"mcp-servers-unregister", "同上（须先 register 成功）"},
 		{"mcp-prompts-get", "须先注册带内容的 prompt 资产（register 后按 name 取）；结果 {name,description,content?,type?,arguments?} 可由 register/list 路径间接覆盖"},
 		{"mcp-resources-read", "须先注册 resource 资产（uri/content）"},
-		{"mcp-tools-timeout", "须控件进入 manual/never 超时裁决态（依赖超时与执行池时序），留待专测"},
+		{"mcp-tools-timeout", "须控件进入 manual/sync 超时裁决态（依赖超时与执行池时序），留待专测"},
 		{"mcp-tools-progress", "下行进度事件（GATEWAY-2 L8）：须一个会上报 notifications/progress 的假下游 + 时序；载荷形状（字段对齐 / total 缺省不写键）由 gwadapter/mqadapter 的 TestProgressHandlerEmitsContractTopic 断言"},
-		{"mcp-tools-wait", "阻塞等待异步工具终态（依赖执行池 + 超时/取消时序），单测级最小驱动成本高；由 async 专测与 gateway 单测覆盖"},
 		{"history-pre-tool-hook", "前置钩子主题由注册方（plugin-history）声明 handler_subject/pre_hook_subject 后触发；gateway 侧仅转发，留待插件侧对账"},
 	}
 	declared := c.byTopic()

@@ -189,9 +189,6 @@ func TaskToWire(t facade.Task) map[string]any {
 	put(row, "tool_call_id", t.ToolCallID)
 	put(row, "state", t.State)
 	put(row, "exec_json", t.ExecJSON)
-	if t.Awaiting != nil {
-		row["awaiting"] = t.Awaiting
-	}
 	// DSL-3 展示字段（非零才带）。
 	put(row, "return_kind", t.ReturnKind)
 	put(row, "return_inline", t.ReturnInline)
@@ -427,9 +424,6 @@ func McpServerToWire(s facade.McpServer) map[string]any {
 	}
 	if s.Isolate != nil {
 		out["isolate"] = *s.Isolate
-	}
-	if s.Sandbox != nil {
-		out["sandbox"] = *s.Sandbox
 	}
 	return out
 }

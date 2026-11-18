@@ -20,8 +20,8 @@ import (
 // **自建临时契约根**（不再依赖 `src/initdata/capability` 的内容）。
 func TestLoadExecToolsFromCapRoot(t *testing.T) {
 	root := t.TempDir()
-	writeToolDocForTest(t, root, "file_read", "category=file\nruntime=builtin\nhot=true\nasync=never\ntimeout=120")
-	writeToolDocForTest(t, root, "file_write", "category=file\nruntime=builtin\nhot=true\nasync=never\ntimeout=120")
+	writeToolDocForTest(t, root, "file_read", "category=file\nruntime=builtin\nhot=true\nasync=sync\ntimeout=120")
+	writeToolDocForTest(t, root, "file_write", "category=file\nruntime=builtin\nhot=true\nasync=sync\ntimeout=120")
 
 	tools, err := LoadExecTools(root, nil)
 	if err != nil {
@@ -68,10 +68,10 @@ func TestLoadExecToolsFromCapRoot(t *testing.T) {
 			t.Fatalf("%s: _meta.category = %v，期望 %q", et.Name, et.Tool.Meta["category"], et.Doc.Category)
 		}
 	}
-	// file_read 契约显式 async: never / timeout: 120 → buildTool 透出 _meta。
+	// file_read 契约显式 async: sync / timeout: 120 → buildTool 透出 _meta。
 	fr := findExecTool(tools, "file_read")
-	if fr.Tool.Meta["async"] != "never" {
-		t.Fatalf("file_read _meta.async = %v，期望 never", fr.Tool.Meta["async"])
+	if fr.Tool.Meta["async"] != "sync" {
+		t.Fatalf("file_read _meta.async = %v，期望 sync", fr.Tool.Meta["async"])
 	}
 	if fr.Tool.Meta["timeout"] != 120 {
 		t.Fatalf("file_read _meta.timeout = %v，期望 120 (int)", fr.Tool.Meta["timeout"])

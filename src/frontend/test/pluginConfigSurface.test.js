@@ -24,10 +24,9 @@ const srcDir = join(here, '..', 'src')
 const repoDir = join(here, '..', '..', '..')
 const PLUGINS = ['browser', 'desktop', 'file', 'mcp', 'task', 'web']
 const read = (rel) => readSrc(rel)
-// PLUGIN-LOAD-1 D12：完整 manifest 走 manifest.json（plugin.json = 极简启动信息）。
-const manifestOf = (id) =>
-  JSON.parse(readFileSync(join(repoDir, 'src', 'initdata', 'capability', 'plugins', id, 'manifest.json'), 'utf8'))
+// PLUGIN-LOAD-1 D12 / 2026-11-18：完整 manifest 随插件源码并 `//go:embed` 进 exe（plugin.ini = 启动命令）。
 const pluginsDir = join(repoDir, '..', 'chonkpilot-plugins')
+const manifestOf = (id) => JSON.parse(readFileSync(join(pluginsDir, id, 'src', 'manifest.json'), 'utf8'))
 const pageOf = (id) => readFileSync(join(pluginsDir, id, 'src', 'webui', 'config.html'), 'utf8')
 
 /** 递归列出目录下全部文件（不存在 → []）。 */

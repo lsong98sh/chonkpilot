@@ -103,6 +103,12 @@
       "publishMqEmpty": "Publish MQ (no topic)"
     }
   },
+  "panel": {
+    "minimize": "Minimize (collapse to title bar)",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close panel"
+  },
   "plugin": {
     "title": "Plugins",
     "manager": "Plugin Manager",

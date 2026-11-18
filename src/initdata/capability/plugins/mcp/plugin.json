@@ -1,7 +1,0 @@
-{
-  "id": "mcp",
-  "cmd": ["chonkpilot-plugin-mcp.exe"],
-  "enabled": true,
-  "name": "MCP 工具",
-  "icon": "plug"
-}

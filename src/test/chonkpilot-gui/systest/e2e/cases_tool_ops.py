@@ -5,7 +5,7 @@ mock LLM 剧本：
 * `please call py`       → 同步 task_run（stdout `py-ok`）；
 * `please call py-async` → 异步 task_run（`tool-pair{status:async}` → 后台完成 → `tool-result` 含 `py-slow`）。
 
-断言同时覆盖：`llm-tool-call` 暴露名（无 self_ 前缀归一）、`tool-result` 回填、任务节点
+断言同时覆盖：`llm-tool-call` 暴露名（原名）、`tool-result` 回填、任务节点
 （`task-started{task_id:tk-*}`）注册、最终回复纳入工具输出。ask_user 多选由 `S-ASK-03` 覆盖。
 """
 
@@ -21,7 +21,7 @@ EVENTS = ["llm-tool-call", "tool-result", "tool-pair", "task-started", "llm-comp
 
 def _canon(tool):
     t = tool or ""
-    return t[5:] if t.startswith("_self") or t.startswith("self_") else t
+    return t
 
 
 def _payloads(env, topic):

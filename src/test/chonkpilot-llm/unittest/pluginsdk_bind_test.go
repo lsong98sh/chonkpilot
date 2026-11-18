@@ -29,7 +29,9 @@ func TestPluginSDKBindSubjectRoundTrip(t *testing.T) {
 	t.Cleanup(func() { _ = pb.Close() })
 
 	p, err := pluginsdk.New(pluginsdk.Options{
-		ID: "t.sdk", Name: "sdk-test", Version: "0.0.0", Addr: pb.Addr(), Timeout: 5 * time.Second,
+		Addr:     pb.Addr(),
+		Timeout:  5 * time.Second,
+		Manifest: []byte(`{"schema":"chonkpilot.plugin/v1","id":"t.sdk","name":"sdk bind test","version":"1.0.0"}`),
 	})
 	if err != nil {
 		t.Fatalf("pluginsdk.New: %v", err)

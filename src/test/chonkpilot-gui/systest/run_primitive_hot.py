@@ -112,7 +112,7 @@ def case_h1_baseline():
     stray = matches(names)
     if stray:
         raise TestError("基线工具面已含哨兵原语（残留）: %r" % (stray,))
-    evi("H1 基线工具面", total=len(names), has_self=any(n.startswith("self_") for n in names),
+    evi("H1 基线工具面", total=len(names),
         stray=stray, prj_tools_dir=PRJ_TOOLS)
 
 

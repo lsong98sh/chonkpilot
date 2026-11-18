@@ -1,8 +1,7 @@
 // wiring_test.go — 桥接线守卫（统一异步模型 2026-09-13，[42 §2 (59)]）。
 //
 // 目的：`PublishEvent` 对**未登记的单字方法 type 静默丢弃**（bridge.go:261-264），
-// 漏登记会让前端按钮"点了没反应"且无报错。这里锁住超时裁决所需的接线：
-//   - 上行：前端 type `mcp-tools-wait` → 相对主题 `mcp-tools-wait`（gateway 消费）；
+// 漏登记会让前端按钮"点了没反应"且无报错。这里锁住超时通知所需的接线：
 //   - 上行：前端 type `task-stop` → 相对主题 `task-stop`（server 消费；超时裁决「取消」与
 //     任务树 ▍ 停止统一走此入口，2026-09-18 取代已移除的 `mcp-tasks-cancel`）；
 //   - 下行：相对主题 `mcp-tools-timeout` → 前端 type 同名（原名直通，无映射项）。
@@ -19,17 +18,6 @@ import (
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
-
-// TestFrontMethodWaitWiring 上行「等待完成」白名单接线：漏了则前端 emit 被静默丢弃。
-func TestFrontMethodWaitWiring(t *testing.T) {
-	subj, ok := frontMethodSubjects["mcp-tools-wait"]
-	if !ok {
-		t.Fatal("frontMethodSubjects 缺少 mcp-tools-wait：前端「等待完成」将被静默丢弃")
-	}
-	if subj != "mcp-tools-wait" {
-		t.Fatalf("mcp-tools-wait 应映射到 gateway 方法面相对主题 mcp-tools-wait（methodSubject(\"tools/wait\")），实际 %q", subj)
-	}
-}
 
 // TestFrontMethodTaskStopWiring 上行「停止」白名单接线（2026-09-18）：工具行「停止」与任务树 ▍
 // 统一走前端 type `task-stop`（→ 相对主题 `task-stop`，server 消费）。须同名映射；漏登记会被

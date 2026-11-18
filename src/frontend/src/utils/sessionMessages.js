@@ -202,9 +202,11 @@ export function createSessionMessages() {
     if (!data || !data.type) return
     const t = data.type
     if (t === 'text' || t === 'reason') {
-      // 文本/推理另有兼容事件 llm-token 路径（compat.go）负责渲染，这里保持原样读取，
-      // 不展开 payload，避免与 llm-token 重复追加。
-      handleToken({ type: t === 'reason' ? 'reasoning' : 'text', content: data.text || '' })
+      // server 定稿载荷为 {session, turn, type, payload:{text}}；payload 缺失时兼容扁平 text。
+      // 文本/推理只有这一条权威路径（旧 llm-token 兼容事件已删除）。
+      const p = (data.payload && typeof data.payload === 'object') ? data.payload : data
+      const content = typeof p.text === 'string' ? p.text : ''
+      if (content) handleToken({ type: t === 'reason' ? 'reasoning' : 'text', content })
     } else if (t === 'tool-call') {
       // server 定稿载荷为 {session, turn, type, payload}（61-消息一览 §4.3）；payload 缺失时
       // 兼容扁平形态。仅本分支展开（工具卡片无其它创建路径）。

@@ -141,7 +141,7 @@ test('⑤ pluginAction：注入 X-CK-Plugin-Id，成功取 result / 失败抛错
 })
 
 test('⑥ codegraph 单源：manifest 声明 selfServe，initdata 不再携带 webui', () => {
-  const manifestPath = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codegraph', 'manifest.json')
+  const manifestPath = join(repoDir, '..', 'chonkpilot-plugins', 'codegraph', 'src', 'manifest.json')
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
   assert.equal(manifest.ui?.selfServe, true, 'codegraph manifest.json 须声明 ui.selfServe: true')
   const legacyWebui = join(repoDir, 'src', 'initdata', 'capability', 'plugins', 'codegraph', 'webui')
@@ -182,7 +182,10 @@ test('⑦ 全量单源：initdata 仅 demo-python 保留 webui 样例，且其�
   }
 
   for (const id of ['browser', 'codegraph', 'desktop', 'file', 'mcp', 'task', 'web']) {
-    const manifest = JSON.parse(readFileSync(join(initPluginsDir, id, 'manifest.json'), 'utf8'))
+    // 2026-11-18：manifest 随插件源码（Go `//go:embed` 进 exe），initdata 只剩 plugin.ini。
+    const manifest = JSON.parse(
+      readFileSync(join(repoDir, '..', 'chonkpilot-plugins', id, 'src', 'manifest.json'), 'utf8'),
+    )
     assert.equal(manifest.ui?.selfServe, true, `${id} manifest.json 须声明 ui.selfServe: true`)
     for (const view of manifest.ui.views ?? []) {
       const asset = join(repoDir, '..', 'chonkpilot-plugins', id, 'src', view.entry)

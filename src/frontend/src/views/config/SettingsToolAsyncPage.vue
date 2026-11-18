@@ -63,7 +63,7 @@
         <div class="group-title">{{ g.key }}<span class="group-count">（{{ g.tools.length }}）</span></div>
 
         <Table :columns="columns" :data="g.tools" size="small">
-          <!-- 工具名：展示剥前缀（网关加的 self_/<节点名>_），:title / data-tool = 完整暴露名（重名可区分） -->
+          <!-- 工具名：展示剥来源前缀（<节点名>_），:title / data-tool = 完整暴露名（重名可区分） -->
           <template #name="{ row }">
             <div class="tool-name" :title="row.name" :data-tool="row.name">
               <span class="mono">{{ stripToolPrefix(row.name, row.server) }}</span>
@@ -242,17 +242,9 @@ function isThresholdMode(row) {
   return row.mode === 'auto' || row.mode === 'manual'
 }
 
-// 配置键（P0a 2026-10-29）：网关暴露名 = 原名（内置 self 节点不再加 `self_` 前缀）；
-// 存量 usr 配置可能仍是历史 `self_<原名>` 键 → 两写法都认（先精确匹配，未命中再试历史键），
-// 读写都落在命中的那个键上（不改写用户既有键）。
+// 配置键：工具配置按当前暴露名精确索引（内置 self 节点 = 原名），不做历史前缀回退。
 function cfgKeyOf(name) {
-  const n = String(name || '')
-  if (!n) return n
-  const has = (m, k) => !!m && Object.prototype.hasOwnProperty.call(m, k)
-  if (has(workMap.value, n) || has(savedMap.value, n)) return n
-  const legacy = 'self_' + n
-  if (has(workMap.value, legacy) || has(savedMap.value, legacy)) return legacy
-  return n
+  return String(name || '')
 }
 
 // 阈值缺省显示：契约 async-threshold 优先，否则 30（执行硬上限不再参与阈值缺省）。
@@ -326,7 +318,7 @@ function buildEntry(row) {
 
 // 待保存态 → 行显示值（workMap 优先，其次已落库态，最后契约现值）
 function resetRowFromMaps(row) {
-  row.cfgKey = cfgKeyOf(row.name) // 配置键：原名优先，存量历史 `self_<原名>` 兼容
+  row.cfgKey = cfgKeyOf(row.name) // 配置键 = 当前暴露名
   const u = workMap.value[row.cfgKey] || savedMap.value[row.cfgKey]
   if (u && typeof u === 'object') {
     row.mode = u.mode ? normalizeUiMode(u.mode) : row.cMode
@@ -392,7 +384,7 @@ async function loadTools() {
       byServer.get(key).push({
         name: tl.name,
         description: tl.description || '',
-        // 展示用：网关为暴露名加的前缀（self_/dir_ 等）剥掉后显示（`row.name` 仍作配置键）
+        // 展示用：dir/第三方暴露名的来源前缀剥掉后显示（`row.name` 仍作配置键）
         server: srv,
         // 契约 `_meta`（打点缺省优先读 touch_files 声明）
         meta,

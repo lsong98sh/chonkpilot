@@ -40,8 +40,7 @@ export function nodeLevel(node) {
 }
 
 // toolLevelOf 工具项 → 级别（取 `_meta.server.node`；node 无法判定时回落 alias；仍无法判定 → ''）。
-// 2026-10-19（一工具一 exe）：app 级工具经 core-mcp-server 以 `namespace=self_` 接入 →
-// `node=core`（app 级，见 nodeLevel）；alias 回落用于节点名未知的兼容形态。
+// app 级工具经内嵌 self 节点接入 → `node=core`（app 级，见 nodeLevel）；alias 回落用于节点名未知的形态。
 export function toolLevelOf(tool) {
   const srv = (tool && tool._meta && tool._meta.server) || {}
   return nodeLevel(srv.node) || nodeLevel(srv.alias)

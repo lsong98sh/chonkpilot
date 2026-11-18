@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,24 +64,6 @@ type SendReq struct {
 
 // defaultMaxToolIterations 单轮工具循环上限的缺省值（provider 未显式配置时生效）。
 const defaultMaxToolIterations = 20
-
-// defaultPendingTaskTimeout 是引擎轮内等待异步回执的超时缺省值：引擎 `PendingWait` 等待循环对超过
-// 该阈值仍未回填的调用合成 failed 占位续轮（阈值与 prj 键 `pending_task_timeout_sec` 同源）。
-// 取值保守（2h）：长时异步（构建 / 抓取 / 编译 / 子作业）仍可正常完成，只在**回执确实丢失**时兜底。
-const defaultPendingTaskTimeout = 2 * time.Hour
-
-// pendingTaskTimeoutKey 是项目级键「异步任务看门狗超时（秒）」（缺省 defaultPendingTaskTimeout）：
-// 覆盖 pending 回执与 inflight（ask / 子作业）两类在飞登记的兜底判定阈值。
-const pendingTaskTimeoutKey = "pending_task_timeout_sec"
-
-// pendingTaskTimeoutOf 从**已读** prj 配置值表折算看门狗超时（纯函数，不再读配置）：
-// 键存在且为正整数（秒）→ 采用；缺失 / 空 / 非数字 / 非正 → 回落 defaultPendingTaskTimeout。
-func pendingTaskTimeoutOf(vals map[string]string) time.Duration {
-	if n, err := strconv.Atoi(strings.TrimSpace(vals[pendingTaskTimeoutKey])); err == nil && n > 0 {
-		return time.Duration(n) * time.Second
-	}
-	return defaultPendingTaskTimeout
-}
 
 // S6 LLM 错误恢复参数（对齐 llm-error-handling.md §一）。
 // llmRetryCount 为**回落默认**：usr 配置 retryCount（T-27 接线）未配置时生效；
@@ -224,10 +205,6 @@ type turnCtx struct {
 	// 仅引擎工具执行 goroutine 读写，nextRunMu 保护（防御并发工具派发）。
 	nextRunItemID string
 	nextRunMu     sync.Mutex
-	// pendingTaskTimeout 引擎轮内等待异步回执的超时（pending 回执 / ask·子作业 未回填）——来自 prj 键
-	// `pending_task_timeout_sec`（缺省 defaultPendingTaskTimeout）；非正 → 兜底回落缺省
-	// （见 engineRuntimeConfig 的 PendingWait）。
-	pendingTaskTimeout time.Duration
 	// maxToolIterations 单轮工具循环上限（来自 provider 定义；缺省 20）。
 	maxToolIterations int
 	// allowedTools 本轮工具白名单（来自本轮 agent 的 `tools`，AG-1/AG-C4）：nil = 不限制
@@ -334,7 +311,7 @@ func (tc *turnCtx) isSubsession() bool {
 
 // cloneToolArgs 复制一次工具调用参数（不改调用方 map）。
 // 自 2026-11-08 起 llm-server **不再**向 gateway 注入 `async`：异步/超时/超时动作全部由
-// gateway 按「界面 > .tool.md > 默认 auto/30s/background」裁决，禁止在派发层强制 always。
+// gateway 按「界面 > .tool.md > 默认 auto/30s/background」裁决，禁止在派发层强制 sync。
 func cloneToolArgs(args map[string]any) map[string]any {
 	out := make(map[string]any, len(args))
 	for k, v := range args {
@@ -506,7 +483,6 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 		retryBudget:          retryBudget,
 		contCfg:              sessionrunner.ContinueConfig{Enabled: contEnabled, Delay: contDelay, Text: contText},
 		nextRunMax:           nextRunMax,
-		pendingTaskTimeout:   pendingTaskTimeoutOf(zoneVals),
 		maxToolIterations:    llmMaxIter,
 		allowedTools:         allowedTools,
 		denyTools:            denyTools,
@@ -1146,7 +1122,7 @@ func (tc *turnCtx) registerPending(taskID, toolCallID string) {
 }
 
 // markInflight 登记一个已派发、结果异步回喂的 tool_call（ask_user / llm_run 子作业），
-// 并记录派发时刻（引擎 PendingWait 超时兜底语义的归属判定用）。
+// 并记录派发时刻（帧归属判定用）。
 func (tc *turnCtx) markInflight(toolCallID string) {
 	if toolCallID == "" {
 		return
@@ -1204,7 +1180,7 @@ func (tc *turnCtx) pushInbox(item facade.InboxItem) bool {
 }
 
 // handleAsyncDone 处理异步任务完成：落一条 role=tool 记录（call + async + result，一条记录承载
-// 三段）→ 结果投递到 engineInbox（与 ask 回执同形），由引擎的 PendingWait 消费。
+// 三段）→ 结果投递到 engineInbox（与 ask 回执同形），由引擎的轮内等待消费（回执到达或取消）。
 // 2026-09-18（用户决定）：结果取自保留的通知面 mcp-tasks-report（`result_summary` = 结果全文，
 // 见 gateway reportTaskDone），**不再经 `tasks/result` 方法面**；落库后该记录即
 // tool_result / 后续查询的读取源（message 表）。
@@ -1285,8 +1261,8 @@ func (tc *turnCtx) filterDeniedTools(in []ToolDef) []ToolDef {
 	return out
 }
 
-// toolDenied 判定该工具名是否被本轮**硬拒**（调用面收窄，见 turnCtx.denyTools）。名字口径 = LLM
-// 工具面**暴露名**（P0a 起 = 原名）或历史暴露名 `self_<原名>`（存量兼容）；空集 → 恒 false。
+// toolDenied 判定该工具名是否被本轮**硬拒**（调用面收窄，见 turnCtx.denyTools）。名字口径 =
+// LLM 工具面**暴露名**（= 原名）；空集 → 恒 false。
 func (tc *turnCtx) toolDenied(name string) bool {
 	if len(tc.denyTools) == 0 {
 		return false
@@ -1295,28 +1271,18 @@ func (tc *turnCtx) toolDenied(name string) bool {
 }
 
 // toolNameIn 判定工具名 name 是否命中名字集 set（白名单 / 硬拒集）。
-// P0a（2026-10-29，61 §4.6）：网关暴露名 = 原名（不再加 `self_` 前缀）；**存量用户配置 / 白名单
-// 可能仍写历史 `self_<原名>`** → 先精确匹配，未命中再按「剥 self_ / 补 self_」两种形式兼容。
+// 网关暴露名 = 原名（61 §4.6），按**精确名字**匹配；不做任何前缀改写。
 func toolNameIn(set map[string]struct{}, name string) bool {
 	if len(set) == 0 {
 		return false
 	}
-	if _, ok := set[name]; ok {
-		return true
-	}
-	if trimmed := strings.TrimPrefix(name, "self_"); trimmed != name {
-		if _, ok := set[trimmed]; ok {
-			return true
-		}
-	}
-	_, ok := set["self_"+name]
+	_, ok := set[name]
 	return ok
 }
 
 // toolAllowed 判定本轮是否允许调用该工具（AG-C4 白名单语义；**调用处硬拒** G-45 ③）：
 // allowedTools 为空（agent 未配 tools / 配 `[]` / 解析不到名字）= **不限制**（全量放行）；
-// 非空 = 仅白名单内。名字口径 = LLM 工具面的**暴露名**（与 llmTools 过滤同一名字空间；
-// 历史 `self_<原名>` 写法同样命中，见 toolNameIn）。
+// 非空 = 仅白名单内。名字口径 = LLM 工具面的**暴露名**（与 llmTools 过滤同一名字空间）。
 func (tc *turnCtx) toolAllowed(name string) bool {
 	if tc.toolDenied(name) {
 		return false // 硬拒（work_session 排除 subchat_finish 等）先于白名单判定
@@ -1392,7 +1358,7 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 	args := parseArgs(call.Arguments)
 	// 该工具自身的 _meta（gateway tools/list 缓存，已预热；I-60）：随 tool-call 通知与
 	// role=tool 消息落库推前端，使前端无需依赖一次性 mcp-tools-timeout 事件即可本地判断
-	// 裁决项（manual→detach/cancel；never→wait/cancel）。
+	// 裁决项（manual→detach/cancel）。
 	toolMeta := tc.server.gc.ToolMeta(name)
 	notifyPayload := map[string]any{
 		"tool_call_id": call.ID, "tool": name, "arguments": args,
@@ -1408,9 +1374,8 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 	}
 	tc.server.notify(tc, NotifyTypeToolCall, notifyPayload)
 
-	// P0a（2026-10-29）起网关暴露名 = 原名（不再带 self_ 前缀）；canon 剥前缀仅为**兼容存量**
-	// 会话 / 历史节点里的旧暴露名（分类 / 展示按契约名，gateway 调用仍用暴露名）。
-	canon := strings.TrimPrefix(name, "self_")
+	// 网关暴露名 = 原名；canon 与 name 同值，仅作为「契约名」语义别名供分类/展示使用。
+	canon := name
 
 	// 白名单**调用处硬拒**（G-45 ③ / 42 §2 (165)）：下发面过滤（llmTools）挡不住模型幻觉
 	// 调用未列工具 —— 此处按本轮 agent 的 `tools` 白名单在**调用处分发前**拒绝，不落 gateway
@@ -1459,8 +1424,8 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 		TurnID:     tc.req.Turn,
 		InstanceID: tc.req.InstanceID,
 	}
-	// 标题取值用**契约名**（canon，剥 self_ 前缀，与 domainNode 同源）：注入展示名优先，
-	// 无注入回退契约工具名（I-38；避免回退成网关暴露名 self_<契约名>）。
+	// 标题取值用**契约名**（canon = 网关暴露名，与 domainNode 同源）：注入展示名优先，
+	// 无注入回退契约工具名（I-38）。
 	node.Name, node.Purpose, node.Simplified = taskDisplay(canon, args)
 	node.SetToolArgs(args) // 保存参数（tool-retry 重跑用）
 	if isAskTool(canon) {
@@ -1510,7 +1475,7 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 
 // dispatchToolWorker 把一次 gateway 工具调用交给**独立 worker** 执行：
 //   - 发起立刻登记 inflight（续轮闸门 / 插话相位判定与 ask 同口径）后返回，调用方（引擎
-//     工具循环）立即进入 PendingWait，**不占用 turn 协调线程**；
+//     工具循环）立即进入轮内等待回执，**不占用 turn 协调线程**；
 //   - 结果（同步完成 / 失败 / 超时裁决取消）由 worker 落库并经引擎 Inbox 回喂 → 同一 turn
 //     续轮；转异步（task_id）则由既有的 `registerPending` + `onGatewayTaskDone` 通道回喂。
 //
@@ -1522,7 +1487,7 @@ func (tc *turnCtx) dispatchToolWorker(call ToolCall, name string, args map[strin
 	// ask_user（2026-11-08 迁 task 插件后仍由本 turn 先落 ask_id）：终态回填同一 running 行时
 	// 必须保留 messages.ask_id（AskUser S4 / 失效回执回查）。
 	askID := tc.askIDOf(call.ID)
-	canon := strings.TrimPrefix(name, "self_")
+	canon := name
 	go func() {
 		res, taskID, cerr := tc.server.gc.Call(tc.ctx, name, cloneToolArgs(args), ctxMsg)
 		if cerr != nil {
@@ -1591,7 +1556,7 @@ func (tc *turnCtx) dispatchToolWorker(call ToolCall, name string, args map[strin
 }
 
 // finishBackgroundTool 摘除 inflight 登记并把 worker 结果投递进引擎 Inbox（tool_result）：
-// 与 `onAsyncDone` / ask 回执同一消费点（引擎 PendingWait），保证只续轮一次。
+// 与 `onAsyncDone` / ask 回执同一消费点（引擎轮内等待），保证只续轮一次。
 func (tc *turnCtx) finishBackgroundTool(callID, text, status string) {
 	tc.clearInflight(callID)
 	tc.engineInbox.Push(engineToolResultItem(callID, text, status != "completed"))
@@ -1738,8 +1703,28 @@ func (tc *turnCtx) persistToolResultAsk(toolCallID, result, status string, async
 	}
 	// 工具终态结果落库失败仅留痕（B-33）：该结果仍会喂给 LLM，但 DB（message 表）缺此条时，
 	// 重载/重启后上下文出现「助理发起 tool_call 但无 tool 结果」断链；返回值语义不变。
-	if _, err := tc.server.newSessionStore(tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key); err != nil {
+	id, err := tc.server.newSessionStore(tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key)
+	if err != nil {
 		logf("[chonkpilot-server] 工具结果落库失败（turn=%s key=%s）: %v\n", tc.req.Turn, key, err)
+		return
+	}
+	// 派发前拒绝（白名单 / 建节点失败）等路径此前未落 running 行 → 终态按新键落库。
+	// 登记该主键，使引擎的 Pending 占位（SavePendingTool）识别为「事实已在」，不再补 running 行
+	// （否则同一 tool_call 会出现两条行，且 LoadToolContent 可能读到后写的空结果占位）。
+	if key == "" && id != "" {
+		tc.mu.Lock()
+		if _, exists := tc.toolMsgKeys[toolCallID]; !exists {
+			if tc.toolMsgKeys == nil {
+				tc.toolMsgKeys = map[string]string{}
+			}
+			if tc.toolCallMeta == nil {
+				tc.toolCallMeta = map[string]toolCallMeta{}
+			}
+			tc.toolMsgKeys[toolCallID] = id
+			argMap, _ := args.(map[string]any)
+			tc.toolCallMeta[toolCallID] = toolCallMeta{name: name, args: argMap, askID: askID}
+		}
+		tc.mu.Unlock()
 	}
 }
 

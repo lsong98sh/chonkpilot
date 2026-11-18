@@ -10,8 +10,7 @@
 //   - 影子桶（`task_shadow*`，P1 回滚开关）与索引桶（`tasktree_by_parent/_by_top`）是**存储
 //     实现**（索引无读方）→ 门面只暴露 `Shadow` 开关语义（回滚用），不暴露桶名；
 //   - `exec_json` 是**任务层执行态扩展**的承载列（层写入、层回读）→ 门面按原字符串透传
-//     （明细结构由任务层定义，门面不解析）；`awaiting`（待裁决）是**领域派生视图**，
-//     由实现侧从执行态解析后按领域形态给出。
+//     （明细结构由任务层定义，门面不解析）。
 //
 // 字段覆盖 = 调用方的**全部合法需求**：list（按主会话）/ tasks（按会话）/ upsert（幂等落库）/
 // delete（关闭 = 逻辑删除 + 级联子树）。
@@ -131,9 +130,6 @@ type Task struct {
 	ExecJSON string `json:"exec_json,omitempty"`
 	// StartedAt 开始时间（= 节点创建时间）。
 	StartedAt string `json:"started_at,omitempty"`
-	// Awaiting 待裁决明细（仅状态为 awaiting 且执行态携带选项时非 nil）。
-	Awaiting map[string]any `json:"awaiting,omitempty"`
-
 	// ── DSL-3 展示字段（口径同 TaskNode；缺省为空 → 与既有载荷逐字节等价）──
 	LoopCurrent  int       `json:"loop_current,omitempty"`
 	LoopTotal    int       `json:"loop_total,omitempty"`

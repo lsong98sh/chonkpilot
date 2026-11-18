@@ -182,7 +182,7 @@
 **实现要点**
 
 - `dispatchToolCall` 的 ask 分支：登记提问 → `persistToolResultAsk(占位文案, completed)` →
-  返回同步 tool 消息；**不再 `markInflight`**，引擎不进入 `PendingWait`。
+  返回同步 tool 消息；**不再 `markInflight`**，引擎不进入轮内等待。
 - 轮次**正常结束不清理** ask 登记与批次（提问允许跨轮存活）；显式 `llm-cancel` 与
   `instance-exit` 才清理（批次内已收到的答复一并丢弃）。
 - 主会话答复投递走持久化 INBOX 的 `next_turn`（有运行轮则轮末消费；无运行轮立即起新轮），
@@ -209,7 +209,7 @@
 | 24 I-1（一会话一窗口） | Ask 中心**不绑定会话**，不参与 I-1；S3 起为**全局单例**（每进程一个，跨项目） |
 | 群聊 D42 / 单聊 B4 | 投递口径沿用“按 instance 定向”；归属窗口再转交全局 Ask 中心 |
 | MQ 投递模型 | **S3 已实施**：后端唯一分发 + 订阅登记 + `user` 作用域（可选 `work_dir`）+ 每 wd 有序队列/`seq`；宿主待办表降级为进程级缓存 |
-| 引擎异步等待（INBOX/PendingWait） | **S4 起 ask 不参与**：ask_user 立即返回占位结果，不 `markInflight`、不进入 `PendingWait`；答复走 INBOX `next_turn`（主会话）后续投递 |
+| 引擎异步等待（INBOX 轮内等待） | **S4 起 ask 不参与**：ask_user 立即返回占位结果，不 `markInflight`、不进入轮内等待；答复走 INBOX `next_turn`（主会话）后续投递 |
 | 会话输入 / 归属（INBOX + owner） | **S5 内嵌面板**复用既有 `llm-inbox-add`：以 `ask.owner_instance` 发送（不新建 owner）；ask 未解除时任务节点 running → 源窗口 owner 保持活动，面板不会触发 owner conflict |
 
 ---
@@ -268,7 +268,7 @@
 | S3-5 | 后端唯一分发 + 订阅登记（user/可选 workdir 作用域、每 wd seq 有序队列） | ✅ | `handler_ask.go`（`onAskCenterSubscribe` / `onAskCenterUnsubscribe` / `askCenterSnapshot` / `pushAskCenter`）、`subscribe.go`；L1 `askcenter_test.go`；契约 `ask-center-subscribe` / `ask-center-unsubscribe` |
 | S3-6 | `session-ask.owner_instance`（必带）/ `context`（可选）/ `session_title`（可选）；`expires_at` 改可选 | ✅ | `handler_ask.go`（payload + `askSessionTitle`）；`61-messages.schema.json`；前端 `AskUserDialog` / `AskCenterView` / `AskUserContent` |
 | S3-7 | 全局 Ask 中心「聊一聊」跨项目：`gui.chat.insert-text.work_dir` 路由到目标项目窗口表 | ✅ | `askcenter.go`（`insertText` workDir → `env.lookupProject`）、`registry.go`；l4 `run_ask_ui.py` A13/A14 |
-| S4-1 | `ask_user` 立即返回占位结果（快速转异步），不再 inflight/PendingWait | ✅ | `src/lib/llm/server/turn.go`（ask 分支：登记 + `persistToolResultAsk(占位, completed)` + 同步返回）、`handler_ask.go`（`askAsyncHandoffResult`）；L1 `engine_turn_test.go` **TestEngineTurnAsk** |
+| S4-1 | `ask_user` 立即返回占位结果（快速转异步），不再 inflight/轮内等待 | ✅ | `src/lib/llm/server/turn.go`（ask 分支：登记 + `persistToolResultAsk(占位, completed)` + 同步返回）、`handler_ask.go`（`askAsyncHandoffResult`）；L1 `engine_turn_test.go` **TestEngineTurnAsk** |
 | S4-2 | 答复不再同步续轮；同会话全部答完后一次性作为用户消息投递；答复到达时就地回填 tool-result（S5-4 补齐） | ✅ | `handler_ask.go`（`askBatch` / `recordAskAnswer` / `formatAskAnswers` / `deliverAskAnswers` / `updateAskToolResult`）；L1 `askbatch_test.go` |
 | S4-3 | 轮次正常结束保留 ask 登记与批次；取消 / 实例退出清理 | ✅ | `turn.go`（loop 收尾不再清 ask）、`handler_session.go`（`onLLMCancel` 显式清理）、`instancescope.go`（`forgetAskLocked`）；L1 `isolation_test.go` **TestAskSurvivesTurnClose** |
 | S4-4 | 主会话答复走持久化 INBOX `next_turn`（有运行轮轮末消费 / 无运行轮立即起新轮） | ✅ | `handler_ask.go`（`deliverAskAnswers` → `onInboxAdd`）；L1 TestEngineTurnAsk（后续轮消息断言） |

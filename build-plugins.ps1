@@ -19,8 +19,8 @@
 # 行为 / 数据口径 / 消息面不变；宿主不再编译期持有它们（见 appwire.DefaultPlugins）。
 #
 # 部署：由 build-desktop.ps1 把 staging 拷进 `dist/plugins/<id>/`
-# （`plugin.json`（极简启动信息）+ `manifest.json`（完整 manifest，插件自读上报）来自
-#  src/initdata/capability/plugins/<id>/，exe 必须与之**同目录**）。
+# （`plugin.ini`（启动命令）来自 src/initdata/capability/plugins/<id>/，exe 必须与之**同目录**；
+#  manifest 已 `//go:embed` 进插件 exe，产物不带 manifest.json）。
 # webui 的投放（PLUGIN-UI-1）：本脚本产出的插件**全部** `ui.selfServe: true` ——
 # webui 源随插件源码（`chonkpilot-plugins/<id>/src/webui/`；memory/history 目前无 webui），
 # 经 `//go:embed all:webui` 打进 exe，产物**不带** webui/。
@@ -172,7 +172,7 @@ if (Test-Path $desktopPlugins) {
         $srcDir = Join-Path $out $id
         $dstDir = Join-Path $desktopPlugins $id
         if (-not (Test-Path $dstDir)) {
-            Write-Host "    skip (未发现 manifest 目录): $dstDir"
+            Write-Host "    skip (未发现 dist 插件目录): $dstDir"
             continue
         }
         # 递归：file 插件带 tools/file/ 契约目录

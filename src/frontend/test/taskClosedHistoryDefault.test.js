@@ -6,7 +6,7 @@
  * ② history 默认关：后端只认显式 "true"；前端开关缺省为关 + 开启前确认（取消回退、不写库）。
  *
  * 前端无组件级测试运行器（`npm test` = node:test 直跑，见 package.json）→
- * 源码接线守卫（与 configSurface / awaitingTaskBar 同法；Go 判定读源码，同 awaitingArbitration.test.js）。
+ * 源码接线守卫（与 configSurface 同法；Go 判定读源码）。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -58,7 +58,6 @@ test('① 呈现：节点灰色 + 「已关闭」标签；只读（无停止 / �
     'closed 判定读节点 closed 字段')
   assert.match(vue, /const isRunning = computed\(\(\) => !isClosed\.value && status\.value === 'running'\)/,
     '已关闭节点不得显示停止动作')
-  assert.match(vue, /isClosed\.value \? null : resolveAwaiting/, '已关闭节点不渲染裁决条')
   assert.match(vue, /\.node-header\.closed \.node-title/, '须有灰色样式')
 })
 
@@ -75,7 +74,8 @@ test('① 详情：已关闭 → 只读提示、无停止/关闭动作', () => {
 test('① 级联子节点一并显示：closed 沿子树传播（parent_node_id 遍历）', () => {
   const view = read('composables/useTaskView.js')
   const m = view.match(/async function deleteTreeNode\(nodeId\)\s*\{[\s\S]*?\n\}/)
-  assert.match(m[0], /m\.parent_node_id === cur/, '须沿 parent_node_id 级联标 closed')
+  // 长会话性能（评审第 11 条）：父子关系改由共享索引 childrenOf 提供（仍按 parent_node_id 建索引）
+  assert.match(m[0], /for \(const child of childrenOf\(cur\)\)/, '须沿 parent_node_id 级联标 closed')
 })
 
 test('① i18n：closed_label / closed_readonly_hint 双语齐备', () => {

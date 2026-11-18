@@ -230,7 +230,7 @@ func TestFacadeSessionWritesCrossReadable(t *testing.T) {
 		t.Fatalf("MQ set-summary 应答形状变化：%+v", got)
 	}
 	if got := mqCall(t, bus, "complete-turn", map[string]any{
-		"turn_id": "t-mq", "dialog_id": d1, "status": "done", "finish_reason": "stop",
+		"turn_id": "t-mq", "dialog_id": d1, "status": "complete", "finish_reason": "stop",
 	}); got["ok"] != true {
 		t.Fatalf("MQ complete-turn 应答形状变化：%+v", got)
 	}

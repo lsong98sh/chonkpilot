@@ -2748,20 +2748,6 @@
       }
     },
     {
-      "topic": "mcp-tools-wait",
-      "face": "gateway",
-      "direction": "server<->gateway",
-      "clientTopic": "mcp-tools-wait",
-      "payload": {
-        "tool_call_id": { "type": "string", "required": false },
-        "task_id": { "type": "string", "required": false }
-      },
-      "result": {
-        "waiting": { "type": "bool", "required": true },
-        "task_id": { "type": "string", "required": true }
-      }
-    },
-    {
       "topic": "mcp-tools-register",
       "face": "gateway",
       "direction": "server<->gateway",
@@ -2978,6 +2964,10 @@
         "tool": { "type": "string", "required": true },
         "state": { "type": "string", "required": true },
         "result_summary": { "type": "string", "required": true },
+        "resultType": { "type": "string", "required": false },
+        "content": { "type": "array", "required": false },
+        "structuredContent": { "type": "object", "required": false },
+        "isError": { "type": "bool", "required": false },
         "tool_call_id": { "type": "string", "required": false },
         "instance_id": { "type": "string", "required": true },
         "session": { "type": "string", "required": false },

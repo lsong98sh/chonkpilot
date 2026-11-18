@@ -21,7 +21,7 @@ func namedTool(name, node string) ToolDef {
 
 // TestFilterWhitelistColdCachePassThrough 冷缓存（可见工具面空）→ 放行；非空 → 按矩阵剔除。
 func TestFilterWhitelistColdCachePassThrough(t *testing.T) {
-	raw := map[string]struct{}{"some_legal_tool": {}, "self_x": {}}
+	raw := map[string]struct{}{"some_legal_tool": {}, "other_x": {}}
 
 	// ① 冷缓存：buckets 为空（未预热 tools/list）→ 原样返回（放行，不误剔）
 	cold := &Server{gc: newGWClient(nil)}
@@ -37,15 +37,15 @@ func TestFilterWhitelistColdCachePassThrough(t *testing.T) {
 
 	// ② 缓存非空（含 app 级 + user 级工具）→ 按场景级别矩阵剔除：app 场景只保留 app 级工具
 	g := newGWClient(nil)
-	g.tools = []ToolDef{namedTool("self_app_tool", "self"), namedTool("ins-warm-user_user_tool", "ins-warm-user")}
+	g.tools = []ToolDef{namedTool("app_tool", "self"), namedTool("ins-warm-user_user_tool", "ins-warm-user")}
 	g.buckets = map[string][]ToolDef{
-		"":         {namedTool("self_app_tool", "self")},
+		"":         {namedTool("app_tool", "self")},
 		"ins-warm": {namedTool("ins-warm-user_user_tool", "ins-warm-user")},
 	}
 	warm := &Server{gc: g}
-	raw2 := map[string]struct{}{"self_app_tool": {}, "ins-warm-user_user_tool": {}}
+	raw2 := map[string]struct{}{"app_tool": {}, "ins-warm-user_user_tool": {}}
 	got2 := warm.filterWhitelistByLevel("ins-warm", "app", raw2)
-	if _, ok := got2["self_app_tool"]; !ok {
+	if _, ok := got2["app_tool"]; !ok {
 		t.Fatalf("app 场景应保留 app 级工具：%v", got2)
 	}
 	if _, ok := got2["ins-warm-user_user_tool"]; ok {

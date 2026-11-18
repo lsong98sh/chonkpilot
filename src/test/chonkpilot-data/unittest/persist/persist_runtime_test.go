@@ -69,12 +69,12 @@ func TestSessionRuntimePrimitives(t *testing.T) {
 
 	// set-summary + complete-turn → turns 表直连断言
 	dataResult(t, sess("set-summary", map[string]any{"turn_id": "t1", "summary": "摘要"}))
-	dataResult(t, sess("complete-turn", map[string]any{"turn_id": "t1", "status": "done", "finish_reason": "stop"}))
+	dataResult(t, sess("complete-turn", map[string]any{"turn_id": "t1", "status": "complete", "finish_reason": "stop"}))
 	var rec data.Record
 	if ok, _ := sdb.Table("turns").Get("t1", &rec); !ok {
 		t.Fatal("turn t1 missing")
 	}
-	if persist.Sval(rec["status"]) != "done" || persist.Sval(rec["finish_reason"]) != "stop" {
+	if persist.Sval(rec["status"]) != "complete" || persist.Sval(rec["finish_reason"]) != "stop" {
 		t.Fatalf("turn status mismatch: %+v", rec)
 	}
 	if persist.Sval(rec["summary"]) != "摘要" {
@@ -100,7 +100,7 @@ func TestSessionCompleteTurnTokens(t *testing.T) {
 	sess("ensure-session", map[string]any{"session_id": "s-tok"})
 	sess("ensure-turn", map[string]any{"turn_id": "t-tok", "session_id": "s-tok"})
 	sess("complete-turn", map[string]any{
-		"turn_id": "t-tok", "status": "done", "finish_reason": "stop",
+		"turn_id": "t-tok", "status": "complete", "finish_reason": "stop",
 		"full_tokens": 1234, "brief_tokens": 56,
 	})
 	var rec data.Record
@@ -148,12 +148,11 @@ func TestSessionContextTurnTokens(t *testing.T) {
 		return dataResult(t, dataCall(t, bus, "data-session-"+action,
 			map[string]any{"instance_id": "ins-test", "data": data}))
 	}
-	sess("ensure-session", map[string]any{"session_id": "s-ctx"})
 	sess("ensure-turn", map[string]any{"turn_id": "t1", "session_id": "s-ctx"})
 	sess("append-message", map[string]any{"turn_id": "t1", "role": "user", "kind": "text", "content": "q1"})
 	// t1 预存 token；t2 只有 runnning（无预存值 → 字段省略键）。
 	sess("complete-turn", map[string]any{
-		"turn_id": "t1", "status": "done", "finish_reason": "stop",
+		"turn_id": "t1", "status": "complete", "finish_reason": "stop",
 		"full_tokens": 1234, "brief_tokens": 56,
 	})
 	sess("ensure-turn", map[string]any{"turn_id": "t2", "session_id": "s-ctx"})
@@ -192,7 +191,7 @@ func TestSessionContextTurnTokens(t *testing.T) {
 		t.Fatalf("排除后应仅剩 t1：%+v", e0)
 	}
 	// 无轮次会话 → 不写 turn_tokens 键（旧载荷逐字节等价）。
-	sess("ensure-session", map[string]any{"session_id": "s-empty"})
+	sess("ensure-session", map[string]any{"session_id": "s-empty", "parent_session_id": "s-ctx"})
 	empty := sess("context", map[string]any{"session_id": "s-empty"})
 	if _, ok := empty["turn_tokens"]; ok {
 		t.Fatalf("无轮次不应写 turn_tokens 键：%+v", empty)

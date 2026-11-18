@@ -17,7 +17,7 @@ TASK_STDOUT = "E2E-TASK-OK"
 
 def _canon(tool):
     t = tool or ""
-    return t[5:] if t.startswith("self_") else t
+    return t
 
 
 def _payloads(env, topic):

@@ -22,8 +22,8 @@ import (
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
 
-// turnInstance 取轮次归属 instance（tc 为空 → ""）：旧调用方（无 turn 上下文的直接调用）不限定
-// 实例归属，行为与引入 instance 维度前一致（缺口 3/5 的过滤口径之一）。
+// turnInstance 取轮次归属 instance（tc 为空 → ""）：归属过滤口径（缺口 3/5）。
+// 空值只命中归属为空的节点，不再表示「不限定实例」。
 func turnInstance(tc *turnCtx) string {
 	if tc == nil {
 		return ""

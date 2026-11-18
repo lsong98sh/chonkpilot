@@ -457,7 +457,6 @@ func TestClientTopicToBusSubjectMapping(t *testing.T) {
 		{"tools-list", "mcp-tools-list"},
 		{"prompts-list", "mcp-prompts-list"},
 		{"resources-list", "mcp-resources-list"},
-		{"mcp-tools-wait", "mcp-tools-wait"},
 	}
 
 	for _, tc := range cases {
@@ -602,7 +601,7 @@ func TestSessionContextTwoPathsKeyParity(t *testing.T) {
 	// 预存该轮 token —— 「非空 turn_tokens」的触发条件（nil = 不写键）。
 	full, brief := 123, 45
 	if _, err := svc.TurnComplete(facade.TurnCompleteRequest{
-		InstanceID: instanceID, TurnID: "t-ctx", Status: "done", DialogID: dialogID,
+		InstanceID: instanceID, TurnID: "t-ctx", Status: "complete", DialogID: dialogID,
 		FullTokens: &full, BriefTokens: &brief, Scope: facade.Scope{WorkDir: wd},
 	}); err != nil {
 		t.Fatalf("TurnComplete: %v", err)

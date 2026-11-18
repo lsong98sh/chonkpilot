@@ -145,7 +145,7 @@ func TestConfigSuggestLLMWhitelist(t *testing.T) {
 func TestConfigSuggestMCPWhitelist(t *testing.T) {
 	reply := `{"name":"github","transport":"stdio","description":"GitHub MCP",
 		"runtime":"npx","args":["-y","@modelcontextprotocol/server-github"],"namespace":"gh",
-		"level":"app","enabled":true,"isolate":true,"sandbox":true,"hot_tools":["*"]}`
+		"level":"app","enabled":true,"isolate":true,"hot_tools":["*"]}`
 	rec, srv := suggestStub(t, reply)
 	s := suggestServer(t, rec, srv)
 
@@ -156,7 +156,7 @@ func TestConfigSuggestMCPWhitelist(t *testing.T) {
 			t.Errorf("白名单字段 %q 应回填，实得 fields=%+v", k, fields)
 		}
 	}
-	for _, k := range []string{"level", "enabled", "isolate", "sandbox", "hot_tools"} {
+	for _, k := range []string{"level", "enabled", "isolate", "hot_tools"} {
 		if _, ok := fields[k]; ok {
 			t.Errorf("禁填字段 %q 不得回填：%+v", k, fields)
 		}

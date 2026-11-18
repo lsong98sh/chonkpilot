@@ -16,7 +16,6 @@ export const EventNames = {
   ...FrameworkEventNames,
 
   // ── Executor 事件（executor → IDE → 前端）──
-  llmToken: 'llm-token', // LLM 回复文本 token 增量（原 message-chunk type=text）
   llmText: 'llm-text', // LLM 推理思考增量（原 message-chunk type=reasoning）
   llmToolCall: 'llm-tool-call', // LLM 工具调用（原 tool-call）
   toolResult: 'tool-result', // 工具结果
@@ -31,7 +30,6 @@ export const EventNames = {
   toolPair: 'tool-pair', // 工具调用完整信息（后端 → 前端：开始/转异步/终态全量广播；气泡终态已由 tasks.* 驱动，保留兼容）
   toolTimeout: 'mcp-tools-timeout', // 后端 → 前端：调用超时待裁决（{instance_id, tool_call_id, task_id, tool, reason:'timeout', timeout_s, options:[detach,cancel]|[wait,cancel]}）
   mcpToolsProgress: 'mcp-tools-progress', // 后端 → 前端：工具完成进度（{instance_id, tool_call_id, progress, total?}；total 缺省 = 不显示百分比；GATEWAY-2 L8）
-  toolsWait: 'mcp-tools-wait', // 前端 → 后端：等待完成 / 撤销超时（{instance_id, tool_call_id|task_id}）
   sessionNew: 'session-new', // 会话创建（主/子统一主题；子会话 payload 带 parent_session_id）
   // 任务编排事件（server 编排广播，21-llm-server；task 结构字段：task_id/tool/kind/state/…）
   taskStarted: 'tasks.started', // server 任务节点建立（编排广播）

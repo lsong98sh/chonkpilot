@@ -27,8 +27,8 @@ import (
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	mcpgw "github.com/lsong98sh/chonkpilot-agent/gateway"
 	"github.com/chonkpilot/chonkpilot-gwadapter/mqadapter"
+	mcpgw "github.com/lsong98sh/chonkpilot-agent/gateway"
 )
 
 // mockSpec 描述测试用 mock 工具（handler 本地执行，经 self 能力源 server 注册）。
@@ -42,7 +42,7 @@ type mockSpec struct {
 // startTestGW 建内存总线 + 真实 Gateway 装配；mock 工具经**公开方法面** `tools/register`
 // （handler_subject = 本测试订阅的回调主题）接入。
 // GATEWAY-2 L5：gateway 只接 Transport + Servers，不再接受进程内能力源（Params.MCPServer 已删除）；
-// 注册工具以**原名**暴露（P0a 2026-10-29：注册提供方 entry.ID=self 为内置 → 不再加 `self_` 前缀）。
+// 注册工具以**原名**暴露（`entry.ID=self` 为内置，不加前缀）。
 func startTestGW(t *testing.T, specs []mockSpec) (mq.Bus, *mcpgw.Gateway) {
 	t.Helper()
 	ctx := context.Background()
@@ -115,6 +115,11 @@ func subj(method string) string { return "mcp-" + strings.ReplaceAll(method, "/"
 // callMethod 经总线调用方法面并返回结果 map。
 func callMethod(t *testing.T, bus mq.Bus, method string, payload map[string]any) map[string]any {
 	t.Helper()
+	if method == "tools/call" {
+		if _, ok := payload["instance_id"]; !ok {
+			payload["instance_id"] = "ins-test"
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	v := bus.Emit(ctx, subj(method), payload).Wait()
@@ -206,10 +211,10 @@ func TestSyncCall(t *testing.T) {
 	}
 }
 
-// TestAsyncByMeta 工具 meta async=always → tools/call 自动转后台（pending + 完成回报带结果全文）。
+// TestAsyncByMeta 工具 meta async=async → tools/call 自动转后台（pending + 完成回报带结果全文）。
 func TestAsyncByMeta(t *testing.T) {
 	bus, _ := startTestGW(t, []mockSpec{{
-		name: "tool_meta_async", desc: "async by meta", meta: map[string]any{"async": "always"},
+		name: "tool_meta_async", desc: "async by meta", meta: map[string]any{"async": "async"},
 		handle: func(ctx context.Context) (*mcp.CallToolResult, error) {
 			time.Sleep(120 * time.Millisecond)
 			return mockResult("meta-async-ok"), nil
@@ -268,7 +273,7 @@ func TestBackgroundManual(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		v := bus.Emit(ctx, subj("tools/call"), map[string]any{
-			"name": "tool_bg", "tool_call_id": "call-bg-1",
+			"name": "tool_bg", "instance_id": "ins-test", "tool_call_id": "call-bg-1",
 			"arguments": map[string]any{"async": "manual"},
 		}).Wait()
 		res, _ := v.Result.(map[string]any)
@@ -281,7 +286,7 @@ func TestBackgroundManual(t *testing.T) {
 		t.Fatal("上游调用未开始")
 	}
 	// 解绑转后台（按 tool_call_id 命中）→ 返回 task_id
-	taskID, err := gw.DetachExec("", "call-bg-1")
+	taskID, err := gw.DetachExec("ins-test", "call-bg-1")
 	if err != nil || taskID == "" {
 		t.Fatalf("DetachExec: task=%q err=%v", taskID, err)
 	}
@@ -363,22 +368,22 @@ func TestBackgroundManualAfterDone(t *testing.T) {
 	}
 }
 
-// TestContractNeverOverridableByCallAlways（INBOX Q1）：契约 async=never **允许**被调用级
-// `async=always` 覆盖 → 派发即转后台（pending + task_id），主循环让出以便插话消费。
-func TestContractNeverOverridableByCallAlways(t *testing.T) {
+// TestContractSyncOverridableByCallAsync（INBOX Q1）：契约 async=sync **允许**被调用级
+// `async=async` 覆盖 → 派发即转后台（pending + task_id），主循环让出以便插话消费。
+func TestContractSyncOverridableByCallAsync(t *testing.T) {
 	bus, _ := startTestGW(t, []mockSpec{{
-		name: "tool_never", desc: "never",
-		meta: map[string]any{"async": "never"},
+		name: "tool_sync", desc: "sync",
+		meta: map[string]any{"async": "sync"},
 		handle: func(ctx context.Context) (*mcp.CallToolResult, error) {
-			return mockResult("never-ok"), nil
+			return mockResult("sync-ok"), nil
 		},
 	}})
 	res := callMethod(t, bus, "tools/call", map[string]any{
-		"name": "tool_never", "arguments": map[string]any{"async": "always"},
+		"name": "tool_sync", "arguments": map[string]any{"async": "async"},
 	})
 	sc, _ := res["structuredContent"].(map[string]any)
 	if sc == nil || sc["status"] != "pending" || sc["task_id"] == "" {
-		t.Fatalf("契约 never + 调用级 always 应转后台（pending+task_id），got %v", res)
+		t.Fatalf("契约 sync + 调用级 async 应转后台（pending+task_id），got %v", res)
 	}
 }
 
@@ -403,6 +408,9 @@ func subTimeoutEvent(t *testing.T, bus mq.Bus) chan map[string]any {
 // callAsync 在 goroutine 内发出 tools/call 并返回结果通道（避免阻塞主协程的裁决动作）。
 func callAsync(t *testing.T, bus mq.Bus, payload map[string]any) chan map[string]any {
 	t.Helper()
+	if _, ok := payload["instance_id"]; !ok {
+		payload["instance_id"] = "ins-test"
+	}
 	outCh := make(chan map[string]any, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -500,7 +508,6 @@ func TestManualThresholdCancelReturnsCancelled(t *testing.T) {
 	release := make(chan struct{})
 	var once sync.Once
 	closeRelease := func() { once.Do(func() { close(release) }) }
-	t.Cleanup(closeRelease) // LIFO：先于 gateway Stop 释放 handler，避免 goroutine 泄漏到 Stop
 
 	bus, gw := startTestGW(t, []mockSpec{{
 		name: "tool_slow_cancel", desc: "slow cancel",
@@ -514,6 +521,9 @@ func TestManualThresholdCancelReturnsCancelled(t *testing.T) {
 			}
 		},
 	}})
+	// LIFO：closeRelease 须在 startTestGW 注册 Stop 之后登记，才能先于 Stop 释放「故意不响应
+	// 取消」的执行体；否则 Stop 取消后仍会等待该 goroutine 直到 ctx 超时。
+	t.Cleanup(closeRelease)
 	evCh := subTimeoutEvent(t, bus)
 	reportCh := subReport(t, bus)
 
@@ -529,7 +539,7 @@ func TestManualThresholdCancelReturnsCancelled(t *testing.T) {
 
 	// 选 cancel：立即回执（不等待执行体退出）。
 	start := time.Now()
-	ok, err := gw.CancelExec("", taskID)
+	ok, err := gw.CancelExec("ins-test", taskID)
 	if err != nil || !ok {
 		t.Fatalf("CancelExec: ok=%v err=%v", ok, err)
 	}
@@ -668,7 +678,7 @@ func TestTaskCancel(t *testing.T) {
 	res := callMethod(t, bus, "tools/call", map[string]any{"name": "tool_long", "arguments": map[string]any{"async": "true"}})
 	taskID := pendingTaskID(t, res)
 	time.Sleep(50 * time.Millisecond) // 确保已 running
-	ok, err := gw.CancelExec("", taskID)
+	ok, err := gw.CancelExec("ins-test", taskID)
 	if err != nil || !ok {
 		t.Fatalf("CancelExec: ok=%v err=%v", ok, err)
 	}

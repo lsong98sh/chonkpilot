@@ -1,7 +1,0 @@
-{
-  "id": "memory",
-  "cmd": ["chonkpilot-memory.exe"],
-  "enabled": true,
-  "name": "记忆沉淀",
-  "icon": "collection"
-}

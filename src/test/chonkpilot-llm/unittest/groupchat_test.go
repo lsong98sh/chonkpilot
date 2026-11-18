@@ -97,7 +97,7 @@ func dataReply(t *testing.T, bus mq.Bus, subject string, payload map[string]any)
 }
 
 // TestGroupChatEndToEndBlackBox（SUBCHAT-3 阶段 H · 群聊 §3/§4/§7）：一条连续黑盒链路，
-// 驱动 = `session-send`（主轮 → mock LLM 调 `self_subchat_open`）/ `subchat-finish`（用户拍板）；
+// 驱动 = `session-send`（主轮 → mock LLM 调 `subchat_open`）/ `subchat-finish`（用户拍板）；
 // 断言 = 监听 `subchat-opened` / `subchat-state` / `subchat-participant-state` + 读
 // `data-session-history`（展示板）/ `data-session-group-participants-load`（名册）/
 // `data-session-group-round-targets-load`（大轮次投递）/ `data-session-get`（会话行）。
@@ -176,7 +176,7 @@ func TestGroupChatEndToEndBlackBox(t *testing.T) {
 			return
 		}
 
-		// 主会话轮：首问 → 调 `self_subchat_open`（N=3 → 群聊）；工具结果回填后再答文本。
+		// 主会话轮：首问 → 调 `subchat_open`（N=3 → 群聊）；工具结果回填后再答文本。
 		if wantOpen && !hasTool {
 			args := jb(map[string]any{
 				"agent": "main", "scenario_id": "scn-1", "llm": "llm-1", "prompt": opening,
@@ -211,7 +211,7 @@ func TestGroupChatEndToEndBlackBox(t *testing.T) {
 	const mainSession, mainTurn = "s-gc-main", "t-gc-main"
 	startTurn(t, bus, mainSession, mainTurn, "ins-bb")
 
-	// ① 发起（N≥2 → 群聊）：主轮调 self_subchat_open → 建群聊 + 发 subchat-opened（主轮不挂起）。
+	// ① 发起（N≥2 → 群聊）：主轮调 subchat_open → 建群聊 + 发 subchat-opened（主轮不挂起）。
 	w := watch(t, bus, mainTurn)
 	bus.Emit(context.Background(), "session-send", jb(map[string]any{
 		"instance_id": "ins-bb", "session": mainSession, "turn": mainTurn,

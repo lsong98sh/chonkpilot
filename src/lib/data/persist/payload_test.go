@@ -94,17 +94,14 @@ func TestUserConfigPayloadFlatAndDataForms(t *testing.T) {
 
 func TestMcpPayloadTriState(t *testing.T) {
 	var p McpPayload
-	if err := json.Unmarshal([]byte(`{"instance_id":"ins","name":"srv","level":"user","sandbox":false}`), &p); err != nil {
+	if err := json.Unmarshal([]byte(`{"instance_id":"ins","name":"srv","level":"user","isolate":false}`), &p); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	m := p.merged()
 	if m.target() != "srv" || m.Level != "user" {
 		t.Fatalf("mcp = %+v，want name=srv level=user", m)
 	}
-	if m.Isolate != nil {
-		t.Fatalf("isolate 无键应为 nil，实得 %v", *m.Isolate)
-	}
-	if m.Sandbox == nil || *m.Sandbox {
-		t.Fatalf("sandbox 显式 false 应保留，实得 %v", m.Sandbox)
+	if m.Isolate == nil || *m.Isolate {
+		t.Fatalf("isolate 显式 false 应保留，实得 %v", m.Isolate)
 	}
 }

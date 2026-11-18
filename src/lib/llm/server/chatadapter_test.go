@@ -96,7 +96,7 @@ func TestContractEnvNames(t *testing.T) {
 func TestContractDBMessageKeys(t *testing.T) {
 	msg := data.ChatMsg{
 		Role: "assistant", Kind: "text", Content: "hi", ToolCallID: "c",
-		Reasoning: "r", Meta: map[string]any{"async": "always"},
+		Reasoning: "r", Meta: map[string]any{"async": "async"},
 		ToolCalls: []data.ToolCall{{ID: "c1", Type: "function"}},
 	}
 	msg.ToolCalls[0].Function.Name = "f"
@@ -131,7 +131,7 @@ func TestContractChatMessagePersistWireEquivalence(t *testing.T) {
 	chatMsg := chat.Message{
 		Role: "assistant", Kind: "text", Content: "答", Reasoning: "r",
 		ToolCalls: []chat.ToolCall{{ID: "c1", Name: "f", Arguments: `{}`}},
-		Meta:      map[string]any{"async": "always"},
+		Meta:      map[string]any{"async": "async"},
 	}
 	var snap data.ToolCall
 	snap.ID = "c1"
@@ -141,7 +141,7 @@ func TestContractChatMessagePersistWireEquivalence(t *testing.T) {
 	want := data.ChatMsg{
 		Role: "assistant", Kind: "text", Content: "答", Reasoning: "r",
 		ToolCalls: []data.ToolCall{snap},
-		Meta:      map[string]any{"async": "always"},
+		Meta:      map[string]any{"async": "async"},
 	}
 
 	gotRaw, _ := json.Marshal(ChatMessageToData(chatMsg))

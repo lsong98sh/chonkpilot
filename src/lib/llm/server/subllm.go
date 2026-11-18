@@ -198,7 +198,9 @@ func (s *Server) closeDelegatedTurn(instanceID, turnID string) bool {
 	if tc == nil {
 		return len(children) > 0
 	}
-	// 与 onLLMCancel 同口径：先取消该轮在飞工具，再落 interrupted 终态 + 关轮。
+	// 与 onLLMCancel 同口径：先做 turn 级执行侧取消（cancel ctx 立即返回，阶梯在 gateway
+	// 后台），再推进任务树状态 + 层回调（此时执行侧多已终态，回调不再跑阶梯）。
+	_, _ = s.cancelExecTurn(tc.req.InstanceID, tc.req.Turn)
 	s.tasks.cancelByTurn(tc.req.InstanceID, tc.req.Turn)
 	s.complete(tc, "interrupted", "interrupted", "")
 	tc.Close()
@@ -217,6 +219,8 @@ func (s *Server) closeChildTurn(h *childTurn) {
 	for _, g := range s.takeDelegated(h.tc.req.InstanceID, h.Turn) {
 		s.closeChildTurn(g)
 	}
+	// 先做执行侧 turn 级取消（幂等；与 closeDelegatedTurn 同口径），再推进任务树。
+	_, _ = s.cancelExecTurn(h.tc.req.InstanceID, h.Turn)
 	s.tasks.cancelByTurn(h.tc.req.InstanceID, h.Turn)
 	s.complete(h.tc, "interrupted", "interrupted", "")
 	h.tc.Close()
@@ -323,6 +327,36 @@ func (s *Server) awaitDelegatedChildren(tc *turnCtx) {
 func (s *Server) closeDelegatedChildren(instanceID, parentTurn string) {
 	for _, h := range s.takeDelegated(instanceID, parentTurn) {
 		s.closeChildTurn(h)
+	}
+}
+
+// closeDelegatedChildrenFast 是父轮次取消（llm-cancel）的**快速关闭**通道（第 1 条）：
+// 与 closeDelegatedChildren 的差异 = **只递归落子轮次终态 + 关轮**，**不在本 goroutine 做**
+// 任务树取消（cancelByTurn → 层 CancelSubtree → 执行侧取消阶梯可能长达数十秒）——
+// 那部分交给后台 `cancelTurnCleanup`，保证 UI 发布线程立即拿到父轮终态。
+//
+// 递归顺序与 closeChildTurn 一致（先下一级、再本子轮），终态闸门仍由 `finish/life.BeginFinish`
+// 保证只落一次。返回**被关闭的全部 turn id（本 turn 在前，随后为各层子轮 id）**，供后台清理
+// 逐项补做 `cancelByTurn` / 可选 `CancelTurn`（不依赖任务树绑定，覆盖其余执行侧登记）。
+func (s *Server) closeDelegatedChildrenFast(instanceID, parentTurn string) []string {
+	ids := []string{parentTurn}
+	s.closeDelegatedFast(instanceID, parentTurn, &ids)
+	return ids
+}
+
+// closeDelegatedFast 递归关闭子轮次（只落终态 + 关轮；取消清理由后台补做）。
+// `ids` 依次追加本次关闭的子/孙轮 turn id。
+func (s *Server) closeDelegatedFast(instanceID, parentTurn string, ids *[]string) {
+	for _, h := range s.takeDelegated(instanceID, parentTurn) {
+		if h == nil || h.tc == nil {
+			continue
+		}
+		h.tc.cancelRequested.Store(true)
+		*ids = append(*ids, h.Turn)
+		// 先关下一级（子 agent 先终态），再落本子轮终态、关轮。
+		s.closeDelegatedFast(h.tc.req.InstanceID, h.Turn, ids)
+		s.complete(h.tc, "interrupted", "interrupted", "")
+		h.tc.Close()
 	}
 }
 

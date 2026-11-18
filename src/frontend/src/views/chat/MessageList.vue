@@ -64,7 +64,7 @@
             :find-hit="findHitIds.has(it.msg.id)"
             :find-active="!!findActiveId && it.msg.id === findActiveId"
             :data-idx="it.origIdx"
-            @clear-arbitration="onClearArbitration"
+            @clear-timeout="onClearTimeout"
           />
           <div v-if="virtual.bottomPad > 0" class="virtual-pad" :style="{ height: virtual.bottomPad + 'px' }"></div>
         </template>
@@ -80,7 +80,7 @@
           :from-history="!!msg.fromHistory"
           :find-hit="findHitIds.has(msg.id)"
           :find-active="!!findActiveId && msg.id === findActiveId"
-          @clear-arbitration="onClearArbitration"
+          @clear-timeout="onClearTimeout"
         />
         <!-- 「加载中」占位（独立 pending 状态，不在 messages 内）→ 历史全量替换不影响 -->
         <MessageItem
@@ -108,6 +108,7 @@ import { resolvePublishError } from '../../utils/publishError'
 import { findRetryableToolPair, detectNotifyTurn, isNotifyTurn, isNotifyMessage, isUnfinishedTurn } from '../../utils/chatRetry'
 import { EventNames } from '../../events/event-names'
 import { createSessionMessages } from '../../utils/sessionMessages'
+import { createTurnInterruptState, markInterruptedLocally, convergeOnComplete, resetTurnInterruptState } from '../../utils/turnInterrupt'
 import { sessionDialogOf } from '../../api/session'
 import {
   publishLLMContinue,
@@ -145,8 +146,7 @@ const props = defineProps({
 })
 
 // 主会话 cancel（§〇.7）：全部级联，无弹框
-// tasks/taskMap：切会话/刷新时查询任务快照（data-tasktree-tasks），补挂待裁决（awaiting）裁决条
-const { confirmTurnCancel, refresh: refreshTasks, tasks: taskMap, clearAwaiting } = useTaskView()
+const { confirmTurnCancel } = useTaskView()
 const { t } = useI18n() // retryText 的"继续"文案（autoContinue 自动续写用）
 
 // ── Internal message state ──
@@ -154,7 +154,7 @@ const {
   messages, turns, turnActive,
   hasMore, loadingMore, loadingMessages,
   pending, pendingStatus,
-  handleToken, handleReceive, handleDone, handleError,
+  handleReceive, handleDone, handleError,
   loadMessages, loadMoreMessages, teardown: resetMessages,
   showPending, setPendingStatus, hidePending,
 } = createSessionMessages()
@@ -480,7 +480,7 @@ function clearInboxStartTimer() {
 }
 const turnUnsubs = []
 // 常驻流订阅（onMounted 注册，组件销毁清理）：脚本注入 llm-start 不经 doSend，
-// 流事件（llm-receive/llm-complete/llm-token）仍按 session+turn 过滤渲染。
+// 流事件（llm-receive/llm-complete）仍按 session+turn 过滤渲染。
 const persistentUnsubs = []
 
 // 当前 LLM（待发送队列按 LLM 分桶；ChatPanel initSession/selectLLM 时经 chat-select-llm 广播）
@@ -489,6 +489,10 @@ const currentLlm = ref('')
 const lastTurnCanceled = ref(false)
 // 本 turn 是否用户主动取消（取消 ≠ 断链/中断：取消不自动续写，断链才自动续写）
 let userCanceled = false
+// 停止按钮乐观置态：点击即本地收尾（收起加载态），后端 llm-complete 到达后幂等收敛。
+// 纯状态机见 utils/turnInterrupt.js；ref 供 UI 可选显示「已停止」。
+const turnInterruptState = createTurnInterruptState()
+const interruptedLocally = ref(false)
 // 本 turn 的 LLM 错误是否可自动重试（分类来源：llm-complete.retryable 优先，S21；
 // 缺省回退旧 llm-error.retryable）。false 如 API Key 401 → 只手动重试；每轮发送时复位 true
 let lastTurnRetryable = true
@@ -508,8 +512,8 @@ onUpdated(() => {
   // 经 rAF 闸节流（流式期 onUpdated 高频触发，避免每次同步布局测量）。
   scheduleMeasureItemHeights()
   updateCurrentCircleThrottled()
-  // 卡片渲染后补挂早到的待决裁决（mcp-tools-timeout 是 fire-and-forget，可能先于卡片到达）
-  flushPendingArbitration()
+  // 卡片渲染后补挂早到的阈值提示（mcp-tools-timeout 是 fire-and-forget，可能先于卡片到达）
+  flushPendingTimeouts()
 
   if (!autoScroll.value) return
   if (!ta) {
@@ -780,6 +784,9 @@ async function sendSameTurnContinue() {
   // handleCanceledQueue 把队列写回 textarea 并抑制 autoRetry）。每轮起点显式复位。
   lastTurnCanceled.value = false
   userCanceled = false
+  // 乐观停止状态随新一轮复位（否则本轮 llm-complete 会被上一轮的 converged 吞掉）
+  resetTurnInterruptState(turnInterruptState)
+  interruptedLocally.value = false
   // 续写即新一轮动作（会话进行中）→ 收起「继续」/空回复提示（A7）
   showContinue.value = false
   emptyReplyHint.value = false
@@ -874,6 +881,9 @@ async function onSessionChanged({ session_id }) {
   notifyTurn.value = false
   emptyReplyHint.value = false
   lastTurnRetryable = true
+  // 乐观停止状态随会话复位
+  resetTurnInterruptState(turnInterruptState)
+  interruptedLocally.value = false
   // 最近一轮 turn 记录随会话重置：继续时改用已加载 turns 列表末项（DB 历史）
   lastTurnId.value = null
   // 双开：切换会话不取消旧 turn（后端 LLM 域按 session 独立，后台继续跑）。
@@ -896,8 +906,6 @@ async function onSessionChanged({ session_id }) {
     await refreshInbox() // 切会话：拉回该会话 pending inbox（重启/切换后队列可见）
     // 切换期间已收到当前会话终态 → 事件结论优先，不用历史覆盖（见 terminalSeq 注释）
     if (terminalSeq === seqAtSwitch) await assessContinueState()
-    // 切会话恢复：消息落库后按任务列表 awaiting 补挂超时裁决条（I-57）
-    await restoreAwaitingArbitration(newId)
   } else {
     showContinue.value = false
   }
@@ -914,7 +922,7 @@ function cleanupAndFinish() {
   handleDone()
 }
 
-// ── 常驻流事件订阅（llm-receive 流增量 / llm-complete 终态 / 旧协议 llm-token）──
+// ── 常驻流事件订阅（llm-receive 流增量 / llm-complete 终态）──
 // 主 chat 与 viewer 均常驻（onMounted 注册，组件销毁清理），交互与脚本注入
 // （直接 mq.emit llm-start，不经 doSend）都按 session+turn 过滤渲染。
 // server 协议（21-llm-server）：llm-receive{type:text/reason/tool-call} 一个主题
@@ -949,13 +957,6 @@ function setupPersistentStreamSubs() {
   }
   persistentUnsubs.push(mq.on(EventNames.llmComplete, onComplete))
 
-  // 旧协议 llm-token（C12 脚本注入流事件断言过滤用；按 session+turn 过滤后追加）
-  const onLegacyToken = (d) => {
-    if (!isForThisTurn(d)) return
-    if (d.type === 'text' && d.content) handleToken({ type: 'text', content: d.content })
-  }
-  persistentUnsubs.push(mq.on(EventNames.llmToken, onLegacyToken))
-
   // turn-start（桥 mqTypeMap：session-turn-start → turn-start）：INBOX 起轮时**服务端分配**
   // turn id，前端据此回填 currentTurnId（llm-receive/complete 的 turn 过滤依赖它）。
   const onTurnStart = (d) => {
@@ -963,6 +964,11 @@ function setupPersistentStreamSubs() {
     const dsid = d.session || d.session_id
     if (sid && dsid && dsid !== sid) return
     if (!d.turn) return
+    // 新 turn（含脚本注入/INBOX 起轮）：乐观停止状态随轮次复位，避免上轮 converged 吞掉本轮终态
+    if (currentTurnId.value !== d.turn) {
+      resetTurnInterruptState(turnInterruptState)
+      interruptedLocally.value = false
+    }
     currentTurnId.value = d.turn
     lastTurnId.value = d.turn
     // 通知轮判定：事件显式 notify / notify_turn 优先；否则仅当「通知气泡就是本轮的
@@ -1054,6 +1060,9 @@ async function doSend(batch) {
   // 每轮起点显式复位，确保只反映本轮取消。
   lastTurnCanceled.value = false
   userCanceled = false
+  // 乐观停止状态随新一轮复位（否则本轮 llm-complete 会被上一轮的 converged 吞掉）
+  resetTurnInterruptState(turnInterruptState)
+  interruptedLocally.value = false
   // 新一轮开始（会话进行中）→ 不显示「继续」/空回复提示（A7：正常回复后/进行中都不显示）
   showContinue.value = false
   emptyReplyHint.value = false
@@ -1136,11 +1145,10 @@ function clearPendingTimers() {
   if (pendingTimerThinking) { clearTimeout(pendingTimerThinking); pendingTimerThinking = null }
 }
 
-// 超时信号清除：MessageItem 发事件回传消息对象（消息归本组件持有）→ 置空 arbitration /
-// manualThreshold（E-08）。manual 新语义下两者互斥，但转异步/停止成功后都要一并清理。
-function onClearArbitration(msg) {
+// 超时信号清除：MessageItem 发事件回传消息对象（消息归本组件持有）→ 置空 manualThreshold
+//（E-08）：转异步/停止成功后提示高亮一并清理。
+function onClearTimeout(msg) {
   if (!msg) return
-  msg.arbitration = null
   msg.manualThreshold = null
 }
 
@@ -1162,7 +1170,22 @@ function pushUserBubble(text, at) {
   nextTick(() => scrollToBottom())
 }
 
-// ── Handle cancel (from ChatPanel via mq) ──
+// 停止按钮乐观置态（第 1 条）：点击即收起「加载中」/结束本地流式段，不等待后端
+// （后端可能还要最多 5s 清理工具）。不伪造 assistant 消息、不发 MQ、不写库；
+// 真实 llm-complete 到达后由 onLlmComplete 按既有路径收敛（幂等，见 utils/turnInterrupt.js）。
+// 注意：**不动** isLoading / currentTurnId / 全局订阅 —— 保持忙碌过滤与 turn 过滤不变，
+// 期间新消息仍走 inbox 排队（避免 backend 清理期插入旧轮）。
+function finishTurnLocallyInterrupted() {
+  if (!markInterruptedLocally(turnInterruptState)) return false
+  interruptedLocally.value = true
+  awaitingInboxTurn = false
+  clearInboxStartTimer()
+  clearPendingTimers()
+  // 收起「加载中」占位 + 结束本地流式段（turnActive=false / currentSection=null）
+  handleDone()
+  return true
+}
+
 // 主会话 cancel（20-gui）：发 llm-cancel{session,turn} 消息，无弹框。
 // 标记 lastTurnCanceled：llm-complete 后对队列做简化处理（§3.5.3）——
 // 待发消息写回 textarea，由用户点击发送。
@@ -1174,6 +1197,8 @@ function onMessageCancel() {
   if (!turnId && !sid) return
   lastTurnCanceled.value = true
   userCanceled = true
+  // 顺序：先本地置态（UI 立即响应），再发 llm-cancel
+  finishTurnLocallyInterrupted()
   confirmTurnCancel({ turnId, sessionId: sid })
 }
 
@@ -1310,18 +1335,15 @@ function onToolPairUpdate(d) {
 
 // 转异步阈值信号（mcp-tools-timeout，后端 → 前端）：按 tool_call_id（回退 task_id）
 // 匹配当前 tool_pair 卡片，挂载 `manualThreshold`（timeout_s/tool/task_id）供 MessageItem
-// 高亮「转异步」图标。**manual 新语义（2026-11-15）**：阈值到达后原调用仍在同步等待，
-// 该事件不是 awaiting 裁决，不挂裁决条、不显示「等待完成」；用户点转异步 → pending，
+// 高亮「转异步」图标。阈值到达后原调用仍在同步等待；用户点转异步 → pending，
 // 点停止 → 取消，不操作 → 继续等真实结果。
 // 同一调用只提示一次（timeoutShown 去重，含裁决后再次到达）。
 //
-// 该事件是 fire-and-forget（41 I-57）：可能早于目标卡片渲染（超时很短 / 消息未落库），
-// 或用户刷新/切会话后事件已丢失 → 图标高亮不出现。故未命中卡片时**不丢弃**，
-// 先入待决缓存 pendingArbitration，待卡片加载/渲染（flush）或任务列表自愈（restore）时补挂。
+// 该事件是 fire-and-forget（41 I-57）：可能早于目标卡片渲染（超时很短 / 消息未落库）
+// → 未命中卡片时**不丢弃**，先入待决缓存 pendingTimeouts，待卡片渲染（flush）时补挂。
 const timeoutShown = new Set()
-// key（tool_call_id 优先，回退 task_id）→ { kind, arb?, threshold?, callId, tid }
-// kind='threshold'：manual 阈值通知（新语义）；kind='arb'：历史 awaiting 裁决（兼容恢复）。
-const pendingArbitration = new Map()
+// key（tool_call_id 优先，回退 task_id）→ { threshold, callId, tid }
+const pendingTimeouts = new Map()
 
 // 按调用 id 在已渲染消息中定位 tool_pair 卡片（与 tool-pair 终态事件同一匹配规则）。
 function findToolPairMsg(callId, tid) {
@@ -1333,7 +1355,6 @@ function findToolPairMsg(callId, tid) {
 }
 
 // 尝试把「阈值已到、可转异步」标记挂到卡片：'attached' / 'terminal' / 'missing'。
-// 新信号与旧 awaiting 互斥：挂阈值标记时清掉裁决条（旧版遗留 / 恢复数据）。
 function tryAttachThreshold(thr, callId, tid) {
   const msg = findToolPairMsg(callId, tid)
   if (!msg) return 'missing'
@@ -1341,42 +1362,23 @@ function tryAttachThreshold(thr, callId, tid) {
   if (s && s !== 'pending' && s !== 'running') return 'terminal'
   if (!thr.tool) thr.tool = msg.tool || ''
   msg.manualThreshold = thr
-  msg.arbitration = null
-  // 去重（I-103）：卡片已承接超时信号 → 任务区节点条让位。
-  clearAwaiting(msg.task_id || tid || callId)
   return 'attached'
 }
 
-// 尝试把历史 awaiting 裁决条挂到卡片（兼容旧任务；manual 新语义不再产生）。
-function tryAttachArbitration(arb, callId, tid) {
-  const msg = findToolPairMsg(callId, tid)
-  if (!msg) return 'missing'
-  const s = msg.status
-  if (s && s !== 'pending' && s !== 'running') return 'terminal'
-  if (!arb.tool) arb.tool = msg.tool || ''
-  msg.arbitration = arb
-  // 去重（I-103）：卡片已渲染裁决条 → 任务区节点条让位（「卡片存在时沿用卡片，卡片不存在时才由
-  // 节点渲染」）。按 task_id 清本地 awaiting（缺 task_id 时回退调用 id，键不匹配则无操作）。
-  clearAwaiting(msg.task_id || tid || callId)
-  return 'attached'
-}
-
-// 补挂缓存项（统一按 kind 分派）。
+// 补挂缓存项。
 function attachPendingItem(item) {
-  return item.kind === 'threshold'
-    ? tryAttachThreshold(item.threshold, item.callId, item.tid)
-    : tryAttachArbitration(item.arb, item.callId, item.tid)
+  return tryAttachThreshold(item.threshold, item.callId, item.tid)
 }
 
 // 把待决缓存中已能命中的项补挂到卡片（消息加载 / 卡片渲染后调用）。
-function flushPendingArbitration() {
-  if (pendingArbitration.size === 0) return
-  for (const [key, item] of pendingArbitration) {
-    if (timeoutShown.has(key)) { pendingArbitration.delete(key); continue }
+function flushPendingTimeouts() {
+  if (pendingTimeouts.size === 0) return
+  for (const [key, item] of pendingTimeouts) {
+    if (timeoutShown.has(key)) { pendingTimeouts.delete(key); continue }
     const r = attachPendingItem(item)
     if (r === 'attached' || r === 'terminal') {
       timeoutShown.add(key)
-      pendingArbitration.delete(key)
+      pendingTimeouts.delete(key)
     }
   }
 }
@@ -1388,68 +1390,17 @@ function onToolTimeout(d) {
   if (!callId && !tid) return
   const key = callId || tid
   if (timeoutShown.has(key)) return
-  // manual 新语义：blocking=true → 只报「阈值已到」，原调用仍同步等待。
-  if (d.blocking === true) {
-    const threshold = {
-      options: Array.isArray(d.options) ? d.options : [],
-      timeout_s: d.timeout_s,
-      tool: d.tool || '',
-      task_id: tid,
-    }
-    const r = tryAttachThreshold(threshold, callId, tid)
-    if (r === 'attached' || r === 'terminal') { timeoutShown.add(key); return }
-    pendingArbitration.set(key, { kind: 'threshold', threshold, callId, tid })
-    return
-  }
-  // 历史 awaiting 事件（新四模式下 gateway 不再发）→ 保留兼容渲染。
-  const arb = {
+  // manual：blocking=true 只报「阈值已到」，原调用仍同步等待。
+  const threshold = {
     options: Array.isArray(d.options) ? d.options : [],
     timeout_s: d.timeout_s,
     tool: d.tool || '',
     task_id: tid,
   }
-  const r = tryAttachArbitration(arb, callId, tid)
+  const r = tryAttachThreshold(threshold, callId, tid)
   if (r === 'attached' || r === 'terminal') { timeoutShown.add(key); return }
-  // 卡片尚未渲染 → 入待决缓存，等卡片出现（flush）或任务列表自愈（restore）时补挂
-  pendingArbitration.set(key, { kind: 'arb', arb, callId, tid })
-}
-
-// 切会话 / 刷新恢复（I-57 自愈）：查询任务列表，对仍在飞且带超时信号的任务补挂。
-// 历史任务若处于 awaiting（旧版崩溃/升级前）→ 按「阈值已到」恢复，不恢复裁决条。
-// 卡片未渲染则先入待决缓存。沿用既有前端通道（useTaskView.refresh → data-tasktree-tasks，
-// 载荷 {session_id, top_session}，返回 {list:[...]}，不新造主题）。
-async function restoreAwaitingArbitration(sessionId) {
-  if (sessionId) {
-    try {
-      await refreshTasks(sessionId, '')
-      for (const t of taskMap.values()) {
-        if (!t || !t.awaiting) continue
-        const callId = t.tool_call_id || ''
-        const tid = t.task_id || ''
-        if (!callId && !tid) continue
-        const key = callId || tid
-        if (timeoutShown.has(key)) continue
-        const cached = pendingArbitration.get(key)
-        const threshold = cached && cached.kind === 'threshold' ? cached.threshold : {
-          options: Array.isArray(t.awaiting.options) ? t.awaiting.options : [],
-          timeout_s: t.awaiting.timeout_s,
-          tool: t.tool || t.tool_name || '',
-          task_id: tid,
-        }
-        const r = tryAttachThreshold(threshold, callId, tid)
-        if (r === 'attached' || r === 'terminal') {
-          timeoutShown.add(key)
-          pendingArbitration.delete(key)
-        } else {
-          pendingArbitration.set(key, { kind: 'threshold', threshold, callId, tid })
-        }
-      }
-    } catch (e) {
-      console.warn('[MessageList] restoreAwaitingArbitration failed:', e)
-    }
-  }
-  // 补挂其余缓存项（卡片已渲染但事件早到）
-  flushPendingArbitration()
+  // 卡片尚未渲染 → 入待决缓存，等卡片出现（flush）时补挂
+  pendingTimeouts.set(key, { threshold, callId, tid })
 }
 
 function onLlmComplete(d) {
@@ -1458,6 +1409,12 @@ function onLlmComplete(d) {
   if (sid && d.session_id && d.session_id !== sid) return
   if (d.turn && currentTurnId.value && d.turn !== currentTurnId.value) return
   if (d.turn_id && currentTurnId.value && d.turn_id !== currentTurnId.value) return
+  // 乐观停止 → 后端终态收敛：同一 turn 的首次终态照常走既有收尾；重复终态（同轮多次
+  // llm-complete）幂等跳过，避免重复 cleanup/drain/队列回写。真实终态到达即清空本地乐观标志。
+  const terminalTurn = d.turn || d.turn_id || currentTurnId.value || ''
+  const firstTerminal = convergeOnComplete(turnInterruptState, terminalTurn)
+  interruptedLocally.value = false
+  if (!firstTerminal) return
   terminalSeq++
   // server 协议状态枚举映射（20-gui）：
   //   complete↔completed（正常完成）；incomplete（length 截断）；error（错误，错误信息随
@@ -1597,8 +1554,6 @@ onMounted(async () => {
     pruneItemHeights() // 整体重载后淘汰旧 msg.id 高度缓存条目
     await refreshInbox() // 重启拉回：pending inbox（默认不自动发送，仅显示队列）
     await assessContinueState()
-    // 刷新恢复：挂载后按任务列表 awaiting 补挂超时裁决条（I-57）
-    await restoreAwaitingArbitration(props.sessionId)
   }
 
   // 窗口化：记录视口高度并随容器尺寸变化更新（ResizeObserver；不引入 watch）
@@ -1640,14 +1595,15 @@ onUnmounted(() => {
   if (unsubChatContinue) unsubChatContinue()
   persistentUnsubs.forEach(fn => { try { fn() } catch (e) { console.error('[MessageList] persistentUnsubs cleanup error:', e) } })
   persistentUnsubs.length = 0
-  clearTimeout(autoContinueTimer)
+  // 注：原先这里 clearTimeout 引用了未声明变量（ReferenceError 会中断卸载清理）；
+  // 自动续写已由后端承担，前端无此定时器 → 删除该行。
   clearInboxStartTimer()
   clearPendingTimers()
   cleanupAndFinish()
   resetMessages()
 })
 
-defineExpose({ scrollTop, scrollBottom, isLoading, showContinue, lastInterruptedPair, emptyReplyHint, onRetryToolClick, activeSessionId, currentTurnId, scrollToMessage, revealMessage })
+defineExpose({ scrollTop, scrollBottom, isLoading, showContinue, lastInterruptedPair, emptyReplyHint, onRetryToolClick, activeSessionId, currentTurnId, interruptedLocally, scrollToMessage, revealMessage })
 </script>
 
 <style scoped>

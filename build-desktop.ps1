@@ -27,9 +27,9 @@
 #       ├── agents/                         # 智能体契约（*.agent.md，扁平；源 src/initdata/capability/agents）
 #       ├── system/                         # 非原语系统文档全量（源 src/initdata/capability/system，OP-02）
 #       ├── scenarios/<场景id>/…            # 出厂场景（源 src/initdata/capability/scenarios，覆盖式同步）
-#       └── plugins/<id>/plugin.json + <exe>  # manifest 插件（manifest 源 src/initdata/capability/plugins，exe 由 build-plugins.ps1 产出）
-#                                           # ⚠️ `ui.selfServe: true` 的插件把 webui embed 进 exe（唯一源 = chonkpilot-plugins/<id>/webui/），
-#                                           #    产物内**不带** <id>/webui/；demo-python 为样例（product=false，不随产物投放）
+#       └── plugins/<id>/plugin.ini + <exe>  # 插件（启动描述源 src/initdata/capability/plugins，exe 由 build-plugins.ps1 产出）
+#                                           # ⚠️ Go 插件把 webui + manifest embed 进 exe（唯一源 = chonkpilot-plugins/<id>/），
+#                                           #    产物内**不带** <id>/webui/ 与 manifest.json；demo-python 为样例（product=false，不随产物投放）
 #
 # **不再产出**（2026-11-02 按用户口径精简：重复/历史形态全部移除）：
 #   - dist\other\（mcp-server / gateway / executors 部署区）——桌面单体不依赖；
@@ -293,13 +293,12 @@ $serverToolsLegacy = Join-Path $capDst "tools\server"
 if (Test-Path $serverToolsLegacy) { Remove-SafeItem -LiteralPath $serverToolsLegacy -Recurse }
 Write-Host "    ok: capability/tools/server 已移除（core 无域工具契约）"
 
-# -- 4.5) manifest 插件（PLUGIN-1）：manifest 来自 src/initdata，exe 由 build-plugins.ps1 产出 --
-#   插件目录 = dist/capability/plugins/<id>/（plugin.json + exe 同目录；
-#   manifest 的 runtime.exe 是插件目录内相对路径）。
-#   ⚠️ PLUGIN-UI-1：`ui.selfServe: true` 的插件（本轮起 = browser/codegraph/desktop/file/mcp/task/websearch）
-#   自持 webui —— 资源 embed 在插件 exe 内，webui 唯一源 = `chonkpilot-plugins/<id>/webui/`，
-#   产物内**不得**出现 `<id>/webui/`（避免双源漂移；判定见下方通用规则）。
-Write-Host "==> [4/7] stage plugins (manifest + exe)"
+# -- 4.5) 插件（PLUGIN-1）：启动描述来自 src/initdata（plugin.ini），exe 由 build-plugins.ps1 产出 --
+#   插件目录 = dist/capability/plugins/<id>/（plugin.ini + exe 同目录；目录名 = 插件 id）。
+#   Go 插件的 manifest 已 `//go:embed` 进 exe（随 `plugin.hello` 上报）→ 产物**不带** manifest.json。
+#   ⚠️ PLUGIN-UI-1：Go 插件全部 `ui.selfServe: true`（webui 已 embed 在插件 exe 内，唯一源 =
+#   `chonkpilot-plugins/<id>/webui/`），产物内**不得**出现 `<id>/webui/`。
+Write-Host "==> [4/7] stage plugins (plugin.ini + exe)"
 $initPlugins = Join-Path $root "src\initdata\capability\plugins"
 if (Test-Path $initPlugins) {
     $plgDst = Join-Path $dist "plugins"
@@ -310,30 +309,15 @@ if (Test-Path $initPlugins) {
     # 需要演示时从 src/initdata 手工安装到用户级 capability 即可。
     $demoPlg = Join-Path $plgDst "demo-python"
     if (Test-Path $demoPlg) { Remove-SafeItem -LiteralPath $demoPlg -Recurse }
-    # 自持 webui（PLUGIN-UI-1）：manifest 声明 `ui.selfServe: true` 的插件，资源已 embed 在
-    # 插件 exe 内（唯一源 = `chonkpilot-plugins/<id>/webui/`），产物内**不得**出现 `<id>/webui/`。
-    # 通用规则：遍历全部插件 manifest 判定，不按插件 id 逐个列举（新增 selfServe 插件自动覆盖）。
+    # 自持 webui（PLUGIN-UI-1）：Go 插件全部把 webui embed 在 exe 内（唯一源 =
+    # `chonkpilot-plugins/<id>/webui/`），产物内**不得**出现 `<id>/webui/`。
+    # 2026-11-18：manifest 已随 exe 内嵌，不再读目录内 manifest.json 判定 selfServe —— 直接清理。
     Get-ChildItem -Path $plgDst -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
-        # PLUGIN-LOAD-1：plugin.json 已极简（无 ui 段），selfServe 判定改读插件自带的 manifest.json。
-        $ckManifest = Join-Path $_.FullName "manifest.json"
-        if (-not (Test-Path -LiteralPath $ckManifest)) { return }
-        $ckManifestJSON = $null
-        try {
-            $ckManifestJSON = Get-Content -LiteralPath $ckManifest -Raw -Encoding UTF8 | ConvertFrom-Json
-        } catch {
-            Write-Host ("    [警告] manifest 解析失败（跳过 selfServe 判定）: " + $ckManifest)
-            return
+        $ckWebui = Join-Path $_.FullName "webui"
+        if (Test-Path -LiteralPath $ckWebui) {
+            Remove-SafeItem -LiteralPath $ckWebui -Recurse
+            Write-Host ("    selfServe: " + $_.Name + "（webui 由插件 exe 自持，产物不带 webui/）")
         }
-        # PSObject.Properties 取键（避免 StrictMode 下缺键取属性抛异常）。
-        $ckUIProp = $ckManifestJSON.PSObject.Properties['ui']
-        if (-not $ckUIProp -or -not $ckUIProp.Value) { return }
-        $ckSelfServeProp = $ckUIProp.Value.PSObject.Properties['selfServe']
-        if (-not $ckSelfServeProp -or ($ckSelfServeProp.Value -ne $true)) { return }
-        $ckSelfServeWebui = Join-Path $_.FullName "webui"
-        if (Test-Path -LiteralPath $ckSelfServeWebui) {
-            Remove-SafeItem -LiteralPath $ckSelfServeWebui -Recurse
-        }
-        Write-Host ("    selfServe: " + $_.Name + "（webui 由插件 exe 自持，产物不带 webui/）")
     }
     Invoke-ChildBuild "build-plugins.ps1"
     Write-Host "    ok: capability/plugins/"

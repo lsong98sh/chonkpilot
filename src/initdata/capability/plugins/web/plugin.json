@@ -1,7 +1,0 @@
-{
-  "id": "web",
-  "cmd": ["chonkpilot-web.exe"],
-  "enabled": true,
-  "name": "联网能力",
-  "icon": "search"
-}

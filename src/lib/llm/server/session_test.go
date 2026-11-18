@@ -193,7 +193,7 @@ func TestBuildContextTokensReadsPrestored(t *testing.T) {
 	appendMsg(t, st, "t1", "user", "hist")
 	appendMsg(t, st, "t2", "user", "current")
 	fullTok, briefTok := 1234, 56
-	if err := st.CompleteTurnTokens("t1", "done", "stop", &fullTok, &briefTok); err != nil {
+	if err := st.CompleteTurnTokens("t1", "complete", "stop", &fullTok, &briefTok); err != nil {
 		t.Fatalf("CompleteTurnTokens: %v", err)
 	}
 

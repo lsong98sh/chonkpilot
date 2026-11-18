@@ -42,12 +42,12 @@ test('① 常量：self 节点标识 + 白名单 = filesys_run / script_run', ()
 
 test('① defaultTouchFiles：self 内置仅白名单涉及；dir 节点/第三方/无法判定 → 保守涉及', () => {
   // self 内置：白名单内（含暴露名前缀剥离）
-  assert.equal(defaultTouchFiles('self_filesys_run', SELF), true)
-  assert.equal(defaultTouchFiles('self_script_run', SELF), true)
+  assert.equal(defaultTouchFiles('filesys_run', SELF), true)
+  assert.equal(defaultTouchFiles('script_run', SELF), true)
   assert.equal(defaultTouchFiles('filesys_run', SELF), true, '无前缀（契约名）亦识别')
   // self 内置：其余不涉及
   for (const n of ['file_read', 'file_find', 'file_diff', 'web_fetch', 'browser_run', 'desktop_run']) {
-    assert.equal(defaultTouchFiles('self_' + n, SELF), false, `self ${n} 应不涉及`)
+    assert.equal(defaultTouchFiles(n, SELF), false, `self ${n} 应不涉及`)
   }
   // dir 节点 / 第三方 / 无法判定 → 保守涉及
   assert.equal(defaultTouchFiles('mydir_run', DIRN), true)
@@ -55,35 +55,35 @@ test('① defaultTouchFiles：self 内置仅白名单涉及；dir 节点/第三�
   assert.equal(defaultTouchFiles('anything', null), true)
   assert.equal(defaultTouchFiles('anything', undefined), true)
   // `alias=self` / `node=self` 任一命中即视为 self（与 toolSource 同口径）
-  assert.equal(defaultTouchFiles('self_file_read', { node: 'self' }), false)
-  assert.equal(defaultTouchFiles('self_file_read', { alias: 'self' }), false)
+  assert.equal(defaultTouchFiles('file_read', { node: 'self' }), false)
+  assert.equal(defaultTouchFiles('file_read', { alias: 'self' }), false)
 })
 
 test('① defaultTouchFiles：契约 `_meta.touch_files` 优先于来源启发式', () => {
-  assert.equal(defaultTouchFiles('self_file_read', SELF, { touch_files: true }), true, '契约 true 覆盖「不涉及」缺省')
-  assert.equal(defaultTouchFiles('self_filesys_run', SELF, { touch_files: false }), false, '契约 false 覆盖「涉及」缺省')
+  assert.equal(defaultTouchFiles('file_read', SELF, { touch_files: true }), true, '契约 true 覆盖「不涉及」缺省')
+  assert.equal(defaultTouchFiles('filesys_run', SELF, { touch_files: false }), false, '契约 false 覆盖「涉及」缺省')
   assert.equal(defaultTouchFiles('github_x', THIRD, { touch_files: false }), false, '第三方亦可由契约声明不涉及')
-  assert.equal(defaultTouchFiles('self_file_read', SELF, {}), false, '无契约声明 → 回落来源启发式')
+  assert.equal(defaultTouchFiles('file_read', SELF, {}), false, '无契约声明 → 回落来源启发式')
 })
 
 test('① effectiveTouchFiles / checkpointEnabled：显式配置优先于缺省', () => {
-  assert.equal(effectiveTouchFiles({ mode: 'never' }, 'self_file_read', SELF), false, '未配 touch_files → 缺省')
-  assert.equal(effectiveTouchFiles({ touch_files: true }, 'self_file_read', SELF), true, '显式 true 覆盖缺省')
-  assert.equal(effectiveTouchFiles({ touch_files: false }, 'self_filesys_run', SELF), false, '显式 false 覆盖缺省')
+  assert.equal(effectiveTouchFiles({ mode: 'never' }, 'file_read', SELF), false, '未配 touch_files → 缺省')
+  assert.equal(effectiveTouchFiles({ touch_files: true }, 'file_read', SELF), true, '显式 true 覆盖缺省')
+  assert.equal(effectiveTouchFiles({ touch_files: false }, 'filesys_run', SELF), false, '显式 false 覆盖缺省')
   assert.equal(effectiveTouchFiles(null, 'github_x', THIRD), true)
   // 打点派生 = 生效值（true = 打点）
-  assert.equal(checkpointEnabled({ touch_files: true }, 'self_file_read', SELF), true)
-  assert.equal(checkpointEnabled({ touch_files: false }, 'self_filesys_run', SELF), false)
-  assert.equal(checkpointEnabled(null, 'self_filesys_run', SELF), true)
+  assert.equal(checkpointEnabled({ touch_files: true }, 'file_read', SELF), true)
+  assert.equal(checkpointEnabled({ touch_files: false }, 'filesys_run', SELF), false)
+  assert.equal(checkpointEnabled(null, 'filesys_run', SELF), true)
 })
 
 test('① touchFilesOverride：与缺省一致 → undefined（不写库）；偏离 → 布尔值', () => {
   // self 内置不涉及工具：显式 true（偏离缺省 false）→ 写库
-  assert.equal(touchFilesOverride(true, 'self_file_read', SELF), true)
-  assert.equal(touchFilesOverride(false, 'self_file_read', SELF), undefined, '与缺省一致不写库')
+  assert.equal(touchFilesOverride(true, 'file_read', SELF), true)
+  assert.equal(touchFilesOverride(false, 'file_read', SELF), undefined, '与缺省一致不写库')
   // 涉及工具：缺省 true → 显式 false 写库、true 不写库
-  assert.equal(touchFilesOverride(false, 'self_filesys_run', SELF), false)
-  assert.equal(touchFilesOverride(true, 'self_filesys_run', SELF), undefined)
+  assert.equal(touchFilesOverride(false, 'filesys_run', SELF), false)
+  assert.equal(touchFilesOverride(true, 'filesys_run', SELF), undefined)
   // 第三方缺省 true → 显式 false 写库
   assert.equal(touchFilesOverride(false, 'github_x', THIRD), false)
   assert.equal(touchFilesOverride(true, 'github_x', THIRD), undefined)

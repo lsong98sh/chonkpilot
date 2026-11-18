@@ -178,6 +178,9 @@ func (tm *taskManager) findRetryTarget(instanceID, session, turn, toolCallID str
 // restoreStale tool-retry 重启恢复：把从库还原的节点登记回内存任务表（沿用原 task_id）。
 func (tm *taskManager) restoreStale(n *TaskNode) { tm.tree.RestoreStale(n) }
 
+// retryReset 把 interrupted 节点重置为 running（重跑前调用；非 interrupted → false）。
+func (tm *taskManager) retryReset(taskID string) bool { return tm.tree.RetryReset(taskID) }
+
 // done 终态（done/error/cancelled）：广播 tasks.done（完整结构）；已终态不重复广播。
 func (tm *taskManager) done(taskID, state, summary, errMsg string) {
 	tm.tree.Done(taskID, state, summary, errMsg)
@@ -336,4 +339,34 @@ func (s *taskExecSink) DetachExec(instanceID, idOrCall string) (string, error) {
 		return "", fmt.Errorf("执行池不可用（未注入 gateway），无法转后台 %s", idOrCall)
 	}
 	return s.gw.DetachExec(instanceID, idOrCall)
+}
+
+// CancelTurn 编排方 → 执行侧 **turn 级**取消（第 1 条：turn 取消快速终态 / Stop 预算）。
+//
+// gateway 已实现 `CancelTurn`（O(任务数) 扫描 + 后台阶梯，立即返回）；旧 gateway / 未注入 /
+// 测试桩未实现 → (0, nil)，调用方不因缺能力失败。**可选接口**（不并入
+// `mcpgateway.ExecSink`：不强制下层/测试桩实现）。
+func (s *taskExecSink) CancelTurn(instanceID, turnID string) (int, error) {
+	if s == nil || s.gw == nil || turnID == "" {
+		return 0, nil
+	}
+	if c, ok := any(s.gw).(turnCanceller); ok {
+		return c.CancelTurn(instanceID, turnID)
+	}
+	return 0, nil
+}
+
+// cancelExecTurn 对执行池做一次**可选**的 turn 级取消：`s.execSink` 可能是
+// taskExecSink / 测试桩 / 旧实现 —— 未实现 `turnCanceller` 时安全 no-op（0, nil）。
+//
+// 调用点（onLLMCancel 快路径 / cancelTurnCleanup 后台兜底）都只需 best-effort：
+// 任务树取消已由 `tasks.cancelByTurn` 覆盖，本通道用于兜住「任务树尚未绑定 / 已转后台」的执行。
+func (s *Server) cancelExecTurn(instanceID, turnID string) (int, error) {
+	if s == nil || s.execSink == nil || turnID == "" {
+		return 0, nil
+	}
+	if c, ok := s.execSink.(turnCanceller); ok {
+		return c.CancelTurn(instanceID, turnID)
+	}
+	return 0, nil
 }

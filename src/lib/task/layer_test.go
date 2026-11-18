@@ -637,7 +637,7 @@ func TestCancelSubtreeLayerAuthority(t *testing.T) {
 }
 
 // TestRecoverMarksInterrupted：启动恢复（P2 交付物 ⑥）——库中非终态（pending/running/
-// awaiting/detached）一律标 interrupted，终态不动，closed 保留。
+// detached）一律标 interrupted，终态不动，closed 保留。
 func TestRecoverMarksInterrupted(t *testing.T) {
 	l, fake := newLayer(t)
 	rows := []map[string]any{

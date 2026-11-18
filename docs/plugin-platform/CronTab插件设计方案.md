@@ -1,10 +1,10 @@
 # CronTab 定时任务插件设计方案（PLUGIN-CRON-1）
 
-> 状态：✅ 已实现（2026-10-31；**2026-11-04 核对**）：代码 = `chonkpilot-plugins/crontab/src`；`plugin.json`（极简启动信息）+ `manifest.json`（完整 manifest，插件自读并由 `plugin.hello` 上报）= `src/initdata/capability/plugins/crontab/`；构建 = `build-plugins.ps1`。
-> 2026-11-04 核对结论：六工具 / 调度 / 通知 / 零轮询 / L2+L4 均已落地；`plugin.json` 已按 PLUGIN-LOAD-1 拆为极简五字段；任务级沙箱（SANDBOX-WRITE-1）已实现；`running` 标记已落库。本文旧口径（整份 manifest 写 `plugin.json`、沙箱不做、running 仅内存）已按代码修正。
+> 状态：✅ 已实现（2026-10-31；**2026-11-04 核对**）：代码 = `chonkpilot-plugins/crontab/src`；`plugin.ini`（启动命令）+ `manifest.json`（完整 manifest，`//go:embed` 进 exe 并由 `plugin.hello` 上报）= `chonkpilot-plugins/crontab/src/` + `src/initdata/capability/plugins/crontab/plugin.ini`（2026-11-18）；构建 = `build-plugins.ps1`。
+> 2026-11-04 核对结论：六工具 / 调度 / 通知 / 零轮询 / L2+L4 均已落地；启动描述已按 PLUGIN-LOAD-1 极简化（2026-11-18 载体改为 `plugin.ini`）；任务级沙箱（SANDBOX-WRITE-1）已实现；`running` 标记已落库。本文旧口径（整份 manifest 写启动文件、沙箱不做、running 仅内存）已按代码修正。
 > 2026-11-10：`crontab_enable` / `crontab_disable` 合并为 `crontab_toggle{task_id,enabled}`，工具面变为五个；本文仅同步工具清单，动作/调度细节以插件契约与 28-plugins 为准。
 > 关联：[28-plugins](../spec/20-modules/28-plugins.md)（插件体系，权威）· [61-消息一览](../spec/60-reference/61-消息一览.md) · [2C-UI插件](../spec/20-modules/2C-UI插件.md) · [49-待实现项](../spec/40-roadmap/49-待实现项.md#1-引用迁移与历史索引2026-11-04) · [41-未决项登记](../spec/40-roadmap/41-未决项登记.md#2-已收口--历史只读不再待决)
-> 代码落点：`chonkpilot-plugins/crontab/{src,doc}`（新）· `src/initdata/capability/plugins/crontab/{plugin.json,manifest.json}`（新）· `build-plugins.ps1`（增一步）· 前端/主仓/框架**零改动**
+> 代码落点：`chonkpilot-plugins/crontab/{src,doc}`（新）· `src/initdata/capability/plugins/crontab/plugin.ini` + `chonkpilot-plugins/crontab/src/manifest.json`（2026-11-18）· `build-plugins.ps1`（增一步）· 前端/主仓/框架**零改动**
 
 ---
 
@@ -57,10 +57,10 @@ chonkpilot-plugins/crontab/
 └── doc/                           # 设计/使用说明（可选）
 ```
 
-- `plugin.json`（极简，5 字段）：`id` / `cmd` / `enabled` / `name` / `icon`。
-- `manifest.json`（完整）：`product=true`、`runtime.autostart=true`、`mcp.mode=http`、`mcp.category="crontab"`、`mcp.hot_tools` 六项、`ui.selfServe=true`、`ui.views`（tasks/badge/config）、`ui.menus`（无 `ui.actions`）、`ui.statusbar[].view="badge"`。
+- `plugin.ini`（启动描述）：`[plugin] cmd` / `args`（2026-11-18 起取代 `plugin.json`）。
+- `manifest.json`（完整；`//go:embed` 进 exe）：`product=true`、`runtime.autostart=true`、`mcp.mode=http`、`mcp.category="crontab"`、`mcp.hot_tools` 六项、`ui.selfServe=true`、`ui.views`（tasks/badge/config）、`ui.menus`（无 `ui.actions`）、`ui.statusbar[].view="badge"`。
 - 数据根 = `CHONKPILOT_PLUGIN_DATA_DIR`（宿主注入 = `<宿主数据根>/plugins/crontab`，**跨重启保留**，见 `mgr.runOnce`）。
-- 拉起：仓库内无 `plugin.ini`；启用态以 `<数据根>/plugins/enabled.json`（设置页开关）为准，`manifest.runtime.autostart` 仅作声明。
+- 拉起：启动命令来自 `plugin.ini`；启用态以 DB `plugin_state`（设置页开关）为准，`manifest.runtime.autostart` 仅作声明。
 
 ---
 
@@ -267,7 +267,7 @@ tools/crontab/
 
 ## 7. UI
 
-### 7.1 manifest 声明（`manifest.json`；`plugin.json` 仅 id/cmd/enabled/name/icon）
+### 7.1 manifest 声明（`manifest.json`，随 exe 内嵌；`plugin.ini` 仅 cmd/args）
 
 ```jsonc
 "ui": {
@@ -376,7 +376,7 @@ tools/crontab/
 
 1. **（前置）`chonkpilot-util` 上收**：`scriptrun` / `winproc` / `lockfile` / `trayconsole`（§14），`task` 侧改薄封装；跑 `go run ./cmd/utilguard` 与 `go run ./cmd/gencatalog -check`
 2. `chonkpilot-plugins/crontab/**`（§2 目录）
-3. `src/initdata/capability/plugins/crontab/{plugin.json,manifest.json}`（极简 + 完整；2026-11-04 核对）
+3. `src/initdata/capability/plugins/crontab/plugin.ini`（启动描述）+ `chonkpilot-plugins/crontab/src/manifest.json`（完整，内嵌 exe；2026-11-18）
 4. `build-plugins.ps1`：新增 **`[7/11] crontab`**（实际步骤号，2026-11-04 核对）+ 部署清单追加 `crontab`（**唯一构建入口**：`.\build-desktop.ps1`，其 `[4/7] stage plugins` 负责投放 manifest）
 5. ~~`plugin.ini`（若产物中存在）：追加一行~~ —— 仓库已无 `plugin.ini`，启用态走 `<数据根>/plugins/enabled.json`（N/A，2026-11-04 核对）
 6. `docs/spec/20-modules/28-plugins.md` §3 增 `3.6 crontab`
