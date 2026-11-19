@@ -14,11 +14,9 @@ require (
 
 require (
 	github.com/chonkpilot/chonkpilot-gwadapter v0.0.0 // indirect
-	github.com/chonkpilot/chonkpilot-workspace v0.0.0-00010101000000-000000000000 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/lsong98sh/chonkpilot-agent/types v0.0.0 // indirect
-	github.com/lsong98sh/chonkpilot-util v0.0.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
@@ -41,7 +39,6 @@ replace github.com/chonkpilot/chonkpilot-gwadapter => ../gwadapter
 
 replace github.com/chonkpilot/chonkpilot-mcp-server => ../mcp-server
 
-
 replace github.com/chonkpilot/chonkpilot-task => ../task
 
 require github.com/lsong98sh/chonkpilot-plugin-framework v0.1.3
@@ -63,7 +60,11 @@ replace github.com/lsong98sh/chonkpilot-framework/host => ../../../../chonkpilot
 
 replace github.com/chonkpilot/chonkpilot-workspace => ../workspace
 
-require github.com/lsong98sh/chonkpilot-framework/host v0.0.0
+require (
+	github.com/chonkpilot/chonkpilot-workspace v0.0.0-00010101000000-000000000000
+	github.com/lsong98sh/chonkpilot-framework/host v0.0.0
+	github.com/lsong98sh/chonkpilot-util v0.0.0
+)
 
 replace github.com/lsong98sh/chonkpilot-agent => ../../../../chonkpilot-agent
 
@@ -78,7 +79,6 @@ replace github.com/lsong98sh/chonkpilot-agent/session => ../../../../chonkpilot-
 replace github.com/lsong98sh/chonkpilot-agent/types => ../../../../chonkpilot-agent/types/src
 
 require (
-	github.com/lsong98sh/chonkpilot-agent v0.0.0 // indirect
 	github.com/lsong98sh/chonkpilot-agent/chat v0.0.0-00010101000000-000000000000
 	github.com/lsong98sh/chonkpilot-agent/gateway v0.0.0-00010101000000-000000000000
 	github.com/lsong98sh/chonkpilot-agent/router v0.0.0-00010101000000-000000000000

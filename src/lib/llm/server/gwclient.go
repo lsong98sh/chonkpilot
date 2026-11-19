@@ -1,5 +1,5 @@
-// gateway 客户端：tools/list 缓存 + 方法调用（mq promise：Emit 方法主题 → await 同主题
-// v.Result/v.Err()，无 -reply 主题、无 req_id——对齐 26-mcp-gateway 2026-09-05 promise 化）。
+// gateway 客户端：tools/list 缓存 + 方法调用（buscall req_id 回执：Emit 方法主题 →
+// mqadapter handler 按信封 {req_id, ok, result} 回执同主题——总线 promise 退场 2026-11-19）。
 // 2026-09-06 主题统一 mcp 域：方法调用相对主题 = mcp-<组>-<动作>（tools/list → mcp-tools-list）。
 package server
 
@@ -8,12 +8,17 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lsong98sh/chonkpilot-agent/gateway"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/buscall"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
+
+// gwCallTimeout 方法面调用超时（对齐 gwadapter 同口径）。
+const gwCallTimeout = 30 * time.Second
 
 // ToolDef 是 LLM 工具定义（对齐 21-llm-server FetchTools 映射）。
 type ToolDef struct {
@@ -60,13 +65,29 @@ func gwSubject(method string) string {
 	return "mcp-" + strings.ReplaceAll(method, "/", "-")
 }
 
-// emitWait 对方法主题做一次 Emit + await：返回 gateway 写回的 v.Result（JSON 归一 map）。
+// emitWait 对方法主题做一次 buscall（req_id 回执）：返回 gateway 应答 result
+// （JSON 归一 map；总线 promise 退场 2026-11-19，mqadapter.Subscribe 的 handler 按信封回执）。
 func (g *gwClient) emitWait(ctx context.Context, subject string, payload any) (map[string]any, error) {
-	v := g.bus.Emit(ctx, subject, payload).Wait()
-	if err := v.Err(); err != nil {
+	req := map[string]any{}
+	switch p := payload.(type) {
+	case map[string]any:
+		for k, v := range p {
+			req[k] = v
+		}
+	case nil:
+	default:
+		b, err := json.Marshal(p)
+		if err == nil {
+			_ = json.Unmarshal(b, &req) // 非 JSON 形载荷：按空载荷（与旧实现 Emit 序列化失败口径一致）
+		}
+	}
+	c := buscall.New(g.bus)
+	defer c.Close()
+	res, err := c.CallWithTimeout(ctx, gwCallTimeout, subject, req)
+	if err != nil {
 		return nil, &toolError{msg: err.Error()}
 	}
-	return resultJSON(v.Result), nil
+	return resultJSON(res), nil
 }
 
 // call 统一的请求-回执入口（context 携带 instance/session/turn）。
@@ -319,11 +340,13 @@ func (s *Server) emitGateway(ctx context.Context, method string, args map[string
 		payload[k] = val
 	}
 	subject := "mcp-" + strings.ReplaceAll(method, "/", "-")
-	v := s.bus.Emit(ctx, subject, payload).Wait()
-	if err := v.Err(); err != nil {
+	c := buscall.New(s.bus)
+	defer c.Close()
+	res, err := c.CallWithTimeout(ctx, gwCallTimeout, subject, payload)
+	if err != nil {
 		return nil, &toolError{msg: err.Error()}
 	}
-	return resultJSON(v.Result), nil
+	return resultJSON(res), nil
 }
 
 type toolError struct{ msg string }

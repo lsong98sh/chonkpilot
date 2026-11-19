@@ -8,12 +8,10 @@ package filesys
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"strings"
-	"sync/atomic"
 	"time"
 
+	"github.com/lsong98sh/chonkpilot-framework/host/core/buscall"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/lsong98sh/chonkpilot-util/strlist"
@@ -29,9 +27,6 @@ var defaultHiddenDirs = []string{".git", ".svn", ".chonkpilot"}
 // prjConfigLoadTimeout 是异步读取 prj 配置的应答超时：仅用于首次 watch 的一次性补齐，
 // 超时即回落缺省，**不阻塞** watch 请求本身。
 const prjConfigLoadTimeout = 2 * time.Second
-
-// cfgReqSeq 请求序号（进程内自增，避免同 tick 撞号）。
-var cfgReqSeq atomic.Uint64
 
 // parseHiddenDirs 解析「不显示的目录」清单：按逗号 / 分号 / 换行分隔，去空白、去尾分隔符、
 // 去重；空串 → 缺省清单（配置为空 = 回落默认）。
@@ -65,47 +60,22 @@ func sameStrings(a, b []string) bool {
 // readPrjConfigKey 经既有 `data-prj-config-load` 消息面读取单个 prj 配置键。
 // 契约（61-消息一览 §3.1）：payload `{req_id, instance_id, data:{id}}`，
 // 应答（发布到同一主题）`{req_id, ok, result:{data}}`；按 req_id 关联收敛，超时返回 error。
+// 2026-11-19（总线 promise 退场）：改走共享 buscall（长驻订阅按 req_id 路由）；
+// 本包不依赖 data 模块的约束不变（buscall 在 framework host/core）。
 func readPrjConfigKey(bus mq.Bus, instanceID, key string) (string, error) {
-	reqID := fmt.Sprintf("filesys-%d-%d", time.Now().UnixNano(), cfgReqSeq.Add(1))
-	type reply struct {
-		val string
-		err error
-	}
-	done := make(chan reply, 1)
-	sub, err := bus.On(msgkeys.TopicDataPrjConfigLoad, 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var m struct {
-			ReqID  string `json:"req_id"`
-			OK     *bool  `json:"ok"`
-			Result struct {
-				Data string `json:"data"`
-			} `json:"result"`
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(v.Payload, &m) != nil || m.ReqID != reqID || m.OK == nil {
-			return nil // 他人请求 / 应答忽略
-		}
-		if !*m.OK {
-			done <- reply{err: fmt.Errorf("data-prj-config-load: %s", m.Error)}
-			return nil
-		}
-		done <- reply{val: m.Result.Data}
-		return nil
+	c := buscall.New(bus)
+	defer c.Close()
+	res, err := c.CallWithTimeout(context.Background(), prjConfigLoadTimeout, msgkeys.TopicDataPrjConfigLoad, map[string]any{
+		"instance_id": instanceID,
+		"data":        map[string]any{"id": key},
 	})
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = sub.Unsubscribe() }()
-	if err := bus.Emit(context.Background(), msgkeys.TopicDataPrjConfigLoad, map[string]any{
-		"req_id":      reqID,
-		"instance_id": instanceID,
-		"data":        map[string]any{"id": key},
-	}).Wait().Err(); err != nil {
-		return "", err
+	m, _ := res.(map[string]any)
+	if m == nil {
+		return "", nil
 	}
-	select {
-	case r := <-done:
-		return r.val, r.err
-	case <-time.After(prjConfigLoadTimeout):
-		return "", fmt.Errorf("data-prj-config-load 应答超时")
-	}
+	s, _ := m["data"].(string)
+	return s, nil
 }

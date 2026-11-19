@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/lsong98sh/chonkpilot-framework/host/core/buscall"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// gwCallTimeout 方法面调用超时（tools/list 等；对齐旧 Emit().Wait 的实用上限）。
+const gwCallTimeout = 30 * time.Second
 
 // gwSubject 映射方法名（tools/register、servers/list 等）→ 相对主题 mcp-<组>-<动作>
 // （2026-09-06 统一 mcp 域；chonk. 前缀由总线注入）。规则对齐 gateway subjects.go：
@@ -17,27 +22,31 @@ func gwSubject(method string) string {
 	return "mcp-" + strings.ReplaceAll(method, "/", "-")
 }
 
-// busCall 发方法调用并 await 同主题（promise）：返回 v.Result 的 JSON map 形态。
+// busCall 发方法调用并按 req_id 回执等待（总线 promise 退场，2026-11-19）：
+// mcp-* 方法面由 mqadapter.Subscribe 的 handler 回执应答（信封 {req_id, ok, result}，
+// 请求带 req_id → handler 取 req_id 应答回同主题）。返回 result 的 JSON map 形态。
 func (a *Adapter) busCall(ctx context.Context, method string, payload map[string]any) (map[string]any, error) {
-	v := a.bus.Emit(ctx, gwSubject(method), payload).Wait()
-	if err := v.Err(); err != nil {
+	c := buscall.New(a.bus)
+	defer c.Close()
+	res, err := c.CallWithTimeout(ctx, gwCallTimeout, gwSubject(method), payload)
+	if err != nil {
 		return nil, err
 	}
-	switch res := v.Result.(type) {
+	switch m := res.(type) {
 	case map[string]any:
-		return res, nil
+		return m, nil
 	case nil:
 		return map[string]any{}, nil
 	default:
-		b, err := json.Marshal(v.Result)
-		if err != nil {
-			return nil, err
+		b, jerr := json.Marshal(res)
+		if jerr != nil {
+			return nil, jerr
 		}
-		var m map[string]any
-		if err := json.Unmarshal(b, &m); err != nil {
-			return map[string]any{"value": v.Result}, nil
+		var out map[string]any
+		if uerr := json.Unmarshal(b, &out); uerr != nil {
+			return map[string]any{"value": res}, nil
 		}
-		return m, nil
+		return out, nil
 	}
 }
 

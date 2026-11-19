@@ -17,6 +17,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/lsong98sh/chonkpilot-framework/host/core/buscall"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 )
@@ -46,57 +47,18 @@ type store struct {
 
 // request 发 data-<domain>-<op> 请求并等应答（应答发布到**同一主题**，载荷
 // {req_id, ok, result}；按 req_id 匹配，忽略他人请求 / 应答）。
+// 2026-11-19（总线 promise 退场）：改走共享 buscall（长驻订阅按 req_id 路由）。
 func (s *store) request(subject string, req map[string]any) (map[string]any, error) {
-	reqID := newID()
-	req["req_id"] = reqID
-	type reply struct {
-		result map[string]any
-		err    error
-	}
-	done := make(chan reply, 1)
-	sub, err := s.bus.On(subject, 0, func(_ context.Context, _ string, v *mq.Value) error {
-		var m struct {
-			ReqID  string         `json:"req_id"`
-			OK     *bool          `json:"ok"`
-			Result map[string]any `json:"result"`
-			Error  string         `json:"error"`
-		}
-		if json.Unmarshal(v.Payload, &m) != nil || m.ReqID != reqID || m.OK == nil {
-			return nil
-		}
-		if !*m.OK {
-			msg := m.Error
-			if msg == "" {
-				msg = "data error"
-			}
-			select {
-			case done <- reply{err: errors.New(msg)}:
-			default:
-			}
-			return nil
-		}
-		select {
-		case done <- reply{result: m.Result}:
-		default:
-		}
-		return nil
-	})
+	c := buscall.New(s.bus)
+	defer c.Close()
+	res, err := c.CallWithTimeout(context.Background(), s.timeout, subject, req)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = sub.Unsubscribe() }()
-
-	b, _ := json.Marshal(req)
-	f := s.bus.Emit(context.Background(), subject, b)
-	if err := f.Wait().Err(); err != nil {
-		return nil, err
+	if m, ok := res.(map[string]any); ok || res == nil {
+		return m, nil
 	}
-	select {
-	case r := <-done:
-		return r.result, r.err
-	case <-time.After(s.timeout):
-		return nil, errors.New(subject + " via data 面 timeout")
-	}
+	return map[string]any{"result": res}, nil
 }
 
 // upsert 同步写权威行（幂等 upsert；默认路径，不传 shadow）。
