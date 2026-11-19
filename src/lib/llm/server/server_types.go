@@ -31,6 +31,11 @@ type Options struct {
 	// 会话/任务树等持久化经总线 persist 数据服务（本包内嵌，同样使用该路径）。
 	UsrPath string
 
+	// Data 外部注入的 persist 数据服务（appwire「内核插件化」：persist 归 Kernel persist
+	// 节点所有）。非 nil = 本服务**借用不持有**：Start/Stop 由注入方编排（agent 不再
+	// 自建/自停 persist）；nil = 兼容旧装配，本包自建并保留全部生命周期（server 独立形态）。
+	Data *persist.Service
+
 	// 内嵌 MCP server + gateway（21-llm-server：server lib 依赖并内嵌
 	// mcp-server + mcp-gateway）。默认启用；宿主自建 gateway 时置 DisableMCP。
 	DisableMCP     bool                     // true = 跳过内嵌（宿主自建 gateway）
@@ -81,6 +86,9 @@ type Server struct {
 
 	// 内嵌数据服务（persist data 面，61-消息一览 §3）：会话/tasktree/快照/配置落库应答方。
 	data *persist.Service
+	// dataExternal = persist 由外部注入（appwire Kernel persist 节点所有）：本服务借用不持有，
+	// Start/Stop 都不动它（注入方编排）；false = 本包自建，行为与旧装配完全一致。
+	dataExternal bool
 	// cfg 是 **data 门面**（阶段 4 第二批，41 G-34；阶段 4 internal 下沉后实现 = 内嵌 persist）：
 	// 覆盖 config 域（配置 kv 面 + 用户配置）+ mcp 域（四级文件化 MCP 配置）等各域面。
 	// 绑定 = inline（同进程直调，实现 = 内嵌 persist —— 与 data-<domain>-* MQ handler 同一份

@@ -2,7 +2,11 @@ package appwire
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
+
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
 // TestBuildSpineNoServer 校验共用脊柱的最小装配：NoServer → 仅总线 + 门面；
@@ -47,6 +51,53 @@ func TestBuildSpineNoServer(t *testing.T) {
 		t.Fatal("Shutdown 后 Kernel 不应为已启动")
 	}
 	app.Shutdown() // 幂等：不得重复停止 / panic
+}
+
+// TestBuildSpineWithServer 校验 persist 真节点：agent（server）借用注入的 persist.Service，
+// Start/Stop 由 Kernel persist 插件编排 —— server.Start/Stop 都不动 persist（借用不持有）。
+// 断言口径：① Start 后 persist 在线（data-* 请求面应答）；② Shutdown 幂等不 panic。
+func TestBuildSpineWithServer(t *testing.T) {
+	app, err := Build(Snapshot(BootConfig{Form: "desktop", Filesys: true}), BuildOptions{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if app.Server == nil {
+		t.Fatal("缺省装配应有 server（agent 插件）")
+	}
+	if err := app.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// persist 真节点在线：user-config 域（全局级，无需 instance_id）load 走总线应能应答。
+	// persist 的请求-应答 = 同主题回执（req_id 关联）；测试订阅一次捕获回执。
+	type reply struct {
+		OK     bool `json:"ok"`
+		Result any  `json:"result"`
+	}
+	got := make(chan reply, 1)
+	sub, err := app.Bus.On("data-user-config-load", 1, func(_ context.Context, _ string, v *mq.Value) error {
+		if len(v.Payload) > 0 && v.Payload[0] == '{' {
+			var r reply
+			if err := json.Unmarshal(v.Payload, &r); err == nil && r.OK {
+				select {
+				case got <- r:
+				default:
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer sub.Unsubscribe()
+	_ = app.Bus.Emit(context.Background(), "data-user-config-load", []byte(`{"id":"llms"}`))
+	select {
+	case <-got:
+	case <-time.After(3 * time.Second):
+		t.Fatal("persist 未应答 user-config load（真节点未在线？）")
+	}
+	app.Shutdown()
+	app.Shutdown() // 幂等
 }
 
 // TestBuildShutdownBeforeStart 校验未 Start 直接 Shutdown：Kernel.Stop 仍停止 root Scope

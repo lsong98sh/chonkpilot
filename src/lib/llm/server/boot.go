@@ -78,12 +78,19 @@ func New(bus mq.Bus, opts Options) *Server {
 	s.noticeSeen = newNoticeDedup()
 	s.tasks = newTaskManager(s)
 	s.plugins = append([]hook.Hook{}, opts.Plugins...)
-	// 内嵌 persist 数据服务（同一总线应答 data-* 面；usrPath 测试可注入）
-	// Warnf（MW-11）：数据的「唯一实例回退 / 缺 instance_id」告警经本服务日志出口暴露。
-	// AppDir = 系统级 capability 根（与 assembly 的 `Root` 同源，opts.MCPServerRoot）→ 数据层场景
-	// 根随之 = `<AppDir>/../scenarios`（与 capability/ 平级，25 §6）；两边同源避免路径规则分叉。
-	s.data = persist.New(bus, persist.Options{UsrPath: opts.UsrPath, AppDir: opts.MCPServerRoot, Warnf: logf})
-	// config 域门面绑定 = inline（同进程直调）：实现 = 内嵌 persist（与 MQ handler 同源实现）
+	// persist 数据服务（同一总线应答 data-* 面；usrPath 测试可注入）。
+	// 外部注入（opts.Data）= 借用不持有：Start/Stop 由注入方（appwire Kernel persist 节点）
+	// 编排，本服务只消费；nil = 兼容旧装配，本包自建并保留全部生命周期（server 独立形态）。
+	if opts.Data != nil {
+		s.data = opts.Data
+		s.dataExternal = true
+	} else {
+		// Warnf（MW-11）：数据的「唯一实例回退 / 缺 instance_id」告警经本服务日志出口暴露。
+		// AppDir = 系统级 capability 根（与 assembly 的 `Root` 同源，opts.MCPServerRoot）→ 数据层场景
+		// 根随之 = `<AppDir>/../scenarios`（与 capability/ 平级，25 §6）；两边同源避免路径规则分叉。
+		s.data = persist.New(bus, persist.Options{UsrPath: opts.UsrPath, AppDir: opts.MCPServerRoot, Warnf: logf})
+	}
+	// config 域门面绑定 = inline（同进程直调）：实现 = persist 服务（与 MQ handler 同源实现）
 	s.cfg = s.data
 	// LLM provider 对账（LR-11）：usr `llms` 全量 + exe flags 隐含默认 → router 注册集
 	// （启动一次 + `data-user-config-refresh` 各一次；调用路径亦按需幂等 Register）。
@@ -158,8 +165,10 @@ func (s *Server) Start(ctx context.Context) error {
 	// 易失 lane 的启动清空（2026-11-16 inbox 架构整理）：挂账通知等只存在于内存、重启后不回放；
 	// 用户持久 lane（inbox_items 的 next_turn / insert）不在此清空，按 pending 懒恢复。
 	s.clearEphemeralLanes()
-	// 内嵌 persist 数据服务（应答 data-* 面；先于 gateway/路由，保证数据请求可用）
-	if s.data != nil {
+	// 内嵌 persist 数据服务（应答 data-* 面；先于 gateway/路由，保证数据请求可用）。
+	// 外部注入（dataExternal）时由注入方编排启动，此处跳过（Kernel persist 节点拓扑上
+	// 先于 agent，Start 到这里时 persist 已在线）。
+	if s.data != nil && !s.dataExternal {
 		if err := s.data.Start(); err != nil {
 			return err
 		}
@@ -322,7 +331,7 @@ func (s *Server) Stop() {
 	if s.taskLayer != nil {
 		s.taskLayer.Stop()
 	}
-	if s.data != nil {
+	if s.data != nil && !s.dataExternal {
 		s.data.Stop()
 	}
 	flushSessionIndexes(s.bus) // 清本总线备忘（防总线指针复用导致跨宿主串味）

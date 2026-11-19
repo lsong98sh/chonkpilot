@@ -8,6 +8,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/facade/inline"
+	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-llm/server"
 	"github.com/chonkpilot/chonkpilot-workspace"
@@ -71,6 +72,14 @@ func Build(cfg BootConfig, opts BuildOptions) (*App, error) {
 	ws := workspace.New(bus, workspace.Options{Instances: im})
 	app.Workspace = ws
 
+	// persist 数据服务（真节点）：由 Kernel persist 插件编排 Start/Stop；同一份实例同时作为
+	// ① App.Facade（inline 绑定）② 注入 agent（server 借用不持有）③ data-* MQ 应答面。
+	persistSvc := persist.New(bus, persist.Options{Warnf: func(format string, args ...any) {
+		if opts.LogWriter != nil {
+			fmt.Fprintf(opts.LogWriter, "[persist] "+format+"\n", args...)
+		}
+	}})
+
 	var fsys *filesys.Filesys
 	if cfg.Filesys {
 		fsys = filesys.New(bus, ws)
@@ -86,6 +95,9 @@ func Build(cfg BootConfig, opts BuildOptions) (*App, error) {
 			Form:            cfg.Form,
 			Plugins:         DefaultPlugins(),
 			InstanceManager: im,
+			// persist 归 Kernel persist 节点所有（agent 借用不持有）：
+			// Start/Stop 由 Kernel 编排（拓扑序 persist 早于 agent、晚于 workspace）。
+			Data: persistSvc,
 		})
 	}
 
@@ -122,11 +134,27 @@ func Build(cfg BootConfig, opts BuildOptions) (*App, error) {
 		return fail(fmt.Errorf("kernel add workspace: %w", err))
 	}
 
-	// persist 是显式占位插件：Facade（inline data API）已在上面构造完成，
-	// 无独立 Start/Stop 资源；保留节点是为了让依赖图显式（agent → persist）。
+	// persist 真插件：Start 订阅 data-* 应答面 + instance-* 生命周期；Stop 退订并等
+	// 在飞对账收口（返回后无 goroutine 触及数据层连接）。同一份 persistSvc 同时是
+	// App.Facade（inline 绑定）与 agent 的注入实现。
+	persistStarted := false
 	if err := kernel.Add(&inprocPlugin{
 		id:   pluginPersist,
 		deps: []string{pluginBus},
+		start: func(context.Context, *lifecycle.Scope) error {
+			if err := persistSvc.Start(); err != nil {
+				return err
+			}
+			persistStarted = true
+			return nil
+		},
+		stop: func(context.Context) error {
+			if persistStarted {
+				persistSvc.Stop()
+				persistStarted = false
+			}
+			return nil
+		},
 	}); err != nil {
 		return fail(fmt.Errorf("kernel add persist: %w", err))
 	}
