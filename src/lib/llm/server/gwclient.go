@@ -213,16 +213,20 @@ func (g *gwClient) Tools() []ToolDef {
 // ToolsFor 返回某 instance **可见**的工具定义（RB-5 L2：按 instance 分桶直取）：
 // = global 桶 ∪ 归属该 instance 的桶（顺序 = tools/list 顺序：global 在前，与「全量过滤」
 // 逐项同序）。instance 为空 → 仅 global 桶（等价旧口径：`scope==""`）。
-func (g *gwClient) ToolsFor(instance string) []ToolDef {
+func (g *gwClient) ToolsFor(instance string, scopes ...string) []ToolDef {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	global := g.buckets[""] // scope 空串 = global（61-消息一览 §5：tools/list 每项 scope 缺省/""=全局）
-	if instance == "" {
+	scope := instance
+	if len(scopes) > 0 && scopes[0] != "" {
+		scope = scopes[0]
+	}
+	if scope == "" {
 		return global
 	}
-	out := make([]ToolDef, 0, len(global)+len(g.buckets[instance]))
+	out := make([]ToolDef, 0, len(global)+len(g.buckets[scope]))
 	out = append(out, global...)
-	out = append(out, g.buckets[instance]...)
+	out = append(out, g.buckets[scope]...)
 	return out
 }
 

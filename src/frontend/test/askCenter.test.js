@@ -95,7 +95,7 @@ test('AskChatPanel：内嵌会话视图 + 以源会话实例发送 + 完成/返�
 })
 
 test('publishInboxAdd：可选 instance_id（Ask 中心以源会话实例发送）', () => {
-  assert.match(CHAT_API, /export function publishInboxAdd\([^)]*instanceId = ''\)/)
+  assert.match(CHAT_API, /export function publishInboxAdd\([^)]*instanceId = '', workDir = '', dataDir = ''\)/)
   assert.match(CHAT_API, /if \(instanceId\) payload\.instance_id = instanceId/)
 })
 

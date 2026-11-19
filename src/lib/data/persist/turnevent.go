@@ -23,13 +23,13 @@ func (s *Service) handleTurnEvent(action string, payload []byte) {
 	switch action {
 	case "append":
 		resp, err := s.TurnEventAppend(facade.TurnEventAppendRequest{
-			InstanceID: p.InstanceID,
-			SessionID:  f.SessionID,
-			TurnID:     f.TurnID,
-			Seq:        uint64(f.Seq),
-			Type:       f.Type,
-			At:         f.At,
-			Payload:    nonNullRaw(f.Payload),
+			InstanceID: p.InstanceID, Scope: p.scope(),
+			SessionID: f.SessionID,
+			TurnID:    f.TurnID,
+			Seq:       uint64(f.Seq),
+			Type:      f.Type,
+			At:        f.At,
+			Payload:   nonNullRaw(f.Payload),
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -38,7 +38,7 @@ func (s *Service) handleTurnEvent(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.OKPayload{OK: resp.OK})
 	case "cleanup":
 		resp, err := s.TurnEventCleanup(facade.TurnEventCleanupRequest{
-			InstanceID:    p.InstanceID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
 			RetentionDays: int(f.RetentionDays),
 		})
 		if err != nil {

@@ -1,6 +1,7 @@
 import { EventNames } from '../events/event-names'
 import { MsgTopics, SessionRunningListKeys } from '../events/msgkeys'
 import mq from '@ckfw/utils/mq.js'
+import { scopeOfSession } from './session'
 
 // 域化改造（阶段三，20-gui）：send/队列出队不再走 SendChatMessage /
 // SendNoticeTurn RPC，改为发布 llm-start 事件。turn 由前端自分配 uuid（客户端分配
@@ -24,6 +25,17 @@ export function newSessionId() {
   return newUuid('sess')
 }
 
+// applyLLMScope 给 llm-start 载荷补显式项目作用域（SESSION-SCOPE-1：一个窗口多 workdir）。
+// 显式入参优先，其次取会话已登记的 scope；都没有 → 不写键（单项目窗口沿用实例绑定）。
+function applyLLMScope(payload, sessionId, workDir = '', dataDir = '') {
+  const sc = scopeOfSession(sessionId) || {}
+  const wd = workDir || sc.workDir || ''
+  const dd = dataDir || sc.dataDir || ''
+  if (wd) payload.work_dir = wd
+  if (dd) payload.data_dir = dd
+  return payload
+}
+
 // 发布 llm-start（前端 send/队列出队时调用；载荷对齐 server 协议：
 // session/turn 必填 + llm；q 文本随事件携带，由桥拆为 llm-send{text-user}）。
 // scenarioId = 场景目录名/key（空 = 默认场景）。
@@ -32,9 +44,9 @@ export function newSessionId() {
 //   - ack：/publish 应答 promise（桥同步受理：server 落库 session/turn 后才返回）
 //     —— T5 方案 B 的「落库回执」，user 气泡据此渲染（不再乐观插入）。
 // E-25：ack 同为请求-响应面，补 30s 超时（后端卡死 → resolve(null) → 发送端按未受理兜底）。
-export function publishLLMStart(sessionId, text, llmName, thinkEnabled, effort, scenarioId) {
+export function publishLLMStart(sessionId, text, llmName, thinkEnabled, effort, scenarioId, workDir = '', dataDir = '') {
   const turn = newTurnId()
-  const ack = mq.emit(EventNames.llmStart, {
+  const payload = applyLLMScope({
     session: sessionId,
     turn: turn,
     llm: llmName || '',
@@ -42,7 +54,8 @@ export function publishLLMStart(sessionId, text, llmName, thinkEnabled, effort, 
     effort: effort || '',
     scenario_id: scenarioId || '',
     q: text,
-  }, { timeout: 30000 })
+  }, sessionId, workDir, dataDir)
+  const ack = mq.emit(EventNames.llmStart, payload, { timeout: 30000 })
   return { turn, ack }
 }
 
@@ -52,7 +65,7 @@ export function publishLLMStart(sessionId, text, llmName, thinkEnabled, effort, 
 // 返回应答 promise：{ok, id, type}；type=insert 表示已登记插话意向。
 // `instanceId` 可选：Ask 中心内嵌聊天面板需以**源会话实例**发送（否则 owner conflict）；
 // 空 = 由 mq 自动注入当前窗口实例（既有行为）。
-export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, scenarioId, insert = false, instanceId = '') {
+export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, scenarioId, insert = false, instanceId = '', workDir = '', dataDir = '') {
   const payload = {
     session: sessionId,
     llm: llmName || '',
@@ -63,12 +76,14 @@ export function publishInboxAdd(sessionId, text, llmName, thinkEnabled, effort, 
     insert: !!insert,
   }
   if (instanceId) payload.instance_id = instanceId
+  applyLLMScope(payload, sessionId, workDir, dataDir)
   return mq.emit(EventNames.llmInboxAdd, payload, { timeout: 10000 })
 }
 
 // 读回 inbox 项（status 缺省 = pending）：队列指示器 / 重启拉回。
-export function listInbox(sessionId, status = 'pending') {
-  return mq.emit(EventNames.llmInboxList, { session: sessionId, status }, { timeout: 10000 })
+export function listInbox(sessionId, status = 'pending', workDir = '', dataDir = '') {
+  const payload = applyLLMScope({ session: sessionId, status }, sessionId, workDir, dataDir)
+  return mq.emit(EventNames.llmInboxList, payload, { timeout: 10000 })
 }
 
 // 撤回 / 删除一条 inbox 项。
@@ -144,8 +159,8 @@ export async function cancelRunningTurnsOf(sessionId, deps = {}) {
 // server 侧把注入的 user 消息标 Kind=continue（非新轮边界，拼接视为同一轮）。
 // turn 为空时由 server 按 session 取最近一轮（桥不再为 continue 分配 turn）。
 // 返回 { turn, ack }（turn 为空表示由后端解析；ack 语义同 publishLLMStart）。
-export function publishLLMContinue(sessionId, text, turnId, llmName, thinkEnabled, effort, scenarioId) {
-  const ack = mq.emit(EventNames.llmStart, {
+export function publishLLMContinue(sessionId, text, turnId, llmName, thinkEnabled, effort, scenarioId, workDir = '', dataDir = '') {
+  const payload = applyLLMScope({
     session: sessionId,
     turn: turnId || '',
     llm: llmName || '',
@@ -154,6 +169,7 @@ export function publishLLMContinue(sessionId, text, turnId, llmName, thinkEnable
     scenario_id: scenarioId || '',
     continue: true,
     q: text,
-  }, { timeout: 30000 })
+  }, sessionId, workDir, dataDir)
+  const ack = mq.emit(EventNames.llmStart, payload, { timeout: 30000 })
   return { turn: turnId || '', ack }
 }

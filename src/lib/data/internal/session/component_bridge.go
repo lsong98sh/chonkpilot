@@ -56,7 +56,7 @@ func (s *Service) componentEnsureSession(prj *data.DB, req facade.SessionEnsureR
 		return facade.SessionEnsureResponse{}, err
 	}
 	if res.Created {
-		s.emitSessionNew(req.SessionID, req.ParentSessionID, req.InstanceID, res.DialogID)
+		s.emitSessionNew(req.SessionID, req.ParentSessionID, req.InstanceID, res.DialogID, req.Scope)
 	}
 	return facade.SessionEnsureResponse{OK: true, DialogID: res.DialogID}, nil
 }

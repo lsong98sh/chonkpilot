@@ -50,7 +50,7 @@ func sessionRunParentCtx(t *testing.T, s *Server, session, turn string) *turnCtx
 	})
 	t.Cleanup(parent.Close)
 	s.mu.Lock()
-	s.registerTurnLocked(instKey("ins-test", turn), parent)
+	s.registerTurnLocked(s.runKey("ins-test", turn), parent)
 	s.mu.Unlock()
 	return parent
 }

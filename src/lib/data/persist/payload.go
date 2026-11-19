@@ -18,6 +18,15 @@ import (
 type Header struct {
 	ReqID      string `json:"req_id,omitempty"`
 	InstanceID string `json:"instance_id,omitempty"`
+	// WorkDir/DataDir 是显式项目数据根。一个窗口可同时访问多个 workdir，
+	// instance_id 只作运行态/投递身份，不再推断数据根；留空 = 既有实例绑定口径。
+	WorkDir string `json:"work_dir,omitempty"`
+	DataDir string `json:"data_dir,omitempty"`
+}
+
+// scope 返回显式数据根（空 = 调用方未指定，按 instance 绑定解析）。
+func (h Header) scope() facade.Scope {
+	return facade.Scope{WorkDir: h.WorkDir, DataDir: h.DataDir}
 }
 
 // ConfigPayload 是 prj-config / prompt / prj-security 四动作（list/load/save/delete）的载荷。
@@ -463,6 +472,7 @@ type TaskNodePayload struct {
 	State        string `json:"state,omitempty"`
 	InstanceID   string `json:"instance_id,omitempty"`
 	WorkDir      string `json:"work_dir,omitempty"`
+	DataDir      string `json:"data_dir,omitempty"`
 	ArgsDigest   string `json:"args_digest,omitempty"`
 	ResultDigest string `json:"result_digest,omitempty"`
 	ExecJSON     string `json:"exec_json,omitempty"`
@@ -548,6 +558,11 @@ func (p TasktreeUpsertPayload) merged() (TaskNodePayload, string) {
 	q.Data = nil // 只把顶层业务字段作为「补缺」来源，避免 data 自嵌套
 	m := mergeFlat(q, p.Data)
 	return m.TaskNodePayload, m.DialogID
+}
+
+// scope 返回节点行携带的显式数据根（缺省 = 按信封 instance 绑定解析）。
+func (p TasktreeUpsertPayload) scope() facade.Scope {
+	return facade.Scope{WorkDir: p.WorkDir, DataDir: p.DataDir}
 }
 
 // TasktreeDeletePayload 是 data-tasktree-delete 的载荷（`node_id` / `id` / `filter.node_id` 三形）。

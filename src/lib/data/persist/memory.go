@@ -29,14 +29,14 @@ func (s *Service) handleMemory(op string, payload []byte) {
 
 	switch op {
 	case "list":
-		resp, err := s.MemoryList(facade.MemoryListRequest{InstanceID: p.InstanceID})
+		resp, err := s.MemoryList(facade.MemoryListRequest{InstanceID: p.InstanceID, Scope: p.scope()})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
 			return
 		}
 		s.replyID(method, p.ReqID, wire.MemoryListResult(resp.List))
 	case "read":
-		resp, err := s.MemoryGet(facade.MemoryGetRequest{InstanceID: p.InstanceID, Category: d.Category})
+		resp, err := s.MemoryGet(facade.MemoryGetRequest{InstanceID: p.InstanceID, Scope: p.scope(), Category: d.Category})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -44,7 +44,7 @@ func (s *Service) handleMemory(op string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.MemoryGetResult(resp.Doc))
 	case "save":
 		resp, err := s.MemorySave(facade.MemorySaveRequest{
-			InstanceID: p.InstanceID, Category: d.Category, Content: d.Content,
+			InstanceID: p.InstanceID, Scope: p.scope(), Category: d.Category, Content: d.Content,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -52,7 +52,7 @@ func (s *Service) handleMemory(op string, payload []byte) {
 		}
 		s.replyID(method, p.ReqID, wire.MemoryIDResult(resp.ID))
 	case "delete":
-		resp, err := s.MemoryDelete(facade.MemoryDeleteRequest{InstanceID: p.InstanceID, Category: d.Category})
+		resp, err := s.MemoryDelete(facade.MemoryDeleteRequest{InstanceID: p.InstanceID, Scope: p.scope(), Category: d.Category})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -62,7 +62,7 @@ func (s *Service) handleMemory(op string, payload []byte) {
 	// 记录 (会话, 类别) → 最后已成功提取的 turn，落 prjusr（不再用 config 键）。
 	case "extract-load":
 		resp, err := s.MemoryExtractLoad(facade.MemoryExtractLoadRequest{
-			InstanceID: p.InstanceID, SessionID: d.SessionID, Category: d.Category,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: d.SessionID, Category: d.Category,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -71,7 +71,7 @@ func (s *Service) handleMemory(op string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.MemoryExtractListResult(resp.List))
 	case "extract-save":
 		resp, err := s.MemoryExtractSave(facade.MemoryExtractSaveRequest{
-			InstanceID: p.InstanceID, SessionID: d.SessionID, Category: d.Category, LastTurnID: d.LastTurnID,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: d.SessionID, Category: d.Category, LastTurnID: d.LastTurnID,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -80,7 +80,7 @@ func (s *Service) handleMemory(op string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.OKIDPayload{OK: resp.OK, ID: resp.ID})
 	case "extract-delete":
 		if _, err := s.MemoryExtractDelete(facade.MemoryExtractDeleteRequest{
-			InstanceID: p.InstanceID, SessionID: d.SessionID, Category: d.Category,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: d.SessionID, Category: d.Category,
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return

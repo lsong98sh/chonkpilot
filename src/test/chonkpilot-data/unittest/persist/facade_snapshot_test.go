@@ -16,7 +16,6 @@ package persist_test
 
 import (
 	"encoding/json"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -206,7 +205,7 @@ func TestFacadeInlineSelfRegistersFromScope(t *testing.T) {
 
 	const inst = "ins-scope"
 	wd := t.TempDir()
-	scope := facade.Scope{WorkDir: wd, DataDir: filepath.Join(wd, ".chonkpilot")}
+	scope := facade.Scope{WorkDir: wd}
 	snap := seedSnapshot("t1")
 
 	// 对话库需先存在（一树一库：快照随对话落库；快照写入要求会话行已在对话库内）。

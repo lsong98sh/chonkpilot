@@ -25,7 +25,7 @@ func (s *Service) handleInbox(action string, payload []byte) {
 	switch action {
 	case "append":
 		resp, err := s.InboxAppend(facade.InboxAppendRequest{
-			InstanceID:     p.InstanceID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
 			DialogID:       f.DialogID,
 			SessionID:      f.Session,
 			TurnID:         f.TurnID,
@@ -45,10 +45,10 @@ func (s *Service) handleInbox(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.OKIDPayload{OK: resp.OK, ID: resp.ID})
 	case "list":
 		resp, err := s.InboxList(facade.InboxListRequest{
-			InstanceID: p.InstanceID,
-			DialogID:   f.DialogID,
-			SessionID:  f.Session,
-			Status:     f.Status,
+			InstanceID: p.InstanceID, Scope: p.scope(),
+			DialogID:  f.DialogID,
+			SessionID: f.Session,
+			Status:    f.Status,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -84,13 +84,13 @@ func (s *Service) handleInbox(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.InboxItemsPayload{OK: true, Items: items})
 	case "update":
 		resp, err := s.InboxUpdate(facade.InboxUpdateRequest{
-			InstanceID: p.InstanceID,
-			DialogID:   f.DialogID,
-			ID:         string(f.ID),
-			Status:     f.Status,
-			Type:       f.Type,
-			TurnID:     f.TurnID,
-			Content:    f.Content,
+			InstanceID: p.InstanceID, Scope: p.scope(),
+			DialogID: f.DialogID,
+			ID:       string(f.ID),
+			Status:   f.Status,
+			Type:     f.Type,
+			TurnID:   f.TurnID,
+			Content:  f.Content,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -116,7 +116,7 @@ func (s *Service) handleInbox(action string, payload []byte) {
 			_ = json.Unmarshal(raw, &mp)
 		}
 		resp, err := s.InboxCommit(facade.InboxCommitRequest{
-			InstanceID:     p.InstanceID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
 			DialogID:       f.DialogID,
 			InboxID:        inboxID,
 			TurnID:         f.TurnID,

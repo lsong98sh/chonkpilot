@@ -19,12 +19,13 @@
  *   `DialogManager` · `useUserConfigSync`（theme/locale 跨窗口共享 ref）· 区块显隐（属布局域）。
  */
 import { defineStore } from 'pinia'
+import { publishHostState } from './hostState.js'
 
 /** 左侧（ExplorerPane）四模式（与既有 filetree-mode-select 载荷取值一致）。 */
-export const EXPLORER_MODES = ['project', 'sessions', 'memory', 'extensions']
+export const EXPLORER_MODES = ['workspaces', 'project', 'memory', 'extensions']
 
 /** 左侧默认模式。 */
-export const DEFAULT_EXPLORER_MODE = 'project'
+export const DEFAULT_EXPLORER_MODE = 'workspaces'
 
 export const useSelectionStore = defineStore('selection', {
   state: () => ({
@@ -74,32 +75,40 @@ export const useSelectionStore = defineStore('selection', {
     /** 工作目录（原 `api/file.js` 的模块级 `_workDir` 唯一落点）。 */
     setWorkDir(dir) {
       this.workDir = dir ? String(dir) : ''
+      publishHostState('workdir', this.workDir)
     },
 
     /** 预览激活文件镜像（`{path, renderType}`；空 = 无文件激活）。 */
     setActiveFile(file) {
       const f = file || {}
       this.activeFile = { path: String(f.path || ''), renderType: String(f.renderType || '') }
+      publishHostState('active-file-path', this.activeFile.path)
     },
 
     /** 当前主会话（`session-changed`）。 */
     setActiveSession(sessionId) {
       this.activeSession = { sessionId: sessionId ? String(sessionId) : '' }
+      publishHostState('selected-session', this.activeSession.sessionId)
     },
 
     /** 子会话选中（`subsession-changed`）：选中子会话即清掉任务详情叠加态（与既有 SessionChat 同口径）。 */
     setActiveSubSession(sessionId) {
       this.activeTask = { sessionId: sessionId ? String(sessionId) : '', taskId: '' }
+      publishHostState('active-task-id', '')
     },
 
     /** 任务详情叠加（`task-detail-open`）：仅改 taskId，保留当前子会话身份。 */
     setActiveTaskId(taskId) {
       this.activeTask = { ...this.activeTask, taskId: taskId ? String(taskId) : '' }
+      publishHostState('active-task-id', this.activeTask.taskId)
     },
 
     /** 左侧模式（非 EXPLORER_MODES 取值一律忽略 —— 防脏值写坏渲染分支）。 */
     setExplorerMode(mode) {
-      if (EXPLORER_MODES.includes(mode)) this.explorerMode = mode
+      if (EXPLORER_MODES.includes(mode)) {
+        this.explorerMode = mode
+        publishHostState('explorer-mode', this.explorerMode)
+      }
     },
 
     /** 预览区选中文本快照（空文本 = 无选区）。 */
@@ -125,6 +134,12 @@ export const useSelectionStore = defineStore('selection', {
       this.activeTask = { sessionId: '', taskId: '' }
       this.explorerMode = DEFAULT_EXPLORER_MODE
       this.activeSelection = { text: '', range: null }
+      // owner 侧复位同步到状态注册表（未安装 hostState 时 publish 为安全 no-op）。
+      publishHostState('workdir', this.workDir)
+      publishHostState('active-file-path', this.activeFile.path)
+      publishHostState('selected-session', this.activeSession.sessionId)
+      publishHostState('active-task-id', this.activeTask.taskId)
+      publishHostState('explorer-mode', this.explorerMode)
     },
   },
 })

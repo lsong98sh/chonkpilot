@@ -51,6 +51,8 @@ func TestGeneratedFilesUpToDate(t *testing.T) {
 	}{
 		{"Go 键常量", filepath.Join(root, "..", "chonkpilot-framework", "host", "src", "core", "msgkeys", "msgkeys_gen.go"), out.Go},
 		{"JS 键常量", filepath.Join(root, "src", "frontend", "src", "events", "msgkeys.js"), out.JS},
+		{"Go 主题 scope", filepath.Join(root, "..", "chonkpilot-framework", "plugin", "src", "runtime", "topics", "builtin_gen.go"), out.TopicsGo},
+		{"JS 主题 scope", filepath.Join(root, "src", "frontend", "src", "events", "topic-specs.generated.js"), out.TopicsJS},
 	}
 	for _, tc := range cases {
 		tc := tc

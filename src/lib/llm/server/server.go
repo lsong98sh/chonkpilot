@@ -105,7 +105,7 @@ func (s *Server) exitInstance(instanceID string) {
 		}
 		closing = append(closing, sess)
 		delete(s.turns, key)
-		delete(s.busy, instKey(instanceID, sess.SessionID()))
+		delete(s.busy, s.runKey(instanceID, sess.SessionID()))
 		delete(s.continuePending, key)
 	}
 	// 实例退出 → 摘除该实例的**全部** ask 等待登记（E2-1：其轮次可能已被移出 s.turns，
@@ -190,6 +190,7 @@ func (s *Server) onInstanceRegister(_ string, payload []byte) {
 	}()
 	// 实例 → work_dir 映射**只有一份**：权威 = 共通实例视图 `s.im`（instance.Manager，
 	// 本包在其后订阅 instance-register → 此处读到的是刚登记的记录）。不再维护本地副本。
+	s.rememberCanonicalWorkDir(msg.InstanceID, msg.WorkDir)
 	// 目录节点接入含 gateway `servers/register`（spawn 下游进程）→ **必须放后台**（与
 	// MCP 对账同口径）：本 handler 在总线同步派发线程内，不得等待子进程/网络。
 	s.capRegisterWG.Add(1)
@@ -271,8 +272,12 @@ func (s *Server) turnSession(turnID string) string {
 //
 // 供两处消费：① `toolsForLLM`（缺省下发面 = hot 子集）；② `llmTools` 的白名单分支
 // （25 §4.3：白名单非空 → 白名单里的工具**不论是否 hot**都下发，见 T1 缺陷修正）。
-func (s *Server) visibleTools(instance string) []ToolDef {
-	visible := s.gc.ToolsFor(instance)
+func (s *Server) visibleTools(instance string, workDirs ...string) []ToolDef {
+	workDir := ""
+	if len(workDirs) > 0 {
+		workDir = workDirs[0]
+	}
+	visible := s.gc.ToolsFor(instance, s.capScope(instance, workDir))
 	out := make([]ToolDef, 0, len(visible))
 	var vars map[string]string // 懒加载（无占位符则不发 data-user-config-load）
 	for _, t := range visible {
@@ -290,8 +295,8 @@ func (s *Server) visibleTools(instance string) []ToolDef {
 // toolsForLLM 组装发给 LLM 的**缺省**工具列表（21-llm-server · 25 §4.1）：
 // = visibleTools 筛 `hot==true`（hot 工具 ∪ gateway in-memory meta 工具；实例级 capability
 // dir 节点工具不污染其他 instance 的 LLM 工具面）。白名单非空时改走 `llmTools` 的白名单分支。
-func (s *Server) toolsForLLM(instance string) []ToolDef {
-	visible := s.visibleTools(instance)
+func (s *Server) toolsForLLM(instance string, workDirs ...string) []ToolDef {
+	visible := s.visibleTools(instance, workDirs...)
 	out := make([]ToolDef, 0, len(visible))
 	for _, t := range visible {
 		if !t.Hot {

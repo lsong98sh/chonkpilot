@@ -86,5 +86,8 @@
   "type_skill": "Skill",
   "type_prompt": "Prompt",
   "type_resource": "Resource",
-  "type_agent": "Agent"
+  "type_agent": "Agent",
+  "no_sessions": "No sessions",
+  "add_workdir": "Add workdir",
+  "mode_workspaces": "Workspaces"
 }

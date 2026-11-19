@@ -23,7 +23,7 @@ func (s *Service) handleAsk(action string, payload []byte) {
 	switch action {
 	case "pending":
 		resp, err := s.AskPending(facade.AskPendingRequest{
-			InstanceID:  p.InstanceID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
 			DialogID:    string(f.DialogID),
 			AskID:       f.AskID,
 			PendingOnly: bool(f.PendingOnly),

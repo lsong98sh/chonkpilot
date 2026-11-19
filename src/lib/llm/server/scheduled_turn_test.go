@@ -11,7 +11,7 @@ import (
 func TestStartScheduledTurnRejectsBusySession(t *testing.T) {
 	s, _, _ := newTaskWaitFixture(t, "s-sched", "t-running")
 	s.mu.Lock()
-	s.busy[instKey("ins-test", "s-sched")] = "t-running"
+	s.busy[s.runKey("ins-test", "s-sched")] = "t-running"
 	s.mu.Unlock()
 
 	_, err := s.startScheduledTurn(context.Background(), StartReq{

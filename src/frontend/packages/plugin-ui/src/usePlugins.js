@@ -18,7 +18,6 @@ const unregisterPluginViews = (id) => pluginHost().views.unregister(id)
 const state = reactive({
   plugins: [],
   ready: false,
-  error: '',
 })
 
 let started = false
@@ -86,20 +85,37 @@ export async function refreshPlugins(retry = 5) {
     const list = env.result?.plugins
     if (Array.isArray(list)) applySnapshot(list)
     state.ready = true
-    state.error = ''
   } catch (e) {
-    state.error = e?.message || String(e)
+    console.warn('[plugins] 清单加载失败:', e?.message || e)
     // 后端（server/persist）可能尚未就绪：短退避重试，就绪后自然收敛。
     if (retry > 0) setTimeout(() => refreshPlugins(retry - 1), 800)
   }
 }
 
-/** 用全量快照替换本地台账，并同步视图注册表（plugin-list / plugin-refresh 共用）。 */
-function applySnapshot(list) {
-  state.plugins = list
-  for (const p of list) {
+/**
+ * 用全量快照替换本地台账，并同步视图注册表（plugin-list / plugin-refresh 共用）。
+ *
+ * 快照是**权威全量**：旧台账中不在新 list 的插件必须卸载其视图（并通知变更），
+ * 否则插件被禁用/移除后 `plugin:<id>:*` 的旧 key 会一直留在布局定义里。
+ * 导出供纯逻辑测试直接驱动（宿主调用路径不变）。
+ */
+export function applySnapshot(list) {
+  const next = (Array.isArray(list) ? list : [])
+    .filter((p) => p && p.id)
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+  const incoming = new Set(next.map((p) => p.id))
+  const before = new Map(state.plugins.filter((p) => p && p.id).map((p) => [p.id, p]))
+  const removed = [...before.keys()].filter((id) => !incoming.has(id))
+
+  state.plugins = next
+  for (const id of removed) {
+    unregisterPluginViews(id)
+    notifyChange(id)
+  }
+  for (const p of next) {
     registerPluginViews(p)
-    notifyChange(p.id)
+    // 同一快照反复下发（plugin-list / plugin-refresh）时，未变化的插件不重复通知。
+    if (JSON.stringify(before.get(p.id)) !== JSON.stringify(p)) notifyChange(p.id)
   }
 }
 
@@ -123,7 +139,6 @@ export function refreshPluginsHard() {
       const list = env.result?.plugins
       if (Array.isArray(list)) applySnapshot(list)
       state.ready = true
-      state.error = ''
       return list || []
     } finally {
       refreshing = null

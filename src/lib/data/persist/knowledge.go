@@ -24,21 +24,21 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 
 	switch action {
 	case "root": // root 只解析 kind 根，不依赖实例（app 根可独立存在）
-		resp, err := s.KnowledgeRoot(facade.KnowledgeRootRequest{InstanceID: p.InstanceID, Kind: d.Kind})
+		resp, err := s.KnowledgeRoot(facade.KnowledgeRootRequest{InstanceID: p.InstanceID, Scope: p.scope(), Kind: d.Kind})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
 			return
 		}
 		s.replyID(method, p.ReqID, wire.KnowledgeRootResult(resp))
 	case "list":
-		resp, err := s.KnowledgeList(facade.KnowledgeListRequest{InstanceID: p.InstanceID, Dir: d.Dir})
+		resp, err := s.KnowledgeList(facade.KnowledgeListRequest{InstanceID: p.InstanceID, Scope: p.scope(), Dir: d.Dir})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
 			return
 		}
 		s.replyID(method, p.ReqID, wire.KnowledgeListResult(resp))
 	case "read":
-		resp, err := s.KnowledgeRead(facade.KnowledgeReadRequest{InstanceID: p.InstanceID, Path: d.Path})
+		resp, err := s.KnowledgeRead(facade.KnowledgeReadRequest{InstanceID: p.InstanceID, Scope: p.scope(), Path: d.Path})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -46,7 +46,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.KnowledgeReadResult(resp))
 	case "save":
 		if _, err := s.KnowledgeSave(facade.KnowledgeSaveRequest{
-			InstanceID: p.InstanceID, Path: d.Path, Doc: knowledgeDocOf(d.Doc),
+			InstanceID: p.InstanceID, Scope: p.scope(), Path: d.Path, Doc: knowledgeDocOf(d.Doc),
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -54,7 +54,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.OKResult())
 	case "create":
 		resp, err := s.KnowledgeCreate(facade.KnowledgeCreateRequest{
-			InstanceID: p.InstanceID, Dir: d.Dir, Type: d.Type, Name: d.Name,
+			InstanceID: p.InstanceID, Scope: p.scope(), Dir: d.Dir, Type: d.Type, Name: d.Name,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -63,7 +63,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.PathPayload{OK: true, Path: resp.Path})
 	case "delete":
 		if _, err := s.KnowledgeDelete(facade.KnowledgeDeleteRequest{
-			InstanceID: p.InstanceID, Path: d.Path,
+			InstanceID: p.InstanceID, Scope: p.scope(), Path: d.Path,
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -71,7 +71,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.OKResult())
 	case "rename":
 		if _, err := s.KnowledgeRename(facade.KnowledgeRenameRequest{
-			InstanceID: p.InstanceID, Path: d.Path, NewName: d.NewName,
+			InstanceID: p.InstanceID, Scope: p.scope(), Path: d.Path, NewName: d.NewName,
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -79,7 +79,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.OKResult())
 	case "mkdir":
 		resp, err := s.KnowledgeMkdir(facade.KnowledgeMkdirRequest{
-			InstanceID: p.InstanceID, Parent: d.Parent, Name: d.Name,
+			InstanceID: p.InstanceID, Scope: p.scope(), Parent: d.Parent, Name: d.Name,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -88,7 +88,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.PathPayload{OK: true, Path: resp.Path})
 	case "rmdir":
 		if _, err := s.KnowledgeRmdir(facade.KnowledgeRmdirRequest{
-			InstanceID: p.InstanceID, Path: d.Path,
+			InstanceID: p.InstanceID, Scope: p.scope(), Path: d.Path,
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -96,7 +96,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.OKResult())
 	case "rename-dir":
 		if _, err := s.KnowledgeRenameDir(facade.KnowledgeRenameDirRequest{
-			InstanceID: p.InstanceID, Path: d.Path, NewName: d.NewName,
+			InstanceID: p.InstanceID, Scope: p.scope(), Path: d.Path, NewName: d.NewName,
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -104,7 +104,7 @@ func (s *Service) handleKnowledge(action string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.OKResult())
 	case "import": // 导入 / 新建「其他类型」（61 §3.3；逐文件尽力而为 → ok + paths + errors）
 		resp, err := s.KnowledgeImport(facade.KnowledgeImportRequest{
-			InstanceID: p.InstanceID, Dir: d.Dir, Files: knowledgeImportFiles(d.Files),
+			InstanceID: p.InstanceID, Scope: p.scope(), Dir: d.Dir, Files: knowledgeImportFiles(d.Files),
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)

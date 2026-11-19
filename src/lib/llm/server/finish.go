@@ -44,7 +44,7 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		}
 		tc.turnErr = errors.New(msg)
 	}
-	st := s.newSessionStore(tc.req.InstanceID)
+	st := s.newSessionStore(tc.req.InstanceID, tc.scope())
 	// 本轮全部消息（最后一段；快照拼接与预存 token 共用一份，避免重复读库）。
 	cur := st.LoadMessages(tc.req.Turn)
 	// P3：轮次结束时计算并**预存**本轮完整态/简化态 token 数（判定/拼接后续直接累加，免重复估算）。
@@ -79,7 +79,7 @@ func (s *Server) finish(tc *turnCtx, status, finishReason, code, message, text s
 		ev["code"] = code
 	}
 	// 一树一库（P3-4b，61 §0.6）：轮末订阅方（memory 等）需按对话定位会话库。
-	if dlg := s.dialogOf(tc.req.InstanceID, tc.req.Session); dlg != "" {
+	if dlg := s.dialogOf(tc.req.InstanceID, tc.req.Session, tc.scope()); dlg != "" {
 		ev["dialog_id"] = dlg
 	}
 	if message != "" {
@@ -166,10 +166,17 @@ func (s *Server) publish(typ string, payload any) {
 // 注：不能用 session-start（方法面 llm-start）广播——它由域方法面订阅（Start → onLLMStart）
 // 受理，广播同主题会被自身方法路由误受理；turn-start 是独立轮次事件。
 func (s *Server) emitTurnStart(req StartReq) {
-	s.publish("turn-start", map[string]any{
+	payload := map[string]any{
 		"instance_id": req.InstanceID,
 		"session":     req.Session,
 		"turn":        req.Turn,
 		"parents":     req.Parents,
-	})
+	}
+	if req.WorkDir != "" {
+		payload["work_dir"] = req.WorkDir
+	}
+	if req.DataDir != "" {
+		payload["data_dir"] = req.DataDir
+	}
+	s.publish("turn-start", payload)
 }

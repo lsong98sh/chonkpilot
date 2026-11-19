@@ -14,6 +14,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/chonkpilot/chonkpilot-data"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -87,15 +89,30 @@ func (s *Server) sessionRunCap(ctx context.Context, _ *pluginbridge.Session, arg
 		title = firstLine(prompt, 60)
 	}
 
+	scope := facade.Scope{WorkDir: rec.WorkDir, DataDir: rec.DataDir}
+	if wd := strings.TrimSpace(in.WorkDir); wd != "" {
+		// 显式目标项目：与窗口绑定不同时，必须是已注册的绝对路径（信任边界）。
+		if projectKey(wd) != projectKey(rec.WorkDir) {
+			if !filepath.IsAbs(wd) {
+				return nil, &pluginbridge.Error{Code: pluginbridge.CodeArgsInvalid, Msg: "session.run: work_dir 必须是绝对路径"}
+			}
+			dd, ok := data.DataDirForWorkDir(wd)
+			if !ok {
+				return nil, &pluginbridge.Error{Code: "project_not_registered", Msg: "session.run: work_dir 未在项目注册表中: " + wd}
+			}
+			scope = facade.Scope{WorkDir: wd, DataDir: dd}
+		}
+		s.rememberScope(instanceID, sessionID, "", scope)
+	}
 	ensureReq := facade.SessionEnsureRequest{
-		InstanceID: instanceID, Scope: s.cfgScope(instanceID),
+		InstanceID: instanceID, Scope: scope,
 		SessionID: sessionID, Title: title,
 	}
 	if creating {
 		// 顶层：不带 dialog_id / parent_session_id → 宿主自举新对话（kind=main）。
 		ensureReq.Kind = ""
 	} else {
-		dlg := s.ensureDialogIndex(instanceID, sessionID)
+		dlg := s.ensureDialogIndex(instanceID, sessionID, scope)
 		if dlg == "" {
 			return nil, &pluginbridge.Error{Code: pluginbridge.CodeNotFound, Msg: "会话不存在: " + sessionID}
 		}
@@ -105,7 +122,7 @@ func (s *Server) sessionRunCap(ctx context.Context, _ *pluginbridge.Session, arg
 	if err != nil {
 		return nil, &pluginbridge.Error{Code: "session_ensure_failed", Msg: err.Error()}
 	}
-	s.rememberDialog(instanceID, sessionID, resp.DialogID)
+	s.rememberDialog(instanceID, sessionID, resp.DialogID, scope)
 
 	// 并发上限（项目级信号量）：超限时阻塞排队，直到有空位或调用 ctx 结束。
 	release, aerr := s.acquireSessionRunSlot(ctx, instanceID)
@@ -116,8 +133,11 @@ func (s *Server) sessionRunCap(ctx context.Context, _ *pluginbridge.Session, arg
 	turnID := newID()
 	startReq := StartReq{
 		InstanceID: instanceID, Session: sessionID, Turn: turnID,
-		WorkDir: rec.WorkDir, DataDir: rec.DataDir,
+		WorkDir: scope.WorkDir, DataDir: scope.DataDir,
 		Agent: agentName, ScenarioID: scenarioID,
+	}
+	if scope.WorkDir != "" {
+		startReq.ScopeExplicit = true
 	}
 	// 独立 ctx：父轮正常收尾不取消派生会话；取消经 llm-cancel / task-stop 的级联路径。
 	h, err := s.startScheduledTurn(context.Background(), startReq, prompt)
@@ -147,7 +167,7 @@ func (s *Server) sessionRunCap(ctx context.Context, _ *pluginbridge.Session, arg
 		Tool: toolName, ToolCallID: strings.TrimSpace(in.ToolCallID), ParentID: parentID,
 		TopSession: topSession, Kind: TaskKindLLM, SessionID: sessionID, TurnID: turnID,
 		InstanceID: instanceID, Name: name, Purpose: strings.TrimSpace(in.DisplayName),
-		Simplified: name,
+		Simplified: name, WorkDir: scope.WorkDir,
 	})
 	if nerr != nil {
 		h.tc.Close()

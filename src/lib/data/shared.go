@@ -8,6 +8,7 @@ package data
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -34,11 +35,23 @@ type sharedDB struct {
 	refs int
 }
 
+// prjUsrPin 是一个（实例，路径）常开引用；release 归还 OpenSharedLayer 的引用。
+type prjUsrPin struct {
+	db      *DB
+	release func()
+}
+
 // 包级单例：instance 绑定表 + 路径缓存（并发安全）。
 var (
 	storeMu   sync.Mutex
 	instances = make(map[string]instBind)
 	shared    = make(map[string]*sharedDB)
+	// prjUsrPins 是按 (instance, prjusr 路径) 的常开引用：同一窗口可同时访问多个 workdir，
+	// 不能再用 instBind 的单一 prjUsrDB 字段承载。实例退出时一次性归还其全部路径引用。
+	prjUsrPins = make(map[string]map[string]*prjUsrPin)
+	// workDirs 是显式项目注册表（work_dir → data_dir），由 workdir-opened 维护；
+	// 一个 window 可访问没有实例绑定的 workdir，故不能只靠 instances 反查。
+	workDirs = make(map[string]string)
 	// openLocks 是按路径的单飞锁（每路径一把）：bbolt.Open 可能阻塞至超时，故打开动作
 	// **不持 storeMu**，只持该路径自己的锁（同路径并发只打开一次，不同路径互不阻塞）。
 	// refs 记在册引用（持有者 + 等待者）；归零后回收条目，避免按路径只增不清（A-12）——
@@ -72,10 +85,18 @@ func Register(instanceID, workDir, dataDir string) error {
 		return nil
 	}
 	stale := old.prjUsrRelease
+	var stalePins map[string]*prjUsrPin
+	if existed && (old.WorkDir != workDir || old.DataDir != dataDir) {
+		stalePins = prjUsrPins[instanceID]
+		delete(prjUsrPins, instanceID)
+	}
 	instances[instanceID] = instBind{WorkDir: workDir, DataDir: dataDir}
 	storeMu.Unlock()
 	if stale != nil {
 		stale() // 数据根变更：归还旧 prjusr 引用（解析路径可能已变）
+	}
+	for _, pin := range stalePins {
+		pin.release()
 	}
 	return nil
 }
@@ -110,6 +131,9 @@ func DataDirByWorkDir(workDir string) (string, bool) {
 	if workDir == "" {
 		return "", false
 	}
+	if dd, ok := DataDirForWorkDir(workDir); ok {
+		return dd, true
+	}
 	storeMu.Lock()
 	defer storeMu.Unlock()
 	ids := make([]string, 0, len(instances))
@@ -125,6 +149,52 @@ func DataDirByWorkDir(workDir string) (string, bool) {
 	return instances[ids[0]].DataDir, true
 }
 
+// RegisterWorkDir 登记显式项目数据根（workdir-opened / 项目注册表调用）。
+func RegisterWorkDir(workDir, dataDir string) {
+	if workDir == "" {
+		return
+	}
+	storeMu.Lock()
+	workDirs[workDirKey(workDir)] = dataDir
+	storeMu.Unlock()
+}
+
+// UnregisterWorkDir 移除显式项目登记（workdir-closed / 项目移除；幂等）。
+func UnregisterWorkDir(workDir string) {
+	if workDir == "" {
+		return
+	}
+	storeMu.Lock()
+	delete(workDirs, workDirKey(workDir))
+	storeMu.Unlock()
+}
+
+// HasWorkDir 判断 workdir 是否已在显式项目注册表中（显式 scope 的信任边界）。
+func HasWorkDir(workDir string) bool {
+	if workDir == "" {
+		return false
+	}
+	storeMu.Lock()
+	_, ok := workDirs[workDirKey(workDir)]
+	storeMu.Unlock()
+	return ok
+}
+
+// DataDirForWorkDir 取显式项目注册表中的 data_dir（无记录 → ok=false）。
+func DataDirForWorkDir(workDir string) (string, bool) {
+	if workDir == "" {
+		return "", false
+	}
+	storeMu.Lock()
+	dd, ok := workDirs[workDirKey(workDir)]
+	storeMu.Unlock()
+	return dd, ok
+}
+
+func workDirKey(workDir string) string {
+	return strings.ToLower(strings.TrimSpace(workDir))
+}
+
 // Unregister 移除 instance 绑定（instance-exit / 超时清理时调用）。
 // **并关闭该 instance 的 prjusr 常开连接**（🆕 2026-10-09）：prjusr 引用不释放 → 不解绑时
 // 其 bbolt 连接与文件锁会残留（D-45 同类问题：长持会锁死外部进程）。按首次打开的路径关闭缓存条目。
@@ -138,25 +208,42 @@ func Unregister(instanceID string) {
 	storeMu.Lock()
 	bind, ok := instances[instanceID]
 	delete(instances, instanceID)
+	pins := prjUsrPins[instanceID]
+	delete(prjUsrPins, instanceID)
 	storeMu.Unlock()
 	if !ok || bind.prjUsrRelease == nil {
+		for _, pin := range pins {
+			pin.release()
+		}
 		return
 	}
 	// 归还**本实例**持有的 prjusr 引用：refs 归零才真正 Close —— 同 work_dir 的兄弟窗口
 	// 仍持有时只减计数、不关闭（PRODSIM-1 L1 缺陷①：原实现无其它在册实例即强关，会让
 	// 兄弟窗口后续请求拿到已关闭连接）。
 	bind.prjUsrRelease()
+	for _, pin := range pins {
+		pin.release()
+	}
 }
 
 // Reset 清空 instance 绑定与连接缓存（测试用；关闭全部缓存连接）。
 func Reset() {
 	storeMu.Lock()
-	defer storeMu.Unlock()
-	for _, s := range shared {
-		_ = s.db.Close()
-	}
+	pins := prjUsrPins
+	sharedOld := shared
 	instances = make(map[string]instBind)
 	shared = make(map[string]*sharedDB)
+	prjUsrPins = make(map[string]map[string]*prjUsrPin)
+	workDirs = make(map[string]string)
+	storeMu.Unlock()
+	for _, byPath := range pins {
+		for _, pin := range byPath {
+			pin.release()
+		}
+	}
+	for _, s := range sharedOld {
+		_ = s.db.Close()
+	}
 }
 
 // bindOf 取 instance 绑定。
@@ -195,7 +282,13 @@ func Prj(instanceID string) (*DB, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return OpenSharedLayer(ProjectPath(bind.WorkDir, bind.DataDir), LayerPrj)
+	return PrjAt(bind.WorkDir, bind.DataDir)
+}
+
+// PrjAt 按显式数据根短开 prj 主库（不依赖 instance 绑定）。供同一窗口访问任意已注册
+// workdir 的项目域使用；路径规则与 Prj 同源（ProjectPath）。
+func PrjAt(workDir, dataDir string) (*DB, func(), error) {
+	return OpenSharedLayer(ProjectPath(workDir, dataDir), LayerPrj)
 }
 
 // PrjUsr 返回该 instance 的 prjusr 主库连接（会话/任务树/快照/个人运行态）。
@@ -215,12 +308,41 @@ func PrjUsr(instanceID string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := PrjUsrDBPath(bind.WorkDir, bind.DataDir)
+	return PrjUsrAt(instanceID, bind.WorkDir, bind.DataDir)
+}
+
+// PrjUsrAt 按显式数据根常开 prjusr 主库（instance 仅作为引用归属，不参与路径解析）。
+// 同一 instance 可同时持有多个 workdir 的常开引用；Unregister 时统一归还。
+func PrjUsrAt(instanceID, workDir, dataDir string) (*DB, error) {
+	if instanceID == "" {
+		return nil, fmt.Errorf("data: instanceID is required")
+	}
+	path := PrjUsrDBPath(workDir, dataDir)
+	storeMu.Lock()
+	if pin := prjUsrPins[instanceID][path]; pin != nil {
+		db := pin.db
+		storeMu.Unlock()
+		return db, nil
+	}
+	storeMu.Unlock()
 	db, release, err := OpenSharedLayer(path, LayerPrjUsr)
 	if err != nil {
 		return nil, err
 	}
-	bindPrjUsr(instanceID, path, db, release)
+	storeMu.Lock()
+	pins := prjUsrPins[instanceID]
+	if pins == nil {
+		pins = make(map[string]*prjUsrPin)
+		prjUsrPins[instanceID] = pins
+	}
+	if existing := pins[path]; existing != nil {
+		// 并发下另一协程已 pin 同路径：归还本次多余引用。
+		storeMu.Unlock()
+		release()
+		return existing.db, nil
+	}
+	pins[path] = &prjUsrPin{db: db, release: release}
+	storeMu.Unlock()
 	return db, nil
 }
 

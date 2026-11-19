@@ -190,6 +190,7 @@ func (s *Server) domainNode(tc *turnCtx, callID, tool string, args map[string]an
 		SessionID:  tc.req.Session,
 		TurnID:     tc.req.Turn,
 		InstanceID: tc.req.InstanceID,
+		WorkDir:    tc.req.WorkDir,
 	}
 	node.Name, node.Purpose, node.Simplified = taskDisplay(tool, args)
 	if node.Purpose == "" && purpose != "" {

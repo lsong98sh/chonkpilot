@@ -33,7 +33,8 @@ func (s *Server) onToolRetry(_ context.Context, _ string, v *mq.Value) error {
 	toolCallID := str(raw["tool_call_id"])
 	taskID := str(raw["task_id"])
 	instanceID := str(raw["instance_id"])
-	req := retryReq{Session: session, Turn: turn, ToolCallID: toolCallID, TaskID: taskID, InstanceID: instanceID}
+	req := retryReq{Session: session, Turn: turn, ToolCallID: toolCallID, TaskID: taskID, InstanceID: instanceID,
+		WorkDir: str(raw["work_dir"]), DataDir: str(raw["data_dir"])}
 
 	node := s.retryTarget(req)
 	tc := s.retryRunningTurn(node)
@@ -111,6 +112,8 @@ type retryReq struct {
 	ToolCallID string
 	TaskID     string
 	InstanceID string
+	WorkDir    string
+	DataDir    string
 }
 
 // retryTarget 内存定位重试目标（msg-ref §4.2）：task_id（tk-* 内存 TaskID）直取并校验会话归属；
@@ -184,8 +187,15 @@ func (s *Server) retryRecover(req retryReq, known *TaskNode) (*TaskNode, *turnCt
 	if node.TurnID == "" {
 		node.TurnID = req.Turn // tasktree 记录不存 turn_id；续轮消息按请求 turn 读取
 	}
-	// ② 续轮上下文 = 该轮消息（末条 assistant.tool_calls 无 tool 结果）
-	st := s.newSessionStore(instanceID)
+	// ② 续轮上下文 = 该轮消息（末条 assistant.tool_calls 无 tool 结果）。显式 scope 优先；
+	// 无显式 scope 时不把节点 work_dir 当显式项目（默认单项目窗口仍走实例绑定与同一索引桶）。
+	scope := facade.Scope{WorkDir: req.WorkDir, DataDir: req.DataDir}
+	if scope.Empty() && node.WorkDir != "" {
+		if rec, ok := s.im.Lookup(instanceID); !ok || projectKey(node.WorkDir) != projectKey(rec.WorkDir) {
+			scope.WorkDir = node.WorkDir
+		}
+	}
+	st := s.newSessionStore(instanceID, scope)
 	msgs := st.LoadMessages(req.Turn)
 	toolName, args, toolCallID, ok := lastToolCallPair(msgs, req.ToolCallID)
 	if !ok {
@@ -204,7 +214,7 @@ func (s *Server) retryRecover(req retryReq, known *TaskNode) (*TaskNode, *turnCt
 	s.tasks.restoreStale(node)
 	// ④ 重建运行中轮次（hist 留空——msgs() 从库读当前轮消息；续轮工具结果与
 	// 该轮 assistant.tool_calls 成对进入下一条 LLM 消息）
-	tc := s.recoverTurnCtx(instanceID, req.Session, req.Turn)
+	tc := s.recoverTurnCtx(instanceID, req.Session, req.Turn, scope)
 	return node, tc, nil
 }
 
@@ -212,7 +222,13 @@ func (s *Server) retryRecover(req retryReq, known *TaskNode) (*TaskNode, *turnCt
 // 枚举；会话内取 tool_call_id 匹配优先，其次最近一条 interrupted；无 interrupted → 不重跑）。
 func (s *Server) dbRetryNode(instanceID string, req retryReq) (*TaskNode, error) {
 	payload := map[string]any{"top_session": req.Session}
-	if dlg := s.dialogOf(instanceID, req.Session); dlg != "" {
+	if req.WorkDir != "" {
+		payload["work_dir"] = req.WorkDir
+	}
+	if req.DataDir != "" {
+		payload["data_dir"] = req.DataDir
+	}
+	if dlg := s.dialogOf(instanceID, req.Session, facade.Scope{WorkDir: req.WorkDir, DataDir: req.DataDir}); dlg != "" {
 		payload["dialog_id"] = dlg
 	}
 	res, err := dataRequest(s.bus, msgkeys.TopicDataTasktreeList, map[string]any{
@@ -274,7 +290,9 @@ func nodeFromDBRec(m map[string]any, instanceID string) *TaskNode {
 		TopSession: str(m["top_session"]),
 		Kind:       str(m["kind"]),
 		SessionID:  str(m["session_id"]),
+		TurnID:     str(m["turn_id"]),
 		InstanceID: instanceID,
+		WorkDir:    str(m["work_dir"]),
 		Name:       title,
 		Simplified: title,
 		State:      TaskStateInterrupted,
@@ -290,10 +308,10 @@ func nodeFromDBRec(m map[string]any, instanceID string) *TaskNode {
 // 全部消息，后续 FeedToolResult 的 tool 结果与该轮 assistant.tool_calls 成对进入下一条 LLM
 // 消息；终态 llm-complete 沿用原 {session, turn}。该轮标记 forceFull=true：即使被重试 turn
 // 落在"非维持轮"范围也必须全量拼接。
-func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
+func (s *Server) recoverTurnCtx(instanceID, session, turn string, scopes ...facade.Scope) *turnCtx {
 	// 去重（P3）：同 {instance, turn} 已有存活轮次 → 直接复用，避免另起 loop 双跑
 	//（此前去重命中仍返回**未登记**的新 tc，其 loop 亦在跑 → 同 {session,turn} 双执行）。
-	tk := instKey(instanceID, turn)
+	tk := s.runKey(instanceID, turn)
 	s.mu.Lock()
 	existing := s.turnCtxByKeyLocked(tk)
 	s.mu.Unlock()
@@ -306,9 +324,17 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 	// **记忆 / 资产指引**（msgs() 的 memoryGuide/assetGuide 依赖 tc.req.WorkDir）依赖它
 	// ——此前为空 → 指引缺失。
 	req := StartReq{InstanceID: instanceID, Session: session, Turn: turn}
-	if rec, ok := s.im.Lookup(instanceID); ok {
-		req.WorkDir = rec.WorkDir
-		req.DataDir = rec.DataDir
+	if len(scopes) > 0 && !scopes[0].Empty() {
+		req.WorkDir, req.DataDir, req.ScopeExplicit = scopes[0].WorkDir, scopes[0].DataDir, true
+	} else {
+		// 无显式 scope（重启恢复 / 旧调用方）→ 先按已登记会话作用域，再无则按实例绑定。
+		s.applySessionScope(&req, instanceID, session)
+		if req.WorkDir == "" {
+			if rec, ok := s.im.Lookup(instanceID); ok {
+				req.WorkDir = rec.WorkDir
+				req.DataDir = rec.DataDir
+			}
+		}
 	}
 	// 系统提示词五层（**与新建轮同一构造**，见 resolveTurnScenario）：恢复轮请求里无 scenario/agent
 	// **入参**，但会话固定参数（子聊天的 agent / scenario_id，落库在会话行）经同一构造**取回**
@@ -394,8 +420,8 @@ func (s *Server) recoverTurnCtx(instanceID, session, turn string) *turnCtx {
 		tc.Close()
 		return existing
 	}
-	// 登记键 = instKey(instance, id)（缺口 5：按 instance 分桶）。
-	bk := instKey(instanceID, session)
+	// 登记键 = runKey（项目作用域 + id），与 llm-send / task.wait 的定位同源。
+	bk := s.runKey(instanceID, session)
 	if _, ok := s.busy[bk]; !ok {
 		s.busy[bk] = turn
 	}

@@ -27,7 +27,6 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-appwire"
 	"github.com/chonkpilot/chonkpilot-data"
-	"github.com/chonkpilot/chonkpilot-filesys"
 	"github.com/chonkpilot/chonkpilot-gui/bridge"
 	"github.com/chonkpilot/chonkpilot-gui/mqpolicy"
 	"github.com/chonkpilot/chonkpilot-llm/llmbridge"
@@ -193,11 +192,11 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 
 	// 消息总线：命名空间前缀 chonk. 在此注入一次（server/gateway/persist/filesys/bridge
 	// 共享同一总线），业务 publish/subscribe 一律写相对主题，见 61-消息一览 §0.1。
-	// 收尾依赖序（D-05）：ts.Shutdown → srv.Stop → fsys.Stop → bus.Close。
-	// 需要按**依赖序**（而非 defer LIFO 的注册逆序）停止，且早期 return err 亦须执行收尾（D-08）：
-	// 先声明 fsys/srv/ts 供收尾闭包引用，随后注册**单一**收尾 defer；无论正常收尾还是中途
+	// 收尾依赖序（D-05）：ts/LLM 桥 → 插件平台 → 插件桥 → app.Shutdown（Kernel 逆序：
+	// agent → files → persist/workspace → bus）。共用脊柱一律经 Kernel 收口，宿主不再手写
+	// srv/fsys/workspace/bus 的 Stop。早期 return err 亦须执行收尾（D-08）：
+	// 先声明 srv/ts 供收尾闭包引用，随后注册**单一**收尾 defer；无论正常收尾还是中途
 	// return err，都在 runMain 返回时按序停止（nil 守卫自动跳过未创建者）。
-	var fsys *filesys.Filesys
 	var srv *server.Server
 	var ts *gui.TestServer
 	var pb *pluginbridge.Server
@@ -241,8 +240,16 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 		return err
 	}
 	bus := app.Bus
-	fsys = app.Filesys
 	srv = app.Server
+	// ── Kernel 拓扑启动（GATEWAY-3 全插件化）：bus → workspace → persist → files → agent ──
+	// Build 只构造；这里一次性启动共用脊柱（含 workspace/filesys/server）。
+	// 失败时先 app.Shutdown 收口已启动资源，再返回（此时下方收尾 defer 尚未注册）。
+	if err := app.Start(context.Background()); err != nil {
+		app.Shutdown()
+		return fmt.Errorf("app start: %w", err)
+	}
+	gui.LogStartupStage("共用脊柱启动（Kernel：bus → workspace → persist → files → agent）")
+
 	// 实例视图变更广播（异步改造 §10.1）：`workdir.ensure` 等隐藏打开后**不再轮询**实例视图，
 	// 改由既有 `instance-register` / `instance-exit` 主题（61 §4.1，零新增主题）唤醒。
 	// 订阅者只做非阻塞 close-and-replace 广播；权威状态仍由 `srv.MainInstanceForWorkDir` 反查。
@@ -275,12 +282,6 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 			_ = v.Shutdown(shutCtx)
 			cancel()
 		}
-		if srv != nil {
-			srv.Stop()
-		}
-		if fsys != nil {
-			fsys.Stop()
-		}
 		// 插件平台：先停插件（依赖插件桥在线发 shutdown），再关插件桥。
 		if v := getPlugins(); v != nil {
 			v.Stop()
@@ -288,7 +289,9 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 		if pb != nil {
 			_ = pb.Close()
 		}
-		_ = bus.Close()
+		// 共用脊柱统一经 Kernel 逆序收尾（agent → files → persist/workspace → bus）。
+		// 宿主不再手写 srv/fsys/workspace/bus 的 Stop；未 Start / Start 失败时也安全。
+		app.Shutdown()
 	}()
 	gui.LogStartupStage("MQ 总线 + filesys 文件服务 + server 装配（appwire 共用脊柱）")
 
@@ -298,14 +301,10 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 	// 宿主不再直接打开/持有数据层句柄。
 	// -no-server：跳过（UI 注入测试模式，注入事件完全控制回合，无真实 LLM/数据服务）。
 	if srv != nil {
-		gui.LogStartupStage("server 装配（capability 契约扫描 + gateway 构建）")
-		// 服务端启动参数（WorkDir/DataDir/Form/LogWriter/Plugins）已在 appwire.Build 内装配；
-		// data_dir = `dataDirArg`（desktop 缺省为空 → persist/instance 绑定 data_dir 空 →
-		// prjusr 落 `<workDir>/.chonkpilot/users/<OS 用户名>/`，见 12-数据层 §5.1 / [24 §3.2] MW-7）。
-		if err := app.Start(context.Background()); err != nil {
-			return fmt.Errorf("server start: %w", err)
-		}
-		gui.LogStartupStage("server 启动（数据服务/gateway/能力注册/工具缓存预热/插件）")
+		// 服务端启动参数（WorkDir/DataDir/Form/LogWriter/Plugins）已在 appwire.Build 内装配，
+		// 启动已在 Build 之后经 app.Start（Kernel agent 插件）完成；data_dir = `dataDirArg`
+		// （desktop 缺省为空 → persist/instance 绑定 data_dir 空 → prjusr 落
+		// `<workDir>/.chonkpilot/users/<OS 用户名>/`，见 12-数据层 §5.1 / [24 §3.2] MW-7）。
 
 		// MQ 分发出口策略 S2（49 §2.22.7）：workdir 级主题只投同 workdir 的窗口 —— 事件 workdir
 		// 取值顺序 = 载荷 `work_dir` → 否则按 `instance_id` 反查。反查视图 = framework
@@ -619,10 +618,26 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 			// SANDBOX-WRITE-1 P3：`plugin/v1/workdir.ensure` 宿主实现 —— 定时任务执行前确保项目
 			// 已打开（未打开 → 隐藏打开 + 等 instance-register；见 workdirensure.go）。
 			ensurer := &workdirEnsurer{
-				open:       openProjectAs,
-				registered: srv.MainInstanceForWorkDir,
-				logf:       func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) },
-				timeout:    workDirEnsureTimeout,
+				open: openProjectAs,
+				// 项目已在任一窗口内可访问（SCOPE-1 显式 work_dir）→ 复用该主窗口实例，
+				// 不再为第二个 workdir 隐藏开窗；只有整机没有任何主窗口时才隐藏打开。
+				registered: func(wd string) (string, bool) {
+					if id, ok := srv.MainInstanceForWorkDir(wd); ok {
+						return id, true
+					}
+					if _, ok := app.Workspace.Get(wd); !ok {
+						return "", false
+					}
+					for _, info := range app.Workspace.Instances().List() {
+						if info.ID != "" && info.WorkDir != "" &&
+							info.ParentInstance == "" && info.SessionID == "" {
+							return info.ID, true
+						}
+					}
+					return "", false
+				},
+				logf:    func(format string, args ...any) { slog.Info(fmt.Sprintf(format, args...)) },
+				timeout: workDirEnsureTimeout,
 				// 事件驱动：既有 instance-register / instance-exit 广播（上方订阅）；
 				// 不再 sleep/poll（异步改造 §10.1）。
 				changed: instanceChanges.changed,
@@ -639,6 +654,7 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 			srv.SetPluginData(pluginData)
 			mgr := pluginmgr.New(pluginmgr.Options{
 				Bus:            bus,
+				Topics:         app.Topics,
 				DataDir:        pluginDataDir,
 				Roots:          roots,
 				Data:           pluginData.Hooks(),
@@ -702,8 +718,8 @@ func runMain(distFS fs.FS, opts gui.Options, activations <-chan singleinstance.C
 			pb.MarkReady(map[string]any{"form": string(opts.Form), "at": time.Now().UTC().Format(time.RFC3339)})
 		}
 	}()
-	// 进程级收尾改由总线下注册的**单一收尾 defer**（依赖序 ts→srv→fsys→bus）统一完成，
-	// 不再各自 defer（原 defer LIFO 会使 bus.Close 早于 srv.Stop/fsys.Stop，D-05）。
+	// 进程级收尾改由**单一收尾 defer**（依赖序 ts/LLM 桥 → 插件平台 → 插件桥 → app.Shutdown）
+	// 统一完成；共用脊柱（agent/files/persist/workspace/bus）由 Kernel 逆序停止，不再各自 defer。
 
 	// 实例心跳发布侧（2026-09-20，阶段 2a）：**发布方由宿主改为前端 SPA**；本宿主不再发布心跳。
 	// `--bridge-url`（分离形态 bridge 对端地址）当前仅登记 + 日志（bridge 路由为分阶段落地项）。

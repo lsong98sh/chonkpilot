@@ -17,8 +17,13 @@ class SendQueue {
   // 桶：buckets[llm] = { items: [] }
   buckets = ref({})
 
-  _bucket(llm) {
-    const key = llm || ''
+  _key(llm, sessionId = '') {
+    const l = llm || ''
+    return sessionId ? `${sessionId}|${l}` : l
+  }
+
+  _bucket(llm, sessionId = '') {
+    const key = this._key(llm, sessionId)
     if (!this.buckets.value[key]) {
       this.buckets.value[key] = { items: [] }
     }
@@ -29,28 +34,30 @@ class SendQueue {
   // 队列项：{ id, type: 'message', payload: { sessionId, text, llm, thinkFlag, effortLevel, scenarioId } }
   enqueue(item) {
     const llm = item.llm || item.payload?.llm || ''
-    this._bucket(llm).items.push({
+    this._bucket(llm, item.payload?.sessionId || '').items.push({
       ...item,
       id: item.id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 8)),
     })
   }
 
-  countOf(llm) {
-    const b = this.buckets.value[llm || '']
+  countOf(llm, sessionId = '') {
+    const b = this.buckets.value[this._key(llm, sessionId)]
     return b ? b.items.length : 0
   }
 
   // 待发条目副本（供队列指示器 popover 预览，外部只读）
-  itemsOf(llm) {
-    const b = this.buckets.value[llm || '']
+  itemsOf(llm, sessionId = '') {
+    const b = this.buckets.value[this._key(llm, sessionId)]
     return b ? b.items.map((i) => i) : []
   }
 
   // allItems 返回**全部** LLM 桶的待发条目（inbox 一览 = 该会话全量 pending 项，
   // 不按 LLM / 来源过滤；2026-11-01）。按 created_at 升序（同刻回退 id 保序）。
-  allItems() {
+  allItems(sessionId = '') {
     const out = []
+    const prefix = sessionId ? `${sessionId}|` : ''
     for (const key of Object.keys(this.buckets.value)) {
+      if (prefix && !key.startsWith(prefix)) continue
       out.push(...this.buckets.value[key].items)
     }
     out.sort((a, b) => {
@@ -63,8 +70,8 @@ class SendQueue {
   }
 
   // canceled 简化：取出指定 LLM 桶中全部待发文本（写回 textarea 用），并从队列移除。
-  takeTexts(llm) {
-    const b = this.buckets.value[llm || '']
+  takeTexts(llm, sessionId = '') {
+    const b = this.buckets.value[this._key(llm, sessionId)]
     if (!b) return []
     const texts = b.items.map((it) => (it.payload?.text || ''))
     b.items = []
@@ -82,13 +89,13 @@ class SendQueue {
     return null
   }
 
-  hasPending(llm) {
-    return this.countOf(llm) > 0
+  hasPending(llm, sessionId = '') {
+    return this.countOf(llm, sessionId) > 0
   }
 
   // 取下一批待发内容：message 单条原样返回（doSend 直接读 batch.text/llm/thinkFlag/…）。
-  shiftBatch(llm) {
-    const b = this._bucket(llm || '')
+  shiftBatch(llm, sessionId = '') {
+    const b = this._bucket(llm || '', sessionId)
     if (b.items.length === 0) return null
     const item = b.items.shift()
     return { ...item.payload, type: item.type, llm: llm || item.payload?.llm || '' }
@@ -99,9 +106,15 @@ class SendQueue {
   // sessionId 由调用方补入（list 应答只含 item 字段）。
   syncInbox(items = [], sessionId = '') {
     const next = {}
+    const prefix = sessionId ? `${sessionId}|` : ''
+    // 只替换本会话桶；其它会话（多 workdir / 多页签）保持不动。
+    for (const key of Object.keys(this.buckets.value)) {
+      if (!prefix || !key.startsWith(prefix)) next[key] = this.buckets.value[key]
+    }
     for (const it of items) {
       const llm = it.llm || ''
-      const b = next[llm] || (next[llm] = { items: [] })
+      const key = this._key(llm, sessionId)
+      const b = next[key] || (next[key] = { items: [] })
       b.items.push({
         id: it.id,
         type: 'message',

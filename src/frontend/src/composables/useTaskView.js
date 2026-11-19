@@ -22,11 +22,19 @@ import { eventBelongsToInstance } from '../utils/instanceScope'
 import { EventNames } from '../events/event-names'
 import { copyDslFields } from '../utils/dslView'
 import { resolvePublishError } from '../utils/publishError'
-import { sessionDialogOf } from '../api/session'
+import { sessionDialogOf, scopeOfSession } from '../api/session'
 import { buildChildIndex, buildSessionNodeIndex, nodeTimeOf } from '../utils/taskTreeIndex'
 
 // data-tasktree-* 辅助：发送并等待回复。
 function tasktreeReq(action, body = {}) {
+  // 多 workdir：按 session/top_session 自动带项目作用域（ChatPanel 打开页签时已 seed）。
+  if (body && !body.work_dir) {
+    const sc = scopeOfSession(body.session_id) || scopeOfSession(body.top_session)
+    if (sc && sc.workDir) {
+      body.work_dir = sc.workDir
+      if (sc.dataDir) body.data_dir = sc.dataDir
+    }
+  }
   // 一树一库（P3-4b）：已知该会话的 dialog_id 时补上（session_view 是子会话 → 回落 top_session）。
   if (body && !body.dialog_id) {
     const dlg = sessionDialogOf(body.session_id) || sessionDialogOf(body.top_session)

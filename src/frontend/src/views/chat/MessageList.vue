@@ -129,6 +129,9 @@ const props = defineProps({
   // 一树一库：所属**主会话** id（viewer 用）。父组件只需给主会话 id，dialog_id 在
   // 加载时经 `sessionDialogOf` 现取（备忘可能晚于 vue 渲染填充，避免拿到过期空值）。
   topSessionId: { type: String, default: '' },
+  // 项目作用域（一个窗口多个 workdir）：数据/LLM 请求显式带 work_dir/data_dir。
+  workDir: { type: String, default: '' },
+  dataDir: { type: String, default: '' },
   // 只读查看模式（子会话详情面板）：挂载即常驻订阅流事件，按 session_id 过滤。
   // 主聊天（ChatPanel）不传此标志，仅在发消息后订阅流事件。
   viewer: { type: Boolean, default: false },
@@ -805,6 +808,8 @@ async function sendSameTurnContinue() {
     lastSendParams.think || 'on',
     lastSendParams.effort || 'high',
     lastSendParams.scenarioId || '',
+    props.workDir || '',
+    props.dataDir || '',
   )
   if (turn) currentTurnId.value = turn
   // 落库回执到达后再渲染 user 气泡（不再乐观插入）；等待期间已切会话 → 不渲染
@@ -875,7 +880,7 @@ async function onSessionChanged({ session_id }) {
   // 切换会话：重置续写计数（自动续写由后端承担，切换即取消；见 data-session-active-set）
   autoContinueCount.value = 0
   activeSessionId.value = newId
-  mq.emit(EventNames.dataSessionActiveSet, { session_id: newId || '' })
+  mq.emit(EventNames.dataSessionActiveSet, { session_id: newId || '', work_dir: props.workDir })
   // 空回复/输出标记随会话重置（S21）
   turnHadOutput = false
   notifyTurn.value = false
@@ -986,7 +991,7 @@ function setupPersistentStreamSubs() {
     // 起轮即消费：把本地队列镜像与 consumed 状态对齐（避免幽灵队列徽标）。
     refreshInbox()
   }
-  persistentUnsubs.push(mq.on('turn-start', onTurnStart))
+  persistentUnsubs.push(mq.on(EventNames.turnStart, onTurnStart))
 }
 
 // ── Handle user message sending (from ChatPanel via mq) ──
@@ -1025,6 +1030,8 @@ async function inboxAdd(data) {
     data.scenarioId,
     false,
     data.instanceId || '',
+    props.workDir,
+    props.dataDir,
   )
   await refreshInbox()
 }
@@ -1032,11 +1039,8 @@ async function inboxAdd(data) {
 // refreshInbox：以服务端 `llm-inbox-list` 的 pending 项重建本地镜像（队列指示器 / 重启拉回）。
 async function refreshInbox() {
   const sid = activeSessionId.value || props.sessionId
-  if (!sid) {
-    sendQueue.syncInbox([], '')
-    return
-  }
-  const res = await listInbox(sid)
+  if (!sid) return
+  const res = await listInbox(sid, 'pending', props.workDir, props.dataDir)
   const items = res?.backend?.result?.items || []
   sendQueue.syncInbox(items, sid)
 }
@@ -1093,6 +1097,8 @@ async function doSend(batch) {
     batch.scenarioId,
     false,
     batch.instanceId || '',
+    props.workDir,
+    props.dataDir,
   )
   // 起轮等待 + 看门狗（未收到 turn-start → 消息仍在队列，复位 loading，用户可点「继续」）。
   awaitingInboxTurn = true
@@ -1186,12 +1192,19 @@ function finishTurnLocallyInterrupted() {
   return true
 }
 
+function samePath(a, b) {
+  const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  return norm(a) === norm(b)
+}
+
 // 主会话 cancel（20-gui）：发 llm-cancel{session,turn} 消息，无弹框。
 // 标记 lastTurnCanceled：llm-complete 后对队列做简化处理（§3.5.3）——
 // 待发消息写回 textarea，由用户点击发送。
 // turn-id 缺失兜底（llm-started 缺失/后到，busy 但 currentTurnId 未设置）：
 // 仍按 session 发取消，server 经 LLM 域解析运行中 turn。
-function onMessageCancel() {
+function onMessageCancel(data) {
+  if (data && data.session_id && data.session_id !== props.sessionId) return
+  if (data && data.work_dir && props.workDir && samePath(data.work_dir, props.workDir) === false) return
   const turnId = currentTurnId.value
   const sid = activeSessionId.value || props.sessionId
   if (!turnId && !sid) return
@@ -1206,7 +1219,7 @@ function onMessageCancel() {
 // INBOX：撤回 = 服务端置 discarded（不再只改内存），随后重建本地镜像。
 async function handleCanceledQueue() {
   await refreshInbox()
-  const items = sendQueue.itemsOf(currentLlm.value)
+  const items = sendQueue.itemsOf(currentLlm.value, props.sessionId)
   if (items.length === 0) return
   const texts = []
   for (const it of items) {
@@ -1297,6 +1310,8 @@ function onRetryToolClick() {
   mq.emit(EventNames.toolRetry, {
     session: sid,
     turn: pair.turn_id || currentTurnId.value || '',
+    work_dir: props.workDir || '',
+    data_dir: props.dataDir || '',
   })
 }
 function onToolRetry(d) {
@@ -1537,7 +1552,11 @@ onMounted(async () => {
   unsubScrollBottom = mq.on(EventNames.msgScrollBottom, (d) => { if (isForThisSession(d)) scrollBottom() })
   unsubToolNotify = mq.on(EventNames.toolNotify, onCompletionNotice)
   // 继续按钮：v-mq 触发 → 发送"继续"
-  unsubChatContinue = mq.on(EventNames.chatContinue, sendContinue)
+  unsubChatContinue = mq.on(EventNames.chatContinue, (data) => {
+    if (data && data.session_id && data.session_id !== props.sessionId) return
+    if (data && data.work_dir && props.workDir && !samePath(data.work_dir, props.workDir)) return
+    sendContinue()
+  })
 
   if (props.viewer) {
     // 子会话详情（只读查看）：跟随 subsession-changed 切换会话，流订阅已常驻。
@@ -1549,7 +1568,7 @@ onMounted(async () => {
   // If already have sessionId on mount, load messages + 评估"继续"
   if (props.sessionId) {
     activeSessionId.value = props.sessionId
-    mq.emit(EventNames.dataSessionActiveSet, { session_id: props.sessionId })
+    mq.emit(EventNames.dataSessionActiveSet, { session_id: props.sessionId, work_dir: props.workDir })
     await loadMessages(props.sessionId, resolveDialogId())
     pruneItemHeights() // 整体重载后淘汰旧 msg.id 高度缓存条目
     await refreshInbox() // 重启拉回：pending inbox（默认不自动发送，仅显示队列）
@@ -1573,7 +1592,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   // 关窗/卸载 → 清空活动会话（后端据此取消待触发的自动续写；提示条随窗口消失）。
-  mq.emit(EventNames.dataSessionActiveSet, { session_id: '' })
+  mq.emit(EventNames.dataSessionActiveSet, { session_id: '', work_dir: props.workDir })
   if (listResizeObserver) { listResizeObserver.disconnect(); listResizeObserver = null }
   if (measureRafId != null) { cancelAnimationFrame(measureRafId); measureRafId = null }
   if (scrollRafId != null) { cancelAnimationFrame(scrollRafId); scrollRafId = null }

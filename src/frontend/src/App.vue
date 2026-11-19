@@ -115,6 +115,13 @@ setProjectReinitHandler(async () => {
 // 但工具/插件视图尚未注册。这里轮询既有方法面 `plugin-list`（不新增 MQ 主题）：
 // 首次成功应答（即使 0 个插件）即视为平台就绪；20s 超时兜底，绝不阻塞使用。
 const pluginsReady = ref(false)
+let topicsSealRequested = false
+/** 阶段 3b：所有插件加载完成后触发一次 topic seal（不阻塞 UI）。 */
+function sealTopicsOnce() {
+  if (topicsSealRequested) return
+  topicsSealRequested = true
+  mq.sealTopics().catch((e) => console.warn('[App] mq.sealTopics failed:', e))
+}
 async function waitPluginsReady() {
   const deadline = Date.now() + 20000
   while (Date.now() < deadline) {
@@ -122,6 +129,7 @@ async function waitPluginsReady() {
       const res = await mq.emit(MsgTopics.pluginList, {})
       if (res && !(res.errors && res.errors.length)) {
         pluginsReady.value = true
+        sealTopicsOnce()
         return
       }
     } catch {
@@ -130,6 +138,7 @@ async function waitPluginsReady() {
     await new Promise((r) => setTimeout(r, 400))
   }
   pluginsReady.value = true
+  sealTopicsOnce()
 }
 if (!chatOnly && !askOnly && !logOnly) waitPluginsReady()
 

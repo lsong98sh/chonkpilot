@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	mcpms "github.com/chonkpilot/chonkpilot-mcp-server/server"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/exedir"
+	"github.com/lsong98sh/chonkpilot-util/pathx"
 )
 
 // capNodeSpec 是要接入的一级 capability 根（节点名后缀 + 契约根目录）。
@@ -45,7 +47,7 @@ func (s *Server) capNodeSpecs(instanceID, workDir string) []capNodeSpec {
 			specs = append(specs, capNodeSpec{suffix: "project", root: root, sig: capRootSignature(root)})
 		}
 	}
-	if root := s.prjUsrCapRoot(instanceID); dirExists(root) {
+	if root := s.prjUsrCapRoot(instanceID, workDir); dirExists(root) {
 		specs = append(specs, capNodeSpec{suffix: "prjusr", root: root, sig: capRootSignature(root)})
 	}
 	return specs
@@ -93,17 +95,55 @@ func capRootSignature(root string) string {
 // prjUsrCapRoot 解析实例的**项目私有级 capability 根**（<prjusr 数据根>/capability）。
 // 经数据层门面 KnowledgeRoot(kind=prjusr) 解析——与知识库 / 场景的 prjusr 写读**同一根**
 // （避免路径规则分叉）。解析不出（实例未登记 / prj 打不开 / project-id 缺失）→ 空串（不含该级）。
-func (s *Server) prjUsrCapRoot(instanceID string) string {
+func (s *Server) prjUsrCapRoot(instanceID string, workDirs ...string) string {
 	if s.data == nil || instanceID == "" {
 		return ""
 	}
+	workDir := ""
+	if len(workDirs) > 0 {
+		workDir = workDirs[0]
+	}
 	res, err := s.data.KnowledgeRoot(facade.KnowledgeRootRequest{
 		Kind: persist.KindPrjUsr, InstanceID: instanceID,
+		Scope: facade.Scope{WorkDir: workDir},
 	})
 	if err != nil || res.Root == "" {
 		return ""
 	}
 	return res.Root
+}
+
+// capScope 返回能力节点的 gateway scope：窗口绑定项目 = instance（保持既有节点名/scope）；
+// 同窗口的另一个 workdir = instance|projectKey（互不遮蔽）。
+func (s *Server) capScope(instanceID, workDir string) string {
+	if instanceID == "" {
+		return ""
+	}
+	if workDir == "" {
+		return instanceID
+	}
+	if cw := s.canonicalWorkDirOf(instanceID); cw == "" || pathx.Same(cw, workDir) {
+		return instanceID
+	}
+	return instanceID + "|" + projectKey(workDir)
+}
+
+// capNodeName 生成能力节点名：绑定项目保持 `<instance>-<suffix>`；
+// 同窗口其它 workdir 加短哈希，避免同名节点冲突。
+func (s *Server) capNodeName(instanceID, workDir, suffix string) string {
+	if workDir == "" {
+		return instanceID + "-" + suffix
+	}
+	if cw := s.canonicalWorkDirOf(instanceID); cw == "" || pathx.Same(cw, workDir) {
+		return instanceID + "-" + suffix
+	}
+	return instanceID + "-" + shortProjectHash(workDir) + "-" + suffix
+}
+
+func shortProjectHash(workDir string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(projectKey(workDir)))
+	return fmt.Sprintf("%08x", h.Sum32())
 }
 
 // capDirOp 是一次待发送的 capability dir 节点总线操作（register=true 注册 / false 注销）。
@@ -113,6 +153,7 @@ func (s *Server) prjUsrCapRoot(instanceID string) string {
 type capDirOp struct {
 	register   bool
 	instanceID string
+	scope      string
 	nodeName   string
 	root       string // register 时生效
 }
@@ -143,31 +184,32 @@ func (s *Server) registerCapNodesLocked(instanceID, workDir string) (ops []capDi
 	if len(specs) == 0 {
 		return nil, false
 	}
+	scopeKey := s.capScope(instanceID, workDir)
 	for _, spec := range specs {
-		nodeName := instanceID + "-" + spec.suffix
+		nodeName := s.capNodeName(instanceID, workDir, spec.suffix)
 		s.mu.Lock()
 		dup := false
-		for _, n := range s.dirNodes[instanceID] {
+		for _, n := range s.dirNodes[scopeKey] {
 			if n == nodeName {
 				dup = true
 				break
 			}
 		}
 		if !dup {
-			s.dirNodes[instanceID] = append(s.dirNodes[instanceID], nodeName)
+			s.dirNodes[scopeKey] = append(s.dirNodes[scopeKey], nodeName)
 			if s.dirSigs == nil {
 				s.dirSigs = map[string]map[string]string{}
 			}
-			if s.dirSigs[instanceID] == nil {
-				s.dirSigs[instanceID] = map[string]string{}
+			if s.dirSigs[scopeKey] == nil {
+				s.dirSigs[scopeKey] = map[string]string{}
 			}
-			s.dirSigs[instanceID][nodeName] = spec.sig
+			s.dirSigs[scopeKey][nodeName] = spec.sig
 		}
 		s.mu.Unlock()
 		if dup {
 			continue // 幂等：重复 instance-register（重连/换绑）不重复建节点
 		}
-		ops = append(ops, capDirOp{register: true, instanceID: instanceID, nodeName: nodeName, root: spec.root})
+		ops = append(ops, capDirOp{register: true, instanceID: instanceID, scope: scopeKey, nodeName: nodeName, root: spec.root})
 	}
 	return ops, true
 }
@@ -182,12 +224,12 @@ func (s *Server) applyCapDirOps(ops []capDirOp) {
 	defer s.capApplyMu.Unlock()
 	for _, op := range ops {
 		if op.register {
-			if err := s.registerDirNode(op.instanceID, op.nodeName, op.root); err != nil {
+			if err := s.registerDirNode(op.instanceID, op.scope, op.nodeName, op.root); err != nil {
 				logf("[chonkpilot-server] capability dir 节点注册失败（跳过 %s）: %v\n", op.nodeName, err)
 			}
 			continue
 		}
-		s.unregisterDirNode(op.instanceID, op.nodeName)
+		s.unregisterDirNode(op.instanceID, op.scope, op.nodeName)
 	}
 }
 
@@ -198,15 +240,22 @@ func (s *Server) unregisterCapabilityNodes(instanceID string) {
 	}
 	s.capMu.Lock()
 	defer s.capMu.Unlock()
+	var removed int
 	s.mu.Lock()
-	names := s.dirNodes[instanceID]
-	delete(s.dirNodes, instanceID)
-	delete(s.dirSigs, instanceID)
-	s.mu.Unlock()
-	for _, nodeName := range names {
-		s.unregisterDirNode(instanceID, nodeName)
+	for key, names := range s.dirNodes {
+		if key != instanceID && !strings.HasPrefix(key, instanceID+"|") {
+			continue
+		}
+		delete(s.dirNodes, key)
+		delete(s.dirSigs, key)
+		scope := key
+		for _, nodeName := range names {
+			s.unregisterDirNode(instanceID, scope, nodeName)
+		}
+		removed += len(names)
 	}
-	if len(names) > 0 {
+	s.mu.Unlock()
+	if removed > 0 {
 		s.refreshTools()
 	}
 }
@@ -280,7 +329,92 @@ func (s *Server) reconcileCapabilityNodes() int {
 	if ops > 0 {
 		s.refreshTools()
 	}
+	// 同窗口其它显式 workdir（capScope = instance|projectKey）不在实例视图里，
+	// 单独按「根签名变化 → 该 scope 全量重建」收敛（周期重扫兜住变化）。
+	s.reconcileExplicitCapabilityNodes()
 	return ops
+}
+
+// reconcileExplicitCapabilityNodes 重扫同窗口显式 workdir 的 capability 节点。
+//
+// 与主路径差异：这些节点不属于实例绑定项目（capScope 带 `|` 后缀），实例视图的
+// planCapabilityNodes 无法生成它们的节点名（需要 workdir 短哈希）。这里按 scope 整组
+// 比对根签名：未变 → 零操作；变化 → 先注销该 scope 全部节点再按新签名注册（短暂工具面缺口
+// 仅限该项目的热更新窗口，换取实现单源与正确性）。
+func (s *Server) reconcileExplicitCapabilityNodes() int {
+	if s.gw == nil {
+		return 0
+	}
+	type explicitScope struct {
+		instance, workDir, scope string
+	}
+	s.mu.Lock()
+	scopes := make([]explicitScope, 0, 2)
+	for key := range s.dirNodes {
+		inst, wd, ok := strings.Cut(key, "|")
+		if !ok || inst == "" || wd == "" {
+			continue
+		}
+		scopes = append(scopes, explicitScope{instance: inst, workDir: wd, scope: key})
+	}
+	s.mu.Unlock()
+	if len(scopes) == 0 {
+		return 0
+	}
+
+	s.capMu.Lock()
+	var ops []capDirOp
+	for _, sc := range scopes {
+		specs := s.capNodeSpecs(sc.instance, sc.workDir)
+		names := make([]string, 0, len(specs))
+		sigs := make(map[string]string, len(specs))
+		registerOps := make([]capDirOp, 0, len(specs))
+		for _, spec := range specs {
+			name := s.capNodeName(sc.instance, sc.workDir, spec.suffix)
+			names = append(names, name)
+			sigs[name] = spec.sig
+			registerOps = append(registerOps, capDirOp{
+				register: true, instanceID: sc.instance, scope: sc.scope, nodeName: name, root: spec.root,
+			})
+		}
+
+		s.mu.Lock()
+		oldNodes := append([]string(nil), s.dirNodes[sc.scope]...)
+		oldSigs := s.dirSigs[sc.scope]
+		same := len(oldNodes) == len(names)
+		if same {
+			for _, n := range names {
+				if oldSigs[n] != sigs[n] {
+					same = false
+					break
+				}
+			}
+		}
+		if same {
+			s.mu.Unlock()
+			continue
+		}
+		// 内存态立即收敛（解锁后统一发送总线操作；register/unregister 顺序由 ops 保证）。
+		for _, n := range oldNodes {
+			ops = append(ops, capDirOp{register: false, instanceID: sc.instance, scope: sc.scope, nodeName: n})
+		}
+		ops = append(ops, registerOps...)
+		if len(names) == 0 {
+			delete(s.dirNodes, sc.scope)
+			delete(s.dirSigs, sc.scope)
+		} else {
+			s.dirNodes[sc.scope] = names
+			s.dirSigs[sc.scope] = sigs
+		}
+		s.mu.Unlock()
+	}
+	s.capMu.Unlock()
+	if len(ops) == 0 {
+		return 0
+	}
+	s.applyCapDirOps(ops)
+	s.refreshTools()
+	return len(ops)
 }
 
 // capPlan 是热重扫的待发送操作与收敛后的内存态。
@@ -397,7 +531,7 @@ func appToolNames(root string) map[string]bool { return assembly.AppToolNames(ro
 // GATEWAY-2 L5：gateway 不再持有 dir 能力源，目录根改以**普通 stdio 下游**接入 ——
 // `chonkpilot-core-mcp-server --stdio --root <folder>` 用同一 RegisterContracts 暴露
 // tools + prompts/skills/resources；载荷走既有 `mcp_server` 键（不新增主题）。
-func (s *Server) registerDirNode(instanceID, nodeName, folder string) error {
+func (s *Server) registerDirNode(instanceID, scope, nodeName, folder string) error {
 	runtimePath, err := coreMCPPath()
 	if err != nil {
 		return err
@@ -406,7 +540,7 @@ func (s *Server) registerDirNode(instanceID, nodeName, folder string) error {
 	defer cancel()
 	_, err = s.emitGateway(ctx, "servers/register", map[string]any{
 		"name":   nodeName,
-		"scope":  instanceID,
+		"scope":  scope,
 		"origin": "builtin",
 		"mcp_server": map[string]any{
 			"runtime":   runtimePath,
@@ -470,10 +604,10 @@ func coreMCPPathIn(exeDir string) (string, error) {
 }
 
 // unregisterDirNode 经 gateway 方法面注销 dir 类型节点（servers/unregister → 拆除）。
-func (s *Server) unregisterDirNode(instanceID, nodeName string) {
+func (s *Server) unregisterDirNode(instanceID, scope, nodeName string) {
 	ctx, cancel := context.WithTimeout(withInstance(context.Background(), instanceID), 15*time.Second)
 	defer cancel()
-	_, _ = s.emitGateway(ctx, "servers/unregister", map[string]any{"name": nodeName, "scope": instanceID})
+	_, _ = s.emitGateway(ctx, "servers/unregister", map[string]any{"name": nodeName, "scope": scope})
 }
 
 // refreshTools 重新拉取 gateway tools/list 刷新工具定义缓存（toolsForLLM 的 hot 过滤依据）。

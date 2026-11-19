@@ -111,7 +111,7 @@ func (s *Server) enqueueCompletionNotice(n completionNotice) {
 		s.publishCompletionNotice(n)
 		return
 	}
-	qKey := instKey(n.instanceID, n.sessionID)
+	qKey := s.runKey(n.instanceID, n.sessionID)
 	handledKey := instKey(n.instanceID, n.messageID)
 
 	s.notifyMu.Lock()
@@ -139,8 +139,8 @@ func (s *Server) enqueueCompletionNotice(n completionNotice) {
 func (s *Server) runningTurnFor(instanceID, sessionID string) *turnCtx {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if turn := s.busy[instKey(instanceID, sessionID)]; turn != "" {
-		return s.turnCtxByKeyLocked(instKey(instanceID, turn))
+	if turn := s.busy[s.runKey(instanceID, sessionID)]; turn != "" {
+		return s.turnCtxByKeyLocked(s.runKey(instanceID, turn))
 	}
 	return nil
 }
@@ -149,7 +149,7 @@ func (s *Server) runningTurnFor(instanceID, sessionID string) *turnCtx {
 func (s *Server) sessionBusy(instanceID, sessionID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.busy[instKey(instanceID, sessionID)] != ""
+	return s.busy[s.runKey(instanceID, sessionID)] != ""
 }
 
 // markTaskNotifyOrigin 登记「任务派生自通知轮」（§5.3 防循环；任务完成时读取）。
@@ -180,7 +180,7 @@ func (s *Server) markTaskResultConsumed(instanceID string, ids ...string) {
 
 // clearNotifyTurn 摘除会话的通知轮占位（仅当仍指向本 turn）。
 func (s *Server) clearNotifyTurn(instanceID, sessionID, turn string) {
-	qKey := instKey(instanceID, sessionID)
+	qKey := s.runKey(instanceID, sessionID)
 	s.notifyMu.Lock()
 	if s.notifyTurns != nil {
 		if cur := s.notifyTurns[qKey]; cur == turn || cur == notifyTurnStarting {
@@ -197,7 +197,7 @@ func (s *Server) flushNoticeQueue(instanceID, sessionID string, allowAuto bool) 
 	if sessionID == "" {
 		return
 	}
-	qKey := instKey(instanceID, sessionID)
+	qKey := s.runKey(instanceID, sessionID)
 
 	s.notifyMu.Lock()
 	s.ensureNotifyMapsLocked()
@@ -289,7 +289,7 @@ func (s *Server) noticeConsumed(n completionNotice) bool {
 	if n.toolCallID == "" || n.sessionID == "" {
 		return false
 	}
-	raw, ok := s.newSessionStore(n.instanceID).LoadToolContent(n.sessionID, n.toolCallID)
+	raw, ok := s.sessionStoreFor(n.instanceID, n.sessionID).LoadToolContent(n.sessionID, n.toolCallID)
 	if !ok {
 		return false
 	}
@@ -308,7 +308,7 @@ func (s *Server) noticeConsumed(n completionNotice) bool {
 // 目标 turn = 任务归属 turn，缺失则取该会话最近一轮（再缺失则建一个通知专用 turn）；
 // 落库主键 = message_id → 重复 completion / 重复冲刷同一 id 恒只一行（幂等）。
 func (s *Server) persistNotice(n completionNotice) bool {
-	store := s.newSessionStore(n.instanceID)
+	store := s.sessionStoreFor(n.instanceID, n.sessionID)
 	if err := store.EnsureSession(n.sessionID); err != nil {
 		logf("[chonkpilot-server] 完成通知落库失败（ensure session=%s）: %v\n", n.sessionID, err)
 		return false
@@ -334,7 +334,7 @@ func (s *Server) persistNotice(n completionNotice) bool {
 // publishCompletionNotice 广播 tool-notify（notice=completion）：payload 保持既有字段**逐字不变**
 // （不新增字段；前端仍按 message_id 幂等去重）。落库成功与否只由 persistNotice 记日志。
 func (s *Server) publishCompletionNotice(n completionNotice) {
-	s.publish(msgkeys.TopicToolNotify, map[string]any{
+	payload := map[string]any{
 		"instance_id": n.instanceID,
 		"session_id":  n.sessionID,
 		"turn_id":     n.turnID,
@@ -342,7 +342,8 @@ func (s *Server) publishCompletionNotice(n completionNotice) {
 		"notice":      "completion",
 		"message":     n.message,
 		"message_id":  n.messageID,
-	})
+	}
+	s.publish(msgkeys.TopicToolNotify, s.addScopeToEvent(payload, n.instanceID, n.sessionID, n.turnID))
 }
 
 // startNotifyTurn 起一个**内部通知轮**（§5.3 第 3 条）：llm-start（NotifyTurn 标记）+ llm-send
@@ -355,7 +356,7 @@ func (s *Server) startNotifyTurn(instanceID, sessionID, content string) {
 	if kind := s.sessionRow(instanceID, sessionID).Kind; kind != "" {
 		return
 	}
-	qKey := instKey(instanceID, sessionID)
+	qKey := s.runKey(instanceID, sessionID)
 	s.notifyMu.Lock()
 	s.ensureNotifyMapsLocked()
 	if s.notifyTurns[qKey] != "" {
@@ -365,12 +366,14 @@ func (s *Server) startNotifyTurn(instanceID, sessionID, content string) {
 	s.notifyTurns[qKey] = notifyTurnStarting
 	s.notifyMu.Unlock()
 
-	res := s.acceptStart(StartReq{
+	start := StartReq{
 		InstanceID: instanceID,
 		Session:    sessionID,
 		Turn:       "turn-" + newID(),
 		NotifyTurn: true,
-	})
+	}
+	s.applySessionScope(&start, instanceID, sessionID)
+	res := s.acceptStart(start)
 	if ok, _ := res["accepted"].(bool); !ok {
 		s.notifyMu.Lock()
 		if s.notifyTurns[qKey] == notifyTurnStarting {

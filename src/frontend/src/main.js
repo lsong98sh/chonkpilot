@@ -9,10 +9,13 @@ import { logError } from './api/log'
 import mq, { mqPlugin } from '@ckfw/utils/mq.js'
 import { installGlobalCkMq } from '@ckfw/plugin-ui/ckMq.js'
 import { installGlobalCkStore, ckStore } from './utils/ckStore'
+import { EventNames } from './events/event-names.js'
+import { TOPIC_SPECS } from './events/topic-specs.generated.js'
 import { dialog } from '@ckfw/components/dialog/index.js'
 import { setHostDeps } from '@ckfw/host-deps.js'
 import { registerSelectionSubscribers } from './stores/selectionSubscribers'
 import { useSelectionStore } from './stores/selection'
+import { installHostStates } from './stores/hostState'
 import { setupLayoutEngine } from '@ckfw/layout/index.js'
 // 业务清单（TOPO-1 §2.22.2「机制在基座、清单在应用」）：视图注册表 / 布局落库 / 新建布局对话框 / 顶栏动作
 import { createViewRegistry } from './layout/views.registry.js'
@@ -34,6 +37,8 @@ setHostDeps({
   layoutApi: { load: loadInitData, save: saveLayoutState },
   layoutNewDialog: LayoutNewDialog,
   barActions: { install: installBarActions },
+  // 前端状态注册表（阶段1）：framework layout-free 经它动态读取变量 key / 值 / 写回。
+  state: ckStore,
 })
 
 const app = createApp(App)
@@ -47,12 +52,18 @@ registerSelectionSubscribers()
 // CK Store（PLUGIN-LOAD-1 D16）：每窗口一份 getter 仓库；插件 iframe 经 `window.top.ckStore` 读取。
 // 示范条目 = 跨 view 状态（selection store），窗口生命周期内常驻。
 installGlobalCkStore()
+// 状态注册 v1：canonical 状态 + layout-free 兼容 alias（须在 pinia 之后、setupLayoutEngine 之前）。
+installHostStates(useSelectionStore())
 {
   const selection = useSelectionStore()
   ckStore.register('workspace.current', () => selection.workDir)
   ckStore.register('chat.currentSession', () => selection.activeSession.sessionId)
   ckStore.register('preview.currentFile', () => selection.activeFile.path)
 }
+// 阶段 3b：前端本地主题注册表装载（不向后端发注册；内置 61 契约 243 条 + 前端本地事件）。
+// 顺序：installGlobalCkStore 之后、setupLayoutEngine 之前（插件加载完成后由 App.vue 触发 seal）。
+mq.installTopicSpecs(TOPIC_SPECS)
+mq.installLocalEventTopics(Object.values(EventNames))
 app.use(mqPlugin)
 // 自由布局容器装配（UILAYOUT-1 §7 P3⑤）：须在 pinia 与 mqPlugin 之后 ——
 // 容器的 mq 订阅会取用 Pinia store，且 v-mq 指令复用宿主已注册的那一个。

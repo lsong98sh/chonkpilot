@@ -86,5 +86,8 @@
   "type_skill": "技能",
   "type_prompt": "提示词",
   "type_resource": "资源",
-  "type_agent": "智能体"
+  "type_agent": "智能体",
+  "no_sessions": "暂无会话",
+  "add_workdir": "添加 workdir",
+  "mode_workspaces": "工作区"
 }

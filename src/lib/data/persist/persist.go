@@ -50,6 +50,7 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/internal/tasktree"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-util/pathx"
 	"github.com/lsong98sh/chonkpilot-util/strx"
 )
 
@@ -176,7 +177,7 @@ func New(bus mq.Bus, opts Options) *Service {
 	ses := session.New(base)
 	s := &Service{
 		Base:         base,
-		SnapshotAPI:  snapshot.New(),
+		SnapshotAPI:  snapshot.New(base),
 		ConfigAPI:    config.New(base),
 		SessionAPI:   ses,
 		TurnAPI:      ses,
@@ -225,6 +226,8 @@ func (s *Service) Start() error {
 		{instanceRegister, s.onInstanceRegister},
 		{instanceHeartbeat, s.onInstanceHeartbeat},
 		{instanceExit, s.onInstanceExit},
+		{msgkeys.TopicWorkdirOpened, s.onWorkdirOpened},
+		{msgkeys.TopicWorkdirClosed, s.onWorkdirClosed},
 	} {
 		sh, err := s.on(sub.subject, sub.h)
 		if err != nil {
@@ -278,6 +281,29 @@ func (s *Service) unsubscribeAll() {
 }
 
 // ─── 实例视图（自持；本体在 kernel.View）────────────────────────────
+
+// onWorkdirOpened 记录显式项目数据根（工作区树注册的项目没有实例绑定）。
+func (s *Service) onWorkdirOpened(_ string, payload []byte) {
+	var msg struct {
+		WorkDir string `json:"work_dir"`
+		DataDir string `json:"data_dir"`
+	}
+	if json.Unmarshal(payload, &msg) != nil || msg.WorkDir == "" {
+		return
+	}
+	data.RegisterWorkDir(msg.WorkDir, msg.DataDir)
+}
+
+// onWorkdirClosed 移除显式项目登记（项目移除 / 无 pin 的最后实例退出）。
+func (s *Service) onWorkdirClosed(_ string, payload []byte) {
+	var msg struct {
+		WorkDir string `json:"work_dir"`
+	}
+	if json.Unmarshal(payload, &msg) != nil || msg.WorkDir == "" {
+		return
+	}
+	data.UnregisterWorkDir(msg.WorkDir)
+}
 
 func (s *Service) onInstanceRegister(_ string, payload []byte) {
 	var req struct {
@@ -409,6 +435,13 @@ func (s *Service) route(subject string, payload []byte) {
 // 该主题按契约必带 instance_id（§0 硬规则）却未携带 → 拒绝处理（不静默走"唯一实例回退"）。
 var errInstanceIDRequired = errors.New("persist: data 请求缺 instance_id（该主题按契约必带；全局级域 user-config/scenario/mcp/knowledge 除外）")
 
+// errWorkDirNotRegistered 是显式 work_dir 不在项目注册表时的明确错误（信任边界：
+// 一个窗口可访问多个 workdir，但只限已由 gui.project.add / 窗口绑定注册过的项目）。
+var errWorkDirNotRegistered = errors.New("persist: work_dir 未在项目注册表中")
+
+// errDataDirMismatch 是显式 data_dir 与项目注册表不一致时的明确错误（数据根不可被请求改写）。
+var errDataDirMismatch = errors.New("persist: data_dir 与项目注册表不一致")
+
 // instanceFreeDomains 是 data 面**按设计无需 instance_id** 的请求主题白名单（G-41-c 审计，
 // 见 [20-实例隔离与后端分离]）。白名单外：请求缺 instance_id → 明确失败 —— 避免多实例下
 // 「唯一实例回退」被误用导致跨实例串库（与 task 层 errInstanceRequired 同口径）。
@@ -435,6 +468,30 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 	if hdr.InstanceID == "" && !instanceFreeDomains[domain] {
 		s.failID(subject, hdr.ReqID, errInstanceIDRequired)
 		return
+	}
+	// 显式 scope 信任边界（SCOPE-1）：work_dir/data_dir 语法合法且 work_dir 已在
+	// 项目注册表中；否则拒绝，绝不按任意绝对路径解析数据根。
+	if strings.TrimSpace(hdr.WorkDir) != "" {
+		if err := validateInstancePath("work_dir", hdr.WorkDir, true); err != nil {
+			s.failID(subject, hdr.ReqID, err)
+			return
+		}
+		if !data.HasWorkDir(hdr.WorkDir) {
+			s.failID(subject, hdr.ReqID, errWorkDirNotRegistered)
+			return
+		}
+		// data_dir 必须与注册表一致（不允许把已注册项目的数据根改写到任意目录）。
+		if dd, ok := data.DataDirForWorkDir(hdr.WorkDir); ok && strings.TrimSpace(hdr.DataDir) != "" &&
+			!pathx.Same(dd, hdr.DataDir) {
+			s.failID(subject, hdr.ReqID, errDataDirMismatch)
+			return
+		}
+	}
+	if strings.TrimSpace(hdr.DataDir) != "" {
+		if err := validateInstancePath("data_dir", hdr.DataDir, false); err != nil {
+			s.failID(subject, hdr.ReqID, err)
+			return
+		}
 	}
 	switch domain {
 	case "user-config":
@@ -530,14 +587,10 @@ func (s *Service) prjUsrDB(instanceID string) (*data.DB, error) {
 	return s.PrjUsrByInst(instanceID, info)
 }
 
-// sessionDBBy 按实例 id 解析 prjusr 主库（信封 handler 用；`handle` 已按白名单校验
+// sessionDBBy 按实例 id / 显式数据根解析 prjusr 主库（信封 handler 用；`handle` 已按白名单校验
 // G-41-c，非全局级域缺 instance_id 在更早处即失败）。
-func (s *Service) sessionDBBy(instanceID string) (*data.DB, error) {
-	instID, info, err := s.View.Resolve(instanceID)
-	if err != nil {
-		return nil, err
-	}
-	return s.PrjUsrByInst(instID, info)
+func (s *Service) sessionDBBy(instanceID string, scope facade.Scope) (*data.DB, error) {
+	return s.PrjUsrFor(instanceID, scope)
 }
 
 // ─── refresh 广播附带的域列表（订阅面；与各域 list 应答同源）──────────

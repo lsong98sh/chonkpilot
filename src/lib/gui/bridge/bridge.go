@@ -24,6 +24,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -32,11 +33,13 @@ import (
 	"time"
 
 	"github.com/chonkpilot/chonkpilot-gui/mqpolicy"
+	"github.com/chonkpilot/chonkpilot-workspace"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/idgen"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/osuser"
 	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/dispatch"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/topics"
 )
 
 // Eval 是后端 → 前端脚本执行器（WebView2 w.Eval）。
@@ -268,6 +271,8 @@ func (b *Bridge) Start() error {
 		b.fwdMu.Lock()
 		if !b.stopRequested { // D-32：stopForward 先于本 Start 被请求 → 不注册（不泄漏已关闭窗口）
 			b.hub.Dispatch.RegisterSink(b.sink(), b.forwardEvent)
+			// 默认订阅 = 本窗口绑定的项目；工作区树增删项目时再增量订阅。
+			b.hub.Policy.Subscribe(b.instanceID, workspace.Scope{WorkDir: b.workDir})
 			b.forwarding = true
 		}
 		b.fwdMu.Unlock()
@@ -416,6 +421,12 @@ func (b *Bridge) EmitFrontend(typ, payloadJSON string) {
 //     server 方法处理写回 Result/Errors）
 //   - 本地事件（window-* 等）由调用方先行过滤，不进入本方法。
 func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error) {
+	// MQ 主题控制面（阶段 3a）：topic-register / topic-unregister / topic-seal。
+	// 必须在 llm-start / gui.* / data-* 之前处理（这些 type 不属于业务方法面）。
+	switch typ {
+	case topics.TopicRegister, topics.TopicUnregister, topics.TopicSeal:
+		return b.topicControl(typ, payloadJSON)
+	}
 	if typ == msgkeys.TopicLlmStart {
 		b.splitLLMStart(payloadJSON)
 		return nil, nil
@@ -453,6 +464,82 @@ func (b *Bridge) PublishEvent(typ, payloadJSON string) (result any, errs []error
 	// 条目（含所有 instance），桥侧按当前实例作用域过滤后再返回前端。
 	b.filterCapabilityScope(typ, result)
 	return result, errs
+}
+
+// topicControl 处理 MQ 主题控制面（阶段 3a）：
+//
+//	topic-register   {topic, scope, schema?, instance_id?} → 注册；成功发 topic-registered
+//	topic-unregister {topic, instance_id?}                 → 反注册；成功发 topic-unregistered
+//	topic-seal       {}                                    → 封存并校验订阅；发 topic-validation
+//
+// owner = "frontend" + (":" + instance_id)；instance_id 仅作注册来源，不写入 Spec。
+func (b *Bridge) topicControl(typ, payloadJSON string) (any, []error) {
+	reg := b.topicRegistry()
+	if reg == nil {
+		return nil, []error{fmt.Errorf("bridge: 主题注册表未装配（topic control 不可用）")}
+	}
+	var in struct {
+		Topic      string         `json:"topic"`
+		Scope      string         `json:"scope"`
+		Schema     map[string]any `json:"schema"`
+		InstanceID string         `json:"instance_id"`
+	}
+	if strings.TrimSpace(payloadJSON) != "" {
+		if err := json.Unmarshal([]byte(payloadJSON), &in); err != nil {
+			return nil, []error{fmt.Errorf("bridge: %s 载荷解析失败: %w", typ, err)}
+		}
+	}
+	owner := "frontend"
+	if in.InstanceID != "" {
+		owner += ":" + in.InstanceID
+	}
+	switch typ {
+	case topics.TopicRegister:
+		spec := topics.Spec{Topic: in.Topic, Scope: topics.Scope(in.Scope), Schema: in.Schema}
+		if err := reg.Register(spec, owner); err != nil {
+			b.emitTopicEvent(topics.TopicRegisterError, map[string]any{"topic": in.Topic, "error": err.Error()})
+			return nil, []error{err}
+		}
+		b.emitTopicEvent(topics.TopicRegistered, map[string]any{"topic": spec.Topic, "scope": string(spec.Scope)})
+		return nil, nil
+	case topics.TopicUnregister:
+		if err := reg.Unregister(in.Topic, owner); err != nil {
+			return nil, []error{err}
+		}
+		b.emitTopicEvent(topics.TopicUnregistered, map[string]any{"topic": in.Topic})
+		return nil, nil
+	case topics.TopicSeal:
+		errs := reg.Seal()
+		msgs := make([]string, 0, len(errs))
+		for _, err := range errs {
+			msgs = append(msgs, err.Error())
+		}
+		payload := map[string]any{"ok": len(errs) == 0, "errors": msgs}
+		b.emitTopicEvent(topics.TopicValidation, payload)
+		return payload, errs
+	}
+	return nil, []error{fmt.Errorf("bridge: 未知主题控制 type: %s", typ)}
+}
+
+// topicRegistry 从总线取主题注册表（可选能力，不加 Bridge 必填字段）。
+func (b *Bridge) topicRegistry() *topics.Registry {
+	if b.bus == nil {
+		return nil
+	}
+	if r, ok := b.bus.(interface{ TopicRegistry() *topics.Registry }); ok {
+		return r.TopicRegistry()
+	}
+	return nil
+}
+
+// emitTopicEvent 把控制面结果下发前端（payload JSON 字符串）。
+func (b *Bridge) emitTopicEvent(typ string, payload map[string]any) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("bridge topic event marshal failed", "type", typ, "err", err)
+		return
+	}
+	b.EmitFrontend(typ, string(raw))
 }
 
 // frontMethodSubjects 前端单字方法 type → 相对域主题（61-消息一览 §4.5；chonk. 前缀由总线补）。
@@ -726,6 +813,7 @@ func (b *Bridge) stopForward() {
 	b.stopRequested = true // D-32：置位，令晚到的 Start 不再注册 sink
 	if b.forwarding && b.hub != nil {
 		b.hub.Dispatch.UnregisterSink(b.instanceID)
+		b.hub.Policy.UnsubscribeAll(b.instanceID)
 		b.forwarding = false
 	}
 }

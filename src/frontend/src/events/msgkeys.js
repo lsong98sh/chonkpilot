@@ -26,6 +26,11 @@ export const MsgTopics = {
   guiSelectedDir: 'gui.selected-dir',
   guiShowDialog: 'gui.show-dialog',
   guiDirOpen: 'gui.dir.open',
+  guiProjectAdd: 'gui.project.add',
+  guiProjectRemove: 'gui.project.remove',
+  guiProjectList: 'gui.project.list',
+  guiScopeSubscribe: 'gui.scope.subscribe',
+  guiScopeUnsubscribe: 'gui.scope.unsubscribe',
   guiRecentList: 'gui.recent.list',
   guiRecentRemove: 'gui.recent.remove',
   guiConsoleOpen: 'gui.console.open',
@@ -428,7 +433,9 @@ export const FieldKeys = {
   pre_hook_subject: 'pre_hook_subject',
   probe: 'probe',
   progress: 'progress',
+  project: 'project',
   project_spec: 'project_spec',
+  projects: 'projects',
   prompt: 'prompt',
   prompt_tokens: 'prompt_tokens',
   prompts: 'prompts',
@@ -445,6 +452,7 @@ export const FieldKeys = {
   refreshed: 'refreshed',
   registered: 'registered',
   reloaded: 'reloaded',
+  removed: 'removed',
   removed_tools: 'removed_tools',
   resource: 'resource',
   resources: 'resources',
@@ -728,7 +736,9 @@ export const FieldDict = {
   prefix: 'prefix',
   probe: 'probe',
   progress: 'progress',
+  project: 'project',
   project_spec: 'project_spec',
+  projects: 'projects',
   prompt: 'prompt',
   'prompt-use-case': 'useCase',
   prompt_tokens: 'prompt_tokens',
@@ -747,6 +757,7 @@ export const FieldDict = {
   refreshed: 'refreshed',
   registered: 'registered',
   reloaded: 'reloaded',
+  removed: 'removed',
   removed_tools: 'removed_tools',
   resource: 'resource',
   resources: 'resources',
@@ -987,6 +998,49 @@ export const GuiShowDialogKeys = {
 export const GuiDirOpenKeys = {
   ok: 'ok',
   path: 'path',
+}
+
+/** gui.project.add 字段键（payload/result/event 合并去重）。 */
+export const GuiProjectAddKeys = {
+  data_dir: 'data_dir',
+  ok: 'ok',
+  project: 'project',
+  work_dir: 'work_dir',
+}
+
+/** gui.project.remove 字段键（payload/result/event 合并去重）。 */
+export const GuiProjectRemoveKeys = {
+  ok: 'ok',
+  removed: 'removed',
+  work_dir: 'work_dir',
+}
+
+/** gui.project.list 字段键（payload/result/event 合并去重）。 */
+export const GuiProjectListKeys = {
+  ok: 'ok',
+  projects: 'projects',
+}
+
+/** gui.scope.subscribe 字段键（payload/result/event 合并去重）。 */
+export const GuiScopeSubscribeKeys = {
+  dialog_id: 'dialog_id',
+  ok: 'ok',
+  session_id: 'session_id',
+  task_id: 'task_id',
+  tool_call_id: 'tool_call_id',
+  turn_id: 'turn_id',
+  work_dir: 'work_dir',
+}
+
+/** gui.scope.unsubscribe 字段键（payload/result/event 合并去重）。 */
+export const GuiScopeUnsubscribeKeys = {
+  dialog_id: 'dialog_id',
+  ok: 'ok',
+  session_id: 'session_id',
+  task_id: 'task_id',
+  tool_call_id: 'tool_call_id',
+  turn_id: 'turn_id',
+  work_dir: 'work_dir',
 }
 
 /** gui.recent.list 字段键（payload/result/event 合并去重）。 */
@@ -1295,11 +1349,13 @@ export const DataUserConfigChangedKeys = {
 
 /** data-user-config-refresh 字段键（payload/result/event 合并去重）。 */
 export const DataUserConfigRefreshKeys = {
+  data_dir: 'data_dir',
   id: 'id',
   ids: 'ids',
   instance_id: 'instance_id',
   list: 'list',
   op: 'op',
+  work_dir: 'work_dir',
 }
 
 /** data-prj-config-list 字段键（payload/result/event 合并去重）。 */
@@ -1328,11 +1384,13 @@ export const DataPrjConfigDeleteKeys = {
 
 /** data-prj-config-refresh 字段键（payload/result/event 合并去重）。 */
 export const DataPrjConfigRefreshKeys = {
+  data_dir: 'data_dir',
   id: 'id',
   ids: 'ids',
   instance_id: 'instance_id',
   list: 'list',
   op: 'op',
+  work_dir: 'work_dir',
 }
 
 /** data-prj-security-list 字段键（payload/result/event 合并去重）。 */
@@ -1361,11 +1419,13 @@ export const DataPrjSecurityDeleteKeys = {
 
 /** data-prj-security-refresh 字段键（payload/result/event 合并去重）。 */
 export const DataPrjSecurityRefreshKeys = {
+  data_dir: 'data_dir',
   id: 'id',
   ids: 'ids',
   instance_id: 'instance_id',
   list: 'list',
   op: 'op',
+  work_dir: 'work_dir',
 }
 
 /** data-prompt-list 字段键（payload/result/event 合并去重）。 */
@@ -1394,11 +1454,13 @@ export const DataPromptDeleteKeys = {
 
 /** data-prompt-refresh 字段键（payload/result/event 合并去重）。 */
 export const DataPromptRefreshKeys = {
+  data_dir: 'data_dir',
   id: 'id',
   ids: 'ids',
   instance_id: 'instance_id',
   list: 'list',
   op: 'op',
+  work_dir: 'work_dir',
 }
 
 /** data-scenario-list 字段键（payload/result/event 合并去重）。 */
@@ -1431,11 +1493,13 @@ export const DataScenarioDeleteKeys = {
 
 /** data-scenario-refresh 字段键（payload/result/event 合并去重）。 */
 export const DataScenarioRefreshKeys = {
+  data_dir: 'data_dir',
   id: 'id',
   ids: 'ids',
   instance_id: 'instance_id',
   list: 'list',
   op: 'op',
+  work_dir: 'work_dir',
 }
 
 /** data-mcp-list 字段键（payload/result/event 合并去重）。 */
@@ -1470,11 +1534,13 @@ export const DataMcpDeleteKeys = {
 
 /** data-mcp-refresh 字段键（payload/result/event 合并去重）。 */
 export const DataMcpRefreshKeys = {
+  data_dir: 'data_dir',
   id: 'id',
   ids: 'ids',
   instance_id: 'instance_id',
   list: 'list',
   op: 'op',
+  work_dir: 'work_dir',
 }
 
 /** data-memory-list 字段键（payload/result/event 合并去重）。 */
@@ -1504,11 +1570,13 @@ export const DataMemoryDeleteKeys = {
 
 /** data-memory-refresh 字段键（payload/result/event 合并去重）。 */
 export const DataMemoryRefreshKeys = {
+  data_dir: 'data_dir',
   id: 'id',
   ids: 'ids',
   instance_id: 'instance_id',
   list: 'list',
   op: 'op',
+  work_dir: 'work_dir',
 }
 
 /** data-memory-extract-load 字段键（payload/result/event 合并去重）。 */
@@ -2213,11 +2281,13 @@ export const LlmSimpleKeys = {
 
 /** session-receive 字段键（payload/result/event 合并去重）。 */
 export const SessionReceiveKeys = {
+  data_dir: 'data_dir',
   instance_id: 'instance_id',
   payload: 'payload',
   session: 'session',
   turn: 'turn',
   type: 'type',
+  work_dir: 'work_dir',
 }
 
 /** session-complete 字段键（payload/result/event 合并去重）。 */

@@ -88,7 +88,7 @@ func (s *Service) sessionEnsureProvisionDialog(prj *data.DB, req facade.SessionE
 		}
 	}
 	if inserted {
-		s.emitSessionNew(req.SessionID, req.ParentSessionID, req.InstanceID, dialogID)
+		s.emitSessionNew(req.SessionID, req.ParentSessionID, req.InstanceID, dialogID, req.Scope)
 	}
 	return facade.SessionEnsureResponse{OK: true, DialogID: dialogID}, nil
 }

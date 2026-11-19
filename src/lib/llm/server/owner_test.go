@@ -13,6 +13,18 @@ import (
 )
 
 // registerInstanceAs 注册一个指定 instance_id 的实例（绑定共享 workdir，与 startTurn 同口径）。
+// ownerOf 是测试用「按 session 后缀查 owner」：owner key 已带项目/实例前缀。
+func ownerOf(s *Server, session string) string {
+	s.ownersMu.Lock()
+	defer s.ownersMu.Unlock()
+	for k, v := range s.owners {
+		if strings.HasSuffix(k, "\x00"+session) {
+			return v
+		}
+	}
+	return ""
+}
+
 func registerInstanceAs(t *testing.T, s *Server, inst string) {
 	t.Helper()
 	_ = s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
@@ -53,12 +65,12 @@ func waitOwnerReleased(t *testing.T, s *Server, session string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if s.sessionOwner(session) == "" {
+		if ownerOf(s, session) == "" {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("会话 %s 的归属未在超时内释放（owner=%q）", session, s.sessionOwner(session))
+	t.Fatalf("会话 %s 的归属未在超时内释放（owner=%q）", session, ownerOf(s, session))
 }
 
 // TestSessionOwnerRejectAndTransfer：A 受理后 S 归 A → B 的 llm-start / llm-send 均被拒
@@ -74,7 +86,7 @@ func TestSessionOwnerRejectAndTransfer(t *testing.T) {
 	if res := emitStartAs(t, s, "ins-a", "s-own", "t-own-a"); res["accepted"] != true {
 		t.Fatalf("ins-a 的 llm-start 应受理：%+v", res)
 	}
-	if got := s.sessionOwner("s-own"); got != "ins-a" {
+	if got := ownerOf(s, "s-own"); got != "ins-a" {
 		t.Fatalf("owner = %q, want ins-a", got)
 	}
 
@@ -103,7 +115,7 @@ func TestSessionOwnerRejectAndTransfer(t *testing.T) {
 	if msg := str(res["error"]); strings.Contains(msg, ownerConflictText) || !strings.Contains(msg, "session busy") {
 		t.Fatalf("同实例重入应命中 busy 而非归属：%q", msg)
 	}
-	if got := s.sessionOwner("s-own"); got != "ins-a" {
+	if got := ownerOf(s, "s-own"); got != "ins-a" {
 		t.Fatalf("同实例重入不得改变 owner：%q", got)
 	}
 
@@ -117,7 +129,7 @@ func TestSessionOwnerRejectAndTransfer(t *testing.T) {
 	if res := emitStartAs(t, s, "ins-b", "s-own", "t-own-b2"); res["accepted"] != true {
 		t.Fatalf("空闲后 ins-b 的 llm-start 应受理：%+v", res)
 	}
-	if got := s.sessionOwner("s-own"); got != "ins-b" {
+	if got := ownerOf(s, "s-own"); got != "ins-b" {
 		t.Fatalf("owner 应转移给 ins-b，got %q", got)
 	}
 }
@@ -133,12 +145,12 @@ func TestSessionOwnerReleasedOnInstanceExit(t *testing.T) {
 	if res := emitStartAs(t, s, "ins-x", "s-exit", "t-exit"); res["accepted"] != true {
 		t.Fatalf("ins-x 的 llm-start 应受理：%+v", res)
 	}
-	if got := s.sessionOwner("s-exit"); got != "ins-x" {
+	if got := ownerOf(s, "s-exit"); got != "ins-x" {
 		t.Fatalf("owner = %q, want ins-x", got)
 	}
 
 	s.exitInstance("ins-x")
-	if got := s.sessionOwner("s-exit"); got != "" {
+	if got := ownerOf(s, "s-exit"); got != "" {
 		t.Fatalf("instance-exit 应整窗释放归属，got %q", got)
 	}
 	if res := emitStartAs(t, s, "ins-y", "s-exit", "t-exit2"); res["accepted"] != true {
@@ -157,20 +169,20 @@ func TestReleaseOwnerIfIdleConditions(t *testing.T) {
 	// ① 无任何运行态 → 释放
 	s.claimSessionOwner("ins-a", "s-idle")
 	s.releaseOwnerIfIdle("ins-a", "s-idle")
-	if got := s.sessionOwner("s-idle"); got != "" {
+	if got := ownerOf(s, "s-idle"); got != "" {
 		t.Fatalf("无活动运行态应释放归属，got %q", got)
 	}
 
 	// ② inbox 有 pending → 保留；转终态后 → 释放
 	s.claimSessionOwner("ins-a", "s-inbox")
-	s.inboxRemember(facade.InboxItem{ID: "in-1", SessionID: "s-inbox", Status: "pending", Type: "next_turn"})
+	s.inboxRemember("ins-a", facade.InboxItem{ID: "in-1", SessionID: "s-inbox", Status: "pending", Type: "next_turn"})
 	s.releaseOwnerIfIdle("ins-a", "s-inbox")
-	if got := s.sessionOwner("s-inbox"); got != "ins-a" {
+	if got := ownerOf(s, "s-inbox"); got != "ins-a" {
 		t.Fatalf("inbox 有 pending 时不应释放归属，got %q", got)
 	}
 	s.inboxSetStatus("in-1", "consumed")
 	s.releaseOwnerIfIdle("ins-a", "s-inbox")
-	if got := s.sessionOwner("s-inbox"); got != "" {
+	if got := ownerOf(s, "s-inbox"); got != "" {
 		t.Fatalf("inbox 无 pending 后应释放归属，got %q", got)
 	}
 
@@ -185,12 +197,12 @@ func TestReleaseOwnerIfIdleConditions(t *testing.T) {
 	}
 	s.tasks.setState(node.TaskID, TaskStatePending)
 	s.releaseOwnerIfIdle("ins-a", "s-async")
-	if got := s.sessionOwner("s-async"); got != "ins-a" {
+	if got := ownerOf(s, "s-async"); got != "ins-a" {
 		t.Fatalf("有 async task 时不应释放归属，got %q", got)
 	}
 	s.tasks.done(node.TaskID, TaskStateDone, "", "")
 	s.releaseOwnerIfIdle("ins-a", "s-async")
-	if got := s.sessionOwner("s-async"); got != "" {
+	if got := ownerOf(s, "s-async"); got != "" {
 		t.Fatalf("async task 终态后应释放归属，got %q", got)
 	}
 }

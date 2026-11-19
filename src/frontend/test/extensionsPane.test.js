@@ -28,11 +28,11 @@ const read = (rel) => readSrc(rel)
 const readLocale = (loc, name) => JSON.parse(read('locales/' + loc + '/' + name))
 const LOCALES = ['zh-CN', 'en-US']
 
-test('扩展页：位于 ExplorerPane 第 4 分段「扩展」，内容体 = ExtensionsPane', () => {
+test('扩展页：位于 ExplorerPane 末段「扩展」，内容体 = ExtensionsPane', () => {
   const pane = read('views/filetree/ExplorerPane.vue')
-  const idxSessions = pane.indexOf("mode === 'sessions'")
+  const idxWorkspaces = pane.indexOf("mode === 'workspaces'")
   const idxExtensions = pane.indexOf("mode === 'extensions'")
-  assert.ok(idxSessions >= 0 && idxExtensions > idxSessions, '「扩展」分段应在「会话」右侧')
+  assert.ok(idxWorkspaces >= 0 && idxExtensions > idxWorkspaces, '「扩展」分段应在「工作区」右侧')
   assert.match(pane, /fileTree\.mode_extensions/, '扩展分段文案应走 i18n')
   assert.match(pane, /m === 'extensions'/, 'setMode 应受理 extensions')
   assert.match(pane, /<ExtensionsPane/, '扩展分段内容体 = ExtensionsPane')

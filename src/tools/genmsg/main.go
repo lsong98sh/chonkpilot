@@ -15,10 +15,12 @@ import (
 
 func main() {
 	var (
-		schemaPath = flag.String("schema", "", "schema 路径（默认 <repo>/docs/spec/60-reference/61-messages.schema.json）")
-		goOut      = flag.String("go", "", "Go 产物路径（默认 <repo>/../chonkpilot-framework/host/src/core/msgkeys/msgkeys_gen.go）")
-		jsOut      = flag.String("js", "", "JS 产物路径（默认 <repo>/src/frontend/src/events/msgkeys.js）")
-		check      = flag.Bool("check", false, "仅校验生成物是否为最新（不写入）")
+		schemaPath   = flag.String("schema", "", "schema 路径（默认 <repo>/docs/spec/60-reference/61-messages.schema.json）")
+		goOut        = flag.String("go", "", "Go 键常量产物（默认 <repo>/../chonkpilot-framework/host/src/core/msgkeys/msgkeys_gen.go）")
+		jsOut        = flag.String("js", "", "JS 键常量产物（默认 <repo>/src/frontend/src/events/msgkeys.js）")
+		topicsGoOut  = flag.String("topics-go", "", "Go 主题 scope 产物（默认 <repo>/../chonkpilot-framework/plugin/src/runtime/topics/builtin_gen.go）")
+		topicsJSOut  = flag.String("topics-js", "", "JS 主题 scope 产物（默认 <repo>/src/frontend/src/events/topic-specs.generated.js）")
+		check        = flag.Bool("check", false, "仅校验生成物是否为最新（不写入）")
 	)
 	flag.Parse()
 
@@ -34,6 +36,12 @@ func main() {
 	}
 	if *jsOut == "" {
 		*jsOut = filepath.Join(root, "src", "frontend", "src", "events", "msgkeys.js")
+	}
+	if *topicsGoOut == "" {
+		*topicsGoOut = filepath.Join(root, "..", "chonkpilot-framework", "plugin", "src", "runtime", "topics", "builtin_gen.go")
+	}
+	if *topicsJSOut == "" {
+		*topicsJSOut = filepath.Join(root, "src", "frontend", "src", "events", "topic-specs.generated.js")
 	}
 
 	raw, err := os.ReadFile(*schemaPath)
@@ -52,17 +60,30 @@ func main() {
 		if err := checkUpToDate(*jsOut, out.JS); err != nil {
 			fatal(err)
 		}
+		if err := checkUpToDate(*topicsGoOut, out.TopicsGo); err != nil {
+			fatal(err)
+		}
+		if err := checkUpToDate(*topicsJSOut, out.TopicsJS); err != nil {
+			fatal(err)
+		}
 		fmt.Println("genmsg: 生成物与 schema 一致")
 		return
 	}
 
-	if err := writeFile(*goOut, out.Go); err != nil {
-		fatal(err)
+	for _, f := range []struct {
+		path    string
+		content string
+	}{
+		{*goOut, out.Go},
+		{*jsOut, out.JS},
+		{*topicsGoOut, out.TopicsGo},
+		{*topicsJSOut, out.TopicsJS},
+	} {
+		if err := writeFile(f.path, f.content); err != nil {
+			fatal(err)
+		}
 	}
-	if err := writeFile(*jsOut, out.JS); err != nil {
-		fatal(err)
-	}
-	fmt.Printf("genmsg: 已生成\n  %s\n  %s\n", *goOut, *jsOut)
+	fmt.Printf("genmsg: 已生成\n  %s\n  %s\n  %s\n  %s\n", *goOut, *jsOut, *topicsGoOut, *topicsJSOut)
 }
 
 // repoRoot 自 cwd 向上查找含 schema 的仓库根目录。

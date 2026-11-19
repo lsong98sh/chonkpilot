@@ -21,8 +21,9 @@ import (
 
 	webview2 "github.com/jchv/go-webview2"
 
-	"github.com/lsong98sh/chonkpilot-framework/host/messages"
+	"github.com/chonkpilot/chonkpilot-workspace"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
+	"github.com/lsong98sh/chonkpilot-framework/host/messages"
 )
 
 // guiCallFunc 是 gui.* 消息面内部复用的 callX 处理器签名（原 dataCall 随 /call 链删除）。
@@ -209,6 +210,43 @@ func (b *Bridge) guiDo(action string, payload []byte) (result any, errs []error)
 	case "dir.open":
 		if _, err := callMap(callOpenDir, strArg(msgkeys.FieldPath)); err != nil {
 			return fail("dir.open: %v", err)
+		}
+		return map[string]any{msgkeys.FieldOk: true}, nil
+
+	// project.add/remove/list：一个窗口内的工作区项目注册（不打开新窗口）。
+	case "project.add", "project.remove", "project.list":
+		topic := msgkeys.TopicGuiProjectAdd
+		if action == "project.remove" {
+			topic = msgkeys.TopicGuiProjectRemove
+		} else if action == "project.list" {
+			topic = msgkeys.TopicGuiProjectList
+		}
+		var req map[string]any
+		if len(payload) > 0 {
+			_ = json.Unmarshal(payload, &req)
+		}
+		result, errs := b.publishV(topic, req)
+		if len(errs) > 0 {
+			return fail("%s: %v", action, errs[0])
+		}
+		if result == nil {
+			return fail("%s: no result", action)
+		}
+		return result, nil
+
+	// scope.subscribe/unsubscribe：后端分发订阅（一个窗口可订阅多个 workdir）。
+	case "scope.subscribe", "scope.unsubscribe":
+		scope := workspace.ScopeFromPayload(payload)
+		if scope.Empty() {
+			return fail("%s: scope required", action)
+		}
+		if b.hub == nil {
+			return fail("%s: no mq hub", action)
+		}
+		if action == "scope.subscribe" {
+			b.hub.Policy.Subscribe(b.instanceID, scope)
+		} else {
+			b.hub.Policy.Unsubscribe(b.instanceID, scope)
 		}
 		return map[string]any{msgkeys.FieldOk: true}, nil
 

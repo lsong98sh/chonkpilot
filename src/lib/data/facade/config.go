@@ -128,6 +128,8 @@ type UserConfigSetRequest struct {
 	Entries map[string]any `json:"entries"`
 	// InstanceID 实例 id（仅用于变更广播的归属字段，61 §0：payload 必带 instance_id）。
 	InstanceID string `json:"instance_id,omitempty"`
+	// Scope 显式数据根（变更广播携带；空 = 按实例绑定）。
+	Scope Scope `json:"scope,omitempty"`
 }
 
 // UserConfigSetResponse 是用户配置增量写出参。
@@ -144,6 +146,8 @@ type UserConfigDeleteRequest struct {
 	Keys []string `json:"keys,omitempty"`
 	// InstanceID 实例 id（仅用于变更广播的归属字段）。
 	InstanceID string `json:"instance_id,omitempty"`
+	// Scope 显式数据根（变更广播携带；空 = 按实例绑定）。
+	Scope Scope `json:"scope,omitempty"`
 }
 
 // UserConfigDeleteResponse 是用户配置删除出参。

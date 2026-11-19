@@ -72,7 +72,7 @@ func (s *Server) runNextRun(tc *turnCtx, args map[string]any) (string, bool) {
 	// ① 先计数（上限判定与自增原子完成）；拒绝时不 +1、不动已登记项。
 	res, err := s.cfg.SessionNextRunCheckAndAdd(facade.SessionNextRunCheckAndAddRequest{
 		InstanceID: tc.req.InstanceID, SessionID: tc.req.Session, Max: max,
-		DialogID: s.dialogOf(tc.req.InstanceID, tc.req.Session),
+		DialogID: s.dialogOf(tc.req.InstanceID, tc.req.Session, tc.scope()),
 	})
 	if err != nil {
 		return "错误: 登记下一轮失败（" + err.Error() + "）", true
@@ -91,11 +91,11 @@ func (s *Server) runNextRun(tc *turnCtx, args map[string]any) (string, bool) {
 		}
 		if it, ok := s.inboxLookup(itemID); ok {
 			it.Content = prompt
-			s.inboxRemember(it)
+			s.inboxRemember(tc.req.InstanceID, it)
 		}
 		return nextRunOKText(res.Count, max), false
 	}
-	id, err := s.inboxAppend(tc.req.InstanceID, facade.InboxAppendRequest{
+	id, err := s.inboxAppend(tc.req.InstanceID, tc.scope(), facade.InboxAppendRequest{
 		SessionID: tc.req.Session, TurnID: tc.req.Turn, Type: "next_turn",
 		Content: prompt, Source: nextRunSourceLLM,
 		// 幂等键：同轮重试不产生第二行（本轮唯一 LLM 排队项）。
@@ -108,7 +108,7 @@ func (s *Server) runNextRun(tc *turnCtx, args map[string]any) (string, bool) {
 	// append 命中数据层幂等键时只回旧 id、**不更新 content**（恢复回查失败 → nextRunItemID 为空，
 	// 同 turn 再次调用即命中）。故无论回查是否命中，append 后都先回填内存索引（inboxUpdate 需按
 	// id 反查 session → dialog_id），再强制覆盖 content = 本次 prompt，避免新提示词被静默丢弃。
-	s.inboxRemember(facade.InboxItem{
+	s.inboxRemember(tc.req.InstanceID, facade.InboxItem{
 		ID: id, SessionID: tc.req.Session, TurnID: tc.req.Turn, Type: "next_turn",
 		Content: prompt, Status: "pending", Source: nextRunSourceLLM,
 	})
@@ -138,7 +138,7 @@ func (s *Server) nextRunItemForTurn(instanceID, sessionID, turnID string) string
 	for _, it := range items {
 		if it.Source == nextRunSourceLLM && it.TurnID == turnID && it.Type == "next_turn" {
 			// 回填内存索引：后续 last-wins 走 inboxUpdate，需要由 id 反查 session → dialog_id。
-			s.inboxRemember(it)
+			s.inboxRemember(instanceID, it)
 			return it.ID
 		}
 	}
@@ -150,9 +150,10 @@ func (s *Server) nextRunCompensate(instanceID, sessionID string) {
 	if s.cfg == nil {
 		return
 	}
+	scope := s.scopeForSession(instanceID, sessionID)
 	if _, err := s.cfg.SessionNextRunDec(facade.SessionNextRunDecRequest{
-		InstanceID: instanceID, SessionID: sessionID,
-		DialogID: s.dialogOf(instanceID, sessionID),
+		InstanceID: instanceID, SessionID: sessionID, Scope: scope,
+		DialogID: s.dialogOf(instanceID, sessionID, scope),
 	}); err != nil {
 		logf("[chonkpilot-server] next_run 计数补偿失败（session=%s）: %v\n", sessionID, err)
 	}
@@ -169,9 +170,10 @@ func (s *Server) resetNextRunCount(instanceID, sessionID string) bool {
 	if s.cfg == nil || instanceID == "" || sessionID == "" {
 		return true
 	}
+	scope := s.scopeForSession(instanceID, sessionID)
 	if _, err := s.cfg.SessionNextRunReset(facade.SessionNextRunResetRequest{
-		InstanceID: instanceID, SessionID: sessionID,
-		DialogID: s.dialogOf(instanceID, sessionID),
+		InstanceID: instanceID, SessionID: sessionID, Scope: scope,
+		DialogID: s.dialogOf(instanceID, sessionID, scope),
 	}); err != nil {
 		// 重置失败不阻断用户发送（仅留痕；下次发送会再试）。
 		logf("[chonkpilot-server] next_run 计数重置失败（session=%s）: %v\n", sessionID, err)

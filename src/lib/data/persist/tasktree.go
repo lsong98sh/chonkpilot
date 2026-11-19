@@ -27,7 +27,7 @@ func (s *Service) handleTasktree(action string, payload []byte) {
 			top = tasktreeTargetID(m.ID, m.Key)
 		}
 		resp, err := s.TasktreeList(facade.TasktreeListRequest{
-			InstanceID:    p.InstanceID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
 			DialogID:      m.DialogID,
 			TopSession:    top,
 			Mode:          m.Mode,
@@ -47,7 +47,7 @@ func (s *Service) handleTasktree(action string, payload []byte) {
 		}
 		q := p.fields()
 		resp, err := s.TasktreeTasks(facade.TasktreeTasksRequest{
-			InstanceID:    p.InstanceID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
 			DialogID:      q.DialogID,
 			SessionID:     q.SessionID,
 			TopSession:    q.TopSession,
@@ -70,10 +70,10 @@ func (s *Service) handleTasktree(action string, payload []byte) {
 			node.InstanceID = p.InstanceID
 		}
 		if _, err := s.TasktreeUpsert(facade.TasktreeUpsertRequest{
-			InstanceID: p.InstanceID,
-			DialogID:   dialogID,
-			Node:       taskNodeOf(node),
-			Shadow:     bool(node.Shadow),
+			InstanceID: p.InstanceID, Scope: p.scope(),
+			DialogID: dialogID,
+			Node:     taskNodeOf(node),
+			Shadow:   bool(node.Shadow),
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -94,10 +94,10 @@ func (s *Service) handleTasktree(action string, payload []byte) {
 			id = f.Filter.NodeID
 		}
 		if _, err := s.TasktreeDelete(facade.TasktreeDeleteRequest{
-			InstanceID: p.InstanceID,
-			DialogID:   f.DialogID,
-			NodeID:     id,
-			Shadow:     bool(f.Shadow),
+			InstanceID: p.InstanceID, Scope: p.scope(),
+			DialogID: f.DialogID,
+			NodeID:   id,
+			Shadow:   bool(f.Shadow),
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return

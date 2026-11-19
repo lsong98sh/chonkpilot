@@ -32,6 +32,8 @@ import (
 // inboxAddReq 是 llm-inbox-add 载荷（61 §4.3）。
 type inboxAddReq struct {
 	InstanceID     string `json:"instance_id"`
+	WorkDir        string `json:"work_dir,omitempty"`
+	DataDir        string `json:"data_dir,omitempty"`
 	Session        string `json:"session"`
 	Turn           string `json:"turn,omitempty"`
 	LLM            string `json:"llm,omitempty"`
@@ -59,6 +61,8 @@ type inboxIDReq struct {
 // inboxListReq 是 llm-inbox-list 载荷。
 type inboxListReq struct {
 	InstanceID string `json:"instance_id"`
+	WorkDir    string `json:"work_dir,omitempty"`
+	DataDir    string `json:"data_dir,omitempty"`
 	Session    string `json:"session"`
 	Status     string `json:"status,omitempty"`
 }
@@ -69,12 +73,13 @@ type inboxListReq struct {
 //
 // 只允许持久 lane（`next_turn` / `insert`）：`inbox_items` 是用户意图队列；工具回执 / 通知 /
 // 控制 / 运行时事件属于易失 lane，不得持久化（启动不回放）。数据面也会校验，这里是服务层防线。
-func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (string, error) {
+func (s *Server) inboxAppend(instanceID string, scope facade.Scope, req facade.InboxAppendRequest) (string, error) {
 	if !sessioninbox.IsDurableType(req.Type) {
 		return "", fmt.Errorf("inbox: type must be durable（next_turn|insert），got %q", req.Type)
 	}
 	req.InstanceID = instanceID
-	req.DialogID = s.dialogForWrite(instanceID, req.SessionID)
+	req.Scope = scope
+	req.DialogID = s.dialogForWrite(instanceID, req.SessionID, scope)
 	if s.cfg != nil {
 		// 本地有界单事务（§2.4 白名单）：门面直调，避免总线派发线程内 Emit().Wait()。
 		res, err := s.cfg.InboxAppend(req)
@@ -100,6 +105,8 @@ func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (
 	}
 	res, err := dataRequest(s.bus, "data-inbox-append", map[string]any{
 		"instance_id": instanceID,
+		"work_dir":    scope.WorkDir,
+		"data_dir":    scope.DataDir,
 		"data":        payload,
 	})
 	if err != nil {
@@ -113,9 +120,11 @@ func (s *Server) inboxAppend(instanceID string, req facade.InboxAppendRequest) (
 // 只返回**持久 lane**（`next_turn` / `insert`，见 session/inbox.LaneOfType）：`inbox_items`
 // 是用户意图的唯一持久队列；工具回执 / 通知 / 控制 / 运行时事件均不落本表（易失，启动清空）。
 func (s *Server) inboxList(instanceID, sessionID, status string) ([]facade.InboxItem, error) {
+	scope := s.scopeForSession(instanceID, sessionID)
 	req := facade.InboxListRequest{
 		InstanceID: instanceID,
-		DialogID:   s.ensureDialogIndex(instanceID, sessionID),
+		Scope:      scope,
+		DialogID:   s.ensureDialogIndex(instanceID, sessionID, scope),
 		SessionID:  sessionID,
 		Status:     status,
 	}
@@ -135,6 +144,8 @@ func (s *Server) inboxList(instanceID, sessionID, status string) ([]facade.Inbox
 	}
 	res, err := dataRequest(s.bus, "data-inbox-list", map[string]any{
 		"instance_id": instanceID,
+		"work_dir":    scope.WorkDir,
+		"data_dir":    scope.DataDir,
 		"data":        payload,
 	})
 	if err != nil {
@@ -185,6 +196,7 @@ func durableInboxItems(items []facade.InboxItem) []facade.InboxItem {
 // inboxUpdate 更新 inbox 项（空字段 = 不改；content 非空 = 就地覆盖正文，
 // 供 NEXTRUN-1 §3.5「同轮多次调用只保留最后一条」）。
 func (s *Server) inboxUpdate(instanceID, id, status, typ, content string) error {
+	scope := facade.Scope{}
 	req := facade.InboxUpdateRequest{
 		InstanceID: instanceID,
 		ID:         id,
@@ -194,7 +206,9 @@ func (s *Server) inboxUpdate(instanceID, id, status, typ, content string) error 
 	}
 	// 一树一库：按内存索引回查该 inbox 项所属会话 → 补 dialog_id（未知则不写键）。
 	if item, ok := s.inboxLookup(id); ok {
-		req.DialogID = s.ensureDialogIndex(instanceID, item.SessionID)
+		scope = s.scopeForSession(instanceID, item.SessionID)
+		req.Scope = scope
+		req.DialogID = s.ensureDialogIndex(instanceID, item.SessionID, scope)
 	}
 	if s.cfg != nil {
 		// 本地有界单事务（§2.4 白名单）：门面直调，避免总线派发线程内 Emit().Wait()。
@@ -207,6 +221,8 @@ func (s *Server) inboxUpdate(instanceID, id, status, typ, content string) error 
 	}
 	_, err := dataRequest(s.bus, "data-inbox-update", map[string]any{
 		"instance_id": instanceID,
+		"work_dir":    scope.WorkDir,
+		"data_dir":    scope.DataDir,
 		"data":        payload,
 	})
 	return err
@@ -225,7 +241,9 @@ func (s *Server) inboxUpdate(instanceID, id, status, typ, content string) error 
 const inboxTerminalKeep = 1024
 
 // inboxRemember 写入/刷新索引项（状态与类型取 item 当前值）。
-func (s *Server) inboxRemember(item facade.InboxItem) {
+//
+// instanceID 只用于**会话分桶键**：同一窗口两个 workdir 的同名 session 各自一桶（见 runKey）。
+func (s *Server) inboxRemember(instanceID string, item facade.InboxItem) {
 	if item.ID == "" {
 		return
 	}
@@ -236,27 +254,35 @@ func (s *Server) inboxRemember(item facade.InboxItem) {
 	if s.inboxPending == nil {
 		s.inboxPending = map[string]map[string]string{}
 	}
-	s.inboxRememberLocked(item)
+	if s.inboxBucketOf == nil {
+		s.inboxBucketOf = map[string]string{}
+	}
+	s.inboxRememberLocked(instanceID, item)
 	s.inboxMu.Unlock()
 }
 
 // inboxRememberLocked 索引写入的加锁实现（调用方持 s.inboxMu）。
-func (s *Server) inboxRememberLocked(item facade.InboxItem) {
+func (s *Server) inboxRememberLocked(instanceID string, item facade.InboxItem) {
 	prev, existed := s.inboxIndex[item.ID]
 	s.inboxIndex[item.ID] = item
 	// 只有持久 lane（next_turn / insert）进入 pending 桶：易失项（tool_result / notify /
 	// control / runtime）不参与「用户队列是否有待消费项」判定，也永不被 next_turn 消费。
 	if item.Status == sessioninbox.StatusPending && sessioninbox.IsDurableType(item.Type) {
-		bucket := s.inboxPending[item.SessionID]
+		key := s.inboxBucketOf[item.ID]
+		if key == "" {
+			key = s.runKey(instanceID, item.SessionID)
+		}
+		bucket := s.inboxPending[key]
 		if bucket == nil {
 			bucket = map[string]string{}
-			s.inboxPending[item.SessionID] = bucket
+			s.inboxPending[key] = bucket
 		}
 		bucket[item.ID] = item.Type
+		s.inboxBucketOf[item.ID] = key
 		return
 	}
 	// 终态：移出 pending 桶；**首次**进入终态时登记 FIFO（重复 remember 不重复登记）。
-	s.inboxDropPendingLocked(item.SessionID, item.ID)
+	s.inboxDropPendingLocked(item.ID)
 	if !existed || prev.Status == sessioninbox.StatusPending {
 		s.inboxTerminal = append(s.inboxTerminal, item.ID)
 		s.inboxTrimTerminalLocked()
@@ -264,14 +290,19 @@ func (s *Server) inboxRememberLocked(item facade.InboxItem) {
 }
 
 // inboxDropPendingLocked 从 pending 桶移除一项（桶空则删桶）。
-func (s *Server) inboxDropPendingLocked(sessionID, id string) {
-	bucket := s.inboxPending[sessionID]
+func (s *Server) inboxDropPendingLocked(id string) {
+	key := s.inboxBucketOf[id]
+	if key == "" {
+		return
+	}
+	delete(s.inboxBucketOf, id)
+	bucket := s.inboxPending[key]
 	if bucket == nil {
 		return
 	}
 	delete(bucket, id)
 	if len(bucket) == 0 {
-		delete(s.inboxPending, sessionID)
+		delete(s.inboxPending, key)
 	}
 }
 
@@ -302,7 +333,7 @@ func (s *Server) inboxSetStatus(id, status string) {
 	s.inboxMu.Lock()
 	if it, ok := s.inboxIndex[id]; ok {
 		it.Status = status
-		s.inboxRememberLocked(it)
+		s.inboxRememberLocked("", it)
 	}
 	if status != sessioninbox.StatusPending {
 		delete(s.inboxQueued, id) // 终态 → 不再需要「已投递待消费」标记
@@ -312,10 +343,10 @@ func (s *Server) inboxSetStatus(id, status string) {
 
 // inboxHasPending 报告该会话是否有待消费的**持久 lane** inbox 项（next_turn 或 insert 意向）。
 // 内存索引分桶直取；避免无项时也发起数据面请求（测试/关停期间不必要地打开 prjusr 库）。
-func (s *Server) inboxHasPending(sessionID string) bool {
+func (s *Server) inboxHasPending(instanceID, sessionID string) bool {
 	s.inboxMu.Lock()
 	defer s.inboxMu.Unlock()
-	return len(s.inboxPending[sessionID]) > 0
+	return len(s.inboxPending[s.runKey(instanceID, sessionID)]) > 0
 }
 
 // inboxEnsureDurableLoaded 是启动后的**按会话懒恢复**：把该会话的 durable pending
@@ -328,7 +359,7 @@ func (s *Server) inboxEnsureDurableLoaded(instanceID, sessionID string) {
 	if sessionID == "" || (s.bus == nil && s.cfg == nil) {
 		return // 无数据面（纯单测的最小 Server）→ 无可恢复来源
 	}
-	key := instKey(instanceID, sessionID)
+	key := s.runKey(instanceID, sessionID)
 	s.inboxMu.Lock()
 	if s.inboxLoaded == nil {
 		s.inboxLoaded = map[string]bool{}
@@ -350,7 +381,7 @@ func (s *Server) inboxEnsureDurableLoaded(instanceID, sessionID string) {
 		return
 	}
 	for _, it := range items {
-		s.inboxRemember(it) // inboxList 已过滤：这里只会是 durable 类型
+		s.inboxRemember(instanceID, it) // inboxList 已过滤：这里只会是 durable 类型
 	}
 }
 
@@ -375,6 +406,9 @@ func (s *Server) onInboxAdd(_ context.Context, _ string, v *mq.Value) error {
 		v.Result = map[string]any{"ok": false, "id": "", "type": "next_turn"}
 		return nil
 	}
+	if req.WorkDir != "" {
+		s.rememberScope(req.InstanceID, req.Session, "", facade.Scope{WorkDir: req.WorkDir, DataDir: req.DataDir})
+	}
 	// INPUTVAL-1：后端复验单条输入长度（超限明确拒绝，不静默截断）。
 	if n := len([]rune(req.Content)); n > maxChatInputChars {
 		v.Result = map[string]any{"ok": false, "id": "", "type": "next_turn",
@@ -393,7 +427,8 @@ func (s *Server) onInboxAdd(_ context.Context, _ string, v *mq.Value) error {
 		turnID = tc.req.Turn
 	}
 
-	id, err := s.inboxAppend(req.InstanceID, facade.InboxAppendRequest{
+	scope := s.scopeForSession(req.InstanceID, req.Session)
+	id, err := s.inboxAppend(req.InstanceID, scope, facade.InboxAppendRequest{
 		SessionID: req.Session, TurnID: turnID, Type: typ,
 		LLM: req.LLM, Content: req.Content, Think: req.Think, Effort: req.Effort,
 		ScenarioID: req.ScenarioID, IdempotencyKey: req.IdempotencyKey, Source: req.Source,
@@ -408,7 +443,7 @@ func (s *Server) onInboxAdd(_ context.Context, _ string, v *mq.Value) error {
 		LLM: req.LLM, Content: req.Content, ScenarioID: req.ScenarioID,
 		Status: sessioninbox.StatusPending, IdempotencyKey: req.IdempotencyKey, Source: req.Source,
 	}
-	s.inboxRemember(item)
+	s.inboxRemember(req.InstanceID, item)
 	s.publishInboxChanged(req.InstanceID, req.Session, "added", []string{id})
 	// 落库期间目标轮可能已收尾（`turnBySessionForAdd` 取到 tc 后才写库）：此时轮末消费可能
 	// 已经跑过、看不到本条 → 按「无运行轮」补发一次消费（否则 next_turn / insert 会滞留）。
@@ -443,6 +478,9 @@ func (s *Server) onInboxList(_ context.Context, _ string, v *mq.Value) error {
 		v.Result = map[string]any{"ok": false, "items": []any{}}
 		return nil
 	}
+	if req.WorkDir != "" {
+		s.rememberScope(req.InstanceID, req.Session, "", facade.Scope{WorkDir: req.WorkDir, DataDir: req.DataDir})
+	}
 	s.inboxEnsureDurableLoaded(req.InstanceID, req.Session)
 	items, err := s.inboxList(req.InstanceID, req.Session, req.Status)
 	if err != nil {
@@ -452,7 +490,7 @@ func (s *Server) onInboxList(_ context.Context, _ string, v *mq.Value) error {
 	}
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
-		s.inboxRemember(it)
+		s.inboxRemember(req.InstanceID, it)
 		m := map[string]any{
 			"id": it.ID, "type": it.Type, "content": it.Content,
 			"status": it.Status, "created_at": it.CreatedAt,
@@ -476,7 +514,7 @@ func (s *Server) onInboxList(_ context.Context, _ string, v *mq.Value) error {
 	// 恢复 / 打开会话后，空闲会话继续消费 durable pending（运行中的轮次由轮末消费接手；
 	// 子会话 / 群聊由各自调度器驱动，consumeNextTurnPass 内部会按 kind 跳过）。
 	if (req.Status == "" || req.Status == sessioninbox.StatusPending) &&
-		s.inboxHasPending(req.Session) && !s.sessionBusy(req.InstanceID, req.Session) {
+		s.inboxHasPending(req.InstanceID, req.Session) && !s.sessionBusy(req.InstanceID, req.Session) {
 		go s.consumeNextTurn(req.InstanceID, req.Session)
 	}
 	return nil
@@ -547,7 +585,7 @@ func (s *Server) onInboxPromote(_ context.Context, _ string, v *mq.Value) error 
 			continue
 		}
 		item.Type = string(sessioninbox.Insert)
-		s.inboxRemember(item)
+		s.inboxRemember(req.InstanceID, item)
 		anyInsert = true
 	}
 	if sessionID == "" {
@@ -601,7 +639,7 @@ func (s *Server) onInboxRevert(_ context.Context, _ string, v *mq.Value) error {
 		return nil
 	}
 	item.Type = string(sessioninbox.NextTurn)
-	s.inboxRemember(item)
+	s.inboxRemember(req.InstanceID, item)
 	s.inboxUnqueue(req.ID)
 	s.publishInboxChanged(req.InstanceID, item.SessionID, "reverted", []string{req.ID})
 	v.Result = map[string]any{"ok": true, "type": string(sessioninbox.NextTurn)}
@@ -623,7 +661,7 @@ func (s *Server) flushInsertIntents(tc *turnCtx) {
 	if s.inboxQueued == nil {
 		s.inboxQueued = map[string]bool{}
 	}
-	bucket := s.inboxPending[sessionID]
+	bucket := s.inboxPending[s.runKey(tc.req.InstanceID, sessionID)]
 	items := make([]facade.InboxItem, 0, len(bucket))
 	for id, typ := range bucket {
 		if typ != string(sessioninbox.Insert) || s.inboxQueued[id] {
@@ -673,9 +711,16 @@ func (s *Server) publishInboxChanged(instanceID, session, action string, ids []s
 	if session == "" {
 		return
 	}
-	s.publish("inbox-changed", map[string]any{
+	payload := map[string]any{
 		"instance_id": instanceID, "session": session, "action": action, "ids": ids,
-	})
+	}
+	if sc := s.scopeForSession(instanceID, session); sc.WorkDir != "" {
+		payload["work_dir"] = sc.WorkDir
+		if sc.DataDir != "" {
+			payload["data_dir"] = sc.DataDir
+		}
+	}
+	s.publish("inbox-changed", payload)
 }
 
 // turnBySessionForAdd 定位该会话的运行轮（带 instance 归属）。
@@ -728,13 +773,13 @@ func (s *Server) consumeNextTurnPass(instanceID, sessionID string) (again bool) 
 		s.inboxMu.Lock()
 		delete(s.inboxConsuming, sessionID)
 		s.inboxMu.Unlock()
-		again = progress && s.inboxHasPending(sessionID) && !s.sessionBusy(instanceID, sessionID)
+		again = progress && s.inboxHasPending(instanceID, sessionID) && !s.sessionBusy(instanceID, sessionID)
 	}()
 	// 重启后内存索引为空：先做一次按会话懒恢复（只装载 durable pending），再判是否有待消费项。
 	// 否则 `inboxHasPending` 会把「库里有用户消息」误判为「无 pending」而搁死。
 	s.inboxEnsureDurableLoaded(instanceID, sessionID)
 	// 无待消费项（内存索引）→ 不发起数据面请求（避免无谓打开 prjusr 库 / 关停期噪音）。
-	if !s.inboxHasPending(sessionID) {
+	if !s.inboxHasPending(instanceID, sessionID) {
 		return false
 	}
 	if kind := s.sessionRow(instanceID, sessionID).Kind; kind != "" {
@@ -747,7 +792,7 @@ func (s *Server) consumeNextTurnPass(instanceID, sessionID string) (again bool) 
 	}
 	// 读回的行先入内存索引：后续撤回（discard）会同步内存状态，下面两次 pending 复核才能看见。
 	for _, it := range items {
-		s.inboxRemember(it)
+		s.inboxRemember(instanceID, it)
 	}
 	batch := make([]facade.InboxItem, 0, len(items))
 	for _, it := range items {
@@ -755,7 +800,7 @@ func (s *Server) consumeNextTurnPass(instanceID, sessionID string) (again bool) 
 		if it.Type == string(sessioninbox.Insert) {
 			_ = s.inboxUpdate(instanceID, it.ID, "", string(sessioninbox.Degrade(sessioninbox.Insert)), "")
 			it.Type = string(sessioninbox.NextTurn)
-			s.inboxRemember(it)
+			s.inboxRemember(instanceID, it)
 		}
 		if it.Type == string(sessioninbox.NextTurn) {
 			batch = append(batch, it)
@@ -777,8 +822,9 @@ func (s *Server) consumeNextTurnPass(instanceID, sessionID string) (again bool) 
 	}
 	// 失效判定（NEXTRUN-1 §4）：LLM 登记项的 `turn_id` 必须等于会话**最新 turn**，否则丢弃
 	// （崩溃 / 被用户新轮抢占后不复活）。用户项不受此约束（沿用既有语义）。
-	latestTurn := s.newSessionStore(instanceID).LatestTurnID(sessionID)
+	latestTurn := s.sessionStoreFor(instanceID, sessionID).LatestTurnID(sessionID)
 	req := StartReq{InstanceID: instanceID, Session: sessionID, Turn: newID()}
+	s.applySessionScope(&req, instanceID, sessionID)
 	if llm := batch[0].LLM; llm != "" {
 		req.LLMModel = llm
 	}
@@ -796,7 +842,7 @@ func (s *Server) consumeNextTurnPass(instanceID, sessionID string) (again bool) 
 		return false // 会话忙 / 实例未注册 → 保持 pending
 	}
 	turnID, _ := res["turn"].(string)
-	st := s.newSessionStore(instanceID)
+	st := s.sessionStoreFor(instanceID, sessionID)
 	for _, it := range batch {
 		// 逐条最后复核：复核快照之后、本条写库之前仍可能被撤回（内存由 discard 同步更新）。
 		if !pendingSet[it.ID] {

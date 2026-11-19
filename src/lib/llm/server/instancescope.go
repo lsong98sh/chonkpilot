@@ -35,7 +35,7 @@ func (s *Server) lookupTurnSessionLocked(instanceID, turnID string) turnSession 
 	if turnID == "" {
 		return nil
 	}
-	if sess := s.turns[instKey(instanceID, turnID)]; sess != nil {
+	if sess := s.turns[s.runKey(instanceID, turnID)]; sess != nil {
 		return sess
 	}
 	if instanceID != "" {

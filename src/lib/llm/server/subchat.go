@@ -138,13 +138,13 @@ func (s *Server) runSubChatOpen(tc *turnCtx, args map[string]any, purpose string
 	instanceID := tc.req.InstanceID
 	parentSession := tc.req.Session
 	sessionID := "subchat-" + newID()
-	scope := s.cfgScope(instanceID)
+	scope := tc.scope()
 
 	// ① 建会话：kind=sub_chat + parent_id（= 发起该调用的主会话）+ 固定参数 + lifecycle=chatting
 	// + purpose（purpose 仅非空才写键；单聊方案 §3.2 / §5.4）。
 	if _, err := s.cfg.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: instanceID, Scope: scope,
-		DialogID:  s.dialogOf(instanceID, parentSession), // 子会话沿用父会话的对话（同一棵树）
+		DialogID:  s.dialogOf(instanceID, parentSession, scope), // 子会话沿用父会话的对话（同一棵树）
 		SessionID: sessionID, ParentSessionID: parentSession,
 		Kind: facade.SessionKindSubChat, Lifecycle: facade.SessionLifecycleChatting,
 		Agent: agent, ScenarioID: scenarioID, LLM: llmRef, Purpose: purpose,
@@ -152,7 +152,8 @@ func (s *Server) runSubChatOpen(tc *turnCtx, args map[string]any, purpose string
 		return subchatToolErr("建子聊天会话失败: " + err.Error()), true
 	}
 	// 一树一库：回填新子会话 → 对话映射（后续 turn / message 写入按其补 dialog_id）。
-	s.rememberDialog(instanceID, sessionID, s.dialogOf(instanceID, parentSession))
+	s.rememberDialog(instanceID, sessionID, s.dialogOf(instanceID, parentSession, scope), scope)
+	s.rememberScope(instanceID, sessionID, "", scope)
 	// 会话标题 = 子聊天名字（= purpose）：窗口标题栏 / 会话列表子节点据此显示（§3.9.2）。
 	// 失败仅留痕——标题非关键路径（回退 = 会话行初值 session_id）。
 	// 一树一库：新建子会话尚未进入本进程备忘 → 沿用**父会话**的 dialog_id。
@@ -160,7 +161,7 @@ func (s *Server) runSubChatOpen(tc *turnCtx, args map[string]any, purpose string
 	if purpose != "" {
 		if _, err := s.cfg.SessionTitle(facade.SessionTitleRequest{
 			InstanceID: instanceID, SessionID: sessionID, Title: purpose, Scope: scope,
-			DialogID: s.dialogOf(instanceID, parentSession),
+			DialogID: s.dialogOf(instanceID, parentSession, scope),
 		}); err != nil {
 			logf("[chonkpilot-server] subchat_open: 设子聊天标题失败（session=%s）: %v\n", sessionID, err)
 		} else {
@@ -170,7 +171,7 @@ func (s *Server) runSubChatOpen(tc *turnCtx, args map[string]any, purpose string
 
 	// ② 建首轮 + 以用户口吻写入交接内容为首条 user 消息（§10 Q2 / D30）。**同一条消息只落一次**：
 	// 异步首轮（startSubChatFirstTurn）以**库内既有上下文**触发一次 LLM 循环（Kick），不再喂新输入。
-	store := s.newSessionStore(instanceID)
+	store := s.newSessionStore(instanceID, scope)
 	turnID := newID()
 	if err := store.EnsureTurn(turnID, sessionID); err != nil {
 		return subchatToolErr("建子聊天首轮失败: " + err.Error()), true
@@ -200,9 +201,10 @@ func (s *Server) runSubChatFinish(tc *turnCtx) (string, bool) {
 	}
 	// 2026-11-08 P0：会话类型守卫 —— 只有 `kind=sub_chat` 可自报完成；主会话 / sub_session /
 	// 群聊调用一律明确失败，避免把无关会话的 lifecycle 写成 ready（并广播 subchat-state）。
+	scope := s.scopeForSession(tc.req.InstanceID, sessionID)
 	resp, err := s.cfg.SessionGet(facade.SessionGetRequest{
 		InstanceID: tc.req.InstanceID, SessionID: sessionID,
-		DialogID: s.dialogOf(tc.req.InstanceID, sessionID), Scope: s.cfgScope(tc.req.InstanceID),
+		DialogID: s.dialogOf(tc.req.InstanceID, sessionID, scope), Scope: scope,
 	})
 	if err != nil {
 		return subchatToolErr("读取会话失败: " + err.Error()), true
@@ -213,8 +215,8 @@ func (s *Server) runSubChatFinish(tc *turnCtx) (string, bool) {
 	}
 	if _, err := s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: tc.req.InstanceID, SessionID: sessionID,
-		DialogID:  s.dialogOf(tc.req.InstanceID, sessionID),
-		Lifecycle: facade.SessionLifecycleReady, Scope: s.cfgScope(tc.req.InstanceID),
+		DialogID:  s.dialogOf(tc.req.InstanceID, sessionID, scope),
+		Lifecycle: facade.SessionLifecycleReady, Scope: scope,
 	}); err != nil {
 		return subchatToolErr("置 ready 失败: " + err.Error()), true
 	}
@@ -237,11 +239,10 @@ func (s *Server) startSubChatFirstTurn(instanceID, sessionID, turnID string) {
 		}
 	}()
 	req := StartReq{InstanceID: instanceID, Session: sessionID, Turn: turnID}
-	if rec, ok := s.im.Lookup(instanceID); ok {
-		req.WorkDir, req.DataDir = rec.WorkDir, rec.DataDir
-	}
+	// 显式项目作用域（已登记）优先；未登记 → 留空，由 newSessionStore / runKey 按实例绑定解析。
+	s.applySessionScope(&req, instanceID, sessionID)
 	tc := newTurnCtx(context.Background(), s, req)
-	bk, tk := instKey(instanceID, sessionID), instKey(instanceID, turnID)
+	bk, tk := s.runKey(instanceID, sessionID), s.runKey(instanceID, turnID)
 	s.mu.Lock()
 	if _, busy := s.busy[bk]; busy {
 		s.mu.Unlock()
@@ -282,9 +283,10 @@ func (s *Server) emitSubchatState(instanceID, sessionID string) {
 	if s.cfg == nil || sessionID == "" {
 		return
 	}
+	scope := s.scopeForSession(instanceID, sessionID)
 	resp, err := s.cfg.SessionGet(facade.SessionGetRequest{
-		InstanceID: instanceID, SessionID: sessionID, Scope: s.cfgScope(instanceID),
-		DialogID: s.dialogOf(instanceID, sessionID), // 一树一库：会话行在对话库内
+		InstanceID: instanceID, SessionID: sessionID, Scope: scope,
+		DialogID: s.dialogOf(instanceID, sessionID, scope), // 一树一库：会话行在对话库内
 	})
 	if err != nil {
 		logf("[chonkpilot-server] emitSubchatState: SessionGet(%s): %v\n", sessionID, err)
@@ -319,12 +321,12 @@ func (s *Server) onSubchatList(_ context.Context, _ string, v *mq.Value) error {
 		v.Result = map[string]any{"error": "数据门面不可用"}
 		return nil
 	}
-	scope := s.cfgScope(instanceID)
+	scope := s.scopeForSession(instanceID, parentID)
 	var chats []facade.Session
 	if parentID != "" {
 		res, err := s.cfg.SessionSubChats(facade.SessionSubChatsRequest{
 			InstanceID: instanceID, ParentSessionID: parentID, Scope: scope,
-			DialogID: s.dialogOf(instanceID, parentID), // 子聊天与其父同库
+			DialogID: s.dialogOf(instanceID, parentID, scope), // 子聊天与其父同库
 		})
 		if err != nil {
 			v.Result = map[string]any{"error": err.Error()}
@@ -354,7 +356,7 @@ func (s *Server) onSubchatList(_ context.Context, _ string, v *mq.Value) error {
 		}
 		t := ""
 		if r, err := s.cfg.SessionGet(facade.SessionGetRequest{
-			InstanceID: instanceID, SessionID: pid, Scope: scope, DialogID: s.dialogOf(instanceID, pid),
+			InstanceID: instanceID, SessionID: pid, Scope: scope, DialogID: s.dialogOf(instanceID, pid, scope),
 		}); err == nil && r.Found {
 			t = r.Session.Title
 		}
@@ -397,10 +399,11 @@ func (s *Server) onSubchatFinish(_ context.Context, _ string, v *mq.Value) error
 		v.Result = map[string]any{"error": "数据门面不可用"}
 		return nil
 	}
+	scope := s.scopeForSession(instanceID, sessionID)
 	if _, err := s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: instanceID, SessionID: sessionID,
-		DialogID:  s.dialogOf(instanceID, sessionID),
-		Lifecycle: facade.SessionLifecycleFinished, Scope: s.cfgScope(instanceID),
+		DialogID:  s.dialogOf(instanceID, sessionID, scope),
+		Lifecycle: facade.SessionLifecycleFinished, Scope: scope,
 	}); err != nil {
 		v.Result = map[string]any{"error": err.Error()}
 		return nil
@@ -425,10 +428,11 @@ func (s *Server) reopenSubChatOnNewTurn(instanceID, sessionID string, sc turnSce
 	if s.cfg == nil || !isSubChatKind(sc.kind) || sc.lifecycle != facade.SessionLifecycleReady {
 		return
 	}
+	scope := s.scopeForSession(instanceID, sessionID)
 	if _, err := s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: instanceID, SessionID: sessionID,
-		DialogID:  s.dialogOf(instanceID, sessionID),
-		Lifecycle: facade.SessionLifecycleChatting, Scope: s.cfgScope(instanceID),
+		DialogID:  s.dialogOf(instanceID, sessionID, scope),
+		Lifecycle: facade.SessionLifecycleChatting, Scope: scope,
 	}); err != nil {
 		logf("[chonkpilot-server] reopenSubChatOnNewTurn(%s): %v\n", sessionID, err)
 		return

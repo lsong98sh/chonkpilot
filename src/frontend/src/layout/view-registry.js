@@ -102,16 +102,27 @@ export function registeredViewKeys() {
  *        组件工厂（宿主在 `views.registry.js` 注入 `PluginPageHost` 适配壳；测试可注入桩）
  */
 export function registerPluginViews(plugin, makeComponent) {
-  if (!plugin || !plugin.id || !Array.isArray(plugin.views) || !plugin.views.length) return
+  if (!plugin || !plugin.id) return
+  const validViews = Array.isArray(plugin.views) ? plugin.views.filter((v) => v && v.id) : []
+  // 快照/事件中的 views 为空或全部无效（例如插件重启后 manifest 暂未带 views）：
+  // 必须卸载旧 view，否则禁用/重启后布局里仍残留旧插件页（旧 key 永不清除）。
+  if (!validViews.length) {
+    unregisterPluginViews(plugin.id)
+    return
+  }
   const sig = pluginViewSig(plugin)
   if (pluginSigs.get(plugin.id) === sig) return
   unregisterPluginViews(plugin.id)
-  pluginSigs.set(plugin.id, sig)
   const entries = []
-  for (const v of plugin.views) {
-    if (!v || !v.id) continue
+  const seen = new Set()
+  for (const v of validViews) {
+    if (seen.has(v.id)) continue
+    seen.add(v.id)
     const entry = v.entry || `webui/${v.id}.html`
     const key = `plugin:${plugin.id}:${v.id}`
+    const component = typeof makeComponent === 'function' ? makeComponent({ plugin, view: v, entry }) : null
+    // 无组件工厂 = 测试 / 装配错误：不写入不可解析的孤立定义。
+    if (!component) continue
     const containers = Array.isArray(v.containers) && v.containers.length
       ? v.containers
       : ['preview', 'tab', 'drawer']
@@ -126,12 +137,11 @@ export function registerPluginViews(plugin, makeComponent) {
       title: v.title || '',
       plugin: { id: plugin.id, view: v.id, entry },
     })
-    entries.push({
-      key,
-      component: typeof makeComponent === 'function' ? makeComponent({ plugin, view: v, entry }) : null,
-    })
+    entries.push({ key, component })
   }
+  if (!entries.length) return
   registerViews(entries, `plugin:${plugin.id}`)
+  pluginSigs.set(plugin.id, sig)
 }
 
 /** 卸载插件全部动态 view（插件禁用 / 卸载）。 */

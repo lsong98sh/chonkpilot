@@ -199,7 +199,7 @@ func (s *Service) SessionFork(req facade.SessionForkRequest) (facade.SessionFork
 	if err != nil {
 		return facade.SessionForkResponse{}, err
 	}
-	s.emitSessionNew(res.SessionID, "", req.InstanceID, res.DialogID)
+	s.emitSessionNew(res.SessionID, "", req.InstanceID, res.DialogID, req.Scope)
 	return facade.SessionForkResponse{OK: true, DialogID: res.DialogID, SessionID: res.SessionID}, nil
 }
 

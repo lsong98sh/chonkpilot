@@ -13,15 +13,25 @@ import (
 )
 
 // Service 是 snapshot 域门面实现（inline 绑定直接持有本类型）。
-type Service struct{}
+type Service struct{ base *kernel.Base }
 
 // 编译期断言：实现完整 snapshot 域门面面（缺方法即编译不过）。
 // 注：门面的**域面**（facade.SnapshotAPI / facade.ConfigAPI）由各自实现分别满足，
 // 合成（facade.API）在绑定侧（facade/inline）——见 41 G-34。
 var _ facade.SnapshotAPI = (*Service)(nil)
 
-// New 构造 snapshot 域门面实现。
-func New() *Service { return &Service{} }
+// New 构造 snapshot 域门面实现（base 提供与其它域同源的实例/显式 scope 数据根解析；
+// 缺省自建空 Base —— 仅测试/独立使用，解析回落 data 绑定表，与改造前口径一致）。
+func New(bases ...*kernel.Base) *Service {
+	var base *kernel.Base
+	if len(bases) > 0 {
+		base = bases[0]
+	}
+	if base == nil {
+		base = kernel.NewBase(nil, kernel.Options{})
+	}
+	return &Service{base: base}
+}
 
 // SnapshotGet 读会话快照（无快照 → Found=false，不是错误）。
 //
@@ -33,7 +43,7 @@ func (s *Service) SnapshotGet(req facade.SnapshotGetRequest) (facade.SnapshotGet
 	if req.DialogID == "" {
 		return facade.SnapshotGetResponse{}, kernel.ErrDialogRequired
 	}
-	catalog, err := resolvePrjUsr(req.InstanceID, req.Scope)
+	catalog, err := s.base.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SnapshotGetResponse{}, err
 	}
@@ -55,7 +65,7 @@ func (s *Service) SnapshotSet(req facade.SnapshotSetRequest) (facade.SnapshotSet
 	if req.DialogID == "" {
 		return facade.SnapshotSetResponse{}, kernel.ErrDialogRequired
 	}
-	catalog, err := resolvePrjUsr(req.InstanceID, req.Scope)
+	catalog, err := s.base.PrjUsrFor(req.InstanceID, req.Scope)
 	if err != nil {
 		return facade.SnapshotSetResponse{}, err
 	}
@@ -63,19 +73,4 @@ func (s *Service) SnapshotSet(req facade.SnapshotSetRequest) (facade.SnapshotSet
 		return facade.SnapshotSetResponse{}, err
 	}
 	return facade.SnapshotSetResponse{OK: true}, nil
-}
-
-// resolvePrjUsr 定位实例的 prjusr 主库（会话/快照所在层，12-数据层）：按数据组件的
-// 实例绑定表解析；未登记且调用方带入数据根（Scope）→ 自登记后重试
-// （与 org 实现 `plugin-compress.prjUsrDB` 的语义一致：分离形态凭事件载荷自给）。
-func resolvePrjUsr(instanceID string, scope facade.Scope) (*data.DB, error) {
-	db, err := data.PrjUsr(instanceID)
-	if err == nil {
-		return db, nil
-	}
-	if scope.Empty() {
-		return nil, err
-	}
-	data.Register(instanceID, scope.WorkDir, scope.DataDir)
-	return data.PrjUsr(instanceID)
 }

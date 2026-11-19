@@ -88,6 +88,8 @@ type MessageView struct {
 type MessageAppendRequest struct {
 	// InstanceID 实例 id。
 	InstanceID string `json:"instance_id"`
+	// Scope 显式项目数据根（空 = 按实例绑定解析）。
+	Scope Scope `json:"scope,omitempty"`
 	// DialogID 对话 id（一树一库：必填；缺 → dialog_required）。
 	DialogID string `json:"dialog_id,omitempty"`
 	// TurnID 归属轮次 id（必填）。
@@ -112,8 +114,6 @@ type MessageAppendRequest struct {
 	// Mentions 群聊发言末行的 `@` 名单（可选；**群聊专属**，SUBCHAT-3 阶段 E / 群聊方案
 	// §10 C6）。空 = 不写该键。
 	Mentions []string `json:"mentions,omitempty"`
-	// Scope 实例数据根（可选；语义同 SnapshotGetRequest.Scope）。
-	Scope Scope `json:"scope,omitempty"`
 }
 
 // MessageAppendResponse 是消息落库出参。

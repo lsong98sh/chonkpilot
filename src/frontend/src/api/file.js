@@ -36,7 +36,12 @@ function currentWorkDir() {
 function fileRequest(action, body = {}, opts = {}) {
   const timeout = opts.timeout || 30000
   const topic = 'filesys.' + action
-  return mq.emit(topic, { [FieldKeys.work_dir]: currentWorkDir(), ...body }, { timeout }).then((env) => {
+  const scope = {
+    [FieldKeys.work_dir]: opts.workDir || currentWorkDir(),
+  }
+  if (opts.dataDir) scope.data_dir = opts.dataDir
+  if (opts.instanceId) scope.instance_id = opts.instanceId
+  return mq.emit(topic, { ...scope, ...body }, { timeout }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(topic + ': backend unreachable')
     const p = backend.result && typeof backend.result === 'object' ? backend.result : {}

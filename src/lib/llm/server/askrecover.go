@@ -123,11 +123,13 @@ func (s *Server) replyExpiredAsk(instanceID, askID, answer string) error {
 	// 新轮：复用该 ask 所属会话（turn 由宿主分配）。
 	// 投递实例 = 源会话所在窗口 / 同 workdir 顶层实例（Ask 中心作答时不能把新轮挂到中心实例）。
 	target := s.expiredReplyTarget(instanceID, it.SessionID)
-	res := s.acceptStart(StartReq{
+	start := StartReq{
 		InstanceID: target,
 		Session:    it.SessionID,
 		Turn:       "turn-" + newID(),
-	})
+	}
+	s.applySessionScope(&start, target, it.SessionID)
+	res := s.acceptStart(start)
 	if ok, _ := res["accepted"].(bool); !ok {
 		msg, _ := res["error"].(string)
 		return methodErr("ask 已失效：新轮受理失败（" + msg + "）")

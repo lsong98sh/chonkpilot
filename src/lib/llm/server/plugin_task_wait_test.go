@@ -29,7 +29,7 @@ func newTaskWaitFixture(t *testing.T, session, turn string) (*Server, *turnCtx, 
 	})
 	t.Cleanup(tc.Close)
 	s.mu.Lock()
-	s.registerTurnLocked(instKey("ins-test", turn), tc)
+	s.registerTurnLocked(s.runKey("ins-test", turn), tc)
 	s.mu.Unlock()
 	reg := pluginbridge.NewRegistry()
 	s.SetPluginRegistry(reg)

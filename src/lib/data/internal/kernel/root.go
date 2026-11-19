@@ -80,7 +80,7 @@ const (
 type bindSource int
 
 const (
-	bindFromView  bindSource = iota
+	bindFromView bindSource = iota
 	bindFromScope
 	bindFromTable
 )
@@ -98,6 +98,12 @@ type binding struct {
 // 取 Lookup / ResolveQuiet / Resolve）② 调用方带入 Scope ③ data 组件绑定表。
 // 解析不出 → bindStrict 透传视图错误，其余返回"未登记"。
 func (b *Base) resolveBinding(mode bindMode, instanceID string, scope facade.Scope) (binding, error) {
+	// 显式 scope 优先：一个窗口可同时访问多个 workdir，instance 不再决定项目数据根。
+	// 空 scope 保持既有实例视图解析阶梯（外部单项目窗口/未改造调用方零变化）。
+	if !scope.Empty() {
+		scope = scopeWithDataDir(scope)
+		return binding{ID: instanceID, WorkDir: scope.WorkDir, DataDir: scope.DataDir, Source: bindFromScope}, nil
+	}
 	viewErr := ErrInstanceNotRegistered
 	switch mode {
 	case bindByID:
@@ -118,10 +124,6 @@ func (b *Base) resolveBinding(mode bindMode, instanceID string, scope facade.Sco
 			return binding{ID: id, WorkDir: info.WorkDir, DataDir: info.DataDir, Source: bindFromView}, nil
 		}
 	}
-	if !scope.Empty() {
-		scope = scopeWithDataDir(scope)
-		return binding{ID: instanceID, WorkDir: scope.WorkDir, DataDir: scope.DataDir, Source: bindFromScope}, nil
-	}
 	if wd, dd, ok := data.BindOf(instanceID); ok {
 		return binding{ID: instanceID, WorkDir: wd, DataDir: dd, Source: bindFromTable}, nil
 	}
@@ -134,9 +136,6 @@ func (b *Base) CfgInstBind(instanceID string, scope facade.Scope) (workDir, data
 	bnd, err := b.resolveBinding(bindByID, instanceID, scope)
 	if err != nil {
 		return "", "", ErrInstanceNotRegistered
-	}
-	if bnd.Source == bindFromScope {
-		data.Register(bnd.ID, bnd.WorkDir, bnd.DataDir)
 	}
 	return bnd.WorkDir, bnd.DataDir, nil
 }
@@ -151,9 +150,6 @@ func (b *Base) InstBindingFor(instanceID string, scope facade.Scope) (string, st
 	bnd, err := b.resolveBinding(bindQuiet, instanceID, scope)
 	if err != nil {
 		return "", "", false
-	}
-	if bnd.Source != bindFromView {
-		data.Register(bnd.ID, bnd.WorkDir, bnd.DataDir)
 	}
 	return bnd.WorkDir, bnd.DataDir, true
 }
@@ -188,8 +184,7 @@ func (b *Base) PrjFor(instanceID string, scope facade.Scope) (*data.DB, func(), 
 	if err != nil {
 		return nil, nil, err
 	}
-	data.Register(bnd.ID, bnd.WorkDir, bnd.DataDir)
-	return data.Prj(bnd.ID)
+	return data.PrjAt(bnd.WorkDir, bnd.DataDir)
 }
 
 // PrjUsrFor 定位实例的 **prjusr 主库**（会话/轮次/消息/任务树/快照所在层，12-数据层）：
@@ -200,8 +195,7 @@ func (b *Base) PrjUsrFor(instanceID string, scope facade.Scope) (*data.DB, error
 	if err != nil {
 		return nil, err
 	}
-	data.Register(bnd.ID, bnd.WorkDir, bnd.DataDir)
-	return data.PrjUsr(bnd.ID)
+	return data.PrjUsrAt(bnd.ID, bnd.WorkDir, bnd.DataDir)
 }
 
 // PrjByInst 按实例绑定解析 prj 主库（绑定登记进 data 缓存）。**短开语义（D-45）**：返回

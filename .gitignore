@@ -132,3 +132,6 @@ ehthumbs.db
 # 本机构建/临时产物
 /.diff_tmp.txt
 /src/desktop/*.syso
+
+# agent 会话产物不入库
+.zcode/

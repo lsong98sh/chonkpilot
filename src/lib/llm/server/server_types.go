@@ -129,6 +129,13 @@ type Server struct {
 	engine          *chat.Engine            // chat 无状态单例（TURNRUN-1 批次 6：端口按轮传入）
 	busy            runner.Registry[string] // Key(instance, session) → running turn（同 instance 同 session 互斥）
 	continuePending map[string]bool         // instKey(instance, turn) → 下一个 text-user 以 Kind=continue 注入
+	// scopeBySession / scopeByTurn：显式项目作用域（一个窗口多个 workdir 时，运行态键必须带项目，
+	// 否则同名 session 跨项目互斥/串库）。空 map 项 = 未显式指定（沿用 instance 绑定）。
+	scopeMu        sync.RWMutex
+	scopeBySession map[string]facade.Scope // instance\x00session
+	scopeByTurn    map[string]facade.Scope // instance\x00turn
+	// canonicalWorkDir 是 instance 注册时上报的绑定 workdir（能力节点判定“当前项目”用）。
+	canonicalWorkDir map[string]string
 	// owners / ownersMu：session → 活动运行态 owner 实例（SCOPE-1 强制不变式「同一 dialog 不得在
 	// 两个窗口打开」的运行态归属表；判据 / 产生 / 拒绝 / 两条释放路径见 owner.go）。
 	ownersMu sync.Mutex
@@ -138,7 +145,8 @@ type Server struct {
 	// inboxPending / inboxTerminal 见 inbox.go（LLM-P4：按会话分桶 + 终态条目有界）。
 	inboxMu       sync.Mutex
 	inboxIndex    map[string]facade.InboxItem
-	inboxPending  map[string]map[string]string // session_id → (inbox_id → type)：仅 pending 项
+	inboxPending  map[string]map[string]string // runKey(instance, session) → (inbox_id → type)：仅 pending 项
+	inboxBucketOf map[string]string            // inbox_id → pending 桶键（终态摘桶用，跨项目不串）
 	inboxTerminal []string                     // 终态项 id 的 FIFO（上限 inboxTerminalKeep，超出淘汰最旧）
 	// inboxLoaded：已完成「持久 lane 懒恢复」的 instKey(instance, session)。
 	// 重启后内存索引为空，首次访问某会话时从 DB 只装载 durable pending（next_turn / insert）；
@@ -183,9 +191,13 @@ type Server struct {
 	// （见 stopGroupRunsForInstance）。独立小锁（不含 IO，避免与 s.mu 锁序纠缠）。
 	groupMu   sync.Mutex
 	groupRuns map[string]*groupSched
-	tasks     *taskManager        // 任务编排（任务树/级联/批量/状态事件，§6.6）
-	cleaned   map[string]bool     // instanceID → 已做过遗留 running 清理
-	dirNodes  map[string][]string // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
+	// groupWG 跟踪全部群聊调度 goroutine（阶段 5：调度生命周期收口）：`Server.Stop` 取消全部运行后
+	// **等待其退出**（受 drainTurnsTimeout 上限，超时只留痕），再停数据服务——避免停机后仍写库。
+	// 关窗即停（stopGroupRunsForInstance）只取消不等待：关窗不是进程停机，不能阻塞。
+	groupWG  sync.WaitGroup
+	tasks    *taskManager        // 任务编排（任务树/级联/批量/状态事件，§6.6）
+	cleaned  map[string]bool     // instanceID → 已做过遗留 running 清理
+	dirNodes map[string][]string // instanceID → 已接入的 capability dir 节点名（幂等/退出清理）
 	// dirSigs 是 dirNodes 的**契约根签名**（instanceID → 节点名 → 根签名）：热重扫据此只重建
 	// 真正变化的节点（根集合/契约文件变化），未变化节点不动 → 工具面无「先注销再注册」窗口。
 	// 与 dirNodes 同锁（s.mu）。

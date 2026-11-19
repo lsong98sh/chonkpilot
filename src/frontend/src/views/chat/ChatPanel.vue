@@ -111,6 +111,8 @@
     <MessageList
       ref="messageListRef"
       :session-id="currentSessionId"
+      :work-dir="workDir"
+      :data-dir="dataDir"
       :find-text="findQuery"
       :find-active-id="findActiveId"
       direction="right"
@@ -289,6 +291,7 @@ import { needsLLMConfigHint } from '../../utils/llmSetup'
 import { pluginFailureText } from '../../../packages/plugin-ui/src/pluginNotice.js'
 import { classifyError } from '../../utils/errorMessage'
 import { useSelectionStore } from '../../stores/selection'
+import { seedSessionScope } from '../../api/session'
 import { useSessionSearch } from '../../composables/useSessionSearch'
 import { useLlmUsage } from '../../composables/useLlmUsage'
 
@@ -302,6 +305,11 @@ const props = defineProps({
   sessionId: { type: String, default: '' },
   /** 是否纯对话窗口（隐藏 T-1 与「新建会话」等会话切换入口）。 */
   chatOnly: { type: Boolean, default: false },
+  /** 项目作用域（一个窗口多个 workdir）：绑定模式下会话由父级页签提供。 */
+  workDir: { type: String, default: '' },
+  dataDir: { type: String, default: '' },
+  /** 绑定模式：不读写全局 selection，会话固定为 props.sessionId。 */
+  bound: { type: Boolean, default: false },
 })
 
 // T-1 入口：新建对话窗口（仅主窗口；达上限置灰）—— 状态来自共享的 useChatWindows 单例。
@@ -315,7 +323,9 @@ const boundSessionId = props.sessionId || ''
 // 已删（与 SessionTree / 会话面板的双源已消除）。会话切换仍由既有 mq 主题表达。
 const selection = useSelectionStore()
 const { activeSession } = storeToRefs(selection)
-const currentSessionId = computed(() => activeSession.value.sessionId || null)
+const currentSessionId = computed(() => props.bound || props.chatOnly
+  ? (props.sessionId || boundSessionId || null)
+  : (activeSession.value.sessionId || null))
 const messageListRef = ref(null)
 const isInitializing = ref(true) // prevent rapid sends before initSession completes
 
@@ -723,7 +733,7 @@ function flushPendingNotifications() {
 }
 
 // ── inbox 一览（2026-11-01）：显示该会话**全量** pending 项（两端共享、不按 LLM / 来源过滤）──
-const queueItems = computed(() => sendQueue.allItems())
+const queueItems = computed(() => sendQueue.allItems(currentSessionId.value || ''))
 const queueCount = computed(() => queueItems.value.length)
 
 // ── 发送消息（LLM 空闲时）──
@@ -805,6 +815,7 @@ async function ensureSessionId() {
   if (currentSessionId.value) return currentSessionId.value
   if (props.chatOnly) return boundSessionId
   const sid = newSessionId()
+  seedSessionScope(sid, props.workDir, props.dataDir)
   // 会话切换的唯一通道 = mq（`session-changed`）；store 由订阅者统一写入（组件不直接写共享状态）。
   setActiveSessionID(sid).catch(e => console.warn('[ChatPanel] setActiveSessionID error:', e))
   mq.emit(EventNames.sessionChanged, { session_id: sid })
@@ -852,13 +863,13 @@ function handleSubChatChildClosed(item) {
 
 // ── Cancel current LLM turn ──
 function handleCancel() {
-  mq.emit(EventNames.messageCancel)
+  mq.emit(EventNames.messageCancel, { session_id: currentSessionId.value || '', work_dir: props.workDir || '' })
   flushPendingNotifications()
 }
 
 // ── Cancel LLM handler (from SessionsPane via session-cancel-llm) ──
 function handleCancelLLM() {
-  mq.emit(EventNames.messageCancel)
+  mq.emit(EventNames.messageCancel, { session_id: currentSessionId.value || '', work_dir: props.workDir || '' })
   flushPendingNotifications()
   import('../../utils/askUserManager').then(({ askUserManager }) => {
     askUserManager.cancelAll()
@@ -887,6 +898,7 @@ function isTransientInitError(e) {
 }
 
 async function initSession(attempt = 0) {
+  if (props.workDir && currentSessionId.value) seedSessionScope(currentSessionId.value, props.workDir, props.dataDir)
   try {
     try {
       const ures = await getUserConfig()
@@ -909,6 +921,12 @@ async function initSession(attempt = 0) {
         }
         // 广播当前 LLM（MessageList 的 currentLlm / 待发送队列跟随；哨兵不外发，见 onPickLLM）
         mq.emit(EventNames.chatSelectLlm, { name: selectedLLMPayloadName() })
+      }
+
+      // 绑定页签：会话固定由父级传入，不读写窗口级活动会话。
+      if (props.bound) {
+        if (props.sessionId) seedSessionScope(props.sessionId, props.workDir, props.dataDir)
+        return
       }
 
       // 对话窗口：会话**由 URL 固定绑定** → 不读活动会话、不取最近会话、不写活动会话
@@ -988,7 +1006,9 @@ onMounted(() => {
     toggleEffort()
   }))
 
-  const unsubSessionChanged = mq.on(EventNames.sessionChanged, ({ session_id }) => {
+  const unsubSessionChanged = mq.on(EventNames.sessionChanged, ({ session_id, work_dir }) => {
+    if (props.bound) return
+    if (session_id && (work_dir || props.workDir)) seedSessionScope(session_id, work_dir || props.workDir, props.dataDir)
     // 对话窗口：会话由 URL 固定绑定，**不跟随**主窗口/其它入口的会话切换（24 §6.2）。
     if (props.chatOnly) return
     // 会话身份已由 selectionSubscribers（唯一写入点）写入 store，此处只做本组件的后续动作。

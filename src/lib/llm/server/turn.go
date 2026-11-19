@@ -46,10 +46,25 @@ type StartReq struct {
 	// NotifyTurn 标记本 turn 为**内部通知轮**（§5.3 四段链路；仅 server 内部构造，客户端不传）。
 	// json:"-"：不进入 llm-start 消息面契约；内部经 acceptStart → serveLLMStart 直达 newTurnCtx。
 	// 通知轮内派生的后台任务完成 → 只落库/广播，不再级联触发新的通知轮（防循环）。
-	NotifyTurn bool   `json:"-"`
-	WorkDir    string `json:"-"`
-	DataDir    string `json:"-"`
+	NotifyTurn bool `json:"-"`
+	// WorkDir/DataDir 是显式项目作用域：一个窗口可同时运行多个 workdir。
+	// 缺省 = 兼容单项目窗口，由 instance 绑定回填；显式值优先且在本轮内不可变。
+	WorkDir string `json:"work_dir,omitempty"`
+	DataDir string `json:"data_dir,omitempty"`
+	// ScopeExplicit 标记 WorkDir 来自请求（而非窗口绑定回填）；仅内部使用，不进入消息面。
+	ScopeExplicit bool `json:"-"`
 }
+
+// scope 返回本轮的不可变项目作用域（缺省 = 未显式指定，沿用实例绑定）。
+func (r StartReq) scope() facade.Scope {
+	if !r.ScopeExplicit || r.WorkDir == "" {
+		return facade.Scope{}
+	}
+	return facade.Scope{WorkDir: r.WorkDir, DataDir: r.DataDir}
+}
+
+// scope 是本轮的项目作用域（供会话/消息/快照/任务写入统一使用）。
+func (tc *turnCtx) scope() facade.Scope { return tc.req.scope() }
 
 // SendReq 是 llm-send 载荷（进入 LLM 的统一消息）。
 type SendReq struct {
@@ -60,6 +75,9 @@ type SendReq struct {
 	Type       string `json:"type"` // text-user / tool-result / text-notify
 	Content    string `json:"content"`
 	ToolCallID string `json:"tool_call_id,omitempty"` // type=tool-result 时关联的 LLM tool-call id
+	// 可选项目作用域（缺省 = 从已定位轮次取，不按窗口推断）。
+	WorkDir string `json:"work_dir,omitempty"`
+	DataDir string `json:"data_dir,omitempty"`
 }
 
 // defaultMaxToolIterations 单轮工具循环上限的缺省值（provider 未显式配置时生效）。
@@ -293,7 +311,7 @@ func (tc *turnCtx) loadSessionInfo() {
 		resp, err := tc.server.cfg.SessionGet(facade.SessionGetRequest{
 			InstanceID: tc.req.InstanceID, SessionID: tc.req.Session,
 			Scope:    tc.server.cfgScope(tc.req.InstanceID),
-			DialogID: tc.server.dialogOf(tc.req.InstanceID, tc.req.Session),
+			DialogID: tc.server.dialogOf(tc.req.InstanceID, tc.req.Session, tc.scope()),
 		})
 		if err != nil {
 			return
@@ -355,7 +373,7 @@ func newTurnCtx(parent context.Context, s *Server, req StartReq) *turnCtx {
 	// 同轮次继续（req.Continue）：本 turn 已被快照覆盖（finish 写 snapshot_turn=本 turn），
 	// 若仍走快照分支会与下方引擎上下文的 LoadMessages(本 turn) 重复——改用全量历史分支并
 	// 排除本 turn，本 turn 既有消息由引擎从库带回，保证该 turn 恒为末段（全量拼接）。
-	hist, turnTokens := s.newSessionStore(req.InstanceID).BuildContextTokens(req.Session, req.Turn, !req.Continue)
+	hist, turnTokens := s.newSessionStore(req.InstanceID, req.scope()).BuildContextTokens(req.Session, req.Turn, !req.Continue)
 	// LLM-P4「单轮配置读收敛」：本轮**只读两次配置**——usr 对象 1 次（provider / 超时 / 续写 /
 	// defaultLLM）+ prj 平铺表 1 次（压缩触发阈值 + 占位符路径键），其余全部从本快照派生。
 	// 改前一轮内共 5 次（loadUserConfig · prjConfigValues · replaceToolchain 内 usr+prj ·
@@ -900,9 +918,10 @@ func (s *Server) sessionRow(instanceID, sessionID string) facade.Session {
 	if s == nil || s.cfg == nil || sessionID == "" {
 		return facade.Session{}
 	}
+	scope := s.scopeForSession(instanceID, sessionID)
 	resp, err := s.cfg.SessionGet(facade.SessionGetRequest{
-		InstanceID: instanceID, SessionID: sessionID, Scope: s.cfgScope(instanceID),
-		DialogID: s.ensureDialogIndex(instanceID, sessionID), // 一树一库：会话行在对话库内（备忘缺失时就地预热）
+		InstanceID: instanceID, SessionID: sessionID, Scope: scope,
+		DialogID: s.ensureDialogIndex(instanceID, sessionID, scope), // 一树一库：会话行在对话库内（备忘缺失时就地预热）
 	})
 	if err != nil {
 		logf("[chonkpilot-server] sessionRow(%s): %v\n", sessionID, err)
@@ -1072,15 +1091,15 @@ func (tc *turnCtx) loop() {
 		tc.server.mu.Lock()
 		// 运行态键 = instKey(instance, id)（缺口 5：按 instance 分桶）；清理只作用于仍指向
 		// 本 turnCtx 的登记，不误删其他 instance / 新轮次的登记。
-		key := instKey(tc.req.InstanceID, tc.req.Turn)
+		key := tc.server.runKey(tc.req.InstanceID, tc.req.Turn)
 		// 轮次关闭 → 摘除本轮 pending 的 task_id 运行态索引（不再有等待任务）。**无条件**执行：
 		// 仅删仍指向本 turnCtx 的项（同键换实例时，旧 tc 的陈旧索引也须清掉，避免 taskTurnFor
 		// 命中已关闭的旧 tc 而漏续轮）。
 		tc.server.forgetPendingTaskIndexLocked(tc)
 		if tc.server.turns[key] == tc {
 			delete(tc.server.turns, key)
-			if tc.server.busy[instKey(tc.req.InstanceID, tc.req.Session)] == tc.req.Turn {
-				delete(tc.server.busy, instKey(tc.req.InstanceID, tc.req.Session))
+			if tc.server.busy[tc.server.runKey(tc.req.InstanceID, tc.req.Session)] == tc.req.Turn {
+				delete(tc.server.busy, tc.server.runKey(tc.req.InstanceID, tc.req.Session))
 			}
 			delete(tc.server.continuePending, key)
 			// AskUser S4：轮次**正常结束不摘除** ask 登记 —— 非阻塞提问允许本轮先收尾，
@@ -1098,7 +1117,7 @@ func (tc *turnCtx) loop() {
 		// 轮次已彻底摘除（busy 已释放）后，若仍有 pending inbox（含 finish 的消费 goroutine
 		// 与 append 交错时漏掉的项），补发一次消费；consumeNextTurn 幂等（无项即 no-op）。
 		// 错误终态已决定丢弃 LLM 排队项（discardNextRun）→ 不在此兜底起轮。
-		if !tc.discardNextRun.Load() && tc.server.inboxHasPending(tc.req.Session) {
+		if !tc.discardNextRun.Load() && tc.server.inboxHasPending(tc.req.InstanceID, tc.req.Session) {
 			go tc.server.consumeNextTurn(tc.req.InstanceID, tc.req.Session)
 		}
 		tc.Close()
@@ -1116,7 +1135,7 @@ func (tc *turnCtx) registerPending(taskID, toolCallID string) {
 	tc.mu.Unlock()
 	tc.server.mu.Lock()
 	if tc.server.taskTurnIndex != nil {
-		tc.server.taskTurnIndex[instKey(tc.req.InstanceID, taskID)] = tc
+		tc.server.taskTurnIndex[tc.server.runKey(tc.req.InstanceID, taskID)] = tc
 	}
 	tc.server.mu.Unlock()
 }
@@ -1236,10 +1255,10 @@ func (tc *turnCtx) takePendingLocked(taskID string) (pendingTool, *sessionrunner
 // 名字口径 = LLM 工具面的**暴露名**（与 `toolAllowed` 同一名字空间）。
 func (tc *turnCtx) llmTools() []ToolDef {
 	if tc.allowedTools == nil {
-		return tc.filterDeniedTools(tc.server.toolsForLLM(tc.req.InstanceID))
+		return tc.filterDeniedTools(tc.server.toolsForLLM(tc.req.InstanceID, tc.req.WorkDir))
 	}
 	out := make([]ToolDef, 0, len(tc.allowedTools))
-	for _, t := range tc.server.visibleTools(tc.req.InstanceID) {
+	for _, t := range tc.server.visibleTools(tc.req.InstanceID, tc.req.WorkDir) {
 		if toolNameIn(tc.allowedTools, t.Name) && !tc.toolDenied(t.Name) {
 			out = append(out, t)
 		}
@@ -1423,6 +1442,7 @@ func (tc *turnCtx) dispatchToolCall(call ToolCall) (toolMsg ChatMsg, pending boo
 		SessionID:  tc.req.Session,
 		TurnID:     tc.req.Turn,
 		InstanceID: tc.req.InstanceID,
+		WorkDir:    tc.req.WorkDir,
 	}
 	// 标题取值用**契约名**（canon = 网关暴露名，与 domainNode 同源）：注入展示名优先，
 	// 无注入回退契约工具名（I-38）。
@@ -1588,7 +1608,7 @@ func (tc *turnCtx) persistMessage(msg ChatMsg) error {
 // persistMessageKeyed 落库 user/assistant 消息；key 非空 = 就地更新该行（assistant 增量落库
 // 回填同一行，I-176），空 = 新键。返回落库主键（供后续回填复用）。
 func (tc *turnCtx) persistMessageKeyed(msg ChatMsg, key string) (string, error) {
-	store := tc.server.newSessionStore(tc.req.InstanceID)
+	store := tc.server.newSessionStore(tc.req.InstanceID, tc.scope())
 	return store.AppendFullKeyed(tc.req.Turn, msg, key)
 }
 
@@ -1597,7 +1617,7 @@ func (tc *turnCtx) toolCallInfo(toolCallID string) (string, any) {
 	if toolCallID == "" {
 		return "", nil
 	}
-	msgs := tc.server.newSessionStore(tc.req.InstanceID).LoadMessages(tc.req.Turn)
+	msgs := tc.server.newSessionStore(tc.req.InstanceID, tc.scope()).LoadMessages(tc.req.Turn)
 	for _, m := range msgs {
 		if m.Role != "assistant" {
 			continue
@@ -1632,7 +1652,7 @@ func (tc *turnCtx) persistToolRunning(toolCallID, name string, args map[string]a
 	if meta := tc.server.gc.ToolMeta(name); len(meta) > 0 {
 		msg["_meta"] = meta
 	}
-	id, err := tc.server.newSessionStore(tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, "")
+	id, err := tc.server.newSessionStore(tc.req.InstanceID, tc.scope()).AppendMsgMap(tc.req.Turn, msg, "")
 	if err != nil || id == "" {
 		// B-42：落库失败仅留痕（不阻断执行，语义不变；与终态侧 B-33 对称）。
 		logf("[chonkpilot-server] 工具 running 落库失败（turn=%s tool_call_id=%s）: err=%v id=%q\n",
@@ -1703,7 +1723,7 @@ func (tc *turnCtx) persistToolResultAsk(toolCallID, result, status string, async
 	}
 	// 工具终态结果落库失败仅留痕（B-33）：该结果仍会喂给 LLM，但 DB（message 表）缺此条时，
 	// 重载/重启后上下文出现「助理发起 tool_call 但无 tool 结果」断链；返回值语义不变。
-	id, err := tc.server.newSessionStore(tc.req.InstanceID).AppendMsgMap(tc.req.Turn, msg, key)
+	id, err := tc.server.newSessionStore(tc.req.InstanceID, tc.scope()).AppendMsgMap(tc.req.Turn, msg, key)
 	if err != nil {
 		logf("[chonkpilot-server] 工具结果落库失败（turn=%s key=%s）: %v\n", tc.req.Turn, key, err)
 		return

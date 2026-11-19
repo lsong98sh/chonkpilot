@@ -419,7 +419,12 @@ test('⑤ 装配入口：layout/index.js 只注入宿主实现（mq/views/persis
   }
   // G-89（2026-10-31）：`lf-*` MQ 主题删除后，GUI 回归用例需直调运行态域动作 →
   // 诊断入口 `window.__ckLayout.actions` 必须暴露（非业务 API，仅测试/联调）。
-  assert.match(idx, /actions:\s*\{\s*openTabs,\s*toggleAreaVisible\s*\}/, '诊断入口缺运行态动作')
+  // 注意：actions 集合可扩展（如面板动作），这里只守护既有动作仍在，不做精确集合匹配。
+  const actions = idx.match(/actions:\s*\{([\s\S]*?)\}/)
+  assert.ok(actions, '诊断入口缺 actions')
+  for (const action of ['openTabs', 'toggleAreaVisible']) {
+    assert.match(actions[1], new RegExp(`\\b${action}\\b`), `诊断入口缺运行态动作：${action}`)
+  }
   // 依赖方向铁律（TOPO-1 §2.22.2）：framework 不得 import 主仓业务模块
   for (const bad of ['api/file', 'plugins/i18n', 'views.registry.js', 'layout/openView.js']) {
     assert.ok(!idx.includes(bad), `layout/index.js 不得 import 业务模块：${bad}`)

@@ -223,3 +223,54 @@ def s_mq_scope_01(env):
             if e.get("level") == "error"
             and "method not implemented" not in (e.get("text") or "")]
     env.check("MQ 分发组无前端错误", len(errs) == 0, errs[:3])
+
+@case("S-MQ-SCOPE-02", "消息", "一个窗口多 workdir：项目注册 / 会话库隔离 / 未注册路径拒绝",
+      stage="seeded", order=393, fp="SESSION-SCOPE-1 · gui.project.* / data-* 显式 work_dir",
+      desc="gui.project.add 注册临时项目 B（不新开窗口）→ 项目列表含 B；"
+           "带 work_dir=B 建会话 → B 列表可见、默认项目 A 列表不可见；"
+           "未注册绝对路径的 data-session-list 明确失败；移除项目后列表不再含 B。")
+def s_mq_scope_02(env):
+    import shutil
+    bdir = tempfile.mkdtemp(prefix="e2e-multi-wd-b-")
+    other = tempfile.mkdtemp(prefix="e2e-multi-wd-unreg-")
+    sid = "mqscope-multi-%s-%d" % (env.run_id, int(time.time() * 1000))
+    norm = lambda p: os.path.normcase(os.path.normpath(str(p or "")))
+
+    def _ids(resp):
+        rows = (resp or {}).get("list") or []
+        return {str(r.get("session_id") or r.get("id") or "") for r in rows if r}
+
+    try:
+        r = env.req("gui.project.add", {"work_dir": bdir}) or {}
+        env.check("gui.project.add 注册 B（返回项目）",
+                  bool(r.get("ok")) and norm((r.get("project") or {}).get("work_dir")) == norm(bdir), r)
+        projects = (env.req("gui.project.list", {}) or {}).get("projects") or []
+        env.check("项目列表含 B", any(norm(p.get("work_dir")) == norm(bdir) for p in projects),
+                  [p.get("work_dir") for p in projects])
+
+        env.req("data-session-ensure-session", {"work_dir": bdir, "session_id": sid})
+        la = _ids(env.req("data-session-list", {}))
+        lb = _ids(env.req("data-session-list", {"work_dir": bdir}))
+        env.check("B 会话在 B 库可见", sid in lb, sorted(lb))
+        env.check("B 会话不污染默认项目 A 的库", sid not in la, sorted(la))
+
+        rejected = False
+        try:
+            env.req("data-session-list", {"work_dir": other})
+        except Exception:
+            rejected = True
+        env.check("未注册 workdir 的 data 请求明确拒绝", rejected)
+    finally:
+        try:
+            env.req("data-session-delete", {"work_dir": bdir, "id": sid})
+        except Exception:
+            pass
+        try:
+            env.req("gui.project.remove", {"work_dir": bdir})
+        except Exception:
+            pass
+        projects = (env.req("gui.project.list", {}) or {}).get("projects") or []
+        env.check("移除项目后列表不再含 B",
+                  all(norm(p.get("work_dir")) != norm(bdir) for p in projects))
+        for d in (bdir, other):
+            shutil.rmtree(d, ignore_errors=True)

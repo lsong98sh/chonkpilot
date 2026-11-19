@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -900,4 +901,90 @@ func TestNonSubChatToolFaceExcludesSubchatFinish(t *testing.T) {
 	}
 	tcS.Close()
 	time.Sleep(150 * time.Millisecond) // 等 loop 收尾，避免清理期与在飞写库竞争
+}
+
+// ── 阶段 5：群聊停机 join ──────────────────────────────────────────────
+
+// TestWaitGroupRunsJoins：waitGroupRuns 必须等到计数归零（群聊 goroutine 结束）才返回。
+func TestWaitGroupRunsJoins(t *testing.T) {
+	s := &Server{}
+	finished := make(chan struct{})
+	s.groupWG.Add(1)
+	go func() {
+		defer s.groupWG.Done()
+		time.Sleep(80 * time.Millisecond)
+		close(finished)
+	}()
+
+	s.waitGroupRuns(2 * time.Second)
+
+	select {
+	case <-finished:
+	default:
+		t.Fatal("waitGroupRuns 应在群聊 run 结束后才返回")
+	}
+}
+
+// TestWaitGroupRunsTimeoutBounded：超时只留痕并返回，不无限阻塞关停；释放后再次 join 成功。
+func TestWaitGroupRunsTimeoutBounded(t *testing.T) {
+	s := &Server{}
+	release := make(chan struct{})
+	s.groupWG.Add(1)
+	go func() {
+		defer s.groupWG.Done()
+		<-release
+	}()
+
+	start := time.Now()
+	s.waitGroupRuns(80 * time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("waitGroupRuns 超时应快速返回，实际耗时 %s", elapsed)
+	}
+	close(release)
+	s.waitGroupRuns(2 * time.Second) // 释放后应正常收口
+}
+
+// TestLaunchGroupRunRefusedAfterStop：Stop 闸门已关（stopped=true）后不再拉起群聊调度
+// （避免 groupWG.Add 与 Stop 的 Wait 竞态 / 停机后新建运行）。
+func TestLaunchGroupRunRefusedAfterStop(t *testing.T) {
+	s := &Server{groupRuns: map[string]*groupSched{}, stopped: true}
+	sc := &groupSched{s: s, groupID: "g-stopped"}
+	s.launchGroupRun(sc, 1, 1, nil, nil, true)
+	if len(s.groupRuns) != 0 {
+		t.Fatalf("停机后不应登记群聊运行：%+v", s.groupRuns)
+	}
+	if sc.ctx != nil || sc.cancel != nil {
+		t.Fatal("停机后不应建立群聊运行 ctx")
+	}
+}
+
+// TestStopJoinsGroupRunsBeforeDataStop 是源码守卫：`Server.Stop` 必须先取消并 join 群聊调度，
+// 再停数据服务；`launchGroupRun` 必须登记 groupWG。运行时数据服务的 Stop 行为难以用 fake
+// 替换，故以源码顺序守卫 + 上面的 waitGroupRuns 纯函数测试共同覆盖。
+func TestStopJoinsGroupRunsBeforeDataStop(t *testing.T) {
+	boot, err := os.ReadFile("boot.go")
+	if err != nil {
+		t.Fatalf("读 boot.go: %v", err)
+	}
+	code := string(boot)
+	stopRuns := strings.Index(code, "s.stopAllGroupRuns()")
+	waitRuns := strings.Index(code, "s.waitGroupRuns(")
+	dataStop := strings.LastIndex(code, "s.data.Stop()") // 前面的注释也提到该调用 → 取最后一处
+	if stopRuns < 0 || waitRuns < 0 || dataStop < 0 {
+		t.Fatalf("Stop 收尾段缺少必要调用：stopAllGroupRuns=%d waitGroupRuns=%d data.Stop=%d",
+			stopRuns, waitRuns, dataStop)
+	}
+	if !(stopRuns < waitRuns && waitRuns < dataStop) {
+		t.Fatalf("关停顺序错误：应先 stopAllGroupRuns，再 waitGroupRuns，最后 data.Stop（%d/%d/%d）",
+			stopRuns, waitRuns, dataStop)
+	}
+
+	launch, err := os.ReadFile("groupchat_sched.go")
+	if err != nil {
+		t.Fatalf("读 groupchat_sched.go: %v", err)
+	}
+	if !strings.Contains(string(launch), "s.groupWG.Add(1)") ||
+		!strings.Contains(string(launch), "defer s.groupWG.Done()") {
+		t.Fatal("launchGroupRun 必须用 groupWG 包装群聊 goroutine")
+	}
 }

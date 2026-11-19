@@ -40,7 +40,7 @@ func (s *Service) handleConfigKV(domain, op string, payload []byte) {
 	}
 	switch op {
 	case "list":
-		resp, err := s.ConfigKVList(facade.ConfigKVListRequest{Domain: domain, InstanceID: req.InstanceID})
+		resp, err := s.ConfigKVList(facade.ConfigKVListRequest{Domain: domain, InstanceID: req.InstanceID, Scope: req.scope()})
 		if err != nil {
 			s.failID(method, req.ReqID, err)
 			return
@@ -49,7 +49,7 @@ func (s *Service) handleConfigKV(domain, op string, payload []byte) {
 	case "load":
 		id := req.key()
 		resp, err := s.ConfigKVGet(facade.ConfigKVGetRequest{
-			Domain: domain, InstanceID: req.InstanceID, Keys: []string{id},
+			Domain: domain, InstanceID: req.InstanceID, Scope: req.scope(), Keys: []string{id},
 		})
 		if err != nil {
 			s.failID(method, req.ReqID, err)
@@ -63,7 +63,7 @@ func (s *Service) handleConfigKV(domain, op string, payload []byte) {
 			return
 		}
 		if _, err := s.ConfigKVSet(facade.ConfigKVSetRequest{
-			Domain: domain, InstanceID: req.InstanceID, Entries: entries,
+			Domain: domain, InstanceID: req.InstanceID, Scope: req.scope(), Entries: entries,
 		}); err != nil {
 			s.failID(method, req.ReqID, err)
 			return
@@ -72,7 +72,7 @@ func (s *Service) handleConfigKV(domain, op string, payload []byte) {
 	case "delete":
 		id := req.key()
 		if _, err := s.ConfigKVDelete(facade.ConfigKVDeleteRequest{
-			Domain: domain, InstanceID: req.InstanceID, Keys: []string{id},
+			Domain: domain, InstanceID: req.InstanceID, Scope: req.scope(), Keys: []string{id},
 		}); err != nil {
 			s.failID(method, req.ReqID, err)
 			return
@@ -102,7 +102,7 @@ func (s *Service) handleUserConfig(op string, payload []byte) {
 	case "load":
 		// load 返回**合并后**的有效值：usr 基线 + 项目层（prjusr → prj）覆盖可继承键
 		// （defaultLLM/defaultScenario）。list 仍为 usr 主库视图（"usr 是否已有配置"语义）。
-		resp, err := s.UserConfigGet(facade.UserConfigGetRequest{InstanceID: req.InstanceID})
+		resp, err := s.UserConfigGet(facade.UserConfigGetRequest{InstanceID: req.InstanceID, Scope: req.scope()})
 		if err != nil {
 			s.failID(method, req.ReqID, err)
 			return
@@ -110,7 +110,7 @@ func (s *Service) handleUserConfig(op string, payload []byte) {
 		s.replyID(method, req.ReqID, wire.DataPayload{Data: resp.Config})
 	case "save":
 		if _, err := s.UserConfigSet(facade.UserConfigSetRequest{
-			Entries: req.Data, InstanceID: req.InstanceID,
+			Entries: req.Data, InstanceID: req.InstanceID, Scope: req.scope(),
 		}); err != nil {
 			s.failID(method, req.ReqID, err)
 			return
@@ -125,7 +125,7 @@ func (s *Service) handleUserConfig(op string, payload []byte) {
 			keys = append(keys, key)
 		}
 		if _, err := s.UserConfigDelete(facade.UserConfigDeleteRequest{
-			Keys: keys, InstanceID: req.InstanceID,
+			Keys: keys, InstanceID: req.InstanceID, Scope: req.scope(),
 		}); err != nil {
 			s.failID(method, req.ReqID, err)
 			return
@@ -169,7 +169,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 
 	switch action {
 	case "list":
-		resp, err := s.SessionList(facade.SessionListRequest{InstanceID: p.InstanceID})
+		resp, err := s.SessionList(facade.SessionListRequest{InstanceID: p.InstanceID, Scope: p.scope()})
 		if err != nil {
 			failf("%v", err)
 			return
@@ -177,7 +177,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.SessionListResult(resp.List))
 	case "get":
 		resp, err := s.SessionGet(facade.SessionGetRequest{
-			InstanceID: p.InstanceID, SessionID: sid, DialogID: f.DialogID,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: sid, DialogID: f.DialogID,
 		})
 		if err != nil {
 			failf("%v", err)
@@ -186,7 +186,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.SessionGetResult(resp.Found, resp.Session))
 	case "history":
 		resp, err := s.TurnHistory(facade.TurnHistoryRequest{
-			InstanceID: p.InstanceID, SessionID: sid, DialogID: f.DialogID,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: sid, DialogID: f.DialogID,
 			BeforeTurnID: f.BeforeTurnID, TargetMessages: int(f.TargetMessages), TargetBytes: int(f.TargetBytes),
 		})
 		if err != nil {
@@ -195,7 +195,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		}
 		okf(wire.TurnHistoryResult(resp))
 	case "latest":
-		resp, err := s.SessionLatest(facade.SessionLatestRequest{InstanceID: p.InstanceID})
+		resp, err := s.SessionLatest(facade.SessionLatestRequest{InstanceID: p.InstanceID, Scope: p.scope()})
 		if err != nil {
 			failf("%v", err)
 			return
@@ -203,7 +203,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.SessionLatestResult(resp.SessionID, resp.DialogID))
 	case "title":
 		if _, err := s.SessionTitle(facade.SessionTitleRequest{
-			InstanceID: p.InstanceID, SessionID: string(f.ID), DialogID: f.DialogID, Title: f.Title,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: string(f.ID), DialogID: f.DialogID, Title: f.Title,
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -211,7 +211,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.OKResult())
 	case "delete":
 		if _, err := s.SessionDelete(facade.SessionDeleteRequest{
-			InstanceID: p.InstanceID, SessionID: string(f.ID), DialogID: f.DialogID,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: string(f.ID), DialogID: f.DialogID,
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -219,10 +219,10 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.OKResult())
 	case "fork":
 		resp, err := s.SessionFork(facade.SessionForkRequest{
-			InstanceID: p.InstanceID,
-			DialogID:   f.DialogID,
-			Mode:       f.Mode,
-			Title:      f.Title,
+			InstanceID: p.InstanceID, Scope: p.scope(),
+			DialogID: f.DialogID,
+			Mode:     f.Mode,
+			Title:    f.Title,
 		})
 		if err != nil {
 			failf("%v", err)
@@ -231,14 +231,14 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.SessionForkPayload{OK: resp.OK, DialogID: resp.DialogID, SessionID: resp.SessionID})
 	case "active-set":
 		if _, err := s.SessionActiveSet(facade.SessionActiveSetRequest{
-			InstanceID: p.InstanceID, SessionID: sid, DialogID: f.DialogID,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: sid, DialogID: f.DialogID,
 		}); err != nil {
 			failf("%v", err)
 			return
 		}
 		okf(wire.OKResult())
 	case "active-get":
-		resp, err := s.SessionActiveGet(facade.SessionActiveGetRequest{InstanceID: p.InstanceID})
+		resp, err := s.SessionActiveGet(facade.SessionActiveGetRequest{InstanceID: p.InstanceID, Scope: p.scope()})
 		if err != nil {
 			failf("%v", err)
 			return
@@ -246,7 +246,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.SessionIDResult(resp.SessionID))
 	case "content":
 		resp, err := s.MessageContent(facade.MessageContentRequest{
-			InstanceID: p.InstanceID, SessionID: sid, DialogID: f.DialogID, Keys: f.Keys,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: sid, DialogID: f.DialogID, Keys: f.Keys,
 		})
 		if err != nil {
 			failf("%v", err)
@@ -256,7 +256,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 	// A3 运行时扩展（server sessionStore 总线化原语；语义对齐 chonkpilot-server/session.go）
 	case "ensure-session":
 		resp, err := s.SessionEnsure(facade.SessionEnsureRequest{
-			InstanceID:      p.InstanceID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
 			SessionID:       sid,
 			DialogID:        f.DialogID,
 			ParentSessionID: f.ParentSessionID,
@@ -275,10 +275,10 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(res)
 	case "ensure-turn":
 		if _, err := s.TurnEnsure(facade.TurnEnsureRequest{
-			InstanceID: p.InstanceID,
-			TurnID:     f.TurnID,
-			SessionID:  sid,
-			DialogID:   f.DialogID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
+			TurnID:    f.TurnID,
+			SessionID: sid,
+			DialogID:  f.DialogID,
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -308,6 +308,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		}
 		r := wire.MessageAppendFromWire(m)
 		r.InstanceID = p.InstanceID
+		r.Scope = p.scope()
 		if r.SessionID == "" {
 			r.SessionID = sid
 		}
@@ -319,10 +320,10 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.OKIDPayload{OK: true, ID: resp.ID})
 	case "set-summary":
 		if _, err := s.TurnSetSummary(facade.TurnSetSummaryRequest{
-			InstanceID: p.InstanceID,
-			TurnID:     f.TurnID,
-			DialogID:   f.DialogID,
-			Summary:    f.Summary,
+			InstanceID: p.InstanceID, Scope: p.scope(),
+			TurnID:   f.TurnID,
+			DialogID: f.DialogID,
+			Summary:  f.Summary,
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -332,7 +333,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		// P3（2026-09-25）：payload 只增字段 full_tokens/brief_tokens（可选；缺省 = 不写该键，
 		// 向后兼容——ReopenTurn 等不携带即保持原行为）。
 		if _, err := s.TurnComplete(facade.TurnCompleteRequest{
-			InstanceID:   p.InstanceID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
 			TurnID:       f.TurnID,
 			DialogID:     f.DialogID,
 			Status:       f.Status,
@@ -345,7 +346,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		}
 		okf(wire.OKResult())
 	case "cleanup-stale":
-		resp, err := s.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: p.InstanceID})
+		resp, err := s.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: p.InstanceID, Scope: p.scope()})
 		if err != nil {
 			failf("%v", err)
 			return
@@ -353,7 +354,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.CleanupResult(resp.Count))
 	case "load-messages":
 		resp, err := s.MessageLoad(facade.MessageLoadRequest{
-			InstanceID: p.InstanceID, TurnID: f.TurnID, DialogID: f.DialogID,
+			InstanceID: p.InstanceID, Scope: p.scope(), TurnID: f.TurnID, DialogID: f.DialogID,
 		})
 		if err != nil {
 			failf("%v", err)
@@ -362,7 +363,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.MessageLoadResult(resp.Messages))
 	case "context":
 		resp, err := s.MessageContext(facade.MessageContextRequest{
-			InstanceID:      p.InstanceID,
+			InstanceID: p.InstanceID, Scope: p.scope(),
 			SessionID:       sid,
 			DialogID:        f.DialogID,
 			ExcludeTurn:     f.ExcludeTurn,
@@ -381,7 +382,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 	// 读方 = 群聊调度器，按其节奏读）。
 	case "group-participants-load":
 		resp, err := s.GroupParticipantsLoad(facade.GroupParticipantsLoadRequest{
-			InstanceID: p.InstanceID, SessionID: sid,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: sid,
 		})
 		if err != nil {
 			failf("%v", err)
@@ -397,7 +398,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 			list = append(list, facade.GroupParticipant{SessionID: sid, Agent: it.Agent, Role: it.Role})
 		}
 		if _, err := s.GroupParticipantsSave(facade.GroupParticipantsSaveRequest{
-			InstanceID: p.InstanceID, SessionID: sid, List: list,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: sid, List: list,
 		}); err != nil {
 			failf("%v", err)
 			return
@@ -405,7 +406,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.OKResult())
 	case "group-round-targets-load":
 		resp, err := s.GroupRoundTargetsLoad(facade.GroupRoundTargetsLoadRequest{
-			InstanceID: p.InstanceID, SessionID: sid, Round: int(f.Round),
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: sid, Round: int(f.Round),
 		})
 		if err != nil {
 			failf("%v", err)
@@ -414,7 +415,7 @@ func (s *Service) handleSession(action string, payload []byte) {
 		okf(wire.GroupRoundTargetsResult(resp.List))
 	case "group-round-targets-save":
 		if _, err := s.GroupRoundTargetsSave(facade.GroupRoundTargetsSaveRequest{
-			InstanceID: p.InstanceID, SessionID: sid,
+			InstanceID: p.InstanceID, Scope: p.scope(), SessionID: sid,
 			Round:  int(f.Round),
 			Agents: f.Agents,
 		}); err != nil {
@@ -439,7 +440,7 @@ func (s *Service) handleSnapshot(action string, payload []byte) {
 		return
 	}
 	failf := func(format string, args ...any) { s.failID(method, req.ReqID, fmt.Errorf(format, args...)) }
-	catalog, err := s.sessionDBBy(req.InstanceID)
+	catalog, err := s.sessionDBBy(req.InstanceID, req.scope())
 	if err != nil {
 		s.failID(method, req.ReqID, err)
 		return

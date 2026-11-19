@@ -3,7 +3,10 @@ package workspace
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +41,8 @@ type Options struct {
 type Space struct {
 	Layout
 	OpenedAt time.Time
+	// Pinned 表示项目由工作区树显式打开（不随最后一个实例退出而关闭）。
+	Pinned bool
 }
 
 // Manager 是工作区管理器（进程内单例）。
@@ -103,6 +108,9 @@ func (m *Manager) Start(_ context.Context) error {
 	}{
 		{msgkeys.TopicInstanceRegister, m.onRegister},
 		{msgkeys.TopicInstanceExit, m.onExit},
+		{msgkeys.TopicGuiProjectAdd, m.onProjectRegister},
+		{msgkeys.TopicGuiProjectRemove, m.onProjectUnregister},
+		{msgkeys.TopicGuiProjectList, m.onProjectList},
 	} {
 		sub, err := m.bus.On(s.subject, instanceOrder, s.h)
 		if err != nil {
@@ -174,6 +182,78 @@ func (m *Manager) List() []Space {
 	return out
 }
 
+// RegisterProject 显式注册一个项目（工作区树“添加 workdir”）：不要求任何 instance 绑定，
+// 也不打开隐藏窗口。已存在 → 幂等并转为 pinned。
+func (m *Manager) RegisterProject(workDir, dataDir string) (Space, error) {
+	wd := strings.TrimSpace(workDir)
+	if wd == "" {
+		return Space{}, fmt.Errorf("workspace: work_dir is required")
+	}
+	// 只接受**已存在的绝对目录**：项目路径来自原生目录选择器 / 已验证的注册表，
+	// 不接受前端或插件传入的任意字符串（否则一个拼写错误就会在磁盘别处建数据根）。
+	if !filepath.IsAbs(wd) {
+		return Space{}, fmt.Errorf("workspace: work_dir must be an absolute path: %s", wd)
+	}
+	if fi, err := os.Stat(wd); err != nil {
+		return Space{}, fmt.Errorf("workspace: work_dir is not accessible: %s: %w", wd, err)
+	} else if !fi.IsDir() {
+		return Space{}, fmt.Errorf("workspace: work_dir is not a directory: %s", wd)
+	}
+	if dd := strings.TrimSpace(dataDir); dd != "" && !filepath.IsAbs(dd) {
+		return Space{}, fmt.Errorf("workspace: data_dir must be an absolute path: %s", dd)
+	}
+	lay := layout.Of(wd, dataDir)
+	layout.EnsureDirs(lay, m.logf)
+	key := normKey(lay.WorkDir)
+	m.mu.Lock()
+	sp := m.spaces[key]
+	created := sp == nil
+	if created {
+		sp = &Space{Layout: lay, OpenedAt: time.Now()}
+		m.spaces[key] = sp
+	}
+	sp.Pinned = true
+	snap := sp.snapshot()
+	m.mu.Unlock()
+	if created {
+		m.emit(msgkeys.TopicWorkdirOpened, lay.WorkDir, lay.DataDir, "")
+	}
+	return snap, nil
+}
+
+// UnregisterProject 显式移除一个项目。仍有活动实例 → 拒绝（避免把正在运行的窗口工作区摘掉）。
+func (m *Manager) UnregisterProject(workDir string) bool {
+	key := normKey(workDir)
+	m.mu.Lock()
+	sp := m.spaces[key]
+	if sp == nil {
+		m.mu.Unlock()
+		return false
+	}
+	if m.hasInstancesLocked(sp.WorkDir) {
+		m.mu.Unlock()
+		return false
+	}
+	delete(m.spaces, key)
+	snap := sp.snapshot()
+	m.mu.Unlock()
+	m.emit(msgkeys.TopicWorkdirClosed, snap.WorkDir, snap.DataDir, "")
+	return true
+}
+
+// RegisteredProjects 返回全部显式注册的项目（工作区树持久化用）。
+func (m *Manager) RegisteredProjects() []Space {
+	m.mu.Lock()
+	out := make([]Space, 0, len(m.spaces))
+	for _, s := range m.spaces {
+		if s.Pinned {
+			out = append(out, s.snapshot())
+		}
+	}
+	m.mu.Unlock()
+	return out
+}
+
 // InstanceIDs 返回某工作区当前活动实例 id（无序；事件定向投递用）。
 // 唯一来源 = instance.Manager（同 work_dir，大小写 / 分隔符不敏感）。
 func (m *Manager) InstanceIDs(workDir string) []string {
@@ -193,6 +273,61 @@ func (m *Manager) InstanceIDs(workDir string) []string {
 // Check 校验 p 在该工作区内（词法 + 真实路径），返回词法绝对路径。
 func (m *Manager) Check(sp Space, p string) (string, bool) {
 	return layout.AbsWithin(sp.WorkDir, p)
+}
+
+// ─── 显式项目注册（工作区树；不依赖窗口实例）─────────────
+
+func (m *Manager) onProjectRegister(_ context.Context, _ string, v *mq.Value) error {
+	var req struct {
+		WorkDir string `json:"work_dir"`
+		DataDir string `json:"data_dir"`
+	}
+	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		v.Result = map[string]any{"ok": false, "error": "bad request"}
+		return nil
+	}
+	sp, err := m.RegisterProject(req.WorkDir, req.DataDir)
+	if err != nil {
+		v.Result = map[string]any{"ok": false, "error": err.Error()}
+		return nil
+	}
+	v.Result = map[string]any{"ok": true, "project": projectView(sp)}
+	return nil
+}
+
+func (m *Manager) onProjectUnregister(_ context.Context, _ string, v *mq.Value) error {
+	var req struct {
+		WorkDir string `json:"work_dir"`
+	}
+	if err := json.Unmarshal(v.Payload, &req); err != nil {
+		v.Result = map[string]any{"ok": false, "error": "bad request"}
+		return nil
+	}
+	removed := m.UnregisterProject(req.WorkDir)
+	v.Result = map[string]any{"ok": true, "removed": removed}
+	return nil
+}
+
+func (m *Manager) onProjectList(_ context.Context, _ string, v *mq.Value) error {
+	projects := make([]map[string]any, 0, len(m.RegisteredProjects()))
+	for _, sp := range m.RegisteredProjects() {
+		projects = append(projects, projectView(sp))
+	}
+	v.Result = map[string]any{"ok": true, "projects": projects}
+	return nil
+}
+
+func projectView(sp Space) map[string]any {
+	out := map[string]any{
+		"work_dir":   sp.WorkDir,
+		"data_dir":   sp.DataDir,
+		"prj_dir":    sp.PrjDir,
+		"prjusr_dir": sp.PrjUsrDir,
+	}
+	if sp.WorkDir != "" {
+		out["label"] = filepath.Base(sp.WorkDir)
+	}
+	return out
 }
 
 // ─── 实例生命周期 ───────────────────────────────────────
@@ -247,8 +382,8 @@ func (m *Manager) onExit(_ context.Context, _ string, v *mq.Value) error {
 
 	m.mu.Lock()
 	sp := m.spaces[key]
-	// 同 work_dir 仍有其它实例 → 工作区保持打开。
-	if sp == nil || m.hasInstancesLocked(info.WorkDir) {
+	// 同 work_dir 仍有其它实例，或项目由工作区树显式打开 → 工作区保持打开。
+	if sp == nil || sp.Pinned || m.hasInstancesLocked(info.WorkDir) {
 		m.mu.Unlock()
 		return nil
 	}
@@ -262,7 +397,7 @@ func (m *Manager) onExit(_ context.Context, _ string, v *mq.Value) error {
 func (m *Manager) reapSilently() {
 	m.mu.Lock()
 	for key, sp := range m.spaces {
-		if !m.hasInstancesLocked(sp.WorkDir) {
+		if !sp.Pinned && !m.hasInstancesLocked(sp.WorkDir) {
 			delete(m.spaces, key)
 		}
 	}
@@ -298,7 +433,7 @@ func (m *Manager) emit(topic, workDir, dataDir, instanceID string) {
 }
 
 func (s *Space) snapshot() Space {
-	return Space{Layout: s.Layout, OpenedAt: s.OpenedAt}
+	return Space{Layout: s.Layout, OpenedAt: s.OpenedAt, Pinned: s.Pinned}
 }
 
 // normKey 归一工作目录键（Clean + 大小写不敏感，Windows 口径）。

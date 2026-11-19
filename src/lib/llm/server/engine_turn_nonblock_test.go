@@ -164,7 +164,7 @@ func TestPluginAgentDelegate(t *testing.T) {
 	})
 	t.Cleanup(parent.Close)
 	s.mu.Lock()
-	s.registerTurnLocked(instKey("ins-test", "t-del"), parent)
+	s.registerTurnLocked(s.runKey("ins-test", "t-del"), parent)
 	s.mu.Unlock()
 
 	reg := pluginbridge.NewRegistry()
@@ -315,7 +315,7 @@ func TestPluginAgentDelegateRejectsUnknownAgent(t *testing.T) {
 	})
 	t.Cleanup(parent.Close)
 	s.mu.Lock()
-	s.registerTurnLocked(instKey("ins-test", "t-ghost"), parent)
+	s.registerTurnLocked(s.runKey("ins-test", "t-ghost"), parent)
 	s.mu.Unlock()
 
 	reg := pluginbridge.NewRegistry()

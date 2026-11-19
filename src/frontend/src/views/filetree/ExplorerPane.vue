@@ -10,16 +10,16 @@
     <div class="explorer-seg">
       <span
         class="explorer-seg-btn"
+        :class="{ active: mode === 'workspaces' }"
+        :title="t('fileTree.mode_workspaces')"
+        v-mq:[EventNames.filetreeModeSelect].click="{ mode: 'workspaces' }"
+      >{{ t('fileTree.mode_workspaces') }}</span>
+      <span
+        class="explorer-seg-btn"
         :class="{ active: mode === 'project' }"
         :title="t('fileTree.mode_project')"
         v-mq:[EventNames.filetreeModeSelect].click="{ mode: 'project' }"
       >{{ t('fileTree.mode_project') }}</span>
-      <span
-        class="explorer-seg-btn"
-        :class="{ active: mode === 'sessions' }"
-        :title="t('fileTree.mode_sessions')"
-        v-mq:[EventNames.filetreeModeSelect].click="{ mode: 'sessions' }"
-      >{{ t('fileTree.mode_sessions') }}</span>
       <span
         class="explorer-seg-btn"
         :class="{ active: mode === 'memory' }"
@@ -44,8 +44,8 @@
     <div v-show="mode === 'project'" class="explorer-body">
       <FileTree />
     </div>
-    <div v-show="mode === 'sessions'" class="explorer-body">
-      <SessionsPane />
+    <div v-show="mode === 'workspaces'" class="explorer-body">
+      <WorkspaceTree />
     </div>
     <div v-show="mode === 'memory'" class="explorer-body">
       <MemoryPane ref="memTreeRef" />
@@ -63,7 +63,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@ckfw/components/icon/Icon.vue'
 import FileTree from './FileTree.vue'
 import MemoryPane from './MemoryPane.vue'
-import SessionsPane from '../sessions/SessionsPane.vue'
+import WorkspaceTree from '../workdirs/WorkspaceTree.vue'
 import ExtensionsPane from '../extensions/ExtensionsPane.vue'
 import mq from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
@@ -83,12 +83,12 @@ const extPaneRef = ref(null)
 const _unsubs = []
 
 function setMode(m) {
-  if (m === 'project' || m === 'sessions' || m === 'memory' || m === 'extensions') selection.setExplorerMode(m)
+  if (m === 'workspaces' || m === 'project' || m === 'memory' || m === 'extensions') selection.setExplorerMode(m)
 }
 
 onMounted(() => {
   _unsubs.push(mq.on(EventNames.filetreeModeToggle, () => {
-    setMode(mode.value === 'project' ? 'extensions' : 'project')
+    setMode(mode.value === 'workspaces' ? 'extensions' : 'workspaces')
   }))
   _unsubs.push(mq.on(EventNames.filetreeModeSelect, (d) => {
     if (d && d.mode) setMode(d.mode)

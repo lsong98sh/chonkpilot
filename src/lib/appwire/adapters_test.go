@@ -14,7 +14,7 @@ import "testing"
 //
 // 本断言防「内嵌 + 外挂」双跑回归。
 func TestDefaultPluginsEmpty(t *testing.T) {
-	if hs := DefaultPlugins(nil); len(hs) != 0 {
+	if hs := DefaultPlugins(); len(hs) != 0 {
 		names := make([]string, 0, len(hs))
 		for _, h := range hs {
 			names = append(names, h.Name())

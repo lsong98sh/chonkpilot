@@ -52,6 +52,30 @@ func (p *WorkDirPolicy) SetInstanceWorkDir(fn func(instanceID string) (string, b
 	p.router.SetInstanceWorkDir(fn)
 }
 
+// Subscribe 为某个 sink 增加 scope 订阅（空 scope = wildcard）。
+func (p *WorkDirPolicy) Subscribe(sinkID string, scope workspace.Scope) {
+	if p == nil || p.router == nil {
+		return
+	}
+	p.router.Subscribe(sinkID, scope)
+}
+
+// Unsubscribe 移除某个 sink 的 scope 订阅。
+func (p *WorkDirPolicy) Unsubscribe(sinkID string, scope workspace.Scope) {
+	if p == nil || p.router == nil {
+		return
+	}
+	p.router.Unsubscribe(sinkID, scope)
+}
+
+// UnsubscribeAll 清空某个 sink 的 scope 订阅（sink 注销）。
+func (p *WorkDirPolicy) UnsubscribeAll(sinkID string) {
+	if p == nil || p.router == nil {
+		return
+	}
+	p.router.UnsubscribeAll(sinkID)
+}
+
 // Mark 记录一次发布（**发布前**调用；owner = 该窗口实例 id）。
 func (p *WorkDirPolicy) Mark(owner, subject string, payload []byte) {
 	if p == nil {

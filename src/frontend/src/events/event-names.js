@@ -44,6 +44,7 @@ export const EventNames = {
   llmStarted: 'llm-started', // 后端 → 前端：受理 ack（含 turn_id；notify=true = 后端通知轮次）——前端据此维护 currentTurnId + busy
   llmReceive: 'llm-receive', // 后端 → 前端：LLM 流增量（桥 mqTypeMap：session-receive → llm-receive；payload.type 二次分子主题 text/reason/tool-call）
   llmComplete: 'llm-complete', // 后端 → 前端：一轮终结（队列出队的唯一 ack；payload 含 turn_id/status）
+  turnStart: 'turn-start', // 后端 → 前端：服务端分配 turn id（桥 mqTypeMap：session-turn-start → turn-start）
   llmUsage: 'llm-usage', // 后端 → 前端：每个 LLM step 的用量（send=估算 / done=真实 usage；桥 mqTypeMap：session-usage → llm-usage）
   llmCancel: 'llm-cancel', // 前端 → 后端：取消当前轮（{session, turn}，21-llm-server；替代 CancelChat RPC）
   // INBOX（中途插话 / 等下一轮，2026-10-17；2026-11-01 语义调整）：所有发送先落 prjusr inbox，
@@ -260,6 +261,8 @@ export const EventNames = {
 
   // 工具栏 / 布局
   workdirOpen: 'workdir-open',
+  workdirOpened: 'workdir-opened',
+  workdirClosed: 'workdir-closed',
   recentDirsToggle: 'recent-dirs-toggle',
   recentDirSelect: 'recent-dir-select',
   recentDirRemove: 'recent-dir-remove', // 「最近项目」下拉项 × → 仅删除该条记录（不删对应项目资产）

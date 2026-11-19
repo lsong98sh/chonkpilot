@@ -10,12 +10,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/chonkpilot/chonkpilot-data"
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	pluginbridge "github.com/lsong98sh/chonkpilot-plugin-framework/bridge"
+	"github.com/lsong98sh/chonkpilot-util/pathx"
 )
 
 // InstanceManager 返回**活动实例视图**（framework `instance.Manager`，本服务唯一内存表；
@@ -242,7 +245,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 			Tool: "task_llm", ToolCallID: in.ToolCallID, ParentID: parentID,
 			TopSession: topSession, Kind: TaskKindLLM, SessionID: h.Session, TurnID: h.Turn,
 			InstanceID: tc.req.InstanceID, Name: title, Purpose: strings.TrimSpace(in.DisplayName),
-			Simplified: title,
+			Simplified: title, WorkDir: tc.req.WorkDir,
 		})
 		if nerr != nil {
 			h.tc.Close()
@@ -562,11 +565,15 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if instanceID == "" {
 			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "未找到该项目的主窗口实例"}
 		}
+		scope, err := s.pluginTargetScope(instanceID, in.WorkDir)
+		if err != nil {
+			return nil, err
+		}
 		dialogID := strings.TrimSpace(in.DialogID)
 		if dialogID == "" {
-			dialogID = s.dialogOf(instanceID, in.SessionID)
+			dialogID = s.dialogOf(instanceID, in.SessionID, scope)
 		}
-		if err := s.newSessionStore(instanceID).EnsureTurnInDialog(in.TurnID, in.SessionID, dialogID); err != nil {
+		if err := s.newSessionStore(instanceID, scope).EnsureTurnInDialog(in.TurnID, in.SessionID, dialogID); err != nil {
 			return nil, &pluginbridge.Error{Code: "turn_ensure_failed", Msg: err.Error()}
 		}
 		return map[string]any{"ok": true, "turn_id": in.TurnID, "session_id": in.SessionID, "dialog_id": dialogID}, nil
@@ -594,7 +601,11 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if instanceID == "" {
 			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "未找到该项目的主窗口实例"}
 		}
-		if err := s.newSessionStore(instanceID).CompleteTurnInDialog(in.TurnID, strings.TrimSpace(in.DialogID), status, in.FinishReason); err != nil {
+		scope, err := s.pluginTargetScope(instanceID, in.WorkDir)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.newSessionStore(instanceID, scope).CompleteTurnInDialog(in.TurnID, strings.TrimSpace(in.DialogID), status, in.FinishReason); err != nil {
 			return nil, &pluginbridge.Error{Code: "turn_complete_failed", Msg: err.Error()}
 		}
 		return map[string]any{"ok": true}, nil
@@ -630,9 +641,13 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if instanceID == "" {
 			return nil, &pluginbridge.Error{Code: "instance_not_found", Msg: "未找到该项目的主窗口实例"}
 		}
+		scope, err := s.pluginTargetScope(instanceID, in.WorkDir)
+		if err != nil {
+			return nil, err
+		}
 		dialogID := strings.TrimSpace(in.DialogID)
 		if dialogID == "" {
-			dialogID = s.ensureDialogIndex(instanceID, sessionID)
+			dialogID = s.ensureDialogIndex(instanceID, sessionID, scope)
 		}
 		if dialogID == "" {
 			return nil, &pluginbridge.Error{Code: "session_not_found", Msg: "通知目标会话不存在"}
@@ -641,7 +656,7 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 		if turnID == "" {
 			turnID = "turn-notice-" + newID()
 		}
-		st := s.newSessionStore(instanceID)
+		st := s.newSessionStore(instanceID, scope)
 		if err := st.EnsureTurnInDialog(turnID, sessionID, dialogID); err != nil {
 			return nil, &pluginbridge.Error{Code: "turn_ensure_failed", Msg: err.Error()}
 		}
@@ -684,6 +699,38 @@ func (s *Server) SetPluginRegistry(reg *pluginbridge.Registry) {
 
 // resolveInstanceForWorkDir 解析能力调用应归属的实例 id（P4）：显式 `instance_id` 优先；
 // 否则按 `work_dir` 取主窗口实例（crontab 执行前先经 `workdir.ensure`，正常情况下必然命中）。
+// pluginTargetScope 解析插件请求的项目作用域：显式 work_dir 必须是**已注册项目**的绝对路径
+// （与 llm-start / persist 同一信任边界）；未给 work_dir → 窗口绑定项目。
+func (s *Server) pluginTargetScope(instanceID, workDir string) (facade.Scope, error) {
+	wd := strings.TrimSpace(workDir)
+	if wd == "" {
+		return s.cfgScope(instanceID), nil
+	}
+	if !filepath.IsAbs(wd) {
+		return facade.Scope{}, &pluginbridge.Error{Code: "workdir_not_registered", Msg: "work_dir 必须是绝对路径"}
+	}
+	// ① 显式项目注册表（workdir-opened / 工作区树）。
+	if dd, ok := data.DataDirForWorkDir(wd); ok {
+		return facade.Scope{WorkDir: wd, DataDir: dd}, nil
+	}
+	// ② 活动实例绑定项目（instance-register 上报的 work_dir，宿主已知路径）。
+	// 返回**空 scope**：这就是实例的默认项目，会话索引 / dialog 备忘按空 scope 登记；
+	// 若写成显式 scope（即使同一路径），索引键不同会导致找不到既有 dialog。
+	if s.im != nil {
+		if id := strings.TrimSpace(instanceID); id != "" {
+			if rec, ok := s.im.Lookup(id); ok && pathx.Same(rec.WorkDir, wd) {
+				return facade.Scope{}, nil
+			}
+		}
+		if id, ok := s.im.MainInstanceForWorkDir(wd); ok {
+			if rec, ok2 := s.im.Lookup(id); ok2 && pathx.Same(rec.WorkDir, wd) {
+				return facade.Scope{}, nil
+			}
+		}
+	}
+	return facade.Scope{}, &pluginbridge.Error{Code: "workdir_not_registered", Msg: "work_dir 不是已注册项目"}
+}
+
 func (s *Server) resolveInstanceForWorkDir(instanceID, workDir string) string {
 	if id := strings.TrimSpace(instanceID); id != "" {
 		return id

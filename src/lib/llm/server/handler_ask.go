@@ -400,7 +400,7 @@ func (s *Server) updateAskToolResultStatus(w *askWaiter, text, status string) {
 	if meta := s.gc.ToolMeta("ask_user"); len(meta) > 0 {
 		msg["_meta"] = meta
 	}
-	if _, err := s.newSessionStore(w.instanceID).AppendMsgMap(w.turnID, msg, ""); err != nil {
+	if _, err := s.turnStoreFor(w.instanceID, w.turnID).AppendMsgMap(w.turnID, msg, ""); err != nil {
 		logf("[chonkpilot-server] ask tool-result 更新失败（turn=%s tool_call_id=%s）: %v\n",
 			w.turnID, w.toolID, err)
 	}
@@ -439,8 +439,10 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 	// 实例归属从 turn 取（业务 payload 一律必带 instance_id，见 61-消息一览 §0.1）；
 	// 登记键 = instKey(instance, ask)（缺口 5：按 instance 分桶，不与其他 instance 串味）。
 	turnInstance := ""
+	scope := facade.Scope{}
 	if tc := s.lookupTurn(turnID); tc != nil {
 		turnInstance = tc.req.InstanceID
+		scope = tc.scope()
 	}
 	// 定向投递（SUBCHAT-3 阶段 F-2 · 群聊 §13 D42）：卡片投到**该会话所在窗口**（`work_session`
 	// → 父群聊窗口；群聊/单聊本体 → 承载窗口），解析不到 → 回落 turn 实例（旧行为，零变化）。
@@ -451,22 +453,20 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 	// 取不到（历史遗留会话、映射缺失）时**不编造**：记 Warn 并按空串发送 ——
 	// **这是 `session-ask.dialog_id` 唯一允许的空值场景**（前端只会原样回带）。
 	sess := s.turnSession(turnID)
-	dialogID := s.ensureDialogIndex(turnInstance, sess)
+	dialogID := s.ensureDialogIndex(turnInstance, sess, scope)
 	if dialogID == "" {
 		logf("[chonkpilot-server] session-ask 取不到 dialog_id（会话 → 对话映射缺失，按空串发送）: session=%s ask_id=%s\n",
 			sess, askID)
 	}
 	// 作用域（后端唯一分发 / 每 wd 有序队列）：workdir + user 取自实例视图；workdir 缺失回落
 	// 轮次请求的 work_dir（分离形态）。
-	workDir, user := "", ""
+	workDir, user := scope.WorkDir, ""
 	if s.im != nil {
 		if info, ok := s.im.Lookup(turnInstance); ok {
-			workDir, user = info.WorkDir, info.User
-		}
-	}
-	if workDir == "" {
-		if tc := s.lookupTurn(turnID); tc != nil {
-			workDir = tc.req.WorkDir
+			user = info.User
+			if workDir == "" {
+				workDir = info.WorkDir
+			}
 		}
 	}
 	// 超时：工具参数优先，缺省用项目全局 ask_timeout_sec；0 = 不超时（一直等）。
@@ -477,7 +477,7 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 		expiresAt = now.Add(time.Duration(timeoutSec) * time.Second)
 	}
 	question := askQuestion(args)
-	payload := map[string]any{
+	payload := s.addScopeToEvent(map[string]any{
 		"instance_id":    deliverInstance,
 		"ask_id":         askID,
 		"question":       question,
@@ -485,7 +485,7 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 		"session":        sess,
 		"turn":           turnID,
 		"owner_instance": turnInstance,
-	}
+	}, turnInstance, sess, turnID)
 	if title := s.askSessionTitle(turnInstance, dialogID, sess); title != "" {
 		payload["session_title"] = title
 	}
@@ -522,9 +522,9 @@ func (s *Server) askWithID(turnID, toolID string, args map[string]any, taskID, a
 	seq := s.askSeq[workDir]
 	// 会话集合（2026-11-10：不再等待全部答完；批次用于答复合并 / ask-resolve / 取消清理）。
 	// 会话未知 → 以 ask 唯一键自成一档。
-	batchKey := instKey(turnInstance, sess)
+	batchKey := s.runKey(turnInstance, sess)
 	if sess == "" {
-		batchKey = instKey(turnInstance, askID)
+		batchKey = s.runKey(turnInstance, askID)
 	}
 	b := s.askBatches[batchKey]
 	if b == nil {
@@ -684,7 +684,7 @@ func (s *Server) persistUndeliveredAskAnswer(w *askWaiter, text string) {
 		return
 	}
 	msg := map[string]any{"role": "user", "content": text}
-	if _, err := s.newSessionStore(w.instanceID).AppendMsgMap(w.turnID, msg, ""); err != nil {
+	if _, err := s.turnStoreFor(w.instanceID, w.turnID).AppendMsgMap(w.turnID, msg, ""); err != nil {
 		logf("[chonkpilot-server] ask 答复投递失败且落库失败: ask_id=%s turn=%s session=%s err=%v\n",
 			w.askID, w.turnID, w.sessionID, err)
 		return
@@ -725,7 +725,9 @@ func (s *Server) sendTextToTurn(inst, sess, turn, text string) error {
 // startAskAnswerTurn 在无运行轮时以答复起新一轮（群聊 / 子会话路径）；失败返回 error，
 // 由调用方落库兜底。
 func (s *Server) startAskAnswerTurn(inst, sess, text string) error {
-	res := s.acceptStart(StartReq{InstanceID: inst, Session: sess, Turn: "turn-" + newID()})
+	start := StartReq{InstanceID: inst, Session: sess, Turn: "turn-" + newID()}
+	s.applySessionScope(&start, inst, sess)
+	res := s.acceptStart(start)
 	if ok, _ := res["accepted"].(bool); !ok {
 		logf("[chonkpilot-server] ask 答复起新轮被拒: session=%s target=%s res=%v\n", sess, inst, res)
 		return fmt.Errorf("起新轮被拒: %v", res)

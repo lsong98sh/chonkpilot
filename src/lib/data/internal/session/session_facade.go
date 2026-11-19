@@ -37,7 +37,7 @@ var (
 // emitSessionNew 广播会话创建事件 session-new（会话行首次落库成功后发；幂等由 SessionEnsure
 // 的存在性检查保证）。payload = {instance_id, session_id, dialog_id[, parent_session_id]}
 // （snake_case，61-消息一览 §命名约定）。
-func (s *Service) emitSessionNew(sessionID, parentSessionID, instanceID, dialogID string) {
+func (s *Service) emitSessionNew(sessionID, parentSessionID, instanceID, dialogID string, scopes ...facade.Scope) {
 	if s == nil || s.Bus == nil || sessionID == "" {
 		return // 无总线（测试/无订阅场景）：静默跳过
 	}
@@ -47,6 +47,12 @@ func (s *Service) emitSessionNew(sessionID, parentSessionID, instanceID, dialogI
 	}
 	if parentSessionID != "" {
 		payload["parent_session_id"] = parentSessionID
+	}
+	if len(scopes) > 0 && scopes[0].WorkDir != "" {
+		payload["work_dir"] = scopes[0].WorkDir
+		if scopes[0].DataDir != "" {
+			payload["data_dir"] = scopes[0].DataDir
+		}
 	}
 	b, _ := json.Marshal(payload)
 	_ = s.Bus.Emit(context.Background(), msgkeys.TopicSessionNew, b)

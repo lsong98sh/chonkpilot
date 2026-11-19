@@ -87,7 +87,9 @@ test('② MessageList：user 气泡在「落库回执」之后渲染（不再乐
 
 test('③ api/chat：llm-start 发布返回 { turn, ack }（ack = /publish 应答 promise）', () => {
   const src = readSrc('api/chat.js')
-  assert.match(src, /const ack = mq\.emit\(EventNames\.llmStart, \{/, 'ack 须为 llm-start 的 mq.emit promise')
+  assert.match(src, /const ack = mq\.emit\(EventNames\.llmStart, payload, \{ timeout: 30000 \}\)/,
+    'ack 须为 llm-start 的 mq.emit promise')
+  assert.match(src, /const payload = applyLLMScope\(\{[\s\S]*?q: text,/, 'llm-start 载荷须经项目作用域补齐')
   assert.match(src, /return \{ turn, ack \}/, 'publishLLMStart 须返回 { turn, ack }')
   assert.match(src, /return \{ turn: turnId \|\| '', ack \}/, 'publishLLMContinue 须返回 { turn, ack }')
 })

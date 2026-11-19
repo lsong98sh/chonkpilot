@@ -216,7 +216,7 @@ func (tc *turnCtx) compressHistory(ctx context.Context, full session.Result) (Ch
 type turnHistorySource struct{ tc *turnCtx }
 
 func (h turnHistorySource) Load(context.Context) (session.History, error) {
-	cur := h.tc.server.newSessionStore(h.tc.req.InstanceID).LoadMessages(h.tc.req.Turn)
+	cur := h.tc.server.newSessionStore(h.tc.req.InstanceID, h.tc.scope()).LoadMessages(h.tc.req.Turn)
 	return session.History{
 		Messages:     h.tc.hist,
 		TurnTokens:   sessionTurnTokens(h.tc.turnTokens),

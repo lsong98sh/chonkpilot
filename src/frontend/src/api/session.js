@@ -10,6 +10,29 @@ import {
 // 与 history 轮次行。**非权威**（持久化真相在 persist）；未命中 → 不写键（旧布局兼容）。
 const dialogBySession = new Map()
 const sessionByTurn = new Map()
+// 会话 → 项目作用域（跨 workdir）：发送/历史/任务等请求自动带 work_dir/data_dir。
+const scopeBySession = new Map()
+
+// seedSessionScope 预置会话所属项目（打开页签/初始化会话时调用）。
+export function seedSessionScope(sessionId, workDir, dataDir = '') {
+  if (sessionId && workDir) scopeBySession.set(String(sessionId), { workDir: String(workDir), dataDir: String(dataDir || '') })
+}
+
+export function scopeOfSession(sessionId) {
+  return (sessionId && scopeBySession.get(String(sessionId))) || null
+}
+
+function applyScope(body, opts = {}) {
+  if (!body) return body
+  const sid = body.session_id || body.id || (body.turn_id ? sessionByTurn.get(body.turn_id) : '')
+  const sc = scopeOfSession(sid)
+  const wd = opts.workDir || body.work_dir || (sc && sc.workDir) || ''
+  const dd = opts.dataDir || body.data_dir || (sc && sc.dataDir) || ''
+  if (wd) body.work_dir = wd
+  if (dd) body.data_dir = dd
+  if (opts.instanceId && !body.instance_id) body.instance_id = opts.instanceId
+  return body
+}
 
 function rememberDialog(sessionId, dialogId) {
   if (sessionId && dialogId) dialogBySession.set(sessionId, dialogId)
@@ -43,7 +66,8 @@ function withDialog(body) {
 
 // data-session-* 消息辅助：发送并等待回复（E-25：统一 30s 超时，对齐 fileRequest/guiReq 口径，
 // 后端卡死时 fetch abort → resolve(null) → 按 backend unreachable 报错，不永久挂起）。
-function sessionReqOnce(action, body) {
+function sessionReqOnce(action, body, opts = {}) {
+  applyScope(body, opts)
   return mq.emit(`data-session-${action}`, body, { timeout: 30000 }).then((env) => {
     const backend = env && env.backend
     if (!backend) throw new Error(`data-session-${action}: backend unreachable`)
@@ -65,32 +89,32 @@ function sessionReqOnce(action, body) {
 // 不新增任何 MQ 主题；delete/title 等写动作**不**走 ensure（避免把已删会话复活）。
 const READ_ACTIONS = new Set(['history', 'load-messages', 'content', 'get'])
 
-async function sessionReq(action, body = {}) {
+async function sessionReq(action, body = {}, opts = {}) {
   withDialog(body)
   try {
-    return await sessionReqOnce(action, body)
+    return await sessionReqOnce(action, body, opts)
   } catch (e) {
     const msg = String((e && e.message) || '')
     if (action === 'list' || body.dialog_id || !msg.includes('dialog_required')) throw e
     let sid = body.session_id || body.id || (body.turn_id ? sessionByTurn.get(body.turn_id) : '')
-    const list = await sessionReqOnce('list', {}).then((r) => r[DataSessionListKeys.list] || []).catch(() => [])
+    const list = await sessionReqOnce('list', {}, opts).then((r) => r[DataSessionListKeys.list] || []).catch(() => [])
     for (const row of list) {
       rememberDialog(row.session_id || row.id, row.dialog_id)
       if (!sid) sid = row.session_id || row.id
     }
     withDialog(body)
     if (!body.dialog_id && sid && READ_ACTIONS.has(action)) {
-      const r = await sessionReqOnce('ensure-session', { [FieldKeys.session_id]: sid }).catch(() => null)
+      const r = await sessionReqOnce('ensure-session', { [FieldKeys.session_id]: sid }, opts).catch(() => null)
       rememberDialog(sid, r && r.dialog_id)
       withDialog(body)
     }
     if (!body.dialog_id) throw e
-    return sessionReqOnce(action, body)
+    return sessionReqOnce(action, body, opts)
   }
 }
 
-export function listSessions() {
-  return sessionReq('list').then((r) => {
+export function listSessions(opts = {}) {
+  return sessionReq('list', {}, opts).then((r) => {
     const list = r[DataSessionListKeys.list] || []
     // shard=on 时列表项自带 dialog_id（每对话一行）；顺带预热备忘，后续请求免再查。
     for (const row of list) rememberDialog(row.session_id || row.id, row.dialog_id)
@@ -116,10 +140,10 @@ export function updateSessionTitle(id, title) {
 
 // ensureSession 幂等建会话行（data-session-ensure-session，61 §3.2a）：开对话窗口前须先使会话在
 // DB 中**存在**（否则标题/列表不一致，24 §6.4；session_id 由前端分配）。
-export function ensureSession(id, parentId) {
+export function ensureSession(id, parentId, opts = {}) {
   const body = { [FieldKeys.session_id]: id }
   if (parentId) body[FieldKeys.parent_session_id] = parentId
-  return sessionReq('ensure-session', body).then((r) => {
+  return sessionReq('ensure-session', body, opts).then((r) => {
     // shard=on 时根会话自举会回带 dialog_id；记下供后续请求使用。
     rememberDialog(id, r && r.dialog_id)
   })

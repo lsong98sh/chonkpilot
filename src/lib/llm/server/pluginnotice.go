@@ -84,7 +84,7 @@ func (s *Server) pluginNotify(n hook.Notice) {
 	if reason == "" {
 		reason = "原因未知（详见日志文件）"
 	}
-	s.publish(msgkeys.TopicToolNotify, map[string]any{
+	payload := map[string]any{
 		"instance_id": n.InstanceID,
 		"session_id":  n.Session,
 		"turn_id":     n.Turn,
@@ -94,7 +94,8 @@ func (s *Server) pluginNotify(n hook.Notice) {
 		"reason":      reason,
 		"message":     "⚠️ " + what + "失败：" + reason + "（本轮对话未受影响；详情见日志文件）",
 		"message_id":  "msg-pnotice-" + noticeKeyID(key),
-	})
+	}
+	s.publish(msgkeys.TopicToolNotify, s.addScopeToEvent(payload, n.InstanceID, n.Session, n.Turn))
 }
 
 // noticeKeyID 由判重键派生稳定短 id（同一键 → 同一 id，供前端按 message_id 幂等去重）。

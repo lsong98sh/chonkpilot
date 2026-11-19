@@ -45,7 +45,7 @@ type childOutcome struct {
 // parentCtx 是子轮次 ctx 的父（取消沿链下传）。**task_llm 委派传 context.Background()**：
 // 子代理是独立作业，父轮次正常收尾不应把它一起取消；取消由 task_stop 显式下发。
 func (s *Server) startChildTurn(parentCtx context.Context, parentReq StartReq, subSession, prompt, agent string) (*childTurn, error) {
-	store := s.newSessionStore(parentReq.InstanceID)
+	store := s.newSessionStore(parentReq.InstanceID, parentReq.scope())
 	if err := store.EnsureSessionWithParent(subSession, parentReq.Session); err != nil {
 		return nil, err
 	}
@@ -62,16 +62,16 @@ func (s *Server) startChildTurn(parentCtx context.Context, parentReq StartReq, s
 
 	tc := newTurnCtx(parentCtx, s, subReq)
 	// 子轮次同样登记 busy/turns：转后台工具完成（onGatewayTaskDone）按 turn 定位续轮。
-	// 键 = instKey(instance, id)（缺口 5：子轮次与主轮次同 instance 桶）。
+	// 键 = runKey（项目作用域 + id；与主轮次、llm-send / task.wait 的定位同源）。
 	// 同一 session_id 并发复用 → 拒绝（覆盖 busy 会让两个子轮次共享上下文/互相打断）。
-	key := instKey(subReq.InstanceID, subSession)
+	key := s.runKey(subReq.InstanceID, subSession)
 	s.mu.Lock()
 	if cur := s.busy[key]; cur != "" && cur != subTurn {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("子会话 %s 正在执行其他轮次（turn=%s），请等其结束或改用新的 session_id", subSession, cur)
 	}
 	s.busy[key] = subTurn
-	s.registerTurnLocked(instKey(subReq.InstanceID, subTurn), tc)
+	s.registerTurnLocked(s.runKey(subReq.InstanceID, subTurn), tc)
 	s.mu.Unlock()
 	// 子轮次开始广播（turn-start 带 parents 链；前端会话树插入 + history 过滤主会话）
 	s.emitTurnStart(subReq)
@@ -91,7 +91,7 @@ func (s *Server) startScheduledTurn(parentCtx context.Context, req StartReq, pro
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}
-	key := instKey(req.InstanceID, req.Session)
+	key := s.runKey(req.InstanceID, req.Session)
 	s.mu.Lock()
 	if cur := s.busy[key]; cur != "" && cur != req.Turn {
 		s.mu.Unlock()
@@ -100,7 +100,7 @@ func (s *Server) startScheduledTurn(parentCtx context.Context, req StartReq, pro
 	s.busy[key] = req.Turn
 	s.mu.Unlock()
 
-	store := s.newSessionStore(req.InstanceID)
+	store := s.newSessionStore(req.InstanceID, req.scope())
 	if err := store.EnsureTurn(req.Turn, req.Session); err != nil {
 		s.mu.Lock()
 		if s.busy[key] == req.Turn {
@@ -111,7 +111,7 @@ func (s *Server) startScheduledTurn(parentCtx context.Context, req StartReq, pro
 	}
 	tc := newTurnCtx(parentCtx, s, req)
 	s.mu.Lock()
-	s.registerTurnLocked(instKey(req.InstanceID, req.Turn), tc)
+	s.registerTurnLocked(s.runKey(req.InstanceID, req.Turn), tc)
 	s.mu.Unlock()
 	s.emitTurnStart(req)
 	tc.FeedText(prompt)
@@ -366,7 +366,7 @@ func (s *Server) partialTurnText(instanceID, turnID string) string {
 	if turnID == "" {
 		return ""
 	}
-	msgs := s.newSessionStore(instanceID).LoadMessages(turnID)
+	msgs := s.turnStoreFor(instanceID, turnID).LoadMessages(turnID)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "assistant" && strings.TrimSpace(msgs[i].Content) != "" {
 			return msgs[i].Content

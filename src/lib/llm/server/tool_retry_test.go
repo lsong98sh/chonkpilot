@@ -345,10 +345,10 @@ func TestToolRetryRejectsDoneOrMissing(t *testing.T) {
 func dropTurn(t *testing.T, s *Server, session, turn string) {
 	t.Helper()
 	s.mu.Lock()
-	key := instKey("ins-test", turn)
+	key := s.runKey("ins-test", turn)
 	tc := s.turns[key]
 	delete(s.turns, key)
-	delete(s.busy, instKey("ins-test", session))
+	delete(s.busy, s.runKey("ins-test", session))
 	s.mu.Unlock()
 	if tc != nil {
 		tc.Close()

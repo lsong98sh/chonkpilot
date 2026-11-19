@@ -51,9 +51,9 @@ test('默认值：workDir / activeFile / activeSession / activeTask / explorerMo
   assert.deepEqual({ ...s.activeFile }, { path: '', renderType: '' })
   assert.deepEqual({ ...s.activeSession }, { sessionId: '' })
   assert.deepEqual({ ...s.activeTask }, { sessionId: '', taskId: '' })
-  assert.equal(s.explorerMode, 'project', '左侧默认「项目」模式')
-  assert.equal(DEFAULT_EXPLORER_MODE, 'project')
-  assert.deepEqual(EXPLORER_MODES, ['project', 'sessions', 'memory', 'extensions'])
+  assert.equal(s.explorerMode, 'workspaces', '左侧默认「工作区」模式')
+  assert.equal(DEFAULT_EXPLORER_MODE, 'workspaces')
+  assert.deepEqual(EXPLORER_MODES, ['workspaces', 'project', 'memory', 'extensions'])
   assert.deepEqual({ ...s.activeSelection }, { text: '', range: null })
 })
 
@@ -149,7 +149,7 @@ test('reset：项目/实例边界复位六项（组件重挂不再自带归零�
   assert.deepEqual({ ...s.activeFile }, { path: '', renderType: '' })
   assert.deepEqual({ ...s.activeSession }, { sessionId: '' })
   assert.deepEqual({ ...s.activeTask }, { sessionId: '', taskId: '' })
-  assert.equal(s.explorerMode, 'project')
+  assert.equal(s.explorerMode, 'workspaces')
   assert.deepEqual({ ...s.activeSelection }, { text: '', range: null })
 })
 
@@ -213,7 +213,7 @@ test('P2③ 双源已消除：相关 view / api 改为读 store，本地状态 r
   // ChatPanel：主会话（原 `const currentSessionId = ref(null)`）
   const chat = SRC('views/chat/ChatPanel.vue')
   assert.match(chat, /useSelectionStore\(\)/)
-  assert.match(chat, /const currentSessionId = computed\(\(\) => activeSession\.value\.sessionId \|\| null\)/)
+  assert.match(chat, /const currentSessionId = computed\(\(\) => props\.bound \|\| props\.chatOnly/)
   assert.doesNotMatch(chat, /const currentSessionId = ref\(/)
   assert.doesNotMatch(chat, /currentSessionId\.value\s*=/, '组件不得再直接写共享状态')
 
@@ -248,7 +248,7 @@ test('P2③ 双源已消除：相关 view / api 改为读 store，本地状态 r
   assert.doesNotMatch(file, /(let|var|const)\s+\w*[Ww]orkDir\s*=/, '不得残留 workDir 模块变量')
   assert.match(file, /useSelectionStore\(\)\.setWorkDir\(dir\)/, 'setWorkDir = 唯一写入漏斗')
   assert.match(file, /function currentWorkDir\(\)/)
-  assert.match(file, /\[FieldKeys\.work_dir\]: currentWorkDir\(\)/)
+  assert.match(file, /\[FieldKeys\.work_dir\]: opts\.workDir \|\| currentWorkDir\(\)/)
 })
 
 // ── UILAYOUT-1 裁决 1（2026-10-16）：SessionsPane 第三份 currentSessionId → store 优先兜底 ──

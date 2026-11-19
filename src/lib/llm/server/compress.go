@@ -98,7 +98,7 @@ func (s *Server) emitCompressNotice(job compressJob, notice, message string) {
 	if turn == "" {
 		turn = job.TurnID
 	}
-	s.publish(msgkeys.TopicToolNotify, map[string]any{
+	payload := map[string]any{
 		"instance_id": job.InstanceID,
 		"session_id":  job.SessionID,
 		"turn_id":     turn,
@@ -106,7 +106,8 @@ func (s *Server) emitCompressNotice(job compressJob, notice, message string) {
 		"message":     message,
 		"message_id":  "msg-compress-" + notice + "-" + job.SessionID + "-" + turn,
 		"plugin":      "compress",
-	})
+	}
+	s.publish(msgkeys.TopicToolNotify, s.addScopeToEvent(payload, job.InstanceID, job.SessionID, turn))
 }
 
 // compressOnOverflow 厂商超窗兜底：用**同一压缩函数** 立刻同步压缩一次（忽略阈值判定）。
@@ -254,8 +255,8 @@ func (s *Server) snapshotWriteBase(tc *turnCtx) ([]ChatMsg, bool) {
 		return nil, false
 	}
 	resp, err := s.cfg.SnapshotGet(facade.SnapshotGetRequest{
-		InstanceID: tc.req.InstanceID, SessionID: tc.req.Session, Scope: s.cfgScope(tc.req.InstanceID),
-		DialogID: s.dialogOf(tc.req.InstanceID, tc.req.Session),
+		InstanceID: tc.req.InstanceID, SessionID: tc.req.Session, Scope: tc.scope(),
+		DialogID: s.dialogOf(tc.req.InstanceID, tc.req.Session, tc.scope()),
 	})
 	if err != nil || !resp.Found || resp.Snapshot.Turn != last {
 		return nil, false
@@ -270,17 +271,21 @@ type compressSnapshotStore struct {
 	s          *Server
 	instanceID string
 	sessionID  string
+	scope      facade.Scope
 }
 
 // snapshotStoreFor 按实例 / 会话构造快照端口（读写同一会话）。
 func (s *Server) snapshotStoreFor(instanceID, sessionID string) session.SnapshotStore {
-	return compressSnapshotStore{s: s, instanceID: instanceID, sessionID: sessionID}
+	return compressSnapshotStore{
+		s: s, instanceID: instanceID, sessionID: sessionID,
+		scope: s.scopeForSession(instanceID, sessionID),
+	}
 }
 
 func (st compressSnapshotStore) Current(context.Context) (session.Snapshot, error) {
 	resp, err := st.s.cfg.SnapshotGet(facade.SnapshotGetRequest{
-		InstanceID: st.instanceID, SessionID: st.sessionID, Scope: st.s.cfgScope(st.instanceID),
-		DialogID: st.s.dialogOf(st.instanceID, st.sessionID),
+		InstanceID: st.instanceID, SessionID: st.sessionID, Scope: st.scope,
+		DialogID: st.s.dialogOf(st.instanceID, st.sessionID, st.scope),
 	})
 	if err != nil {
 		return session.Snapshot{}, err
@@ -298,11 +303,11 @@ func (st compressSnapshotStore) Current(context.Context) (session.Snapshot, erro
 func (st compressSnapshotStore) Commit(_ context.Context, snap session.Snapshot) error {
 	_, err := st.s.cfg.SnapshotSet(facade.SnapshotSetRequest{
 		InstanceID: st.instanceID,
-		DialogID:   st.s.dialogOf(st.instanceID, st.sessionID),
+		DialogID:   st.s.dialogOf(st.instanceID, st.sessionID, st.scope),
 		Snapshot: facade.Snapshot{
 			SessionID: st.sessionID, Turn: snap.Turn, Messages: facadeMessagesFromChat(snap.Messages),
 		},
-		Scope: st.s.cfgScope(st.instanceID),
+		Scope: st.scope,
 	})
 	return err
 }

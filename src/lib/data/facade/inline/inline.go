@@ -20,7 +20,6 @@ package inline
 
 import (
 	"github.com/chonkpilot/chonkpilot-data/facade"
-	"github.com/chonkpilot/chonkpilot-data/internal/snapshot"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
@@ -61,20 +60,20 @@ func New(bus mq.Bus) facade.API {
 func NewWithOptions(bus mq.Bus, opts persist.Options) facade.API {
 	svc := persist.New(bus, opts)
 	return &binding{
-		SnapshotAPI:   snapshot.New(),
-		ConfigAPI:     svc,
-		SessionAPI:    svc,
-		TurnAPI:       svc,
-		TurnEventAPI:  svc,
-		AskAPI:        svc,
-		MessageAPI:    svc,
-		InboxAPI:      svc,
-		TasktreeAPI:   svc,
-		KnowledgeAPI:  svc,
-		ScenarioAPI:   svc,
-		MemoryAPI:     svc,
-		McpAPI:        svc,
-		ProjectAPI:    svc,
-		GroupAPI:      svc,
+		SnapshotAPI:  svc,
+		ConfigAPI:    svc,
+		SessionAPI:   svc,
+		TurnAPI:      svc,
+		TurnEventAPI: svc,
+		AskAPI:       svc,
+		MessageAPI:   svc,
+		InboxAPI:     svc,
+		TasktreeAPI:  svc,
+		KnowledgeAPI: svc,
+		ScenarioAPI:  svc,
+		MemoryAPI:    svc,
+		McpAPI:       svc,
+		ProjectAPI:   svc,
+		GroupAPI:     svc,
 	}
 }

@@ -4,9 +4,9 @@
 //	请求方发 filesys.*（经桥 publishV）→ 服务方处理并写回 Value.Result / Value.Errors
 //	变更事件经 filesys.changed / filesys.watch-error 广播
 //
-// 信任边界（G-21）：操作的**基目录（work_dir）只按 `instance-register` 登记的
-// instance → work_dir 绑定解析**，一律不采信请求载荷里的 work_dir（载荷字段保留
-// 仅为契约兼容）—— 调用方无法借 payload 把读写指到绑定之外的目录。
+// 信任边界（G-21 / SCOPE-1）：操作的**基目录（work_dir）**按显式 work_dir 解析，
+// 且该路径必须已在工作区项目注册表中（`workspace.Manager.Get`）—— 调用方无法借
+// payload 把读写指到未注册目录；未带 work_dir 时才回落到 `instance-register` 绑定。
 package filesys
 
 import (
@@ -20,10 +20,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
-	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/chonkpilot/chonkpilot-workspace"
 	wslayout "github.com/chonkpilot/chonkpilot-workspace/layout"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
 	"github.com/lsong98sh/chonkpilot-util/pathx"
 )
 
@@ -35,9 +35,8 @@ type Filesys struct {
 	subs []mq.Sub
 	wm   *watchManager
 
-	// pm 是工作区管理（唯一权威）：实例 → work_dir 的解析、工作区开闭事件、
-	// 路径边界校验一律走它。本包**不再自持 instance → work_dir 绑定**（G-21 不变：
-	// 请求载荷里的 work_dir 只作契约字段保留，绝不采信）。
+	// pm 是工作区管理（唯一权威）：实例 → work_dir 的解析、显式 work_dir 注册校验、
+	// 工作区开闭事件、路径边界校验一律走它。
 	pm *workspace.Manager
 }
 
@@ -129,12 +128,13 @@ func (f *Filesys) onWorkdirClosed(_ context.Context, _ string, v *mq.Value) erro
 func (f *Filesys) onPrjConfigRefresh(_ context.Context, _ string, v *mq.Value) error {
 	var msg struct {
 		InstanceID string            `json:"instance_id"`
+		WorkDir    string            `json:"work_dir"`
 		List       map[string]string `json:"list"`
 	}
 	if json.Unmarshal(v.Payload, &msg) != nil || msg.List == nil {
 		return nil
 	}
-	wd, ok := f.workDir(msg.InstanceID)
+	wd, ok := f.resolveWorkDir(msg.InstanceID, msg.WorkDir)
 	if !ok {
 		return nil
 	}
@@ -152,6 +152,19 @@ func (f *Filesys) workDir(instanceID string) (string, bool) {
 	return sp.WorkDir, true
 }
 
+// resolveWorkDir 解析文件请求的基目录：显式 work_dir（必须已通过 PM 注册）优先，
+// 否则沿用实例绑定。一个窗口可同时访问多个 workdir，显式路径是唯一可区分手段；
+// 仍不接受任意路径 —— PM 的注册表就是信任边界。
+func (f *Filesys) resolveWorkDir(instanceID, requested string) (string, bool) {
+	if strings.TrimSpace(requested) == "" {
+		return f.workDir(instanceID)
+	}
+	sp, ok := f.pm.Get(requested)
+	if !ok || sp.WorkDir == "" {
+		return "", false
+	}
+	return sp.WorkDir, true
+}
 
 // ─── 请求处理 ────────────────────────────────────────────
 
@@ -169,7 +182,7 @@ type reqBase struct {
 // onList 处理 filesys.list：目录子项快照。
 func (f *Filesys) onList(_ context.Context, _ string, v *mq.Value) error {
 	var req struct {
-		// 契约字段 work_dir 保留但**不采信**：基目录一律取实例绑定（G-21）。
+		// work_dir 为显式项目（须已在工作区注册表）；缺省取实例绑定。
 		WorkDir    string `json:"work_dir"`
 		InstanceID string `json:"instance_id"`
 		Path       string `json:"path"`
@@ -178,7 +191,7 @@ func (f *Filesys) onList(_ context.Context, _ string, v *mq.Value) error {
 		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
-	wd, ok := f.workDir(req.InstanceID)
+	wd, ok := f.resolveWorkDir(req.InstanceID, req.WorkDir)
 	if !ok {
 		v.Errors = append(v.Errors, errForbidden("work dir not bound for instance"))
 		return nil
@@ -205,7 +218,7 @@ func (f *Filesys) onContent(_ context.Context, _ string, v *mq.Value) error {
 		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
-	wd, ok := f.workDir(req.InstanceID)
+	wd, ok := f.resolveWorkDir(req.InstanceID, req.WorkDir)
 	if !ok {
 		v.Errors = append(v.Errors, errForbidden("work dir not bound for instance"))
 		return nil
@@ -237,7 +250,7 @@ func (f *Filesys) onCreate(_ context.Context, _ string, v *mq.Value) error {
 		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
-	wd, ok := f.workDir(req.InstanceID)
+	wd, ok := f.resolveWorkDir(req.InstanceID, req.WorkDir)
 	if !ok {
 		v.Errors = append(v.Errors, errForbidden("work dir not bound for instance"))
 		return nil
@@ -280,7 +293,7 @@ func (f *Filesys) onMkdir(_ context.Context, _ string, v *mq.Value) error {
 		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
-	wd, ok := f.workDir(req.InstanceID)
+	wd, ok := f.resolveWorkDir(req.InstanceID, req.WorkDir)
 	if !ok {
 		v.Errors = append(v.Errors, errForbidden("work dir not bound for instance"))
 		return nil
@@ -322,7 +335,7 @@ func (f *Filesys) onRemove(_ context.Context, _ string, v *mq.Value) error {
 		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
-	wd, ok := f.workDir(req.InstanceID)
+	wd, ok := f.resolveWorkDir(req.InstanceID, req.WorkDir)
 	if !ok {
 		v.Errors = append(v.Errors, errForbidden("work dir not bound for instance"))
 		return nil
@@ -358,7 +371,7 @@ func (f *Filesys) onRename(_ context.Context, _ string, v *mq.Value) error {
 		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
-	wd, ok := f.workDir(req.InstanceID)
+	wd, ok := f.resolveWorkDir(req.InstanceID, req.WorkDir)
 	if !ok {
 		v.Errors = append(v.Errors, errForbidden("work dir not bound for instance"))
 		return nil
@@ -463,7 +476,7 @@ func (f *Filesys) onCopy(_ context.Context, _ string, v *mq.Value) error {
 		v.Errors = append(v.Errors, errBadRequest(err.Error()))
 		return nil
 	}
-	wd, ok := f.workDir(req.InstanceID)
+	wd, ok := f.resolveWorkDir(req.InstanceID, req.WorkDir)
 	if !ok {
 		v.Errors = append(v.Errors, errForbidden("work dir not bound for instance"))
 		return nil
@@ -526,7 +539,6 @@ func (f *Filesys) onWatch(_ context.Context, _ string, _ *mq.Value) error { retu
 
 // onUnwatch 处理 filesys.unwatch：**兼容保留，无副作用**（折叠目录不得停止监听）。
 func (f *Filesys) onUnwatch(_ context.Context, _ string, _ *mq.Value) error { return nil }
-
 
 // ─── 工具函数 ────────────────────────────────────────────
 

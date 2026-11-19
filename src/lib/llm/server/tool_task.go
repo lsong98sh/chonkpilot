@@ -279,7 +279,7 @@ func (s *Server) asyncResultFromMessage(parent *turnCtx, toolCallID string) (str
 	if toolCallID == "" {
 		return "", "", false
 	}
-	raw, ok := s.newSessionStore(parent.req.InstanceID).LoadToolContent(parent.req.Session, toolCallID)
+	raw, ok := s.newSessionStore(parent.req.InstanceID, parent.scope()).LoadToolContent(parent.req.Session, toolCallID)
 	if !ok {
 		return "", "", false
 	}
@@ -311,7 +311,7 @@ func (s *Server) asyncResultFromMessage(parent *turnCtx, toolCallID string) (str
 
 // turnResultText 按子会话 turn id 读结果（llm_run 子轮次最后一条 assistant 消息）。
 func (s *Server) turnResultText(parent *turnCtx, turnID string) (string, bool) {
-	msgs := s.newSessionStore(parent.req.InstanceID).LoadMessages(turnID)
+	msgs := s.turnStoreFor(parent.req.InstanceID, turnID).LoadMessages(turnID)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "assistant" && msgs[i].Content != "" {
 			return msgs[i].Content, true

@@ -138,7 +138,7 @@ func (tc *turnCtx) engineSynthesizeDanglingToolResults() {
 	if !tc.isRecovery {
 		return
 	}
-	msgs := tc.server.newSessionStore(tc.req.InstanceID).LoadMessages(tc.req.Turn)
+	msgs := tc.server.newSessionStore(tc.req.InstanceID, tc.scope()).LoadMessages(tc.req.Turn)
 	have := make(map[string]bool, len(msgs))
 	for _, m := range msgs {
 		if m.Role == "tool" && m.ToolCallID != "" {
@@ -599,7 +599,7 @@ func (s *engineTurnStore) CommitInbox(_ context.Context, inboxID string, msg cha
 	tc := s.tc
 	// 本地有界单事务（§2.4 白名单）：经 data 门面直调，避免会话循环内 Emit().Wait()
 	// 同步等待总线应答。门面实现与 data-inbox-commit 消息面同源（内嵌 persist）。
-	dlg := tc.server.dialogOf(tc.req.InstanceID, tc.req.Session)
+	dlg := tc.server.dialogOf(tc.req.InstanceID, tc.req.Session, tc.scope())
 	req := facade.InboxCommitRequest{
 		InstanceID: tc.req.InstanceID,
 		DialogID:   dlg,

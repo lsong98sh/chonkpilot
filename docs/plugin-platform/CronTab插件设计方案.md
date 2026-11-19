@@ -40,7 +40,7 @@ chonkpilot-plugins/crontab/
 │   ├── go.mod                     # module github.com/chonkpilot/chonkpilot-crontab-plugin
 │   ├── main.go                    # pluginsdk 装配：工具注册 / rpc / 资源 / 调度器启停
 │   ├── config.go                  # 插件配置（默认超时、错过补偿、创建提示、通知兜底）
-│   ├── store.go                   # tasks.json 原子写 + runs.jsonl 滚动
+│   ├── store.go                   # SQLite（crontab.db，WAL）：tasks/runs 表 + 旧 JSON 一次性导入
 │   ├── schedule.go                # cron 解析 / 下次执行 / 1s ticker / 单任务不重入
 │   ├── action.go                  # action{type,param} 解析与校验（run / notify）、描述派生
 │   ├── run.go                     # run 动作（scriptrun）
@@ -67,35 +67,34 @@ chonkpilot-plugins/crontab/
 ## 3. 数据模型
 
 ```jsonc
-// <PLUGIN_DATA_DIR>/tasks.json（原子替换，0600）
+// <PLUGIN_DATA_DIR>/crontab.db（SQLite，WAL；纯 Go 驱动 modernc.org/sqlite，无 CGO）
+// tasks 表一行一条任务（结构化列）；以下为单条任务的逻辑形态
 {
-  "version": 1,
-  "tasks": [
-    {
-      "id": "ct_7f3a91c2",
-      "cron": "*/5 * * * *",
-      "action": {                                    // 任务是全局的；action 为二选一联合类型
-        "type": "run",                               // run | notify
-        "param": { "command": "npm run build", "notify": false }
-      },
-      "description": "执行：npm run build",          // 自动派生（§4.3）
-      "enabled": true,
-      "created_at": 1761878400,
-      "created_by": { "instance_id": "...", "session_id": "...", "work_dir": "E:\\proj" },
-      "next_run_at": 1761878700,
-      "run_count": 12,
-      "running_since": 0,                            // >0 = 本轮执行中（落库，重启据此补 interrupted）
-      "sandbox": null,                               // true/false = 任务级覆盖；null = 继承 plugins.crontab.sandbox
-      "last_run": { "at": 1761878400, "ok": true, "exit_code": 0, "ms": 1834, "error": "", "output_tail": "..." }
-    }
-  ]
+  "id": "ct_7f3a91c2",
+  "cron": "*/5 * * * *",
+  "action": {                                    // 任务是全局的；action 为二选一联合类型
+    "type": "run",                               // run | notify
+    "param": { "command": "npm run build", "notify": false }   // 落 action_param（JSON 文本）
+  },
+  "description": "执行：npm run build",          // 自动派生（§4.3）
+  "enabled": true,
+  "created_at": 1761878400,
+  "created_by": { "instance_id": "...", "session_id": "...", "work_dir": "E:\\proj" },
+  "next_run_at": 1761878700,
+  "run_count": 12,
+  "running_since": 0,                            // >0 = 本轮执行中（落库，重启据此补 interrupted）
+  "sandbox": null,                               // true/false = 任务级覆盖；null = 继承 plugins.crontab.sandbox
+  "last_run": { "at": 1761878400, "ok": true, "exit_code": 0, "ms": 1834, "error": "", "output_tail": "..." }
 }
 ```
 
-- 运行记录另写 `<PLUGIN_DATA_DIR>/runs.jsonl`（每行一条，1MB 滚动 × 3；**任务详情只展示最近 5 条**，2026-11-04 核对；文档旧口径“页面读最近 50 条”未实现）。
+- 数据库文件：`<PLUGIN_DATA_DIR>/crontab.db`；表 `meta`（schema 版本）/ `tasks`（任务定义）/ `runs`（运行明细）；索引 `idx_tasks_due(enabled, next_run_at)`、`idx_runs_task(task_id, at DESC, seq DESC)`。连接 DSN 固定 `busy_timeout=5000` + `journal_mode=WAL` + `_txlock=immediate`。
+- 运行明细写同一 DB 的 `runs` 表（`seq` 自增主键；`AppendRun` 后裁剪到最新 20000 行；**任务详情只展示最近 5 条**，2026-11-04 核对；文档旧口径“页面读最近 50 条”未实现）。
+- 旧版 JSON 一次性导入：首次启动 `Load()` 时，若 `tasks` / `runs` 表为空，分别导入旧 `tasks.json` / `runs.jsonl` 并改名为 `<原文件>.migrated-<unix>`（失败保留原文件）；损坏的 `tasks.json` 备份为 `.corrupt-<ts>` 并告警。导入后不再读写旧文件。
+- 多进程：多个插件实例可同时打开同一 DB（WAL + busy_timeout）；到期认领 / 更新在 `BEGIN IMMEDIATE` 写事务内完成（SELECT → mutate → UPDATE），两个进程不会同时认领同一任务（lease 仍未实现，但不会并发执行同一任务）。
 - 上限：任务 ≤ 200 条（缺省；`plugins.crontab.max-tasks` 可配到 2000）；`description` ≤ 80 字符；`output_tail` ≤ 4KB；`notify` 正文 ≤ 200 字。
-- 配置（§7.4）走插件私有 `configStore`，**不落任务文件**。
-- `running` 标记：任务记录里的 `running_since`（unix 秒）**已落 `tasks.json`**；重启据此补 `interrupted`（见 §10）。
+- 配置（§7.4）走插件私有 `configStore`，**不落任务表**。
+- `running` 标记：任务记录里的 `running_since`（unix 秒）**已落 `tasks.running_since`**；重启据此补 `interrupted`（见 §10）。
 
 ---
 
@@ -206,7 +205,7 @@ tools/crontab/
 | 解析 | `github.com/robfig/cron/v3`，`cron.NewParser(Minute\|Hour\|Dom\|Month\|Dow\|Descriptor)` → **5 段 + @宏**；拒绝 6 段（无秒级） |
 | 时区 | 宿主本地时区（不提供按任务 tz） |
 | 驱动 | 单 goroutine + **1s ticker** 扫描（任务 ≤200，O(n) 足够），不引入 cron 自带调度器 |
-| 不重入 | 每任务 `running_since` 标记**落库**（`tasks.json`）；上一轮未结束 → 本轮**跳过**并记 `skipped:overlap` |
+| 不重入 | 每任务 `running_since` 标记**落库**（`crontab.db` 的 `tasks` 表）；上一轮未结束 → 本轮**跳过**并记 `skipped:overlap`；多进程经 `BEGIN IMMEDIATE` 写事务原子认领 |
 | 并发 | 不同任务并发执行；同任务串行 |
 | 超时 | run 按 `default-timeout-sec`（缺省 600s）杀**进程树** |
 | 执行权限 | 与插件进程同级（不提权、不弹 UAC），与 `task_run` 一致 |
@@ -224,7 +223,7 @@ tools/crontab/
 |----|------|
 | 执行 | 复用 `scriptrun`（见 §6.4）：`command` 一条命令/脚本，外壳固定 `shell`（Windows = PowerShell），`cwd` 缺省 = 创建任务时的 `work_dir` |
 | 超时 | 默认 600s（配置 `default-timeout-sec`），超时**杀进程树** |
-| 结果 | 退出码 / 耗时 / 输出尾（≤4KB）写 `runs.jsonl` 与 `last_run` |
+| 结果 | 退出码 / 耗时 / 输出尾（≤4KB）写 `runs` 表与 `last_run` |
 | 完成通知 | `param.notify`：`true` → 「<描述> 执行成功/失败」；字符串 → 自定义文案 + 结果；只在本任务执行结束后发一次 |
 | 打开网页 / 播放音乐 | 就是命令：`start https://…` / `start "D:\music\a.mp3"`（`start` 走系统默认程序） |
 
@@ -351,13 +350,13 @@ tools/crontab/
 
 | # | 问题 | 设计回答 |
 |---|------|----------|
-| 1 | 状态在哪 | 任务定义 / 下次执行 / 最近结果 = `tasks.json`；运行明细 = `runs.jsonl`；`running` 标记 = **任务记录 `running_since`（落库，非内存）**（2026-11-04 核对；旧稿“内存、崩溃即丢”已作废） |
-| 2 | 受理即持久化 | 工具返回前完成 `tmp + fsync + rename`；UI 启停/删除同样先落盘再回执 |
-| 3 | 非终态收口 | 启动时扫描 `running_since > 0` 的任务 → 在 `runs.jsonl` 补一条 `interrupted`，`last_run.ok=false`（不是“一律视为未运行”） |
+| 1 | 状态在哪 | 任务定义 / 下次执行 / 最近结果 = `crontab.db` 的 `tasks` 表；运行明细 = 同库 `runs` 表；`running` 标记 = **任务记录 `running_since`（落库，非内存）**（2026-11-04 核对；旧稿“内存、崩溃即丢”已作废） |
+| 2 | 受理即持久化 | 工具返回前完成 SQLite 写事务提交（WAL + `_txlock=immediate`）；UI 启停/删除同样先提交再回执 |
+| 3 | 非终态收口 | 启动时扫描 `running_since > 0` 的任务 → 在 `runs` 表补一条 `interrupted`，`last_run.ok=false`（不是“一律视为未运行”） |
 | 4 | 重启后 | 用 `now` 重算每条 `next_run_at`；**错过补偿**：`next_run_at >= now - graceSec` → 立即补跑一次，否则跳过并记 `skipped:missed`；`graceSec` 默认 300 |
 | 5 | 副作用语义 | 定时触发 = **至多一次**（进程崩溃那次不重放）；`run` 本身不保证幂等（契约 `idempotent:false` 已声明）；同一任务不并发 |
 | 6 | 时钟 | 依赖系统时钟；检测到系统时间回拨 > 5min → 重算全部 `next_run_at` 并记日志（不补跑） |
-| 7 | 插件被禁用/卸载 | 调度随进程退出停止；任务文件保留，下次启用继续（不补跑历史） |
+| 7 | 插件被禁用/卸载 | 调度随进程退出停止；任务数据保留在 `<PLUGIN_DATA_DIR>/crontab.db`，下次启用继续（不补跑历史） |
 
 ---
 
@@ -365,7 +364,7 @@ tools/crontab/
 
 | 层 | 内容 |
 |----|------|
-| L1（Go，插件内） | cron 解析/下次执行（含 @宏、非法表达式）· `action{type,param}` 校验（type 不认识 / run 缺 command / notify 空 HTML → 报错）· **HTML → 纯文本**（换行/链接文字/实体）· 描述派生 · store 原子写/损坏文件容错 · 错过补偿策略 · 不重入（overlap 跳过）· `run.notify` 文案构造（走可注入 `notifier` 接口断言，不真弹）· `notifyChanged()` 触发（fake publisher 断言 `plugin.publish`） |
+| L1（Go，插件内） | cron 解析/下次执行（含 @宏、非法表达式）· `action{type,param}` 校验（type 不认识 / run 缺 command / notify 空 HTML → 报错）· **HTML → 纯文本**（换行/链接文字/实体）· 描述派生 · store SQLite 持久化 / 旧 JSON 一次性导入 / 损坏文件容错 / 两实例跨进程原子认领 · 错过补偿策略 · 不重入（overlap 跳过）· `run.notify` 文案构造（走可注入 `notifier` 接口断言，不真弹）· `notifyChanged()` 触发（fake publisher 断言 `plugin.publish`） |
 | L2（systest，`src/test/chonkpilot-gui/systest/run_crontab.py`） | 启动应用 → 经插件动作面建 1 条 `*/1 * * * *` 的 `run` 任务（`echo`）→ 断言 `/api/list` 含该任务、徽标计数 +1（**由 `crontab-changed` 事件驱动，非轮询**）、预览区可打开任务页（`preview-tab-open`）→ 停用 → 断言不再触发 → 删除 → 断言计数归零；**不改消息面**，只断言既有 topic |
 | L4（人工） | 系统通知（右下角气泡 + 通知中心 + `click_url` 打开网址）；`run` 的 `start <url>` / `start <mp3>`；任务页/徽标可见性（`test_statusbar.py` 风格截图） |
 | 契约 | `contract.Parse` 通过；文件名 = `name`；manifest `hot_tools` 与契约一致 |

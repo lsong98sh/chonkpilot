@@ -56,7 +56,7 @@ func (s *Service) handleMCP(op string, payload []byte) {
 
 	switch op {
 	case "list":
-		resp, err := s.McpList(facade.McpListRequest{InstanceID: p.InstanceID})
+		resp, err := s.McpList(facade.McpListRequest{InstanceID: p.InstanceID, Scope: p.scope()})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -65,7 +65,7 @@ func (s *Service) handleMCP(op string, payload []byte) {
 	case "load":
 		m := p.merged()
 		resp, err := s.McpGet(facade.McpGetRequest{
-			InstanceID: p.InstanceID, Name: m.target(), Level: m.Level,
+			InstanceID: p.InstanceID, Scope: p.scope(), Name: m.target(), Level: m.Level,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -78,10 +78,10 @@ func (s *Service) handleMCP(op string, payload []byte) {
 		// （已知字段优先；纯已知字段 = nil → 落盘与改前逐字节一致）。
 		m.McpServer.Extra = mcpUnknownFields(p.Data)
 		resp, err := s.McpSave(facade.McpSaveRequest{
-			InstanceID: p.InstanceID,
-			Server:     m.McpServer,
-			OldName:    m.OldName,
-			OldLevel:   m.OldLevel,
+			InstanceID: p.InstanceID, Scope: p.scope(),
+			Server:   m.McpServer,
+			OldName:  m.OldName,
+			OldLevel: m.OldLevel,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -91,7 +91,7 @@ func (s *Service) handleMCP(op string, payload []byte) {
 	case "delete":
 		m := p.merged()
 		if _, err := s.McpDelete(facade.McpDeleteRequest{
-			InstanceID: p.InstanceID, Name: m.target(), Level: m.Level,
+			InstanceID: p.InstanceID, Scope: p.scope(), Name: m.target(), Level: m.Level,
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return

@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/lsong98sh/chonkpilot-agent/session/component"
@@ -104,10 +105,27 @@ func (s *Server) startGroupChat(instanceID, groupID string) {
 //   - startRound = 起始大轮次；budget = 最大轮数；
 //   - targets / prev = 首轮投递对象与输入（nil → 全体 / 布置任务）；saveFirst = 首轮是否写 round_targets。
 func (s *Server) launchGroupRun(sc *groupSched, startRound, budget int, targets []groupParticipant, prev []groupBoardMsg, saveFirst bool) {
+	if s.isStopped() {
+		return // Stop 已开始：不再拉起新的群聊调度（避免 join 计数与 Wait 竞态）
+	}
 	sc.ctx, sc.cancel = context.WithCancel(context.Background())
 	sc.driverInstance() // 初始化驱动实例（未开群聊窗口 → 回落发起窗口；后续每轮刷新）
+	// 阶段 5：登记群聊调度 goroutine，`Server.Stop` 取消后 join（见 waitGroupRuns）。
+	// Add + 登记在 s.mu 内完成（与 `stopped` 闸门同锁）：Stop 置 stopped 后不会再有新运行；
+	// 在此之前登记的全部运行都能被随后的 stopAllGroupRuns 取消并由 groupWG 等待。
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		sc.cancel()
+		return
+	}
+	s.groupWG.Add(1)
 	s.registerGroupRun(sc)
-	go sc.run(startRound, budget, targets, prev, saveFirst)
+	s.mu.Unlock()
+	go func() {
+		defer s.groupWG.Done()
+		sc.run(startRound, budget, targets, prev, saveFirst)
+	}()
 }
 
 // registerGroupRun 登记运行中的群聊调度器（同 groupID 新运行**顶替**旧运行：取消旧的，避免并发双跑）。
@@ -149,6 +167,26 @@ func (s *Server) stopAllGroupRuns() {
 		if sc.cancel != nil {
 			sc.cancel()
 		}
+	}
+}
+
+// waitGroupRuns 等待全部群聊调度 goroutine 退出（阶段 5：进程停机 join）。
+// timeout <= 0 = 无限等待；超时只留痕（不阻断后续 data.Stop，避免单个卡死拖垮关停）。
+// 仅由 `Server.Stop` 调用（只调用一次）；关窗路径（stopGroupRunsForInstance）只取消、不等待。
+func (s *Server) waitGroupRuns(timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		s.groupWG.Wait()
+		close(done)
+	}()
+	if timeout <= 0 {
+		<-done
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		logf("[chonkpilot-server] Stop: 等待群聊调度收尾超时（仍有 group run 未退出）\n")
 	}
 }
 
@@ -263,11 +301,12 @@ func (s *Server) groupResumePlan(sc *groupSched) (int, []groupParticipant, []gro
 // buildGroupSched 读群聊会话行 + 参与者名册构造调度器；群聊会话不存在 / 名册为空 → 错误。
 func (s *Server) buildGroupSched(instanceID, groupID string) (*groupSched, error) {
 	group := s.sessionRow(instanceID, groupID)
+	scope := s.scopeForSession(instanceID, groupID)
 	if group.Kind != facade.SessionKindGroupChat {
 		return nil, errors.New("not a group chat session: " + groupID)
 	}
 	res, err := s.cfg.GroupParticipantsLoad(facade.GroupParticipantsLoadRequest{
-		InstanceID: instanceID, SessionID: groupID, Scope: s.cfgScope(instanceID),
+		InstanceID: instanceID, SessionID: groupID, Scope: scope,
 	})
 	if err != nil {
 		return nil, err
@@ -280,7 +319,7 @@ func (s *Server) buildGroupSched(instanceID, groupID string) (*groupSched, error
 		return nil, errors.New("group chat has no participants: " + groupID)
 	}
 	sc := &groupSched{
-		s: s, instanceID: instanceID, scope: s.cfgScope(instanceID),
+		s: s, instanceID: instanceID, scope: scope,
 		groupID: groupID, parentID: group.ParentID,
 		scenarioID: group.ScenarioID, llmRef: group.LLM,
 		mainAgent: strings.TrimSpace(group.Agent),
@@ -293,7 +332,7 @@ func (s *Server) buildGroupSched(instanceID, groupID string) (*groupSched, error
 
 // loadOpening 取群聊展示板的首条消息文本（= 主 agent 布置任务，D18；取不到 → 空串）。
 func (sc *groupSched) loadOpening() string {
-	store := sc.s.newSessionStore(sc.instanceID)
+	store := sc.s.newSessionStore(sc.instanceID, sc.scope)
 	turn := store.LatestTurnID(sc.groupID)
 	if turn == "" {
 		return ""
@@ -309,7 +348,7 @@ func (sc *groupSched) loadOpening() string {
 // ensureBoardTurn 取（或建）群聊展示板 turn：群聊所有上屏消息挂在这一条 turn 下
 // （群聊本体不跑 LLM，故该 turn 只承载消息行，无轮次终态）。
 func (sc *groupSched) ensureBoardTurn() string {
-	store := sc.s.newSessionStore(sc.instanceID)
+	store := sc.s.newSessionStore(sc.instanceID, sc.scope)
 	if turn := store.LatestTurnID(sc.groupID); turn != "" {
 		return turn
 	}
@@ -424,14 +463,11 @@ func (sc *groupSched) runWorkTurn(agent, input string) string {
 	// 驱动实例（= 群聊窗口的 instance，F2-2 §15.4 N23）：子轮次以它执行 → 轮内 `ask_user`
 	// 由 `askTargetInstance` 反查落到该窗口；data 面 scope 同步取该实例（未登记 → 回落发起窗口）。
 	driver := sc.driverInstance()
-	scope := sc.s.cfgScope(driver)
-	if scope.WorkDir == "" {
-		scope = sc.scope
-	}
+	scope := sc.scope // 显式项目作用域；空 → 门面按驱动实例绑定解析
 	if _, err := sc.s.cfg.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: driver, Scope: scope,
 		SessionID: workID, ParentSessionID: sc.groupID,
-		DialogID: sc.s.dialogOf(driver, sc.groupID),
+		DialogID: sc.s.dialogOf(driver, sc.groupID, scope),
 		Kind:     facade.SessionKindWorkSession, Agent: agent,
 		ScenarioID: sc.scenarioID, LLM: sc.llmRef,
 	}); err != nil {
@@ -439,9 +475,12 @@ func (sc *groupSched) runWorkTurn(agent, input string) string {
 		return ""
 	}
 	// 一树一库：回填工作会话 → 对话映射（后续 turn / message 写入按其补 dialog_id）。
-	sc.s.rememberDialog(driver, workID, sc.s.dialogOf(driver, sc.groupID))
+	sc.s.rememberDialog(driver, workID, sc.s.dialogOf(driver, sc.groupID, scope), scope)
 	req := StartReq{InstanceID: driver, Session: sc.groupID, ScenarioID: sc.scenarioID, LLMModel: sc.llmRef}
-	if rec, ok := sc.s.im.Lookup(driver); ok {
+	if sc.scope.WorkDir != "" {
+		// 群聊在显式项目（一个窗口多个 workdir）→ 子轮次沿用该项目，不落回驱动窗口默认项目。
+		req.WorkDir, req.DataDir, req.ScopeExplicit = sc.scope.WorkDir, sc.scope.DataDir, true
+	} else if rec, ok := sc.s.im.Lookup(driver); ok {
 		req.WorkDir, req.DataDir = rec.WorkDir, rec.DataDir
 	} else if rec, ok := sc.s.im.Lookup(sc.instanceID); ok {
 		req.WorkDir, req.DataDir = rec.WorkDir, rec.DataDir
@@ -538,7 +577,7 @@ func (sc *groupSched) appendBoard(agent, text string, mentions []string) {
 	if len(mentions) > 0 {
 		msg["mentions"] = mentions
 	}
-	if _, err := sc.s.newSessionStore(sc.instanceID).AppendMsgMap(sc.board, msg, ""); err != nil {
+	if _, err := sc.s.newSessionStore(sc.instanceID, sc.scope).AppendMsgMap(sc.board, msg, ""); err != nil {
 		logf("[chonkpilot-server] groupAppendBoard(%s): %v\n", sc.groupID, err)
 	}
 }
@@ -546,7 +585,7 @@ func (sc *groupSched) appendBoard(agent, text string, mentions []string) {
 // appendBoardNotice 追加一条系统提示到群聊展示板（如「因达上限终止」）。
 func (sc *groupSched) appendBoardNotice(text string) {
 	msg := map[string]any{"role": "system", "content": text}
-	if _, err := sc.s.newSessionStore(sc.instanceID).AppendMsgMap(sc.board, msg, ""); err != nil {
+	if _, err := sc.s.newSessionStore(sc.instanceID, sc.scope).AppendMsgMap(sc.board, msg, ""); err != nil {
 		logf("[chonkpilot-server] groupAppendBoardNotice(%s): %v\n", sc.groupID, err)
 	}
 }
@@ -619,7 +658,7 @@ func (sc *groupSched) emitParticipantState(agent, state string) {
 func (sc *groupSched) lightReady() {
 	if _, err := sc.s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: sc.instanceID, SessionID: sc.groupID,
-		DialogID:  sc.s.dialogOf(sc.instanceID, sc.groupID),
+		DialogID:  sc.s.dialogOf(sc.instanceID, sc.groupID, sc.scope),
 		Lifecycle: facade.SessionLifecycleReady, Scope: sc.scope,
 	}); err != nil {
 		logf("[chonkpilot-server] groupLightReady(%s): %v\n", sc.groupID, err)
@@ -645,7 +684,7 @@ func (sc *groupSched) finalReview() {
 	}
 	if _, err := sc.s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: sc.instanceID, SessionID: sc.groupID,
-		DialogID:  sc.s.dialogOf(sc.instanceID, sc.groupID),
+		DialogID:  sc.s.dialogOf(sc.instanceID, sc.groupID, sc.scope),
 		Lifecycle: facade.SessionLifecycleFinished, Scope: sc.scope,
 	}); err != nil {
 		logf("[chonkpilot-server] groupFinalReview finish(%s): %v\n", sc.groupID, err)
@@ -750,7 +789,7 @@ func (s *Server) runGroupChatOpen(tc *turnCtx, mainAgent, scenarioID, llmRef, pr
 	parts []facade.GroupParticipant, goal, playbook, convergence string) (string, bool) {
 	instanceID := tc.req.InstanceID
 	parentSession := tc.req.Session
-	scope := s.cfgScope(instanceID)
+	scope := tc.scope()
 	groupID := "group-" + newID()
 	list := ensureMainParticipant(parts, mainAgent)
 
@@ -758,7 +797,7 @@ func (s *Server) runGroupChatOpen(tc *turnCtx, mainAgent, scenarioID, llmRef, pr
 	if _, err := s.cfg.SessionEnsure(facade.SessionEnsureRequest{
 		InstanceID: instanceID, Scope: scope,
 		SessionID: groupID, ParentSessionID: parentSession,
-		DialogID: s.dialogOf(instanceID, parentSession),
+		DialogID: s.dialogOf(instanceID, parentSession, scope),
 		Kind:     facade.SessionKindGroupChat, Lifecycle: facade.SessionLifecycleChatting,
 		Agent: mainAgent, ScenarioID: scenarioID, LLM: llmRef, Purpose: purpose,
 		Goal: goal, Playbook: playbook, Convergence: convergence,
@@ -766,12 +805,13 @@ func (s *Server) runGroupChatOpen(tc *turnCtx, mainAgent, scenarioID, llmRef, pr
 		return subchatToolErr("建群聊会话失败: " + err.Error()), true
 	}
 	// 一树一库：回填新群聊会话 → 对话映射（后续 turn / message 写入按其补 dialog_id）。
-	s.rememberDialog(instanceID, groupID, s.dialogOf(instanceID, parentSession))
+	s.rememberDialog(instanceID, groupID, s.dialogOf(instanceID, parentSession, scope), scope)
+	s.rememberScope(instanceID, groupID, "", scope)
 	title := groupID
 	if purpose != "" {
 		if _, err := s.cfg.SessionTitle(facade.SessionTitleRequest{
 			InstanceID: instanceID, SessionID: groupID, Title: purpose, Scope: scope,
-			DialogID: s.dialogOf(instanceID, parentSession),
+			DialogID: s.dialogOf(instanceID, parentSession, scope),
 		}); err == nil {
 			title = purpose
 		}
@@ -785,7 +825,7 @@ func (s *Server) runGroupChatOpen(tc *turnCtx, mainAgent, scenarioID, llmRef, pr
 	}
 
 	// ③ 建展示板 turn + 写首条消息（= 主 agent 布置任务，D18；`role=user` 靠左，D47）。
-	store := s.newSessionStore(instanceID)
+	store := s.newSessionStore(instanceID, scope)
 	boardTurn := newID()
 	if err := store.EnsureTurn(boardTurn, groupID); err != nil {
 		return subchatToolErr("建群聊展示板轮次失败: " + err.Error()), true
@@ -831,8 +871,8 @@ func (s *Server) onSubchatContinue(_ context.Context, _ string, v *mq.Value) err
 	}
 	if _, err := s.cfg.SessionLifecycleSet(facade.SessionLifecycleSetRequest{
 		InstanceID: instanceID, SessionID: sessionID,
-		DialogID:  s.dialogOf(instanceID, sessionID),
-		Lifecycle: facade.SessionLifecycleChatting, Scope: s.cfgScope(instanceID),
+		DialogID:  s.dialogOf(instanceID, sessionID, s.scopeForSession(instanceID, sessionID)),
+		Lifecycle: facade.SessionLifecycleChatting, Scope: s.scopeForSession(instanceID, sessionID),
 	}); err != nil {
 		v.Result = map[string]any{"error": err.Error()}
 		return nil

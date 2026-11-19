@@ -122,7 +122,7 @@ func TestNextRunRecoveryRestoresState(t *testing.T) {
 	}
 	tc.Close()
 
-	id, err := s.inboxAppend("ins-test", facade.InboxAppendRequest{
+	id, err := s.inboxAppend("ins-test", facade.Scope{}, facade.InboxAppendRequest{
 		SessionID: session, TurnID: turn, Type: "next_turn", Content: "旧提示词",
 		Source: nextRunSourceLLM, IdempotencyKey: "next-run:" + turn,
 	})
@@ -167,7 +167,7 @@ func TestNextRunAppendOverwritesOnIdempotencyHit(t *testing.T) {
 	boot.Close()
 
 	// 上一轮已按幂等键落过一行（模拟恢复回查未命中，内存中无 nextRunItemID）。
-	if _, err := s.inboxAppend("ins-test", facade.InboxAppendRequest{
+	if _, err := s.inboxAppend("ins-test", facade.Scope{}, facade.InboxAppendRequest{
 		SessionID: session, TurnID: turn, Type: "next_turn", Content: "旧提示词",
 		Source: nextRunSourceLLM, IdempotencyKey: "next-run:" + turn,
 	}); err != nil {

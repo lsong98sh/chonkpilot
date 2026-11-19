@@ -23,13 +23,18 @@ package server
 const ownerConflictText = "session is running in another window: "
 
 // sessionOwner 返回该 session 当前的活动 owner 实例（无主 → 空串）。
-func (s *Server) sessionOwner(session string) string {
+func (s *Server) sessionOwner(instanceID, session string) string {
 	if session == "" {
 		return ""
 	}
 	s.ownersMu.Lock()
 	defer s.ownersMu.Unlock()
-	return s.owners[session]
+	return s.owners[s.ownerKey(instanceID, session)]
+}
+
+// ownerKey 按项目作用域隔离归属：同一窗口可在两个 workdir 持有同名 session。
+func (s *Server) ownerKey(instanceID, session string) string {
+	return s.runKey(instanceID, session)
 }
 
 // claimSessionOwner 在**受理运行态**时占用归属（llm-start / llm-send）：
@@ -40,14 +45,14 @@ func (s *Server) claimSessionOwner(instanceID, session string) (string, bool) {
 	if session == "" || instanceID == "" {
 		return "", true
 	}
-	if owner := s.sessionOwner(session); owner != "" && owner != instanceID && s.sessionActive(owner, session) {
+	if owner := s.sessionOwner(instanceID, session); owner != "" && owner != instanceID && s.sessionActive(owner, session) {
 		return owner, false
 	}
 	s.ownersMu.Lock()
 	if s.owners == nil {
 		s.owners = map[string]string{}
 	}
-	s.owners[session] = instanceID
+	s.owners[s.ownerKey(instanceID, session)] = instanceID
 	s.ownersMu.Unlock()
 	return instanceID, true
 }
@@ -63,7 +68,7 @@ func (s *Server) ownerConflict(instanceID, session, turn string) (string, bool) 
 	if session == "" {
 		return "", true
 	}
-	owner := s.sessionOwner(session)
+	owner := s.sessionOwner(instanceID, session)
 	if owner == "" || owner == instanceID || !s.sessionActive(owner, session) {
 		return owner, true
 	}
@@ -77,13 +82,13 @@ func (s *Server) sessionActive(instanceID, session string) bool {
 		return false
 	}
 	s.mu.Lock()
-	_, busy := s.busy[instKey(instanceID, session)]
+	_, busy := s.busy[s.runKey(instanceID, session)]
 	s.mu.Unlock()
 	if busy {
 		return true
 	}
 	s.inboxMu.Lock()
-	pending := len(s.inboxPending[session]) > 0
+	pending := len(s.inboxPending[s.runKey(instanceID, session)]) > 0
 	s.inboxMu.Unlock()
 	if pending {
 		return true
@@ -94,20 +99,20 @@ func (s *Server) sessionActive(instanceID, session string) bool {
 // releaseOwnerIfIdle 空闲自动结束 → 只释放该 dialog 的归属（turn 已结束 ∧ inbox 无 pending ∧
 // 无 async task）。调用点 = 轮次 loop 收尾（busy 已摘除、tc.Done 之前）；不匹配 / 仍活动 → 无操作。
 func (s *Server) releaseOwnerIfIdle(instanceID, session string) {
-	if instanceID == "" || session == "" || s.sessionOwner(session) != instanceID {
+	if instanceID == "" || session == "" || s.sessionOwner(instanceID, session) != instanceID {
 		return
 	}
 	if s.sessionActive(instanceID, session) {
 		return
 	}
-	s.clearOwnerIf(session, instanceID)
+	s.clearOwnerIf(instanceID, session)
 }
 
 // clearOwnerIf 仅当归属仍指向该实例时清空（并发接管 / 已释放 → 无操作）。
-func (s *Server) clearOwnerIf(session, instanceID string) {
+func (s *Server) clearOwnerIf(instanceID, session string) {
 	s.ownersMu.Lock()
-	if s.owners[session] == instanceID {
-		delete(s.owners, session)
+	if s.owners[s.ownerKey(instanceID, session)] == instanceID {
+		delete(s.owners, s.ownerKey(instanceID, session))
 	}
 	s.ownersMu.Unlock()
 }

@@ -47,9 +47,10 @@ func (s *Server) sessionOpenCap(_ context.Context, sess *pluginbridge.Session, a
 	if sessionID == "" {
 		return nil, &pluginbridge.Error{Code: pluginbridge.CodeArgsInvalid, Msg: "session.open: session_id 缺失且无注入上下文"}
 	}
+	scope, _ := s.pluginTargetScope(in.InstanceID, workDir)
 	dialogID := strings.TrimSpace(in.DialogID)
 	if dialogID == "" {
-		dialogID = s.ensureDialogIndex(in.InstanceID, sessionID)
+		dialogID = s.ensureDialogIndex(in.InstanceID, sessionID, scope)
 	}
 	if dialogID == "" {
 		return nil, &pluginbridge.Error{Code: pluginbridge.CodeNotFound, Msg: "会话不存在: " + sessionID}

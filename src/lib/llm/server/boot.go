@@ -93,7 +93,9 @@ func New(bus mq.Bus, opts Options) *Server {
 	s.taskLayer = tasklayer.New(bus, tasklayer.Options{
 		Logf:         taskLayerLogf,
 		OnCancelExec: s.onTaskLayerCancelExec,
-		DialogOf:     s.dialogOf, // 一树一库（P3-4b）：任务树行随会话落对话库
+		DialogOf: func(instanceID, sessionID string) string {
+			return s.dialogOf(instanceID, sessionID)
+		}, // 一树一库（P3-4b）：任务树行随会话落对话库
 	})
 	if !opts.DisableMCP {
 		// 静态装配（RB-5 L5）：能力源（capability 契约）+ 执行配置 + 内嵌 gateway 由**入口
@@ -297,7 +299,10 @@ func (s *Server) Stop() {
 	}
 	// 群聊调度（Stop 兜底）：turns 只覆盖单轮，群聊 run 由 groupRuns 自持 ctx → 必须显式取消，
 	// 否则停机后仍会继续发起 LLM 调用。
+	// 阶段 5：取消后 **join 群聊 goroutine**（其收尾仍会写库）→ 必须先于 `s.data.Stop()`；
+	// 与 turnWG 一样受 drainTurnsTimeout 上限（超时只留痕，不阻断关停）。
 	s.stopAllGroupRuns()
+	s.waitGroupRuns(drainTurnsTimeout)
 	waitTurns := make(chan struct{})
 	go func() {
 		s.turnWG.Wait()

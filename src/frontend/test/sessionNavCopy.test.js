@@ -24,21 +24,21 @@ const LOCALES = ['zh-CN', 'en-US']
 
 // ── 1) 左侧导航：会话页签 ─────────────────────────────────────────
 
-test('导航：左侧导航含「项目 · 会话 · 记忆 · 扩展」且顺序正确', () => {
+test('导航：左侧导航含「工作区 · 项目 · 记忆 · 扩展」且顺序正确', () => {
   const pane = read('views/filetree/ExplorerPane.vue')
+  const idxWorkspaces = pane.indexOf("mode === 'workspaces'")
   const idxProject = pane.indexOf("mode === 'project'")
-  const idxSessions = pane.indexOf("mode === 'sessions'")
   const idxMemory = pane.indexOf("mode === 'memory'")
   const idxExtensions = pane.indexOf("mode === 'extensions'")
-  assert.ok(idxProject >= 0 && idxSessions > idxProject && idxMemory > idxSessions && idxExtensions > idxMemory,
-    '页签顺序应为 项目 → 会话 → 记忆 → 扩展')
-  assert.match(pane, /fileTree\.mode_sessions/, '会话页签文案应走 i18n')
+  assert.ok(idxWorkspaces >= 0 && idxProject > idxWorkspaces && idxMemory > idxProject && idxExtensions > idxMemory,
+    '页签顺序应为 工作区 → 项目 → 记忆 → 扩展')
+  assert.match(pane, /fileTree\.mode_workspaces/, '工作区页签文案应走 i18n')
   assert.match(pane, /fileTree\.mode_memory/, '记忆页签文案应走 i18n')
   assert.match(pane, /fileTree\.mode_extensions/, '扩展页签文案应走 i18n')
   assert.match(pane, /<MemoryPane/, '记忆页签内容 = MemoryPane')
-  assert.match(pane, /<SessionsPane/, '会话页签内容 = SessionsPane（原抽屉内容迁入）')
+  assert.match(pane, /<WorkspaceTree/, '工作区页签内容 = WorkspaceTree（workdir + 会话树）')
   assert.match(pane, /<ExtensionsPane/, '扩展页签内容 = ExtensionsPane')
-  assert.match(pane, /m === 'sessions'/, 'setMode 应受理 sessions')
+  assert.match(pane, /m === 'workspaces'/, 'setMode 应受理 workspaces')
   assert.match(pane, /m === 'memory'/, 'setMode 应受理 memory')
   assert.match(pane, /m === 'extensions'/, 'setMode 应受理 extensions')
   // 原「知识库」「工具」两个一级分段已删除（合并进扩展页）

@@ -25,7 +25,7 @@ func (s *Service) handleScenario(op string, payload []byte) {
 
 	switch op {
 	case "list":
-		resp, err := s.ScenarioList(facade.ScenarioListRequest{InstanceID: p.InstanceID})
+		resp, err := s.ScenarioList(facade.ScenarioListRequest{InstanceID: p.InstanceID, Scope: p.scope()})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
 			return
@@ -34,7 +34,7 @@ func (s *Service) handleScenario(op string, payload []byte) {
 	case "load":
 		m := p.merged()
 		resp, err := s.ScenarioGet(facade.ScenarioGetRequest{
-			InstanceID: p.InstanceID, ScenarioID: m.target(), Level: m.Level,
+			InstanceID: p.InstanceID, Scope: p.scope(), ScenarioID: m.target(), Level: m.Level,
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -43,7 +43,7 @@ func (s *Service) handleScenario(op string, payload []byte) {
 		s.replyID(method, p.ReqID, wire.ScenarioGetResult(resp.Scenario))
 	case "save":
 		resp, err := s.ScenarioSave(facade.ScenarioSaveRequest{
-			InstanceID: p.InstanceID, Scenario: scenarioOf(p.merged()),
+			InstanceID: p.InstanceID, Scope: p.scope(), Scenario: scenarioOf(p.merged()),
 		})
 		if err != nil {
 			s.failID(method, p.ReqID, err)
@@ -53,7 +53,7 @@ func (s *Service) handleScenario(op string, payload []byte) {
 	case "delete":
 		m := p.merged()
 		if _, err := s.ScenarioDelete(facade.ScenarioDeleteRequest{
-			InstanceID: p.InstanceID, ScenarioID: m.target(), Level: m.Level,
+			InstanceID: p.InstanceID, Scope: p.scope(), ScenarioID: m.target(), Level: m.Level,
 		}); err != nil {
 			s.failID(method, p.ReqID, err)
 			return

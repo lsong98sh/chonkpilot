@@ -37,6 +37,11 @@ export function initPluginUIHost() {
       mq: {
         on: (...args) => mq.on(...args),
         emit: (...args) => mq.emit(...args),
+        // 阶段 3b：插件可经宿主总线登记 / 查询本地主题（scope 必填；seal 后未登记不可发布）。
+        registerTopic: (...args) => mq.registerTopic(...args),
+        unregisterTopic: (...args) => mq.unregisterTopic(...args),
+        topicSpec: (...args) => mq.topicSpec(...args),
+        listTopics: (...args) => mq.listTopics(...args),
       },
       views: {
         register: registerPluginViews,

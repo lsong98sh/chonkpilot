@@ -14,6 +14,8 @@ import { currentInstanceId } from '@ckfw/utils/mq.js'
 
 /** 事件是否属本实例（缺口 8）。instanceId 缺省 = 当前注入的实例 id。 */
 export function eventBelongsToInstance(payload, instanceId = currentInstanceId()) {
+  // 带项目作用域的事件：后端已按 sink 的 scope 订阅投递（允许跨 instance），前端不再二次按实例丢。
+  if (payload && typeof payload === 'object' && payload.work_dir) return true
   const ev = payload && typeof payload === 'object' && payload.instance_id != null
     ? String(payload.instance_id)
     : ''

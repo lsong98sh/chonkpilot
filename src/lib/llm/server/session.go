@@ -24,6 +24,7 @@ type sessionStore struct {
 	bus        mq.Bus
 	api        facade.API
 	instanceID string
+	scope      facade.Scope
 	idx        *sessionIndex
 }
 
@@ -41,9 +42,9 @@ type sessionIndex struct {
 // sessionIndexes 按「总线实例 + instance_id」隔离（不同测试/宿主的总线互不串味）。
 var sessionIndexes sync.Map // key: "<bus %p>|<instance_id>" → *sessionIndex
 
-// sharedIndex 取（或建）该总线+实例的共享备忘。
-func sharedIndex(bus mq.Bus, instanceID string) *sessionIndex {
-	key := fmt.Sprintf("%p|%s", bus, instanceID)
+// sharedIndex 取（或建）该总线+实例+项目作用域的共享备忘。
+func sharedIndex(bus mq.Bus, instanceID string, scope facade.Scope) *sessionIndex {
+	key := fmt.Sprintf("%p|%s|%s", bus, instanceID, projectKey(scope.WorkDir))
 	if v, ok := sessionIndexes.Load(key); ok {
 		return v.(*sessionIndex)
 	}
@@ -79,6 +80,13 @@ func flushInstanceIndex(bus mq.Bus, instanceID string) {
 	if bus == nil || instanceID == "" {
 		return
 	}
+	prefix := fmt.Sprintf("%p|%s|", bus, instanceID)
+	sessionIndexes.Range(func(k, _ any) bool {
+		if key, ok := k.(string); ok && strings.HasPrefix(key, prefix) {
+			sessionIndexes.Delete(key)
+		}
+		return true
+	})
 	sessionIndexes.Delete(fmt.Sprintf("%p|%s", bus, instanceID))
 }
 
@@ -89,7 +97,7 @@ func flushInstanceIndex(bus mq.Bus, instanceID string) {
 // 实例注册后后台预热一次（61 会话列表已回带 dialog_id，零新增主题）。
 func (st *sessionStore) Prewarm() {
 	if st.api != nil {
-		res, err := st.api.SessionList(facade.SessionListRequest{InstanceID: st.instanceID})
+		res, err := st.api.SessionList(facade.SessionListRequest{InstanceID: st.instanceID, Scope: st.scope})
 		if err != nil {
 			return
 		}
@@ -98,9 +106,9 @@ func (st *sessionStore) Prewarm() {
 		}
 		return
 	}
-	res, err := dataRequest(st.bus, msgkeys.TopicDataSessionList, map[string]any{
-		"instance_id": st.instanceID, "data": map[string]any{},
-	})
+	res, err := dataRequest(st.bus, msgkeys.TopicDataSessionList, st.requestPayload(map[string]any{
+		"data": map[string]any{},
+	}))
 	if err != nil {
 		return
 	}
@@ -115,30 +123,32 @@ func (st *sessionStore) Prewarm() {
 }
 
 // ensureDialogIndex 返回会话所属 dialog_id；备忘缺失时用一次会话列表回填（重启后自愈）。
-func (s *Server) ensureDialogIndex(instanceID, sessionID string) string {
-	if dlg := s.dialogOf(instanceID, sessionID); dlg != "" {
+func (s *Server) ensureDialogIndex(instanceID, sessionID string, scopes ...facade.Scope) string {
+	scope := firstScope(scopes)
+	if dlg := s.dialogOf(instanceID, sessionID, scope); dlg != "" {
 		return dlg
 	}
 	if s == nil || s.bus == nil || sessionID == "" {
 		return ""
 	}
-	s.newSessionStore(instanceID).Prewarm()
-	return s.dialogOf(instanceID, sessionID)
+	s.newSessionStore(instanceID, scope).Prewarm()
+	return s.dialogOf(instanceID, sessionID, scope)
 }
 
 // dialogForWrite 返回会话 dialog_id；备忘缺失且会话行不存在时，幂等 ensure-session 自举对话库
 // 后重取。用于「发送 / 落消息」这类**写**入口（读入口缺 dialog 应按空处理，不建行）。
-func (s *Server) dialogForWrite(instanceID, sessionID string) string {
-	if dlg := s.ensureDialogIndex(instanceID, sessionID); dlg != "" {
+func (s *Server) dialogForWrite(instanceID, sessionID string, scopes ...facade.Scope) string {
+	scope := firstScope(scopes)
+	if dlg := s.ensureDialogIndex(instanceID, sessionID, scope); dlg != "" {
 		return dlg
 	}
 	if s == nil || s.bus == nil || sessionID == "" {
 		return ""
 	}
-	if err := s.newSessionStore(instanceID).EnsureSession(sessionID); err != nil {
+	if err := s.newSessionStore(instanceID, scope).EnsureSession(sessionID); err != nil {
 		return ""
 	}
-	return s.ensureDialogIndex(instanceID, sessionID)
+	return s.ensureDialogIndex(instanceID, sessionID, scope)
 }
 
 func (x *sessionIndex) setDialog(sessionID, dialogID string) {
@@ -173,18 +183,27 @@ func (x *sessionIndex) sessionOfTurn(turnID string) string {
 
 // newSessionStore 构造会话数据客户端（bus 由宿主注入；persist 应答 data-* 面）。
 // 仅测试 / 无门面场景使用；生产路径走 Server.newSessionStore（门面直调）。
-func newSessionStore(bus mq.Bus, instanceID string) *sessionStore {
-	return &sessionStore{bus: bus, instanceID: instanceID, idx: sharedIndex(bus, instanceID)}
+func newSessionStore(bus mq.Bus, instanceID string, scopes ...facade.Scope) *sessionStore {
+	scope := firstScope(scopes)
+	return &sessionStore{bus: bus, instanceID: instanceID, scope: scope, idx: sharedIndex(bus, instanceID, scope)}
 }
 
 // newSessionStoreWithFacade 构造门面直调版本（生产）。
-func newSessionStoreWithFacade(api facade.API, bus mq.Bus, instanceID string) *sessionStore {
-	return &sessionStore{bus: bus, api: api, instanceID: instanceID, idx: sharedIndex(bus, instanceID)}
+func newSessionStoreWithFacade(api facade.API, bus mq.Bus, instanceID string, scopes ...facade.Scope) *sessionStore {
+	scope := firstScope(scopes)
+	return &sessionStore{bus: bus, api: api, instanceID: instanceID, scope: scope, idx: sharedIndex(bus, instanceID, scope)}
 }
 
 // newSessionStore 构造本实例的会话数据客户端（生产：门面直调，避免会话循环内 Emit().Wait()）。
-func (s *Server) newSessionStore(instanceID string) *sessionStore {
-	return newSessionStoreWithFacade(s.cfg, s.bus, instanceID)
+func (s *Server) newSessionStore(instanceID string, scopes ...facade.Scope) *sessionStore {
+	return newSessionStoreWithFacade(s.cfg, s.bus, instanceID, scopes...)
+}
+
+func firstScope(scopes []facade.Scope) facade.Scope {
+	if len(scopes) == 0 {
+		return facade.Scope{}
+	}
+	return scopes[0]
 }
 
 // req 发 data-session-<action> 请求（带 instance_id），返回 result。
@@ -196,9 +215,19 @@ func (st *sessionStore) req(action string, data map[string]any) (map[string]any,
 	if st.api != nil {
 		return st.facadeReq(action, data)
 	}
-	return dataRequest(st.bus, "data-session-"+action, map[string]any{
-		"instance_id": st.instanceID, "data": data,
-	})
+	return dataRequest(st.bus, "data-session-"+action, st.requestPayload(map[string]any{"data": data}))
+}
+
+// requestPayload 补齐 instance_id 与显式项目作用域（空 scope 不写键，保持单项目窗口旧形）。
+func (st *sessionStore) requestPayload(m map[string]any) map[string]any {
+	m["instance_id"] = st.instanceID
+	if st.scope.WorkDir != "" {
+		m["work_dir"] = st.scope.WorkDir
+	}
+	if st.scope.DataDir != "" {
+		m["data_dir"] = st.scope.DataDir
+	}
+	return m
 }
 
 // facadeReq 是 data-session-* 消息面在会话域内的等价直调（信封翻译收在此处）。
@@ -213,7 +242,7 @@ func (st *sessionStore) facadeReq(action string, data map[string]any) (map[strin
 	switch action {
 	case "ensure-session":
 		resp, err := api.SessionEnsure(facade.SessionEnsureRequest{
-			InstanceID:      st.instanceID,
+			InstanceID: st.instanceID, Scope: st.scope,
 			SessionID:       sid,
 			DialogID:        str(data["dialog_id"]),
 			ParentSessionID: str(data["parent_session_id"]),
@@ -231,10 +260,10 @@ func (st *sessionStore) facadeReq(action string, data map[string]any) (map[strin
 		return jsonMap(out)
 	case "ensure-turn":
 		_, err := api.TurnEnsure(facade.TurnEnsureRequest{
-			InstanceID: st.instanceID,
-			TurnID:     str(data["turn_id"]),
-			SessionID:  sid,
-			DialogID:   str(data["dialog_id"]),
+			InstanceID: st.instanceID, Scope: st.scope,
+			TurnID:    str(data["turn_id"]),
+			SessionID: sid,
+			DialogID:  str(data["dialog_id"]),
 		})
 		if err != nil {
 			return nil, err
@@ -242,7 +271,7 @@ func (st *sessionStore) facadeReq(action string, data map[string]any) (map[strin
 		return jsonMap(wire.OKResult())
 	case "history":
 		resp, err := api.TurnHistory(facade.TurnHistoryRequest{
-			InstanceID: st.instanceID, SessionID: sid, DialogID: str(data["dialog_id"]),
+			InstanceID: st.instanceID, Scope: st.scope, SessionID: sid, DialogID: str(data["dialog_id"]),
 			BeforeTurnID:   str(data["before_turn_id"]),
 			TargetMessages: intValue(data["target_messages"]), TargetBytes: intValue(data["target_bytes"]),
 		})
@@ -252,7 +281,7 @@ func (st *sessionStore) facadeReq(action string, data map[string]any) (map[strin
 		return jsonMap(wire.TurnHistoryResult(resp))
 	case "content":
 		resp, err := api.MessageContent(facade.MessageContentRequest{
-			InstanceID: st.instanceID, SessionID: sid, DialogID: str(data["dialog_id"]),
+			InstanceID: st.instanceID, Scope: st.scope, SessionID: sid, DialogID: str(data["dialog_id"]),
 			Keys: strList(data["keys"]),
 		})
 		if err != nil {
@@ -266,6 +295,7 @@ func (st *sessionStore) facadeReq(action string, data map[string]any) (map[strin
 		}
 		r := wire.MessageAppendFromWire(raw)
 		r.InstanceID = st.instanceID
+		r.Scope = st.scope
 		if r.SessionID == "" {
 			r.SessionID = sid
 		}
@@ -276,7 +306,7 @@ func (st *sessionStore) facadeReq(action string, data map[string]any) (map[strin
 		return jsonMap(wire.OKIDPayload{OK: true, ID: resp.ID})
 	case "complete-turn":
 		req := facade.TurnCompleteRequest{
-			InstanceID: st.instanceID, TurnID: str(data["turn_id"]), DialogID: str(data["dialog_id"]),
+			InstanceID: st.instanceID, Scope: st.scope, TurnID: str(data["turn_id"]), DialogID: str(data["dialog_id"]),
 			Status: str(data["status"]), FinishReason: str(data["finish_reason"]),
 		}
 		req.FullTokens = intPtr(data["full_tokens"])
@@ -286,14 +316,14 @@ func (st *sessionStore) facadeReq(action string, data map[string]any) (map[strin
 		}
 		return jsonMap(wire.OKResult())
 	case "cleanup-stale":
-		resp, err := api.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: st.instanceID})
+		resp, err := api.TurnCleanupStale(facade.TurnCleanupStaleRequest{InstanceID: st.instanceID, Scope: st.scope})
 		if err != nil {
 			return nil, err
 		}
 		return jsonMap(wire.CleanupResult(resp.Count))
 	case "load-messages":
 		resp, err := api.MessageLoad(facade.MessageLoadRequest{
-			InstanceID: st.instanceID, TurnID: str(data["turn_id"]), DialogID: str(data["dialog_id"]),
+			InstanceID: st.instanceID, Scope: st.scope, TurnID: str(data["turn_id"]), DialogID: str(data["dialog_id"]),
 		})
 		if err != nil {
 			return nil, err
@@ -301,7 +331,7 @@ func (st *sessionStore) facadeReq(action string, data map[string]any) (map[strin
 		return jsonMap(wire.MessageLoadResult(resp.Messages))
 	case "context":
 		resp, err := api.MessageContext(facade.MessageContextRequest{
-			InstanceID: st.instanceID, SessionID: sid, DialogID: str(data["dialog_id"]),
+			InstanceID: st.instanceID, Scope: st.scope, SessionID: sid, DialogID: str(data["dialog_id"]),
 			ExcludeTurn: str(data["exclude_turn"]), IncludeSnapshot: boolValue(data["include_snapshot"]),
 		})
 		if err != nil {
@@ -461,11 +491,12 @@ func (st *sessionStore) dialogForSessionOrParent(sessionID, parentSessionID stri
 
 // dialogOf 返回该实例下某会话的 dialog_id（进程内备忘；未知 → ""）。
 // 供非 sessionStore 的总线请求（inbox / 任务树等）补 `dialog_id`。
-func (s *Server) dialogOf(instanceID, sessionID string) string {
+func (s *Server) dialogOf(instanceID, sessionID string, scopes ...facade.Scope) string {
 	if s == nil || s.bus == nil || sessionID == "" {
 		return ""
 	}
-	if dlg := sharedIndex(s.bus, instanceID).dialogOf(sessionID); dlg != "" {
+	scope := firstScope(scopes)
+	if dlg := sharedIndex(s.bus, instanceID, scope).dialogOf(sessionID); dlg != "" {
 		return dlg
 	}
 	// 跨实例回落：群聊 / 子聊天的后续写入可能以**驱动窗口**（另一 instance）发起，而
@@ -495,11 +526,11 @@ func lookupDialogAnyInstance(bus mq.Bus, sessionID string) string {
 //
 // 用于 `cfg.SessionEnsure` 直建会话（子聊天 / 群聊）后回填备忘：该路径不经 `sessionStore`，
 // 无法自动从应答里学 `dialog_id`；不记则后续 turn/message 写入缺 `dialog_id` 被拒。
-func (s *Server) rememberDialog(instanceID, sessionID, dialogID string) {
+func (s *Server) rememberDialog(instanceID, sessionID, dialogID string, scopes ...facade.Scope) {
 	if s == nil || s.bus == nil || sessionID == "" || dialogID == "" {
 		return
 	}
-	sharedIndex(s.bus, instanceID).setDialog(sessionID, dialogID)
+	sharedIndex(s.bus, instanceID, firstScope(scopes)).setDialog(sessionID, dialogID)
 }
 
 // EnsureTurn 幂等建轮次（已存在复用）。
@@ -694,7 +725,7 @@ func (st *sessionStore) CleanupStaleTurns() error {
 func (st *sessionStore) CleanupTurnEvents(retentionDays int) error {
 	if st.api != nil {
 		_, err := st.api.TurnEventCleanup(facade.TurnEventCleanupRequest{
-			InstanceID: st.instanceID, RetentionDays: retentionDays,
+			InstanceID: st.instanceID, Scope: st.scope, RetentionDays: retentionDays,
 		})
 		return err
 	}
@@ -716,9 +747,9 @@ func (st *sessionStore) SetSnapshot(sessionID string, history []ChatMsg, snapsho
 			SnapshotTurn: snapshotTurn,
 		})
 		_, err := st.api.SnapshotSet(facade.SnapshotSetRequest{
-			InstanceID: st.instanceID,
-			DialogID:   str(payload["dialog_id"]),
-			Snapshot:   snap,
+			InstanceID: st.instanceID, Scope: st.scope,
+			DialogID: str(payload["dialog_id"]),
+			Snapshot: snap,
 		})
 		return err
 	}

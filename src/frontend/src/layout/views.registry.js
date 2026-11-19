@@ -12,7 +12,7 @@
  */
 import { defineAsyncComponent, defineComponent, h } from 'vue'
 import ExplorerPane from '../views/filetree/ExplorerPane.vue'
-import ChatPanel from '../views/chat/ChatPanel.vue'
+import WorkspaceContent from '../views/workspace/WorkspaceContent.vue'
 import SessionTree from '../views/tasks/SessionTree.vue'
 import SessionChat from '../views/tasks/SessionChat.vue'
 import TaskDetailSlot from './views/TaskDetailSlot.vue'
@@ -53,7 +53,7 @@ registerViews([
   // ── 布局区块 ──
   { key: 'explorer', component: ExplorerPane },
   { key: 'preview', component: PreviewView },
-  { key: 'chat', component: ChatPanel },
+  { key: 'chat', component: WorkspaceContent },
   { key: 'session-tree', component: SessionTree },
   { key: 'session-chat', component: SessionChat },
   { key: 'task-detail', component: TaskDetailSlot },

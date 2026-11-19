@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/chonkpilot/chonkpilot-workspace"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 
 	"github.com/chonkpilot/chonkpilot-filesys"
 )
@@ -316,74 +316,75 @@ func TestWriteErrorsExistsForbidden(t *testing.T) {
 	}
 }
 
-// TestWorkDirBoundToInstanceOnly（G-21 验收）：payload 的 work_dir **一律不被采信** ——
-// 基目录只取 instance-register 登记的绑定；自报绑外目录不能把读写落到绑外。
-func TestWorkDirBoundToInstanceOnly(t *testing.T) {
+// TestWorkDirScopeTrustBoundary（SCOPE-1）：显式 work_dir 只接受**已注册项目**；
+// 未注册目录不得把读写落到绑外；注册项目不依赖窗口实例生命周期。
+func TestWorkDirScopeTrustBoundary(t *testing.T) {
 	bus, _, wd := newTestFilesys(t)
 
-	// 他目录（模拟客户端自报 work_dir / 越界目标）
+	// 他目录（未注册 → 模拟客户端自报 work_dir / 越界目标）
 	other := t.TempDir()
 	secret := filepath.Join(other, "SECRET.txt")
 	if err := os.WriteFile(secret, []byte("SECRET"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// ① 自报 work_dir=other + 绑外绝对 path → forbidden（拒绝执行，而非落到他目录）
+	// ① 未注册 work_dir → forbidden（不回落实例绑定，也不落到他目录）
 	wantErrCode(t, call(bus, "filesys.list", map[string]any{"work_dir": other, "path": other}), "forbidden")
-	// 读他目录文件同样拒绝（绝对 path 落在绑定的 wd 之外）
 	wantErrCode(t, call(bus, "filesys.content", map[string]any{"work_dir": other, "path": secret}), "forbidden")
-	// 删除他目录文件 → forbidden 且文件仍在
 	wantErrCode(t, call(bus, "filesys.remove", map[string]any{"work_dir": other, "path": secret}), "forbidden")
 	if _, err := os.Stat(secret); err != nil {
 		t.Fatalf("绑外文件被删除：%v", err)
 	}
 
-	// ② 自报 work_dir=other + 相对 path → 作用于**实例绑定目录**（不影响他目录）
-	mustOK(t, "filesys.create", call(bus, "filesys.create", map[string]any{
+	// ② 未注册 work_dir + 相对 path → 同样拒绝（不静默写到实例绑定目录）
+	wantErrCode(t, call(bus, "filesys.create", map[string]any{
 		"work_dir": other, "dir": ".", "name": "probe.txt", "content": "x",
-	}))
-	if _, err := os.Stat(filepath.Join(wd, "probe.txt")); err != nil {
-		t.Fatalf("写入未落在实例绑定目录：%v", err)
+	}), "forbidden")
+	if _, err := os.Stat(filepath.Join(wd, "probe.txt")); err == nil {
+		t.Fatal("未注册 work_dir 的写入落到了实例绑定目录")
 	}
 	if _, err := os.Stat(filepath.Join(other, "probe.txt")); err == nil {
-		t.Fatal("写入落到了自报目录（work_dir 未被忽略）")
-	}
-	// list 自报 work_dir=other 时列的是实例绑定目录
-	res := mustOK(t, "filesys.list", call(bus, "filesys.list", map[string]any{"work_dir": other, "path": ""}))
-	if res["path"] != wd {
-		t.Fatalf("list 基目录应为实例绑定 wd=%v，实得 %v", wd, res["path"])
+		t.Fatal("未注册 work_dir 的写入落到了自报目录")
 	}
 
-	// ③ 未登记 instance_id → forbidden（不回落载荷 work_dir，即便载荷填的是绑定值）
-	wantErrCode(t, call(bus, "filesys.list", map[string]any{
+	// ③ 已注册 work_dir（PM 注册表）→ 即使 instance_id 未知也按项目解析（scope 优先）
+	res := mustOK(t, "filesys.list", call(bus, "filesys.list", map[string]any{
 		"work_dir": wd, "path": "", "instance_id": "ins-unregistered",
+	}))
+	if res["path"] != wd {
+		t.Fatalf("显式 work_dir 基目录应为 %v，实得 %v", wd, res["path"])
+	}
+	// 无 instance_id + 已注册 work_dir → 同样可用
+	mustOK(t, "filesys.list", bus.Emit(context.Background(), "filesys.list",
+		map[string]any{"work_dir": wd, "path": ""}).Wait())
+
+	// ④ 无 work_dir + 未登记 instance_id → forbidden（不接受"唯一实例回退"）
+	wantErrCode(t, call(bus, "filesys.list", map[string]any{
+		"path": "", "instance_id": "ins-unregistered",
 	}), "forbidden")
-	// 无 instance_id → forbidden（mq 侧不注入时同样拒绝）
-	unregistered := bus.Emit(context.Background(), "filesys.list", map[string]any{"work_dir": wd, "path": ""}).Wait()
-	wantErrCode(t, unregistered, "forbidden")
 
-	// ④ instance-exit 释放绑定 → 后续请求 forbidden（绑定不残留）
-	// G-29 验收：超时回收侧（llm / persist 的 sweep）如今也发**同一** instance-exit
-	// （主题与 payload 契约不变，61-消息一览 §4.1 ③）→ 这里按"收到 instance-exit 前可通 /
-	// 收到后被拒"逐项验证，并验证重复到达的幂等（同一 id 发两次不报错、绑定不复活）。
-	live := map[string]any{"work_dir": wd, "path": ""}
-	mustOK(t, "filesys.list", call(bus, "filesys.list", live)) // 绑定在 → 同一 payload 可通
-
+	// ⑤ instance-exit 释放实例绑定：无 scope 请求被拒；显式注册（pinned）项目仍可用。
+	liveNoScope := map[string]any{"path": ""}
+	mustOK(t, "filesys.list", call(bus, "filesys.list", liveNoScope))
+	pin := bus.Emit(context.Background(), "gui.project.add", map[string]any{"work_dir": wd}).Wait()
+	if len(pin.Errors) != 0 {
+		t.Fatalf("project.register 不应报错：%v", pin.Errors)
+	}
 	exited := bus.Emit(context.Background(), "instance-exit",
 		map[string]any{"instance_id": testInstanceID}).Wait()
 	if len(exited.Errors) != 0 {
 		t.Fatalf("instance-exit 处理不应报错：%v", exited.Errors)
 	}
-	wantErrCode(t, call(bus, "filesys.list", live), "forbidden") // 解绑 → 同一 payload 被拒
+	wantErrCode(t, call(bus, "filesys.list", liveNoScope), "forbidden")
+	mustOK(t, "filesys.list", call(bus, "filesys.list", map[string]any{"work_dir": wd, "path": ""}))
 
-	// 幂等：同一 instance_id 的 instance-exit 重复到达（如 llm 与 persist 两处 sweep 同时
-	// 判定、或显式 exit 与超时回收叠加）→ 不报错、绑定不复活。
+	// 幂等：同一 instance_id 的 instance-exit 重复到达 → 不报错、绑定不复活。
 	again := bus.Emit(context.Background(), "instance-exit",
 		map[string]any{"instance_id": testInstanceID}).Wait()
 	if len(again.Errors) != 0 {
 		t.Fatalf("重复 instance-exit 不应报错：%v", again.Errors)
 	}
-	wantErrCode(t, call(bus, "filesys.list", live), "forbidden")
+	wantErrCode(t, call(bus, "filesys.list", liveNoScope), "forbidden")
 }
 
 // changedMatches 判断广播载荷是否命中目标路径（单文件事件 path 或目录事件 children 中的节点 path）。

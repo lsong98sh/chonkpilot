@@ -252,7 +252,7 @@ func (s *Server) forgetPendingTaskIndex(instanceID, taskID string, tc *turnCtx) 
 		return
 	}
 	s.mu.Lock()
-	k := instKey(instanceID, taskID)
+	k := s.runKey(instanceID, taskID)
 	if s.taskTurnIndex[k] == tc {
 		delete(s.taskTurnIndex, k)
 	}
@@ -280,11 +280,11 @@ func (s *Server) taskTurnFor(instanceID, turn, taskID string) *turnCtx {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if turn != "" {
-		if tc := s.turnCtxByKeyLocked(instKey(instanceID, turn)); tc != nil && tc.pendingHas(taskID) {
+		if tc := s.turnCtxByKeyLocked(s.runKey(instanceID, turn)); tc != nil && tc.pendingHas(taskID) {
 			return tc
 		}
 	}
-	if tc := s.taskTurnIndex[instKey(instanceID, taskID)]; tc != nil &&
+	if tc := s.taskTurnIndex[s.runKey(instanceID, taskID)]; tc != nil &&
 		(instanceID == "" || tc.req.InstanceID == instanceID) {
 		return tc
 	}
@@ -367,6 +367,10 @@ func (s *Server) notify(tc *turnCtx, typ string, payload map[string]any) {
 	ev := map[string]any{
 		"type": typ, "payload": payload,
 		"instance_id": tc.req.InstanceID, "session": tc.req.Session, "turn": tc.req.Turn,
+		"work_dir": tc.req.WorkDir,
+	}
+	if tc.req.DataDir != "" {
+		ev["data_dir"] = tc.req.DataDir
 	}
 	s.publish("llm-receive", ev)
 }

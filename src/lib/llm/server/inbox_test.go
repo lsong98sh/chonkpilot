@@ -669,7 +669,7 @@ func TestInboxDiscardBeforeConsume(t *testing.T) {
 		ID: "i-del-1", SessionID: "s-del1", Type: "insert",
 		Content: "【撤回】不得落库", Status: "pending",
 	}
-	s.inboxRemember(item)
+	s.inboxRemember("ins-test", item)
 	s.inboxSetStatus(item.ID, "discarded") // 用户已在消费前撤回
 
 	tc.engineRouteInsert(item)
@@ -743,8 +743,8 @@ func TestInboxNextTurnBatchSkipsDiscarded(t *testing.T) {
 	idKeep := appendItem("【保留】A")
 	idDrop := appendItem("【撤回】B")
 	// 内存索引（consumeNextTurn 的 pending 门槛/复核依赖它）
-	s.inboxRemember(facade.InboxItem{ID: idKeep, SessionID: "s-batch", Type: "next_turn", Content: "【保留】A", Status: "pending"})
-	s.inboxRemember(facade.InboxItem{ID: idDrop, SessionID: "s-batch", Type: "next_turn", Content: "【撤回】B", Status: "pending"})
+	s.inboxRemember("ins-test", facade.InboxItem{ID: idKeep, SessionID: "s-batch", Type: "next_turn", Content: "【保留】A", Status: "pending"})
+	s.inboxRemember("ins-test", facade.InboxItem{ID: idDrop, SessionID: "s-batch", Type: "next_turn", Content: "【撤回】B", Status: "pending"})
 	if v := s.bus.Emit(context.Background(), "inbox-discard", jb(map[string]any{
 		"instance_id": "ins-test", "id": idDrop,
 	})).Wait(); v.Err() != nil {
@@ -805,7 +805,7 @@ func TestInboxBatchInsertMerged(t *testing.T) {
 		if err != nil {
 			t.Fatalf("append %q: %v", c, err)
 		}
-		s.inboxRemember(facade.InboxItem{ID: str(res["id"]), SessionID: "s-bat", Type: "insert", Content: c, Status: "pending"})
+		s.inboxRemember("ins-test", facade.InboxItem{ID: str(res["id"]), SessionID: "s-bat", Type: "insert", Content: c, Status: "pending"})
 	}
 	s.flushInsertIntents(tc)
 
@@ -904,7 +904,7 @@ func appendInsertIntent(t *testing.T, s *Server, session, content string) string
 		t.Fatalf("append insert intent %q: %v", content, err)
 	}
 	id := str(res["id"])
-	s.inboxRemember(facade.InboxItem{ID: id, SessionID: session, TurnID: turnID, Type: "insert", Content: content, Status: "pending"})
+	s.inboxRemember("ins-test", facade.InboxItem{ID: id, SessionID: session, TurnID: turnID, Type: "insert", Content: content, Status: "pending"})
 	return id
 }
 
@@ -1207,7 +1207,7 @@ func TestInboxLazyRestoreOnlyDurable(t *testing.T) {
 	if persist.Sval(eph["status"]) != "pending" {
 		t.Fatalf("易失行不应被消费（status=%q）", persist.Sval(eph["status"]))
 	}
-	if s.inboxHasPending(sess) {
+	if s.inboxHasPending("ins-test", sess) {
 		t.Fatalf("恢复的 durable pending 应已消费完")
 	}
 }
@@ -1219,7 +1219,7 @@ func TestClearEphemeralLanesOnStartup(t *testing.T) {
 	s := newTestServer(t, llm)
 
 	const sess = "s-ins-clear"
-	s.inboxRemember(facade.InboxItem{ID: "i-clear", SessionID: sess, Type: "next_turn", Status: "pending"})
+	s.inboxRemember("ins-test", facade.InboxItem{ID: "i-clear", SessionID: sess, Type: "next_turn", Status: "pending"})
 
 	s.notifyMu.Lock()
 	s.notifyQueues["k"] = []completionNotice{{taskID: "tk"}}
@@ -1239,7 +1239,7 @@ func TestClearEphemeralLanesOnStartup(t *testing.T) {
 	if !empty {
 		t.Fatal("易失 lane 的内存状态应在启动时清空")
 	}
-	if !s.inboxHasPending(sess) {
+	if !s.inboxHasPending("ins-test", sess) {
 		t.Fatal("持久 lane（用户 pending）不得被启动清空")
 	}
 }

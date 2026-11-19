@@ -4,14 +4,16 @@
 // **workdir / instance 路由属于业务**，规则集中在 `Router.Route`。本文件是唯一实现，
 // `src/lib/gui/mqpolicy` 只保留薄封装（`WorkDirPolicy` 把 dispatch.Sink 转成本包的 `Sink`）。
 //
-// 规则（与迁移前逐字等价）：
+// 规则（SCOPE-1：scope 订阅 + 旧实例/workdir 语义并存）：
 //
 //	① 自发布丢弃：发布方自己的那条事件不回投（topic + 载荷指纹，1s 窗口）；
 //	② `data-*` 的 persist 同主题应答丢弃（`{req_id, ok, result|error}` 信封）；
-//	③ 载荷 `instance_id` 非空 → 只投该实例的 sink（该 sink 未标识则放行；无匹配 = 空）；
-//	④ workdir 级主题 → 只投同 workdir 的 sink（事件 workdir 未知 → 保守全投）；
-//	⑤ 其余 → 全投。
+//	③ 事件带 `work_dir` → 项目 scope 生效：投命中任一订阅 scope 的 sink，并额外投
+//	   `instance_id` 定向目标（同一 sink 只投一次）；
+//	④ 事件不带 `work_dir`（或 sink 无订阅 = wildcard）→ 旧语义：`instance_id` 非空只投
+//	   该实例；workdir 级主题只投同 workdir；其余全投。
 //
+// 空 scope 订阅 = wildcard（所有项目 + 全局）；订阅字段未填 = 通配；不做树形递归展开。
 // 收紧**只会缩小**投递集合：instance 级精确匹配不受 workdir 判定影响；任何未知一律放行。
 package workspace
 
@@ -68,6 +70,10 @@ type Router struct {
 	mu        sync.Mutex
 	published map[ledgerKey]pubStamp
 
+	// subs 是每 sink 的 scope 订阅（sink ID → scopes）。空 = 未订阅 = wildcard（所有 scope）。
+	subMu sync.RWMutex
+	subs  map[string][]Scope
+
 	// instanceWorkDir 是 `instance_id → work_dir` 的**只读视图**：由 PM 的实例视图注入
 	// （唯一活动实例视图），本结构**不自建第二份登记表**。nil / 未命中 → workdir 未知。
 	rMu             sync.RWMutex
@@ -76,7 +82,63 @@ type Router struct {
 
 // NewRouter 构造路由策略（空发布账本）。
 func NewRouter() *Router {
-	return &Router{published: make(map[ledgerKey]pubStamp)}
+	return &Router{published: make(map[ledgerKey]pubStamp), subs: make(map[string][]Scope)}
+}
+
+// Subscribe 为 sink 增加一个 scope 订阅。空 Scope = wildcard（所有 scope）。
+func (r *Router) Subscribe(sinkID string, scope Scope) {
+	if r == nil || sinkID == "" {
+		return
+	}
+	r.subMu.Lock()
+	defer r.subMu.Unlock()
+	for _, s := range r.subs[sinkID] {
+		if s.Empty() && scope.Empty() {
+			return
+		}
+		if s.Same(scope) {
+			return
+		}
+	}
+	r.subs[sinkID] = append(r.subs[sinkID], scope)
+}
+
+// Unsubscribe 移除一个 scope 订阅（空 scope = wildcard）。
+func (r *Router) Unsubscribe(sinkID string, scope Scope) {
+	if r == nil || sinkID == "" {
+		return
+	}
+	r.subMu.Lock()
+	defer r.subMu.Unlock()
+	list := r.subs[sinkID]
+	out := list[:0]
+	for _, s := range list {
+		if !s.Same(scope) {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		delete(r.subs, sinkID)
+		return
+	}
+	r.subs[sinkID] = out
+}
+
+// UnsubscribeAll 清空某 sink 的订阅（sink 注销）。
+func (r *Router) UnsubscribeAll(sinkID string) {
+	if r == nil || sinkID == "" {
+		return
+	}
+	r.subMu.Lock()
+	delete(r.subs, sinkID)
+	r.subMu.Unlock()
+}
+
+// subscriptions 返回某 sink 的订阅快照（无 = nil = wildcard）。
+func (r *Router) subscriptions(sinkID string) []Scope {
+	r.subMu.RLock()
+	defer r.subMu.RUnlock()
+	return append([]Scope(nil), r.subs[sinkID]...)
 }
 
 // SetInstanceWorkDir 注入 `instance_id → work_dir` 反查（宿主装配期调用一次）。
@@ -147,6 +209,7 @@ func (r *Router) Route(topic string, payload []byte, sinks []Sink) []Target {
 		return nil
 	}
 	instID := eventInstanceID(payload)
+	eventScope := ScopeFromPayload(payload)
 	// ④ workdir 级主题 → 解析事件 workdir（载荷 `work_dir` 优先，否则按 instance 反查）。
 	narrow, wd := false, ""
 	if IsWorkDirTopic(topic) {
@@ -157,21 +220,43 @@ func (r *Router) Route(topic string, payload []byte, sinks []Sink) []Target {
 				"topic", topic, "instance_id", instID)
 		}
 	}
+	// 只有**带 work_dir 的事件**才参与项目 scope 订阅匹配；未带 work_dir 的旧事件保持
+	// 「instance 定向 / 全局广播」语义（大量既有主题/第三方事件尚未补 work_dir）。
+	// 例外：workdir-opened/closed 是**项目注册表生命周期**，必须广播到所有窗口
+	// （否则未订阅新项目的窗口看不到工作区树变化）。
+	scopedMsg := eventScope.WorkDir != "" &&
+		topic != msgkeys.TopicWorkdirOpened && topic != msgkeys.TopicWorkdirClosed
 	out := make([]Target, 0, len(sinks))
 	for i, s := range sinks {
 		// ① 自发布：本 sink 就是发布方 → 吞掉这条回环。
 		if r.selfPublished(s.ID, topic, payload) {
 			continue
 		}
-		// ③ 载荷带 `instance_id` 且本 sink 已声明实例归属 → 必须精确相等（未声明一律放行）。
-		if instID != "" {
-			if own := s.instanceOf(); own != "" && own != instID {
+		own := s.instanceOf()
+		subs := r.subscriptions(s.ID)
+		if scopedMsg && len(subs) > 0 {
+			// 显式订阅：scope 命中即投（允许跨 instance/workdir）；定向消息额外投目标实例。
+			matched := false
+			for _, sub := range subs {
+				if eventScope.Match(sub) {
+					matched = true
+					break
+				}
+			}
+			targetHit := instID != "" && (own == "" || own == instID)
+			if !matched && !targetHit {
 				continue
 			}
-		}
-		// ④ workdir 级主题只投**同 workdir** 的 sink（两边都已知时才判；sink 未知 → 放行）。
-		if narrow && s.WorkDir != "" && !pathx.Same(s.WorkDir, wd) {
-			continue
+		} else {
+			// 无 scope 的事件 / 无订阅 sink（wildcard）：保留旧实例/workdir 规则。
+			if instID != "" {
+				if own != "" && own != instID {
+					continue
+				}
+			}
+			if narrow && s.WorkDir != "" && !pathx.Same(s.WorkDir, wd) {
+				continue
+			}
 		}
 		out = append(out, Target{Index: i, ID: s.ID, Instance: s.Instance, WorkDir: s.WorkDir, Plugin: s.Plugin})
 	}
@@ -225,6 +310,12 @@ var ServerTopics = map[string]struct{}{
 	msgkeys.TopicDataSessionTitleChanged: {},
 	msgkeys.TopicDataUserConfigRefresh:   {},
 	msgkeys.TopicConfigRefresh:           {},
+}
+
+// TargetedTopics 是「带定向目标」的主题：除 scope 订阅者外，`instance_id` 指定的目标 sink
+// 必须收到（ask_user 的投递语义：窗口要弹提问，即使没有显式订阅该 scope）。
+var TargetedTopics = map[string]struct{}{
+	msgkeys.TopicSessionAsk: {},
 }
 
 // IsWorkDirTopic 判定主题是否 workdir 级（server 级白名单优先）。

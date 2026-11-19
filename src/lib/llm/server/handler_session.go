@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/chonkpilot/chonkpilot-data"
+	"github.com/chonkpilot/chonkpilot-data/facade"
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/lsong98sh/chonkpilot-agent/router"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
+	"github.com/lsong98sh/chonkpilot-util/pathx"
 )
 
 // onLLMSimple 无上下文单轮 LLM 方法面（SubjectLLMSimple，mq 方法调用：请求→同主题 promise）：
@@ -143,8 +147,37 @@ func (s *Server) serveLLMStart(v *mq.Value, req StartReq, resetNextRun bool) err
 		v.Result = map[string]any{"accepted": false, "error": "instance not registered"}
 		return nil
 	}
-	req.WorkDir = rec.WorkDir // work_dir/data_dir 随 instance-id 绑定，不随 llm-start 传
-	req.DataDir = rec.DataDir
+	// 项目作用域：显式 work_dir 优先（一个窗口可运行多个项目）；缺省才用窗口绑定。
+	// 本轮开始后 scope 不可变，后续 send/cancel/recover 都从 turnCtx 取。
+	explicitScope := strings.TrimSpace(req.WorkDir) != ""
+	req.ScopeExplicit = explicitScope
+	if !explicitScope {
+		req.WorkDir = rec.WorkDir
+		req.DataDir = rec.DataDir
+	} else {
+		if !filepath.IsAbs(req.WorkDir) {
+			v.Result = map[string]any{"accepted": false, "error": "work_dir must be absolute"}
+			return nil
+		}
+		// 信任边界：显式 work_dir 必须已在项目注册表中（前端/插件不得凭任意绝对路径起轮）。
+		if !data.HasWorkDir(req.WorkDir) {
+			v.Result = map[string]any{"accepted": false, "error": "work_dir is not a registered project"}
+			return nil
+		}
+		dd, _ := data.DataDirForWorkDir(req.WorkDir)
+		if req.DataDir != "" && !pathx.Same(dd, req.DataDir) {
+			v.Result = map[string]any{"accepted": false, "error": "data_dir does not match the registered project"}
+			return nil
+		}
+		req.DataDir = dd
+	}
+	scope := facade.Scope{}
+	if explicitScope {
+		scope = facade.Scope{WorkDir: req.WorkDir, DataDir: req.DataDir}
+		// 同窗口新增 workdir：按该项目的 capability 根补注册 dir 节点（热重扫不覆盖显式 scope 节点）。
+		s.registerCapabilityNodes(req.InstanceID, req.WorkDir)
+	}
+	s.rememberScope(req.InstanceID, req.Session, req.Turn, scope)
 	// 运行态归属（SCOPE-1 强制不变式，2026-10-28）：该 session 已被**另一个窗口实例**持有活动
 	// 运行态 → 拒绝（同一 dialog 不得在两个窗口跑；走既有 accepted:false 应答，不新增字段）。
 	// 无主 / 同一实例 → 本次受理即成为 owner（「用户选择即激活」）。
@@ -172,7 +205,7 @@ func (s *Server) serveLLMStart(v *mq.Value, req StartReq, resetNextRun bool) err
 		// MOD-1 M6b：启动扫描未答 ask（须在遗留清理**之前**——清理会把 running 行置
 		// interrupted，扫描只用于留痕 / 计数，失效应答由 ask_id 回查兜底）。
 		s.scanPendingAsks(req.InstanceID)
-		store := s.newSessionStore(req.InstanceID)
+		store := s.newSessionStore(req.InstanceID, scope)
 		if err := store.CleanupStaleTurns(); err != nil {
 			// B-41：失败须留痕且**撤销占位** → 下次使用重试（原先吞错 + 提前置位 → 永不重试）。
 			logf("[chonkpilot-server] CleanupStaleTurns failed (instance=%s): %v\n", req.InstanceID, err)
@@ -198,14 +231,14 @@ func (s *Server) serveLLMStart(v *mq.Value, req StartReq, resetNextRun bool) err
 	s.mu.Lock()
 	// 同 instance 同 session 互斥（2026-09-19 缺口 5：busy 按 instance 分桶，
 	// 不同 instance 的同名 session 互不阻塞）。
-	if busy, exists := s.busy[instKey(req.InstanceID, req.Session)]; exists {
+	if busy, exists := s.busy[s.runKey(req.InstanceID, req.Session)]; exists {
 		s.mu.Unlock()
 		v.Result = map[string]any{"accepted": false, "error": "session busy: " + busy}
 		return nil
 	}
 	s.mu.Unlock()
 
-	store := s.newSessionStore(req.InstanceID)
+	store := s.newSessionStore(req.InstanceID, scope)
 	// 同轮次继续：未带 turn → 后端取该 session 最近一轮（带 turn 则直接采用）。
 	if req.Continue && req.Turn == "" {
 		req.Turn = store.LatestTurnID(req.Session)
@@ -245,13 +278,13 @@ func (s *Server) serveLLMStart(v *mq.Value, req StartReq, resetNextRun bool) err
 	tc := newTurnCtx(context.Background(), s, req)
 	s.mu.Lock()
 	// 运行态登记键 = instKey(instance, id)（缺口 5：按 instance 分桶）。
-	s.busy[instKey(req.InstanceID, req.Session)] = req.Turn
-	s.registerTurnLocked(instKey(req.InstanceID, req.Turn), tc)
+	s.busy[s.runKey(req.InstanceID, req.Session)] = req.Turn
+	s.registerTurnLocked(s.runKey(req.InstanceID, req.Turn), tc)
 	if req.Continue {
 		// 同轮次继续：首个 text-user 以 Kind=continue 注入（非新轮边界）。
-		s.continuePending[instKey(req.InstanceID, req.Turn)] = true
+		s.continuePending[s.runKey(req.InstanceID, req.Turn)] = true
 	} else {
-		delete(s.continuePending, instKey(req.InstanceID, req.Turn))
+		delete(s.continuePending, s.runKey(req.InstanceID, req.Turn))
 	}
 	s.mu.Unlock()
 
@@ -300,6 +333,9 @@ func (s *Server) onLLMSend(ctx context.Context, _ string, v *mq.Value) error {
 		v.Result = map[string]any{"accepted": false, "error": "bad request"}
 		return nil
 	}
+	if req.WorkDir != "" {
+		s.rememberScope(req.InstanceID, req.Session, req.Turn, facade.Scope{WorkDir: req.WorkDir, DataDir: req.DataDir})
+	}
 	// 运行态归属预检（SCOPE-1 强制不变式，2026-10-28）：该 session 已被**另一个窗口实例**持有
 	// 活动运行态 → 拒绝（走既有 accepted:false 应答，不新增字段）。载荷只带 turn 时按 turn 全局
 	// 反查会话（不按 instance 过滤），否则认不出「别的窗口正在跑」。
@@ -314,9 +350,9 @@ func (s *Server) onLLMSend(ctx context.Context, _ string, v *mq.Value) error {
 	if sess == nil && req.Turn == "" && req.Session != "" {
 		sess = s.turnBySessionSessionLocked(req.InstanceID, req.Session)
 	}
-	key := instKey(req.InstanceID, req.Turn)
+	key := s.runKey(req.InstanceID, req.Turn)
 	if sess != nil {
-		key = instKey(sess.InstanceID(), sess.TurnID())
+		key = s.runKey(sess.InstanceID(), sess.TurnID())
 	}
 	cont := s.continuePending[key]
 	if cont {
@@ -521,7 +557,27 @@ func (s *Server) cancelTurnCleanup(instanceID string, turnIDs []string, budget t
 func (s *Server) onSessionRunningList(_ context.Context, _ string, v *mq.Value) error {
 	s.mu.Lock()
 	list := make([]map[string]any, 0, len(s.busy))
+	// busy 键可能是项目作用域键（projectKey + session）或旧实例键（instance + session），
+	// 不能统一反解出唯一 instance/workdir；运行态注册表 turns 保留了真实来源，优先用它。
 	for key, turn := range s.busy {
+		if sess := s.turns[key]; sess != nil {
+			item := map[string]any{
+				"session_id":  sess.SessionID(),
+				"turn":        turn,
+				"instance_id": sess.InstanceID(),
+			}
+			if tc, ok := sess.(*turnCtx); ok {
+				if tc.req.WorkDir != "" {
+					item["work_dir"] = tc.req.WorkDir
+				}
+				if tc.req.DataDir != "" {
+					item["data_dir"] = tc.req.DataDir
+				}
+			}
+			list = append(list, item)
+			continue
+		}
+		// 无 turns 条目（旧调用方 / 仅 busy 注册）→ 按旧键拆分，字段口径不变。
 		instanceID, session := splitInstKey(key)
 		list = append(list, map[string]any{
 			"session_id":  session,

@@ -43,6 +43,9 @@ const BASES = [
   ['internal/adaptor/', join(SIBLING_ROOT, 'chonkpilot-agent/router/src')],
   ['internal/', join(REPO_ROOT, 'src/lib/data')],
   ['llm/server/', join(REPO_ROOT, 'src/lib')],
+  // 64-配置项一览在「llm server」列使用 `server/` / `plugindata/` 简写（文件实际在 src/lib/llm 下）。
+  ['server/', join(REPO_ROOT, 'src/lib/llm')],
+  ['plugindata/', join(REPO_ROOT, 'src/lib/llm')],
   ['mcp-server/server/', join(REPO_ROOT, 'src/lib')],
   ['gui/bridge/', join(REPO_ROOT, 'src/lib')],
   ['views/', join(REPO_ROOT, 'src/frontend/src')],

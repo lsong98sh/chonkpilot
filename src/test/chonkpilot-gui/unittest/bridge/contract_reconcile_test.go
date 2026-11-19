@@ -393,6 +393,11 @@ func TestForwardedEventKeysSubsetOfContract(t *testing.T) {
 				wd := strings.ReplaceAll(br.WorkDir(), `\`, "/")
 				raw = fmt.Sprintf(`{"instance_id":"inst-test","work_dir":%q,"path":%q,"operation":"write"}`,
 					wd, wd+"/a")
+			} else if strings.Contains(raw, `"work_dir":"/w"`) {
+				// SCOPE-1：带 work_dir 的事件按项目 scope 投递 → 夹具须指向本桥项目；
+				// 无 instance_id 的 tasks.* 否则会被正确丢弃（不是投递缺陷）。
+				wd := strings.ReplaceAll(br.WorkDir(), `\`, "/")
+				raw = strings.Replace(raw, `"work_dir":"/w"`, fmt.Sprintf(`"work_dir":%q`, wd), 1)
 			}
 			pubFire(bus, tc.subject, []byte(raw))
 			env := recvEnvelopeTyp(t, evals, tc.frontType, time.Second)

@@ -93,8 +93,12 @@ func (b *Base) RefreshScopedKeys(domain, instanceID string, ids []string, op str
 	if b.DomainList != nil {
 		list = b.DomainList(domain, instanceID, scope) // 同 work_dir 各实例同源 → 计算一次复用
 	}
+	wd, dd := scope.WorkDir, scope.DataDir
+	if wd == "" {
+		wd, dd, _ = data.BindOf(instanceID)
+	}
 	for _, target := range b.refreshTargets(domain, instanceID) {
-		b.emitRefresh(domain, target, ids, op, list)
+		b.emitRefresh(domain, target, ids, op, list, wd, dd)
 	}
 }
 
@@ -117,13 +121,19 @@ func (b *Base) refreshTargets(domain, instanceID string) []string {
 // emitRefresh 按 **单个目标实例** 发出一次 `data-<domain>-refresh`（载荷形状不变：
 // `{instance_id, id, ids?, op, list?}`；`list` 由调用方一次解析、跨目标复用）。
 // user-config 域额外兼容广播 `config-refresh`（I-42；单播 → 恒 1 条，行为不变）。
-func (b *Base) emitRefresh(domain, instanceID string, ids []string, op string, list any) {
+func (b *Base) emitRefresh(domain, instanceID string, ids []string, op string, list any, workDir, dataDir string) {
 	payload := map[string]any{"id": ids[0], "op": op}
 	if len(ids) > 1 {
 		payload["ids"] = append([]string(nil), ids...) // 批量才带（单键与改前完全一致）
 	}
 	if instanceID != "" {
 		payload["instance_id"] = instanceID
+	}
+	if workDir != "" {
+		payload["work_dir"] = workDir
+	}
+	if dataDir != "" {
+		payload["data_dir"] = dataDir
 	}
 	if list != nil {
 		payload["list"] = list
@@ -135,6 +145,9 @@ func (b *Base) emitRefresh(domain, instanceID string, ids []string, op string, l
 			"instance_id": instanceID, // 无归属 → 空串（字段必带，61 §0）
 			"id":          ids[0],     // 兼容广播恒单键（user-config 恒单 id，不受批量影响）
 			"op":          op,
+		}
+		if workDir != "" {
+			cf["work_dir"] = workDir
 		}
 		if list != nil {
 			cf["list"] = list

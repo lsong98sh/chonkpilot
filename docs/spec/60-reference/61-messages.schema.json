@@ -252,6 +252,8 @@
     "probe": { "type": "object", "desc": "环境探测结果" },
     "progress": { "type": "number", "desc": "已处理量（下游 MCP notifications/progress 的 progress；mcp-tools-progress，2026-10-28 GATEWAY-2 L8）" },
     "project_spec": { "type": "string", "desc": "工程规格路径/内容" },
+    "project": { "type": "object", "desc": "已注册工作区项目（work_dir/data_dir/prj_dir/prjusr_dir/label）" },
+    "projects": { "type": "array", "desc": "工作区项目注册表快照（gui.project.list）" },
     "prompt": { "type": "string", "desc": "提示词" },
     "prompts": { "type": "array", "desc": "提示词清单" },
     "protocol": { "type": "string", "desc": "LLM 协议" },
@@ -262,6 +264,7 @@
     "question": { "type": "string", "desc": "ask_user 提问文本" },
     "queued": { "type": "bool", "desc": "已投递队列（不等待处理完成）" },
     "received_at": { "type": "int", "desc": "宿主接收时刻（unix ms；Ask 中心待办排序/展示）" },
+    "removed": { "type": "bool", "desc": "项目移除结果（true = 已移除；false = 被活动实例占用拒绝）" },
     "reason": { "type": "string", "desc": "原因" },
     "recursive": { "type": "bool", "desc": "递归监视" },
     "recommended": { "type": "array", "desc": "ask_user 推荐选项值列表（前端高亮）" },
@@ -634,6 +637,72 @@
       "payload": { "path": { "type": "string", "required": true } },
       "result": { "ok": { "type": "bool", "required": true } },
       "notes": "**同进程**打开/激活该项目主窗口 —— 已打开 → 置前（不新建、不报 workdir busy）；未打开 → 新建主窗口。当前窗口不做就地切换（多项目并存）。"
+    },
+    {
+      "topic": "gui.project.add",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "work_dir": { "type": "string", "required": true },
+        "data_dir": { "type": "string", "required": false }
+      },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "project": { "type": "object", "required": false }
+      },
+      "notes": "SCOPE-1（2026-11-18）：把一个**已存在的绝对目录**登记为工作区项目（不新开窗口）。宿主校验目录存在 + PM 注册表登记 → 广播 workdir-opened；同一窗口可同时访问多个 workdir。"
+    },
+    {
+      "topic": "gui.project.remove",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": { "work_dir": { "type": "string", "required": true } },
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "removed": { "type": "bool", "required": true }
+      },
+      "notes": "移除工作区项目（仍有绑定实例 → removed=false 拒绝）。成功 → workdir-closed + 数据层注销显式 work_dir。"
+    },
+    {
+      "topic": "gui.project.list",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {},
+      "result": {
+        "ok": { "type": "bool", "required": true },
+        "projects": { "type": "array", "required": true }
+      },
+      "notes": "当前工作区项目注册表快照（work_dir/data_dir/prj_dir/prjusr_dir/label）。"
+    },
+    {
+      "topic": "gui.scope.subscribe",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "work_dir": { "type": "string", "required": false },
+        "dialog_id": { "type": "string", "required": false },
+        "session_id": { "type": "string", "required": false },
+        "turn_id": { "type": "string", "required": false },
+        "task_id": { "type": "string", "required": false },
+        "tool_call_id": { "type": "string", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "窗口向 PM 路由表增加一个 scope 订阅（一个窗口可订阅多个 workdir；空 scope = wildcard）。只投命中 scope 的事件（定向 instance 消息仍必投目标）。"
+    },
+    {
+      "topic": "gui.scope.unsubscribe",
+      "face": "gui",
+      "direction": "client->gui",
+      "payload": {
+        "work_dir": { "type": "string", "required": false },
+        "dialog_id": { "type": "string", "required": false },
+        "session_id": { "type": "string", "required": false },
+        "turn_id": { "type": "string", "required": false },
+        "task_id": { "type": "string", "required": false },
+        "tool_call_id": { "type": "string", "required": false }
+      },
+      "result": { "ok": { "type": "bool", "required": true } },
+      "notes": "移除一个 scope 订阅（页签关闭 / 项目移除时对称退订）。"
     },
     {
       "topic": "gui.recent.list",
@@ -1108,6 +1177,8 @@
       "direction": "data->client",
       "event": {
         "instance_id": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false },
+        "data_dir": { "type": "string", "required": false },
         "id": { "type": "string", "required": true },
         "ids": { "type": "array", "required": false },
         "op": { "type": "string", "required": true },
@@ -1154,6 +1225,8 @@
       "direction": "data->client",
       "event": {
         "instance_id": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false },
+        "data_dir": { "type": "string", "required": false },
         "id": { "type": "string", "required": true },
         "ids": { "type": "array", "required": false },
         "op": { "type": "string", "required": true },
@@ -1198,6 +1271,8 @@
       "direction": "data->client",
       "event": {
         "instance_id": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false },
+        "data_dir": { "type": "string", "required": false },
         "id": { "type": "string", "required": true },
         "ids": { "type": "array", "required": false },
         "op": { "type": "string", "required": true },
@@ -1241,6 +1316,8 @@
       "direction": "data->client",
       "event": {
         "instance_id": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false },
+        "data_dir": { "type": "string", "required": false },
         "id": { "type": "string", "required": true },
         "ids": { "type": "array", "required": false },
         "op": { "type": "string", "required": true },
@@ -1296,6 +1373,8 @@
       "direction": "data->client",
       "event": {
         "instance_id": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false },
+        "data_dir": { "type": "string", "required": false },
         "id": { "type": "string", "required": true },
         "ids": { "type": "array", "required": false },
         "op": { "type": "string", "required": true },
@@ -1353,6 +1432,8 @@
       "direction": "data->client",
       "event": {
         "instance_id": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false },
+        "data_dir": { "type": "string", "required": false },
         "id": { "type": "string", "required": true },
         "ids": { "type": "array", "required": false },
         "op": { "type": "string", "required": true },
@@ -1399,6 +1480,8 @@
       "direction": "data->client",
       "event": {
         "instance_id": { "type": "string", "required": false },
+        "work_dir": { "type": "string", "required": false },
+        "data_dir": { "type": "string", "required": false },
         "id": { "type": "string", "required": true },
         "ids": { "type": "array", "required": false },
         "op": { "type": "string", "required": true },
@@ -2434,7 +2517,9 @@
         "session": { "type": "string", "required": true },
         "turn": { "type": "string", "required": true },
         "type": { "type": "string", "required": true },
-        "payload": { "type": "any", "required": true }
+        "payload": { "type": "any", "required": true },
+        "work_dir": { "type": "string", "required": false },
+        "data_dir": { "type": "string", "required": false }
       }
     },
     {
