@@ -125,7 +125,7 @@ func (f *fakeData) rowClosed(row map[string]any) bool {
 
 func (f *fakeData) reply(subject, reqID string, result map[string]any) {
 	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": true, "result": result})
-	f.bus.Emit(context.Background(), subject, b)
+	f.bus.Publish(subject, b)
 }
 
 // upsertCount upsert 次数（全部落权威表）。

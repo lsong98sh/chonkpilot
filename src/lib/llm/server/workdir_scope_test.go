@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,24 +29,24 @@ func TestOneWindowTwoWorkDirs(t *testing.T) {
 	wslayout.SetUsrRootOverride("")
 	t.Cleanup(func() { wslayout.SetUsrRootOverride(prevRoot) })
 	// 未注册 → 显式 work_dir 必须拒绝（不接受任意绝对路径）。
-	v := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-unreg", "instance_id": "ins-test", "session": "s-unreg", "turn": "t-unreg",
 		"work_dir": wdB,
-	})).Wait()
+	}))
 	if res, _ := v.Result.(map[string]any); res == nil || res["accepted"] == true {
 		t.Fatalf("未注册 workdir 应拒绝，实际 %+v", v.Result)
 	}
 
 	// 注册 B（等价 gui.project.add → workdir-opened）→ 数据层登记显式项目根。
-	s.bus.Emit(context.Background(), "workdir-opened", jb(map[string]any{
+	s.bus.Publish("workdir-opened", jb(map[string]any{
 		"work_dir": wdB, "data_dir": "",
-	})).Wait()
+	}))
 
 	// 已注册 workdir + 不匹配的 data_dir → 仍拒绝（数据根不可由请求改写）。
-	v = s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	v = emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-datadir", "instance_id": "ins-test", "session": "s-dd", "turn": "t-dd",
 		"work_dir": wdB, "data_dir": t.TempDir(),
-	})).Wait()
+	}))
 	if res, _ := v.Result.(map[string]any); res == nil || res["accepted"] == true {
 		t.Fatalf("data_dir 与注册表不一致应拒绝，实际 %+v", v.Result)
 	}
@@ -59,17 +58,17 @@ func TestOneWindowTwoWorkDirs(t *testing.T) {
 	}
 
 	// B 起轮 + 发送，直到终态。
-	v = s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	v = emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-b", "instance_id": "ins-test", "session": "s-b", "turn": "t-b",
 		"work_dir": wdB,
-	})).Wait()
+	}))
 	if res, _ := v.Result.(map[string]any); res == nil || res["accepted"] != true {
 		t.Fatalf("B 起轮应受理，实际 %+v", v.Result)
 	}
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-b", "turn": "t-b",
 		"type": "text-user", "content": "hello B",
-	})).Wait()
+	}))
 	evs := collectTurn(t, s.bus, "t-b", 10*time.Second)
 	c := lastComplete(evs)
 	if c == nil || c["status"] != "complete" {

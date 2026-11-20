@@ -330,14 +330,14 @@ func TestTurnAutoLLMSwitchesProviderOnRetry(t *testing.T) {
 	if err := newSessionStore(s.bus, "ins-test").EnsureSession("s-auto"); err != nil {
 		t.Fatalf("EnsureSession: %v", err)
 	}
-	res, _ := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	res, _ := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-t-auto", "instance_id": "ins-test", "session": "s-auto", "turn": "t-auto",
 		"llm": "auto",
-	})).Wait().Result.(map[string]any)
+	})).Result.(map[string]any)
 	if res["accepted"] != true {
 		t.Fatalf("llm-start rejected: %+v", res)
 	}
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-auto", "turn": "t-auto",
 		"type": "text-user", "content": "hello auto",
 	}))

@@ -297,7 +297,7 @@ func TestSubChatList(t *testing.T) {
 
 	list := func(payload map[string]any) []any {
 		t.Helper()
-		v := s.bus.Emit(context.Background(), "subchat-list", jb(payload)).Wait()
+		v := emitWait(t, s.bus, "subchat-list", jb(payload))
 		if v.Err() != nil {
 			t.Fatalf("subchat-list: %v", v.Err())
 		}
@@ -351,9 +351,9 @@ func TestSubChatFinishMessage(t *testing.T) {
 		ParentSessionID: "s-top-fin2", Kind: facade.SessionKindSubChat, Lifecycle: facade.SessionLifecycleReady})
 	rec := newBusRecorder(t, s.bus)
 
-	v := s.bus.Emit(context.Background(), "subchat-finish", jb(map[string]any{
+	v := emitWait(t, s.bus, "subchat-finish", jb(map[string]any{
 		"instance_id": "ins-test", "session_id": "sub-fin2",
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("subchat-finish: %v", v.Err())
 	}
@@ -383,9 +383,9 @@ func TestSubChatReadyToChattingOnNewTurn(t *testing.T) {
 	rec := newBusRecorder(t, s.bus)
 
 	// llm-start（新一轮）
-	v := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-rw", "instance_id": "ins-test", "session": "sub-rw", "turn": "t-rw",
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("session-start: %v", v.Err())
 	}
@@ -445,7 +445,7 @@ func TestSubChatOpenViaGateway(t *testing.T) {
 	startTurn(t, s, "s-main-gw", "t-gw")
 	rec := newBusRecorder(t, s.bus)
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-main-gw", "turn": "t-gw",
 		"type": "text-user", "content": "请开个子聊天",
 	}))
@@ -533,7 +533,7 @@ func TestAllSessionsToolCallNoAsyncInjection(t *testing.T) {
 		{"s-fs-sess", "t-fs-sess"},
 	} {
 		startTurn(t, s, tc.session, tc.turn)
-		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		s.bus.Publish("session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": tc.session, "turn": tc.turn,
 			"type": "text-user", "content": "sync tool please",
 		}))

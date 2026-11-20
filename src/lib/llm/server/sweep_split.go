@@ -19,7 +19,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"sync"
 	"time"
@@ -80,5 +79,5 @@ func (s *Server) sweepStaleInstances() {
 // 一次（幂等，见 exitInstance 注释），语义上"超时回收 = 一次退出广播"。
 func (s *Server) publishInstanceExit(instanceID string) {
 	b, _ := json.Marshal(map[string]string{"instance_id": instanceID})
-	_ = s.bus.Emit(context.Background(), SubjectExit, b)
+	_ = s.bus.Publish(SubjectExit, b)
 }

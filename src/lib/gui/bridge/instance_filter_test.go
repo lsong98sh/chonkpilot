@@ -5,7 +5,7 @@
 package bridge
 
 import (
-	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -44,7 +44,8 @@ func TestForwardEventFiltersOtherInstance(t *testing.T) {
 	bus, _, scripts := newFilterTestBridge(t, "ins-a")
 
 	emit := func(subject string, payload map[string]any) {
-		bus.Emit(context.Background(), subject, payload).Wait()
+		raw, _ := json.Marshal(payload)
+		bus.Publish(subject, raw)
 	}
 	emit("task-started", map[string]any{"instance_id": "ins-a", "task_id": "task-aaa"})
 	emit("task-started", map[string]any{"instance_id": "ins-b", "task_id": "task-bbb"})
@@ -69,10 +70,12 @@ func TestForwardEventFiltersOtherInstance(t *testing.T) {
 func TestForwardEventNoInstanceIDPassesAll(t *testing.T) {
 	bus, _, scripts := newFilterTestBridge(t, "")
 
-	bus.Emit(context.Background(), "task-started",
-		map[string]any{"instance_id": "ins-a", "task_id": "task-aaa"}).Wait()
-	bus.Emit(context.Background(), "task-started",
-		map[string]any{"instance_id": "ins-b", "task_id": "task-bbb"}).Wait()
+	pub := func(payload map[string]any) {
+		raw, _ := json.Marshal(payload)
+		bus.Publish("task-started", raw)
+	}
+	pub(map[string]any{"instance_id": "ins-a", "task_id": "task-aaa"})
+	pub(map[string]any{"instance_id": "ins-b", "task_id": "task-bbb"})
 
 	joined := strings.Join(scripts(), "\n")
 	if !strings.Contains(joined, "task-aaa") || !strings.Contains(joined, "task-bbb") {
@@ -87,8 +90,8 @@ func TestCloseInstanceUnsubscribesForward(t *testing.T) {
 	bus, b, scripts := newFilterTestBridge(t, "ins-a")
 
 	emit := func() {
-		bus.Emit(context.Background(), "task-started",
-			map[string]any{"instance_id": "ins-a", "task_id": "task-aaa"}).Wait()
+		raw, _ := json.Marshal(map[string]any{"instance_id": "ins-a", "task_id": "task-aaa"})
+		bus.Publish("task-started", raw)
 	}
 	emit()
 	before := len(scripts()) // 一条事件会兼发兼容事件（compatEmit）→ 只断言「有转发」，不锁条数
@@ -127,8 +130,11 @@ func TestStopForwardBeforeStartUnsubscribesOnStart(t *testing.T) {
 		t.Fatalf("bridge start: %v", err)
 	}
 
-	bus.Emit(context.Background(), "task-started",
-		map[string]any{"instance_id": "ins-a", "task_id": "task-aaa"}).Wait()
+	pub := func(payload map[string]any) {
+		raw, _ := json.Marshal(payload)
+		bus.Publish("task-started", raw)
+	}
+	pub(map[string]any{"instance_id": "ins-a", "task_id": "task-aaa"})
 
 	mu.Lock()
 	n := len(scripts)

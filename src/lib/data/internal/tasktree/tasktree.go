@@ -19,7 +19,6 @@
 package tasktree
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -298,7 +297,7 @@ func (s *Service) emitTaskDeleted(instanceID, nodeID string) {
 		return
 	}
 	b, _ := json.Marshal(map[string]any{"instance_id": instanceID, "node_id": nodeID})
-	_ = s.Bus.Emit(context.Background(), msgkeys.TopicTaskDeleted, b)
+	_ = s.Bus.Publish(msgkeys.TopicTaskDeleted, b)
 }
 
 // ival 把数据面 JSON 数值（float64/int/json.Number）转为 int（非法 → 0）。

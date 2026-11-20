@@ -157,8 +157,7 @@ func TestSweepPublishesInstanceExit(t *testing.T) {
 	// 幂等②：同一 id 的 instance-exit 再投递两次（模拟本包与 persist 两处扫描同时判定 /
 	// 显式 exit 与超时回收叠加）→ 全部订阅方（含本包 onExit → exitInstance）不报错。
 	for i := 0; i < 2; i++ {
-		v := s.bus.Emit(context.Background(), SubjectExit,
-			jb(map[string]any{"instance_id": "ins-exit-pub"})).Wait()
+		v := emitWait(t, s.bus, SubjectExit, jb(map[string]any{"instance_id": "ins-exit-pub"}))
 		if len(v.Errors) != 0 {
 			t.Fatalf("重复 instance-exit 不应产生错误（第 %d 次）: %v", i+1, v.Errors)
 		}

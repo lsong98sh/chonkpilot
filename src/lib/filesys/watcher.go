@@ -302,7 +302,7 @@ func (dw *dirWatcher) emit(subject string, payload map[string]any) {
 	}
 	if len(ids) == 0 {
 		raw, _ := json.Marshal(payload)
-		_ = dw.bus.Emit(context.Background(), subject, raw)
+		_ = dw.bus.Publish(subject, raw)
 		return
 	}
 	for _, id := range ids {
@@ -312,7 +312,7 @@ func (dw *dirWatcher) emit(subject string, payload map[string]any) {
 		}
 		p["instance_id"] = id
 		raw, _ := json.Marshal(p)
-		_ = dw.bus.Emit(context.Background(), subject, raw)
+		_ = dw.bus.Publish(subject, raw)
 	}
 }
 

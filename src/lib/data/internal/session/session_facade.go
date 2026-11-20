@@ -9,7 +9,6 @@
 package session
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,7 +54,7 @@ func (s *Service) emitSessionNew(sessionID, parentSessionID, instanceID, dialogI
 		}
 	}
 	b, _ := json.Marshal(payload)
-	_ = s.Bus.Emit(context.Background(), msgkeys.TopicSessionNew, b)
+	_ = s.Bus.Publish(msgkeys.TopicSessionNew, b)
 }
 
 // emitSessionTitleChanged 广播会话标题变更事件 data-session-title-changed（61 §3.2）：由
@@ -73,7 +72,7 @@ func (s *Service) emitSessionTitleChanged(sessionID, title, dialogID string) {
 		payload["dialog_id"] = dialogID
 	}
 	b, _ := json.Marshal(payload)
-	_ = s.Bus.Emit(context.Background(), msgkeys.TopicDataSessionTitleChanged, b)
+	_ = s.Bus.Publish(msgkeys.TopicDataSessionTitleChanged, b)
 }
 
 // ── session 域 ────────────────────────────────────────────────────

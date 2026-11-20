@@ -3,7 +3,6 @@
 package server
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,7 +37,7 @@ func TestTurnUserMessageNotDuplicated(t *testing.T) {
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-dedup", "t-dedup")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-dedup", "turn": "t-dedup",
 		"type": "text-user", "content": "唯一提问",
 	}))
@@ -88,10 +87,10 @@ func TestRecoverTurnCtxCarriesSystemPromptAndDirs(t *testing.T) {
 	// 才能在删目录前先关闭 DB（否则 Windows 上 db 文件被占用导致 RemoveAll 失败）。
 	t.Cleanup(data.Reset)
 	// 注册 instance（绑定 work_dir / data_dir，与 onLLMStart 同一事实源）
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest",
 		"work_dir": testWorkDir, "data_dir": dataDir,
-	})).Wait()
+	}))
 	time.Sleep(50 * time.Millisecond)
 
 	tc := s.recoverTurnCtx("ins-test", "s-rec", "t-rec")

@@ -224,7 +224,7 @@ func inboxAddMQOpt(t *testing.T, s *Server, session, content, source string, ins
 	if insert {
 		payload["insert"] = true
 	}
-	v := s.bus.Emit(context.Background(), "inbox-add", jb(payload)).Wait()
+	v := emitWait(t, s.bus, "inbox-add", jb(payload))
 	if v.Err() != nil {
 		t.Fatalf("llm-inbox-add error: %v", v.Err())
 	}
@@ -237,7 +237,7 @@ func inboxAddMQOpt(t *testing.T, s *Server, session, content, source string, ins
 
 func sendMQ(t *testing.T, s *Server, session, turn, content string) {
 	t.Helper()
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
 		"type": "text-user", "content": content,
 	}))
@@ -245,7 +245,7 @@ func sendMQ(t *testing.T, s *Server, session, turn, content string) {
 
 func reportTask(t *testing.T, s *Server, taskID, result, session, turn string) {
 	t.Helper()
-	s.bus.Emit(context.Background(), "mcp-tasks-report", jb(map[string]any{
+	s.bus.Publish("mcp-tasks-report", jb(map[string]any{
 		"task_id": taskID, "tool": "core_file_read", "state": "done", "result_summary": result,
 		"session": session, "turn": turn, "instance_id": "ins-test",
 	}))
@@ -512,9 +512,9 @@ func TestInboxPromoteNextTurn(t *testing.T) {
 	}
 	itemID := str(dres["id"])
 	// 让 llm-server 记住该 item（list 填充内存索引）
-	lv := s.bus.Emit(context.Background(), "inbox-list", jb(map[string]any{
+	lv := emitWait(t, s.bus, "inbox-list", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-ins18",
-	})).Wait()
+	}))
 	if lv.Err() != nil {
 		t.Fatalf("llm-inbox-list: %v", lv.Err())
 	}
@@ -522,9 +522,9 @@ func TestInboxPromoteNextTurn(t *testing.T) {
 	sendMQ(t, s, "s-ins18", "t-ins18", "请用慢工具")
 	rec.wait(t, "mcp-tools-call", func(m map[string]any) bool { return str(m["tool_call_id"]) == "tc-main" }, 5*time.Second)
 
-	pv := s.bus.Emit(context.Background(), "inbox-promote", jb(map[string]any{
+	pv := emitWait(t, s.bus, "inbox-promote", jb(map[string]any{
 		"instance_id": "ins-test", "id": itemID,
-	})).Wait()
+	}))
 	res, _ := pv.Result.(map[string]any)
 	if ok, _ := res["ok"].(bool); !ok || str(res["type"]) != "insert" {
 		t.Fatalf("提升应成功并变为 insert：%+v", res)
@@ -598,9 +598,9 @@ func TestInboxCancelGlobal(t *testing.T) {
 	inboxAddInsertMQ(t, s, "s-ins8", "【INS-008】插话A")
 	rec.wait(t, "session-receive", textContains("插入回答"), 5*time.Second)
 
-	v := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-ins8", "turn": "t-ins8",
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("llm-cancel: %v", v.Err())
 	}
@@ -690,7 +690,7 @@ func TestInboxDiscardBeforeConsume(t *testing.T) {
 func TestInboxDiscardConsumedRejected(t *testing.T) {
 	llm, _ := newInboxLLM(t)
 	s := newTestServer(t, llm)
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	t.Cleanup(data.Reset)
@@ -701,9 +701,9 @@ func TestInboxDiscardConsumedRejected(t *testing.T) {
 	id := str(res["id"])
 	rec.wait(t, "session-complete", nil, 5*time.Second)
 
-	v := s.bus.Emit(context.Background(), "inbox-discard", jb(map[string]any{
+	v := emitWait(t, s.bus, "inbox-discard", jb(map[string]any{
 		"instance_id": "ins-test", "id": id,
-	})).Wait()
+	}))
 	r, _ := v.Result.(map[string]any)
 	if ok, _ := r["ok"].(bool); ok {
 		t.Fatalf("已 consumed 的项不应允许撤回：%+v", r)
@@ -718,7 +718,7 @@ func TestInboxDiscardConsumedRejected(t *testing.T) {
 func TestInboxNextTurnBatchSkipsDiscarded(t *testing.T) {
 	llm, reqs := newInboxLLM(t)
 	s := newTestServer(t, llm)
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	t.Cleanup(data.Reset)
@@ -745,9 +745,9 @@ func TestInboxNextTurnBatchSkipsDiscarded(t *testing.T) {
 	// 内存索引（consumeNextTurn 的 pending 门槛/复核依赖它）
 	s.inboxRemember("ins-test", facade.InboxItem{ID: idKeep, SessionID: "s-batch", Type: "next_turn", Content: "【保留】A", Status: "pending"})
 	s.inboxRemember("ins-test", facade.InboxItem{ID: idDrop, SessionID: "s-batch", Type: "next_turn", Content: "【撤回】B", Status: "pending"})
-	if v := s.bus.Emit(context.Background(), "inbox-discard", jb(map[string]any{
+if v := emitWait(t, s.bus, "inbox-discard", jb(map[string]any{
 		"instance_id": "ins-test", "id": idDrop,
-	})).Wait(); v.Err() != nil {
+	})); v.Err() != nil {
 		t.Fatalf("discard: %v", v.Err())
 	}
 
@@ -776,7 +776,7 @@ func TestInboxNextTurnBatchSkipsDiscarded(t *testing.T) {
 func TestInboxBatchInsertMerged(t *testing.T) {
 	llm, reqs := newInboxLLM(t)
 	s := newTestServer(t, llm)
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	t.Cleanup(data.Reset)
@@ -868,9 +868,9 @@ func TestInboxRevertIntent(t *testing.T) {
 	}
 	id := str(res["id"])
 	// 取消意向 → next_turn（仍 pending）。
-	v := s.bus.Emit(context.Background(), "inbox-revert", jb(map[string]any{
+v := emitWait(t, s.bus, "inbox-revert", jb(map[string]any{
 		"instance_id": "ins-test", "id": id,
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("inbox-revert: %v", v.Err())
 	}
@@ -948,7 +948,7 @@ func (s *Server) mustPending(session string) []facade.InboxItem {
 // ensureTestSession 自举 ins-test 实例 + 会话行（一树一库：inbox 行落对话库，须先有 dialog_id）。
 func ensureInboxSession(t *testing.T, s *Server, session string) {
 	t.Helper()
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	t.Cleanup(data.Reset)
@@ -1046,9 +1046,9 @@ func TestInboxConsumeBroadcastsPerItem(t *testing.T) {
 	id1 := appendNextTurn(t, s, sess, "【BROADCAST】批量甲")
 	id2 := appendNextTurn(t, s, sess, "【BROADCAST】批量乙")
 	// list 填充内存 pending 索引（consumeNextTurnPass 依赖 inboxHasPending 的内存桶）。
-	lv := s.bus.Emit(context.Background(), "inbox-list", jb(map[string]any{
+lv := emitWait(t, s.bus, "inbox-list", jb(map[string]any{
 		"instance_id": "ins-test", "session": sess,
-	})).Wait()
+	}))
 	if lv.Err() != nil {
 		t.Fatalf("inbox-list: %v", lv.Err())
 	}
@@ -1157,9 +1157,9 @@ func TestInboxLazyRestoreOnlyDurable(t *testing.T) {
 	s.inboxLoaded = map[string]bool{}
 	s.inboxMu.Unlock()
 
-	lv := s.bus.Emit(context.Background(), "inbox-list", jb(map[string]any{
+lv := emitWait(t, s.bus, "inbox-list", jb(map[string]any{
 		"instance_id": "ins-test", "session": sess,
-	})).Wait()
+	}))
 	if lv.Err() != nil {
 		t.Fatalf("inbox-list: %v", lv.Err())
 	}

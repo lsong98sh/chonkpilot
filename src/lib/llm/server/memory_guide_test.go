@@ -5,7 +5,6 @@
 package server
 
 import (
-	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -195,7 +194,7 @@ func TestMemoryGuideCacheProjectScoped(t *testing.T) {
 	s := newTestServer(t, llm)
 	registerTestInstance(t, s)
 	// 第二个窗口：同一 work_dir（项目相同、实例不同）
-	_ = s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	_ = s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test-2", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	time.Sleep(30 * time.Millisecond)
@@ -232,7 +231,7 @@ func TestMemoryGuideCacheInvalidation(t *testing.T) {
 	}
 
 	// refresh：记忆域 save/delete 后 persist 发出的既有广播（同步分发 → 返回即已失效）
-	_ = s.bus.Emit(context.Background(), "data-memory-refresh", jb(map[string]any{
+	_ = s.bus.Publish("data-memory-refresh", jb(map[string]any{
 		"instance_id": "ins-test", "id": "架构决策", "op": "save",
 	}))
 	s.memoryGuide("ins-test", testWorkDir)
@@ -278,7 +277,7 @@ func TestMemoryGuideCacheConcurrent(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for j := 0; j < 20; j++ {
-			_ = s.bus.Emit(context.Background(), "data-memory-refresh", jb(map[string]any{"instance_id": "ins-test"}))
+			_ = s.bus.Publish("data-memory-refresh", jb(map[string]any{"instance_id": "ins-test"}))
 		}
 	}()
 	wg.Wait()

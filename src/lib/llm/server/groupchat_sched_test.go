@@ -460,9 +460,9 @@ func TestGroupChatNoClaimFallbackAndCapContinue(t *testing.T) {
 	// → 只补跑 main（**不另起新大轮次**、不覆盖该轮记录）；补齐后主 agent 收敛 → ready。
 	mainBefore := len(log.calls("main"))
 	rec2 := newBusRecorder(t, s.bus)
-	v := s.bus.Emit(context.Background(), "subchat-continue", jb(map[string]any{
+	v := emitWait(t, s.bus, "subchat-continue", jb(map[string]any{
 		"instance_id": "ins-test", "session_id": gid,
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("subchat-continue: %v", v.Err())
 	}
@@ -567,7 +567,7 @@ func regInstance(s *Server, id, sessionID string) {
 	if sessionID != "" {
 		body["session_id"] = sessionID
 	}
-	_ = s.bus.Emit(context.Background(), "instance-register", jb(body))
+	_ = s.bus.Publish("instance-register", jb(body))
 }
 
 // putRunningTurn 直接放一条运行 turn（仅 `turnSession` 读 req.Session；不启 LLM 循环）。
@@ -748,7 +748,7 @@ func TestGroupChatDriverInstanceAndWindowStop(t *testing.T) {
 	}
 
 	// 关窗（instance-exit）→ 停机（运行注销）。
-	_ = s.bus.Emit(context.Background(), "instance-exit", jb(map[string]any{"instance_id": "ins-group-win"}))
+	_ = s.bus.Publish("instance-exit", jb(map[string]any{"instance_id": "ins-group-win"}))
 	if !waitCond(5*time.Second, func() bool {
 		s.groupMu.Lock()
 		_, running := s.groupRuns[gid]
@@ -810,9 +810,9 @@ func TestGroupChatTerminateSetsFinished(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	v := s.bus.Emit(context.Background(), "subchat-finish", jb(map[string]any{
+	v := emitWait(t, s.bus, "subchat-finish", jb(map[string]any{
 		"instance_id": "ins-test", "session_id": gid,
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("subchat-finish: %v", v.Err())
 	}

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +29,7 @@ func TestTurnSnapshotCrossTurn(t *testing.T) {
 
 	// 第一轮：完成（回显）
 	startTurn(t, s, "s-snap", "t1")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-snap", "turn": "t1",
 		"type": "text-user", "content": "first turn",
 	}))
@@ -75,10 +74,10 @@ func TestLLMStartBusyRejected(t *testing.T) {
 	startTurn(t, s, "s-busy", "t-busy-1")
 
 	// 同 session 第二个 turn → 拒绝（进程内 busy 注册表互斥；TURNRUN-1 批次 1 起无文件锁）
-	f := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	f := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-busy-2", "instance_id": "ins-test", "session": "s-busy", "turn": "t-busy-2",
 	}))
-	v := f.Wait()
+	v := f
 	res, _ := v.Result.(map[string]any)
 	if ok, _ := res["accepted"].(bool); ok {
 		t.Fatalf("second llm-start should be rejected: %+v", res)
@@ -91,10 +90,10 @@ func TestLLMStartRejectsEmptyInstance(t *testing.T) {
 	defer llm.Close()
 	s := newTestServer(t, llm)
 
-	f := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	f := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-noinst", "instance_id": "", "session": "s-noinst", "turn": "t-noinst",
 	}))
-	res, _ := f.Wait().Result.(map[string]any)
+	res, _ := f.Result.(map[string]any)
 	if ok, _ := res["accepted"].(bool); ok {
 		t.Fatalf("空 instance 应被拒，got %+v", res)
 	}

@@ -152,7 +152,7 @@ func runEngineTurnCase(t *testing.T, s *Server, session, turn string,
 
 // engineTextTurn 发送一条用户消息（普通文本轮 / 工具轮的首条输入）。
 func engineTextTurn(s *Server, session, turn, content string) {
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
 		"type": "text-user", "content": content,
 	}))
@@ -302,9 +302,9 @@ func TestEngineTurnAskTaskStop(t *testing.T) {
 		if node == nil {
 			t.Fatalf("未找到 ask 任务节点")
 		}
-		v := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
+		v := emitWait(t, s.bus, "task-stop", jb(map[string]any{
 			"instance_id": "ins-test", "task_id": node.TaskID,
-		})).Wait()
+		}))
 		if err := v.Err(); err != nil {
 			t.Fatalf("task-stop(ask): %v", err)
 		}
@@ -351,7 +351,7 @@ func TestEngineTurnAsk(t *testing.T) {
 		})
 		// 未答复前：DB tool 行是「等待回复」占位（快速转异步）。
 		waitAskPlaceholder(t, turn)
-		s.bus.Emit(context.Background(), "session-ask-reply", jb(map[string]any{
+		s.bus.Publish("session-ask-reply", jb(map[string]any{
 			"ask_id": ask["ask_id"], "answer": "y",
 		}))
 	}
@@ -424,10 +424,10 @@ func TestEngineTurnAskResolve(t *testing.T) {
 		})
 		// 完成前：tool 行是「等待回复」占位。
 		waitAskPlaceholder(t, turn)
-		f := s.bus.Emit(context.Background(), "ask-resolve", jb(map[string]any{
+		f := emitWait(t, s.bus, "ask-resolve", jb(map[string]any{
 			"ask_id": ask["ask_id"],
 		}))
-		v := f.Wait()
+		v := f
 		if v.Err() != nil {
 			t.Fatalf("ask-resolve error: %v", v.Err())
 		}
@@ -610,7 +610,7 @@ func TestEngineTurnCancel(t *testing.T) {
 	log := watchSessionEvents(t, s.bus, "t-et-cancel")
 	engineTextTurn(s, "s-et-cancel", "t-et-cancel", "slow stream")
 	time.Sleep(300 * time.Millisecond) // 进入挂起的 LLM 请求
-	s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	s.bus.Publish("session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-et-cancel", "turn": "t-et-cancel",
 	}))
 	evs := waitComplete(t, log, 8*time.Second)
@@ -941,10 +941,10 @@ func TestEngineTurnSameTurnContinue(t *testing.T) {
 		waitComplete(t, log, 15*time.Second)
 		waitTurnIdle(t, s, session)
 
-		v := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+		v := emitWait(t, s.bus, "session-start", jb(map[string]any{
 			"req_id": "r-cont-" + turn, "instance_id": "ins-test", "session": session,
 			"turn": turn, "continue": true,
-		})).Wait()
+		}))
 		if res, _ := v.Result.(map[string]any); res["accepted"] != true {
 			t.Fatalf("continue llm-start rejected: %+v", res)
 		}

@@ -15,7 +15,6 @@
 package server
 
 import (
-	"context"
 	"reflect"
 	"sync"
 	"testing"
@@ -68,9 +67,9 @@ func TestManualInflightCascadeCancelReachesExec(t *testing.T) {
 	}
 
 	// ② 级联取消（session-cancel）→ 命中执行侧
-	if err := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	if err := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-rb6", "turn": "t-rb6",
-	})).Wait().Err(); err != nil {
+	})).Err(); err != nil {
 		t.Fatalf("session-cancel: %v", err)
 	}
 	if got := waitCancelRefs(execCancelledRefs, []string{"gw-rb6"}, 5*time.Second); len(got) != 1 || got[0] != "gw-rb6" {
@@ -105,9 +104,9 @@ func TestSyncInflightCascadeCancelReachesExecViaAdapter(t *testing.T) {
 	if ex, ok := s.taskLayer.ExecOf(node.TaskID); !ok || ex.GWTaskID != "gw-rb6n" {
 		t.Fatalf("层应经适配器补登记 exec 映射: %+v ok=%v", ex, ok)
 	}
-	if err := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+if err := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-rb6n", "turn": "t-rb6n",
-	})).Wait().Err(); err != nil {
+	})).Err(); err != nil {
 		t.Fatalf("session-cancel: %v", err)
 	}
 	if got := waitCancelRefs(execCancelledRefs, []string{"gw-rb6n"}, 5*time.Second); len(got) != 1 || got[0] != "gw-rb6n" {
@@ -143,7 +142,7 @@ func (r *reentrantCancelSink) CancelExec(instanceID, gwTaskID string) (bool, err
 	r.mu.Lock()
 	r.refs = append(r.refs, gwTaskID)
 	r.mu.Unlock()
-	r.bus.Emit(context.Background(), "mcp-tasks-report", jb(map[string]any{
+	r.bus.Publish("mcp-tasks-report", jb(map[string]any{
 		"instance_id": instanceID, "task_id": gwTaskID, "tool_call_id": "tc-dl",
 		"tool": "core_file_read", "state": "cancelled", "result_summary": "",
 	}))
@@ -178,9 +177,9 @@ func TestLLMCancelCascadeDoesNotSelfDeadlock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+		done <- emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-dl", "turn": "t-dl",
-		})).Wait().Err()
+		})).Err()
 	}()
 	select {
 	case err := <-done:

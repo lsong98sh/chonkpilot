@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 
@@ -156,7 +155,7 @@ func (s *Server) llmErrorRetryable(tc *turnCtx, code, message string, retryable 
 
 func (s *Server) publish(typ string, payload any) {
 	b, _ := json.Marshal(payload)
-	s.bus.Emit(context.Background(), domainSubject(typ), b)
+	s.bus.Publish(domainSubject(typ), b)
 }
 
 // emitTurnStart 广播轮次开始：session-turn-start{instance_id, session, turn, parents}（相对主题）。

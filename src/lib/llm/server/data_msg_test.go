@@ -17,7 +17,7 @@ import (
 // 否则 TempDir 清理时被占用（用例经 data-prj-config-* 打开库后必现）。
 func registerTestInstance(t *testing.T, s *Server) {
 	t.Helper()
-	_ = s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	_ = s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	time.Sleep(30 * time.Millisecond)
@@ -48,8 +48,17 @@ func dataCall(t *testing.T, s *Server, subject string, payload map[string]any) m
 		t.Fatal(err)
 	}
 	defer sub.Unsubscribe()
-	if f := s.bus.Emit(context.Background(), subject, jb(payload)); f.Wait().Err() != nil {
-		t.Fatal(f.Wait().Err())
+	v := emitWait(t, s.bus, subject, jb(payload))
+	// 失败信封（ok:false，persist failID）与超时（fire-and-forget 主题）都返回 err——
+	// 失败信封的 body 落在 Result（{ok:false,error}），调用方按 ok 字段分支；
+	// 超时 = 无应答（异常，旧语义同 fatal）。
+	if v.Err() != nil {
+		if m, ok := v.Result.(map[string]any); ok {
+			if _, has := m["ok"]; has {
+				return m // 失败信封：调用方判 ok=false
+			}
+		}
+		t.Fatal(v.Err())
 	}
 	select {
 	case m := <-ch:

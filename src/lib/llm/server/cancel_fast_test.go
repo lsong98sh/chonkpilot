@@ -8,7 +8,6 @@
 package server
 
 import (
-	"context"
 	"sync"
 	"testing"
 	"time"
@@ -106,9 +105,9 @@ func TestLLMCancelFastTerminalAndBackgroundCleanup(t *testing.T) {
 	s.execSink = sink
 
 	begin := time.Now()
-	v := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
-	})).Wait()
+	}))
 	elapsed := time.Since(begin)
 	if v.Err() != nil {
 		t.Fatalf("session-cancel: %v", v.Err())
@@ -179,9 +178,9 @@ func TestLLMCancelMarksUnansweredAskInterrupted(t *testing.T) {
 		}
 	}
 
-	if v := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+if v := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
-	})).Wait(); v.Err() != nil {
+	})); v.Err() != nil {
 		t.Fatalf("session-cancel: %v", v.Err())
 	}
 
@@ -212,9 +211,9 @@ func TestDelegationParentCancelClosesChildFast(t *testing.T) {
 	// 等子轮任务节点建立（此事件晚于 registerDelegated → 父取消必能命中子轮登记）。
 	waitLLMTask(t, te, "s-child")
 
-	if v := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+if v := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-parent", "turn": "t-parent",
-	})).Wait(); v.Err() != nil {
+	})); v.Err() != nil {
 		t.Fatalf("session-cancel(parent): %v", v.Err())
 	}
 

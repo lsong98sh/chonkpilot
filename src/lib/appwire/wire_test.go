@@ -90,7 +90,7 @@ func TestBuildSpineWithServer(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 	defer sub.Unsubscribe()
-	_ = app.Bus.Emit(context.Background(), "data-user-config-load", []byte(`{"id":"llms"}`))
+	_ = app.Bus.Publish("data-user-config-load", []byte(`{"id":"llms"}`))
 	select {
 	case <-got:
 	case <-time.After(3 * time.Second):

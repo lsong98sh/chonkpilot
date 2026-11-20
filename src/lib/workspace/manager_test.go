@@ -63,7 +63,7 @@ func newTestManager(t *testing.T) (*Manager, mq.Bus, *eventSink) {
 func emit(t *testing.T, bus mq.Bus, topic string, payload map[string]any) {
 	t.Helper()
 	raw, _ := json.Marshal(payload)
-	bus.Emit(context.Background(), topic, raw).Wait()
+	bus.Publish(topic, raw)
 	// 事件为异步派发：给订阅回调一点收敛时间（无锁轮询由调用方断言）。
 	time.Sleep(20 * time.Millisecond)
 }

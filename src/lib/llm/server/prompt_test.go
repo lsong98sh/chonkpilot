@@ -95,7 +95,7 @@ func TestPromptOptimiseGenerateBroadcast(t *testing.T) {
 	s := newPromptTestServer(t, llmSrv)
 	ch := collectPromptOptimised(t, s)
 
-	s.bus.Emit(context.Background(), "prompt-optimise", jb(map[string]any{
+	s.bus.Publish("prompt-optimise", jb(map[string]any{
 		"req_id": "r1", "instance_id": "ins-test", "type": "tool_usage",
 	}))
 
@@ -133,7 +133,7 @@ func TestPromptOptimiseOptimiseExisting(t *testing.T) {
 	s := newPromptTestServer(t, llmSrv)
 	ch := collectPromptOptimised(t, s)
 
-	s.bus.Emit(context.Background(), "prompt-optimise", jb(map[string]any{
+	s.bus.Publish("prompt-optimise", jb(map[string]any{
 		"req_id": "r2", "instance_id": "ins-test", "type": "agent", "content": orig,
 	}))
 
@@ -156,7 +156,7 @@ func TestPromptOptimiseRequiresType(t *testing.T) {
 	s := newPromptTestServer(t, llmSrv)
 	ch := collectPromptOptimised(t, s)
 
-	s.bus.Emit(context.Background(), "prompt-optimise", jb(map[string]any{
+	s.bus.Publish("prompt-optimise", jb(map[string]any{
 		"req_id": "r4", "instance_id": "ins-test",
 	}))
 
@@ -183,7 +183,7 @@ func TestPromptOptimiseLLMError(t *testing.T) {
 	s := newPromptTestServer(t, llmSrv)
 	ch := collectPromptOptimised(t, s)
 
-	s.bus.Emit(context.Background(), "prompt-optimise", jb(map[string]any{
+	s.bus.Publish("prompt-optimise", jb(map[string]any{
 		"req_id": "r5", "instance_id": "ins-test", "type": "agent", "content": "old",
 	}))
 
@@ -234,7 +234,7 @@ func TestPromptOptimiseUsesPromptOptimiseLLM(t *testing.T) {
 			saveTestUserConfig(t, s, data)
 
 			ch := collectPromptOptimised(t, s)
-			s.bus.Emit(context.Background(), "prompt-optimise", jb(map[string]any{
+			s.bus.Publish("prompt-optimise", jb(map[string]any{
 				"req_id": "r6", "instance_id": "ins-test", "type": "agent", "content": "old",
 			}))
 			ev := waitPromptOptimised(t, ch)

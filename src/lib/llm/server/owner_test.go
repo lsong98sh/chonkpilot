@@ -4,7 +4,6 @@
 package server
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +26,7 @@ func ownerOf(s *Server, session string) string {
 
 func registerInstanceAs(t *testing.T, s *Server, inst string) {
 	t.Helper()
-	_ = s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	_ = s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": inst, "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	time.Sleep(50 * time.Millisecond)
@@ -36,9 +35,9 @@ func registerInstanceAs(t *testing.T, s *Server, inst string) {
 // emitStartAs 以指定 instance 发 llm-start（session-start），返回应答载荷。
 func emitStartAs(t *testing.T, s *Server, inst, session, turn string) map[string]any {
 	t.Helper()
-	v := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-" + inst + "-" + turn, "instance_id": inst, "session": session, "turn": turn,
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("llm-start(%s/%s) error: %v", inst, turn, v.Err())
 	}
@@ -46,16 +45,15 @@ func emitStartAs(t *testing.T, s *Server, inst, session, turn string) map[string
 	return res
 }
 
-// emitSendAs 以指定 instance 发 llm-send（text-user）：成功路径不写 Result（= nil）。
+// emitSendAs 以指定 instance 发 llm-send（text-user）：拒绝路径写 Result（accepted:false，
+// 归属/参数校验失败），成功路径不写 Result（emitVal err = buscall 无应答超时——旧语义
+// 成功面 Result=nil，同形）。
 func emitSendAs(t *testing.T, s *Server, inst, session, turn, content string) map[string]any {
 	t.Helper()
-	v := s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-send", jb(map[string]any{
 		"instance_id": inst, "session": session, "turn": turn,
 		"type": "text-user", "content": content,
-	})).Wait()
-	if v.Err() != nil {
-		t.Fatalf("llm-send(%s/%s) error: %v", inst, turn, v.Err())
-	}
+	}))
 	res, _ := v.Result.(map[string]any)
 	return res
 }
@@ -120,7 +118,7 @@ func TestSessionOwnerRejectAndTransfer(t *testing.T) {
 	}
 
 	// A 的轮次结束（取消 → 空闲：inbox 空 + 无 async task）→ 归属释放
-	s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	s.bus.Publish("session-cancel", jb(map[string]any{
 		"instance_id": "ins-a", "session": "s-own", "turn": "t-own-a",
 	}))
 	waitOwnerReleased(t, s, "s-own")

@@ -70,7 +70,7 @@ func TestHandleProcessesRequestWithTopLevelOK(t *testing.T) {
 
 	// user-config 属 instanceFreeDomains，无需 instance_id；业务载荷顶层带 ok。
 	body, _ := json.Marshal(map[string]any{"req_id": "ok-req", "ok": true})
-	_ = s.Bus.Emit(context.Background(), "data-user-config-list", body).Wait()
+	_ = s.Bus.Publish("data-user-config-list", body)
 
 	select {
 	case m := <-ch:

@@ -70,7 +70,7 @@ func suggestServer(t *testing.T, rec *suggestRec, llmSrv *httptest.Server) *Serv
 // configSuggestCall 发 config.suggest（真实总线方法面）并取结果信封。
 func configSuggestCall(t *testing.T, s *Server, payload map[string]any) map[string]any {
 	t.Helper()
-	v := s.bus.Emit(context.Background(), SubjectConfigSuggest, jb(payload)).Wait()
+	v := emitWait(t, s.bus, SubjectConfigSuggest, jb(payload))
 	if v.Err() != nil {
 		t.Fatalf("config.suggest 总线错误: %v", v.Err())
 	}

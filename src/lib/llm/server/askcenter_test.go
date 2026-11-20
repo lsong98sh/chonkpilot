@@ -92,9 +92,9 @@ func TestAskCenterSubscribeSnapshot(t *testing.T) {
 // registerUserInstance 注册一个带 `user` 的实例并等实例视图可见（instance-register 同步派发）。
 func registerUserInstance(t *testing.T, s *Server, instanceID, user, workDir string) {
 	t.Helper()
-	_ = s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": instanceID, "client_type": "unittest", "work_dir": workDir, "user": user,
-	})).Wait()
+	}))
 	waitCond(t, 10*time.Second, "实例注册生效 "+instanceID, func() bool {
 		info, ok := s.im.Lookup(instanceID)
 		return ok && info.User == user && info.WorkDir == workDir
@@ -104,7 +104,7 @@ func registerUserInstance(t *testing.T, s *Server, instanceID, user, workDir str
 // subscribeAskCenter 走**真实方法面** `ask-center-subscribe` 登记订阅并返回应答。
 func subscribeAskCenter(t *testing.T, s *Server, payload map[string]any) map[string]any {
 	t.Helper()
-	v := s.bus.Emit(context.Background(), "ask-center-subscribe", jb(payload)).Wait()
+v := emitWait(t, s.bus, "ask-center-subscribe", jb(payload))
 	if v.Err() != nil {
 		t.Fatalf("ask-center-subscribe 失败: %v", v.Err())
 	}
@@ -406,11 +406,16 @@ func TestAskCenterSubscribeWorkdirScopeNarrowing(t *testing.T) {
 		t.Fatalf("scope=workdir 应隐式取实例 work_dir=%q，got=%q", testWorkDir, sub.workDir)
 	}
 
-	asks, _ := res["asks"].([]map[string]any)
-	if len(asks) != 1 || str(asks[0]["ask_id"]) != localAsk {
+	// buscall JSON 往返后 asks 元素为 []any（非 []map[string]any）。
+	askItems, _ := res["asks"].([]any)
+	if len(askItems) != 1 {
 		t.Fatalf("快照应收窄到本项目（仅 %s）：%+v", localAsk, res["asks"])
 	}
-	if got := str(asks[0]["work_dir"]); got != testWorkDir {
+	ask0, _ := askItems[0].(map[string]any)
+	if str(ask0["ask_id"]) != localAsk {
+		t.Fatalf("快照 ask_id=%q want %q", str(ask0["ask_id"]), localAsk)
+	}
+	if got := str(ask0["work_dir"]); got != testWorkDir {
 		t.Fatalf("快照 work_dir=%q want %q", got, testWorkDir)
 	}
 

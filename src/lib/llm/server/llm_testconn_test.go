@@ -71,7 +71,7 @@ func probeChatServer(t *testing.T) (*probeRec, *httptest.Server) {
 // testConn 发 llm.test-connection（真实总线方法面）并取结果信封。
 func testConn(t *testing.T, s *Server, payload map[string]any) map[string]any {
 	t.Helper()
-	v := s.bus.Emit(context.Background(), SubjectLLMTestConnection, jb(payload)).Wait()
+	v := emitWait(t, s.bus, SubjectLLMTestConnection, jb(payload))
 	if v.Err() != nil {
 		t.Fatalf("llm.test-connection 总线错误: %v", v.Err())
 	}

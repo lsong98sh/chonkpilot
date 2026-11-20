@@ -1,7 +1,6 @@
 package mqpolicy
 
 import (
-	"context"
 	"sync"
 	"testing"
 
@@ -57,7 +56,7 @@ func newDispatchHub(t *testing.T) (mq.Bus, *dispatch.Dispatcher) {
 
 // publish 发一条相对主题事件并等投递完成。
 func publish(bus mq.Bus, topic, payload string) {
-	bus.Emit(context.Background(), topic, []byte(payload)).Wait()
+	bus.Publish(topic, []byte(payload))
 }
 
 // TestPluginSinkWorkDirIsolation：插件 sink（workdir=A）收 A 的 `filesys.changed`，收不到 B 的；

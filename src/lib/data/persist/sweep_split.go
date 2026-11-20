@@ -17,7 +17,6 @@
 package persist
 
 import (
-	"context"
 	"encoding/json"
 	"sync"
 	"time"
@@ -77,5 +76,5 @@ func (s *Service) sweepStale() int {
 // 会再跑一次（幂等，见其注释）。主题名取本包既有常量 instanceExit（data 层不引 chonkpilot-plugin）。
 func (s *Service) publishInstanceExit(instanceID string) {
 	b, _ := json.Marshal(map[string]string{"instance_id": instanceID})
-	_ = s.Bus.Emit(context.Background(), instanceExit, b)
+	_ = s.Bus.Publish(instanceExit, b)
 }

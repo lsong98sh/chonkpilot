@@ -6,7 +6,6 @@
 package server
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 
@@ -16,7 +15,7 @@ import (
 // claimOnce 发一次 instance-claim，返回 (应答 result, v.Err())。
 func claimOnce(t *testing.T, s *Server, payload map[string]any) (map[string]any, error) {
 	t.Helper()
-	v := s.bus.Emit(context.Background(), SubjectInstanceClaim, jb(payload)).Wait()
+	v := emitWait(t, s.bus, SubjectInstanceClaim, jb(payload))
 	res, _ := v.Result.(map[string]any)
 	return res, v.Err()
 }

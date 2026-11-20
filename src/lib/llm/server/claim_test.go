@@ -73,13 +73,13 @@ func TestInstanceClaimEntryBound(t *testing.T) {
 	got := claimBroadcasts(t, s)
 	dataDir := filepath.Join(testWorkDir, ".chonkpilot")
 	const id = "ins-claim"
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": id, "client_type": "gui", "work_dir": testWorkDir, "data_dir": dataDir,
 	}))
 	drainClaimBroadcast(t, got) // 消费启动期登记（前置）
 
 	// claim（desktop 口径：payload 省略 work_dir，仅带入口注入的 instance_id）
-	v := s.bus.Emit(context.Background(), SubjectInstanceClaim, jb(map[string]any{"instance_id": id})).Wait()
+	v := emitWait(t, s.bus, SubjectInstanceClaim, jb(map[string]any{"instance_id": id}))
 	if v.Err() != nil {
 		t.Fatalf("instance-claim 失败: %v", v.Err())
 	}
@@ -112,7 +112,7 @@ func TestInstanceClaimEntryBound(t *testing.T) {
 	}
 
 	// 重复认领幂等（同 id 不新增条目、仍成功）
-	v2 := s.bus.Emit(context.Background(), SubjectInstanceClaim, jb(map[string]any{"instance_id": id})).Wait()
+	v2 := emitWait(t, s.bus, SubjectInstanceClaim, jb(map[string]any{"instance_id": id}))
 	if v2.Err() != nil {
 		t.Fatalf("重复 instance-claim 失败: %v", v2.Err())
 	}
@@ -136,15 +136,15 @@ func TestInstanceClaimWorkDirProposalWins(t *testing.T) {
 
 	got := claimBroadcasts(t, s)
 	const id = "ins-claim-f"
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": id, "client_type": "browser", "work_dir": testWorkDir,
 	}))
 	drainClaimBroadcast(t, got)
 
 	proposal := filepath.Join(testWorkDir, "elsewhere")
-	v := s.bus.Emit(context.Background(), SubjectInstanceClaim, jb(map[string]any{
+	v := emitWait(t, s.bus, SubjectInstanceClaim, jb(map[string]any{
 		"instance_id": id, "work_dir": proposal,
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("instance-claim 失败: %v", v.Err())
 	}
@@ -175,7 +175,7 @@ func TestInstanceClaimWorkDirFromProposal(t *testing.T) {
 
 	// ② 带提议 → 成功；data_dir 为空（prjusr 按 project-id 落数据根）。
 	got := claimBroadcasts(t, s)
-	v := s.bus.Emit(context.Background(), SubjectInstanceClaim, jb(map[string]any{"work_dir": testWorkDir})).Wait()
+	v := emitWait(t, s.bus, SubjectInstanceClaim, jb(map[string]any{"work_dir": testWorkDir}))
 	if v.Err() != nil {
 		t.Fatalf("instance-claim 失败: %v", v.Err())
 	}

@@ -57,7 +57,7 @@ func TestSessionTitleBroadcastMQ(t *testing.T) {
 	emit := func(subject string, payload map[string]any) {
 		t.Helper()
 		b, _ := json.Marshal(payload)
-		_ = s.Bus.Emit(context.Background(), subject, b).Wait()
+		_ = s.Bus.Publish(subject, b)
 	}
 
 	// 前置：幂等建会话（标题初值 = session_id，见 SessionEnsure）

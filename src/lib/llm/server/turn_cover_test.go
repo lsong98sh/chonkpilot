@@ -55,7 +55,7 @@ func TestTurnReasoningSyncToolText(t *testing.T) {
 
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-cov1", "t-cov1")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-cov1", "turn": "t-cov1",
 		"type": "text-user", "content": "reason round",
 	}))
@@ -108,7 +108,7 @@ func TestTurnLLMRetryableAutoRetry(t *testing.T) {
 
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-cov2", "t-cov2")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-cov2", "turn": "t-cov2",
 		"type": "text-user", "content": "retry me",
 	}))
@@ -170,7 +170,7 @@ func TestTurnVisibleRetryEvents(t *testing.T) {
 		registerTestInstance(t, s)
 		saveRetryConfig(t, s, 2)
 		startTurn(t, s, "s-vr1", "t-vr1")
-		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		s.bus.Publish("session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-vr1", "turn": "t-vr1",
 			"type": "text-user", "content": "always fail please",
 		}))
@@ -230,7 +230,7 @@ func TestTurnVisibleRetryEvents(t *testing.T) {
 		registerTestInstance(t, s)
 		saveRetryConfig(t, s, 2)
 		startTurn(t, s, "s-vr2", "t-vr2")
-		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		s.bus.Publish("session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-vr2", "turn": "t-vr2",
 			"type": "text-user", "content": "fail once",
 		}))
@@ -255,7 +255,7 @@ func TestTurnVisibleRetryEvents(t *testing.T) {
 		registerTestInstance(t, s)
 		saveRetryConfig(t, s, 0)
 		startTurn(t, s, "s-vr3", "t-vr3")
-		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		s.bus.Publish("session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-vr3", "turn": "t-vr3",
 			"type": "text-user", "content": "no retry please",
 		}))
@@ -298,7 +298,7 @@ func TestTurnVisibleRetryEvents(t *testing.T) {
 			t.Fatalf("save user-config failed: %+v", res)
 		}
 		startTurn(t, s, "s-vr4", "t-vr4")
-		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		s.bus.Publish("session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-vr4", "turn": "t-vr4",
 			"type": "text-user", "content": "rate limited please",
 		}))
@@ -336,12 +336,12 @@ func TestTurnCancelInterrupted(t *testing.T) {
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-cov3", "t-cov3")
 	log := watchSessionEvents(t, s.bus, "t-cov3")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-cov3", "turn": "t-cov3",
 		"type": "text-user", "content": "slow stream",
 	}))
 	time.Sleep(300 * time.Millisecond) // turn 已进入挂起的 LLM 请求（running）
-	s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	s.bus.Publish("session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-cov3", "turn": "t-cov3",
 	}))
 	evs := waitComplete(t, log, 5*time.Second)
@@ -462,7 +462,7 @@ func TestTurnCompleteRetryableField(t *testing.T) {
 		registerTestInstance(t, s)
 		saveRetryConfig(t, s, 1) // 重试 1 次 → 2 次请求（真实"耗尽"）
 		startTurn(t, s, "s-rt1", "t-rt1")
-		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		s.bus.Publish("session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-rt1", "turn": "t-rt1",
 			"type": "text-user", "content": "always fail please",
 		}))
@@ -496,7 +496,7 @@ func TestTurnCompleteRetryableField(t *testing.T) {
 		registerTestInstance(t, s)
 		saveRetryConfig(t, s, 2)
 		startTurn(t, s, "s-rt2", "t-rt2")
-		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		s.bus.Publish("session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-rt2", "turn": "t-rt2",
 			"type": "text-user", "content": "protocol error please",
 		}))
@@ -518,7 +518,7 @@ func TestTurnCompleteRetryableField(t *testing.T) {
 		defer llm.Close()
 		s := newTestServer(t, llm)
 		startTurn(t, s, "s-rt3", "t-rt3")
-		s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+		s.bus.Publish("session-send", jb(map[string]any{
 			"instance_id": "ins-test", "session": "s-rt3", "turn": "t-rt3",
 			"type": "text-user", "content": "hello",
 		}))

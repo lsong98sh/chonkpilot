@@ -39,7 +39,7 @@ func memExtractCall(t *testing.T, s *Service, subject string, body map[string]an
 	}
 	defer sub.Unsubscribe()
 	b, _ := json.Marshal(body)
-	_ = s.Bus.Emit(context.Background(), subject, b).Wait()
+	_ = s.Bus.Publish(subject, b)
 	select {
 	case m := <-ch:
 		return m

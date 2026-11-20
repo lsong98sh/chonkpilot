@@ -524,13 +524,13 @@ func (s *Service) handle(subject, domain, op string, payload []byte) {
 // replyID 按 req_id 回复成功结果（各域 handler 统一用本方法；result = wire 结果 DTO 或 DB 行 DTO）。
 func (s *Service) replyID(method, reqID string, result any) {
 	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": true, "result": result})
-	_ = s.Bus.Emit(context.Background(), method, b)
+	_ = s.Bus.Publish(method, b)
 }
 
 // failID 按 req_id 回复错误。
 func (s *Service) failID(method, reqID string, err error) {
 	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": false, "error": err.Error()})
-	_ = s.Bus.Emit(context.Background(), method, b)
+	_ = s.Bus.Publish(method, b)
 }
 
 // failDecode 载荷解析失败时的失败回执：先从原始载荷尽力取回 req_id（顶层或 data 内），

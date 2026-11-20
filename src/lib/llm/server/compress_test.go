@@ -53,7 +53,7 @@ func summaryLLMServer(summary string) *httptest.Server {
 // prepareSessionTurns 注册实例 + 建会话 + 建两个 turn 行（**不**起 live turn，避免 session busy）。
 func prepareSessionTurns(t *testing.T, s *Server, sess string, turns ...string) *sessionStore {
 	t.Helper()
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	time.Sleep(50 * time.Millisecond)
@@ -369,7 +369,7 @@ func TestCompressSynchronousOnTriggeringTurn(t *testing.T) {
 	release()
 	// 阈值 1：第三方请求（t3）组装时压缩后仍超 → 本轮 error 终态（2.4 显式报错，不静默截断）。
 	startTurn(t, s, "s-term", "t3")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-term", "turn": "t3",
 		"type": "text-user", "content": "hello three",
 	}))
@@ -401,7 +401,7 @@ func TestCompressSynchronousOnTriggeringTurn(t *testing.T) {
 func completeTurnOne(t *testing.T, s *Server, session, turn, text string) {
 	t.Helper()
 	startTurn(t, s, session, turn)
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
 		"type": "text-user", "content": text,
 	}))

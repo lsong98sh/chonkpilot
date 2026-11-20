@@ -610,11 +610,11 @@ func TestAgentDelegableSameNameInstanceFirst(t *testing.T) {
 // agStartTurn 发 session-start（带 scenario_id；think=off 简化请求体）。
 func agStartTurn(t *testing.T, s *Server, session, turn, llmName, scenarioID string) {
 	t.Helper()
-	f := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	f := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-" + turn, "instance_id": "ins-test", "session": session, "turn": turn,
 		"llm": llmName, "think": "off", "scenario_id": scenarioID,
 	}))
-	v := f.Wait()
+	v := f
 	if v.Err() != nil {
 		t.Fatalf("session-start error: %v", v.Err())
 	}

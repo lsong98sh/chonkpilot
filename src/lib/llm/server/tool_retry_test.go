@@ -8,7 +8,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -184,8 +183,8 @@ func persistInterruptedTurn(t *testing.T, s *Server, turn, userText, toolCallID,
 // retryReply 发 tool-retry 并返回 reply 载荷。
 func retryReply(t *testing.T, s *Server, payload map[string]any) map[string]any {
 	t.Helper()
-	f := s.bus.Emit(context.Background(), "tool-retry", jb(payload))
-	v := f.Wait()
+	f := emitWait(t, s.bus, "tool-retry", jb(payload))
+	v := f
 	res, _ := v.Result.(map[string]any)
 	if res == nil {
 		t.Fatalf("no tool-retry reply for %+v", payload)

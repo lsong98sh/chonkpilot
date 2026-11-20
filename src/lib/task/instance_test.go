@@ -134,12 +134,12 @@ func scopedRowClosed(row map[string]any) bool {
 
 func (d *scopedData) reply(subject, reqID string, result map[string]any) {
 	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": true, "result": result})
-	d.bus.Emit(context.Background(), subject, b)
+	d.bus.Publish(subject, b)
 }
 
 func (d *scopedData) replyErr(subject, reqID, msg string) {
 	b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": false, "error": msg})
-	d.bus.Emit(context.Background(), subject, b)
+	d.bus.Publish(subject, b)
 }
 
 // TestMW11ExplicitInstanceMultiInstance：多实例下显式 instance 各读各库；缺省可从层内事件解析；

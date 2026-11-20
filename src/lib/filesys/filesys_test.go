@@ -24,7 +24,7 @@ func newTestWM(t *testing.T, bus mq.Bus, wd, instanceID string) *watchManager {
 	}
 	t.Cleanup(pm.Stop)
 	raw, _ := json.Marshal(map[string]any{"instance_id": instanceID, "work_dir": wd})
-	bus.Emit(context.Background(), "instance-register", raw).Wait()
+	bus.Publish("instance-register", raw)
 	m := newWatchManager(bus, pm)
 	t.Cleanup(m.Close)
 	return m
@@ -525,7 +525,7 @@ func newBoundFilesys(t *testing.T, wd, instanceID string) *Filesys {
 	}
 	t.Cleanup(pm.Stop)
 	raw, _ := json.Marshal(map[string]any{"instance_id": instanceID, "work_dir": wd})
-	bus.Emit(context.Background(), "instance-register", raw).Wait()
+	bus.Publish("instance-register", raw)
 	return &Filesys{bus: bus, pm: pm}
 }
 

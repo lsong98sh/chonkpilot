@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -33,9 +32,7 @@ func newFacadeBridgeEnv(t *testing.T) (*Bridge, mq.Bus, string, *persist.Service
 	const instanceID = "ins-bridge-test"
 	wd := t.TempDir()
 	body, _ := json.Marshal(map[string]any{"instance_id": instanceID, "work_dir": wd, "data_dir": ""})
-	if err := bus.Emit(context.Background(), "instance-register", body).Wait().Err(); err != nil {
-		t.Fatalf("instance-register: %v", err)
-	}
+	bus.Publish("instance-register", body)
 	br := New(instanceID, wd, "", func(string) {}, bus)
 	return br, bus, instanceID, svc
 }

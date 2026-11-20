@@ -417,9 +417,9 @@ func TestDelegationBarrierE2E_CancelNotDone(t *testing.T) {
 	startDelegationTurn(t, s, "s-parent", "t-parent", "parent delegate")
 
 	_, childTurn := waitLLMTask(t, te, "s-child")
-	if v := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+if v := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-child", "turn": childTurn,
-	})).Wait(); v.Err() != nil {
+	})); v.Err() != nil {
 		t.Fatalf("llm-cancel(child): %v", v.Err())
 	}
 
@@ -454,9 +454,9 @@ func TestDelegationBarrierE2E_CancelRecursive(t *testing.T) {
 
 	_, childTurn := waitLLMTask(t, te, "s-child")
 	waitLLMTask(t, te, "s-grand") // 孙轮次已登记（child 的 delegated 表已写入）
-	if v := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+if v := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-child", "turn": childTurn,
-	})).Wait(); v.Err() != nil {
+	})); v.Err() != nil {
 		t.Fatalf("llm-cancel(child): %v", v.Err())
 	}
 

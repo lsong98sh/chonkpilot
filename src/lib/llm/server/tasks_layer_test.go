@@ -6,7 +6,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -23,7 +22,7 @@ func TestTaskLayerSingleWriter(t *testing.T) {
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-layer", "t-layer")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-layer", "turn": "t-layer",
 		"type": "text-user", "content": "sync tool please",
 	}))
@@ -137,10 +136,10 @@ func TestTaskLayerCancelAuthority(t *testing.T) {
 		t.Fatalf("层未持有 exec 句柄: %+v ok=%v", exec, ok)
 	}
 
-	f := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
+	f := emitWait(t, s.bus, "task-stop", jb(map[string]any{
 		"req_id": "r-layer-stop", "instance_id": "ins-test", "task_id": node.TaskID,
 	}))
-	v := f.Wait()
+	v := f
 	if res, _ := v.Result.(map[string]any); res != nil {
 		if ok, _ := res["cancelled"].(bool); !ok {
 			t.Fatalf("task-stop ack: %+v", res)
@@ -231,14 +230,20 @@ func TestTaskLayerRecoverOnFirstStart(t *testing.T) {
 // verifyCall 发 `task-verify` 方法面（I-87）并取回层宿主应答。
 func verifyCall(t *testing.T, s *Server, topSession string) (*tasklayer.VerifyResult, error) {
 	t.Helper()
-	v := s.bus.Emit(context.Background(), "task-verify", jb(map[string]any{
+	v := emitWait(t, s.bus, "task-verify", jb(map[string]any{
 		"instance_id": "ins-test", "top_session": topSession,
-	})).Wait()
+	}))
 	if err := v.Err(); err != nil {
 		return nil, err
 	}
-	res, ok := v.Result.(*tasklayer.VerifyResult)
-	if !ok {
+	// buscall JSON 往返：Result 为 map（旧 promise 直连 *VerifyResult 已不可达）——
+	// 同字段序回填结构体（VerifyResult JSON tag 同形）。
+	raw, err2 := json.Marshal(v.Result)
+	if err2 != nil {
+		t.Fatalf("task-verify 应答序列化失败: %v (%+v)", err2, v.Result)
+	}
+	var res *tasklayer.VerifyResult
+	if err := json.Unmarshal(raw, &res); err != nil || res == nil {
 		t.Fatalf("task-verify 应答类型错: %T (%+v)", v.Result, v.Result)
 	}
 	return res, nil
@@ -249,7 +254,7 @@ func verifyCall(t *testing.T, s *Server, topSession string) (*tasklayer.VerifyRe
 func runSyncToolTurn(t *testing.T, s *Server, session, turn string) map[string]any {
 	t.Helper()
 	startTurn(t, s, session, turn)
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
 		"type": "text-user", "content": "sync tool please",
 	}))
@@ -354,7 +359,7 @@ func TestTaskVerifyMethod(t *testing.T) {
 	}
 
 	// ③ 缺 top_session → 协议错误
-	v := s.bus.Emit(context.Background(), "task-verify", jb(map[string]any{"instance_id": "ins-test"})).Wait()
+	v := emitWait(t, s.bus, "task-verify", jb(map[string]any{"instance_id": "ins-test"}))
 	if v.Err() == nil {
 		t.Fatalf("缺 top_session 应回协议错误: %+v", v.Result)
 	}
@@ -662,9 +667,9 @@ func TestTaskStopByIdAndToolCall(t *testing.T) {
 	})
 
 	// ① tool_call_id → 反查 task_id → 层 → sink.CancelExec(gw_task_id)（真打断）+ 标终态
-	v := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
+	v := emitWait(t, s.bus, "task-stop", jb(map[string]any{
 		"instance_id": "ins-test", "tool_call_id": "tc-stop",
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("task-stop(tool_call_id): %v", v.Err())
 	}
@@ -686,7 +691,7 @@ func TestTaskStopByIdAndToolCall(t *testing.T) {
 	}
 
 	// ② 已终态 → 明确报错 + 不重复下发执行侧取消
-	v = s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{"instance_id": "ins-test", "task_id": node.TaskID})).Wait()
+v = emitWait(t, s.bus, "task-stop", jb(map[string]any{"instance_id": "ins-test", "task_id": node.TaskID}))
 	if err := v.Err(); err == nil || !strings.Contains(err.Error(), "已结束") {
 		t.Fatalf("已终态应回明确错误, got %v", err)
 	}
@@ -695,10 +700,10 @@ func TestTaskStopByIdAndToolCall(t *testing.T) {
 	}
 
 	// ③ id 缺失 / 未命中 → 明确报错
-	if err := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{})).Wait().Err(); err == nil {
+if err := emitWait(t, s.bus, "task-stop", jb(map[string]any{})).Err(); err == nil {
 		t.Fatal("缺 task_id/tool_call_id 应报错")
 	}
-	if err := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{"instance_id": "ins-test", "tool_call_id": "tc-none"})).Wait().Err(); err == nil {
+if err := emitWait(t, s.bus, "task-stop", jb(map[string]any{"instance_id": "ins-test", "tool_call_id": "tc-none"})).Err(); err == nil {
 		t.Fatal("tool_call_id 未命中应报错")
 	}
 
@@ -712,7 +717,7 @@ func TestTaskStopByIdAndToolCall(t *testing.T) {
 	}
 	s.tasks.setGwTask(node2.TaskID, "tk-stop-gw2")
 	s.execSink = nil
-	err = s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{"instance_id": "ins-test", "task_id": node2.TaskID})).Wait().Err()
+err = emitWait(t, s.bus, "task-stop", jb(map[string]any{"instance_id": "ins-test", "task_id": node2.TaskID})).Err()
 	s.execSink = testExecSink
 	if err == nil || !strings.Contains(err.Error(), "执行池不可用") {
 		t.Fatalf("sink 未注入应回明确错误, got %v", err)

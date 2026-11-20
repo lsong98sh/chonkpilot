@@ -20,6 +20,7 @@ import (
 	"github.com/lsong98sh/chonkpilot-agent/gateway"
 	"github.com/lsong98sh/chonkpilot-agent/router"
 	sessionrunner "github.com/lsong98sh/chonkpilot-agent/session/runner"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/buscall"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 )
 
@@ -242,7 +243,7 @@ func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 			// 2026-09-18 起该通知面是结果唯一交付通道；server 据此落 message 表并回填续轮）。
 			go func() {
 				time.Sleep(taskDoneDelay)
-				bus.Emit(context.Background(), "mcp-tasks-report", jb(map[string]any{
+				bus.Publish("mcp-tasks-report", jb(map[string]any{
 					"task_id": "tk-test", "tool": req.Name, "state": "done",
 					"result_summary": "async file content", "session": req.Session, "turn": req.Turn,
 					"instance_id": req.InstanceID,
@@ -261,6 +262,95 @@ func fakeGateway(bus mq.Bus, s *Server, taskDoneDelay time.Duration) {
 func jb(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+// busCall 发一次请求-应答调用（buscall req_id 信封，总线 promise 退场 2026-11-19）：
+// 返回 result map 与 err（服务端失败信封 → err 非 nil；超时/无应答同旧 Wait 的错误语义）。
+// 载荷顶层带 result 的（v.Result 服务端写回经自动回执层合成信封）由总线层处理，测试无需关心。
+func busCall(t *testing.T, bus mq.Bus, subject string, payload map[string]any) (map[string]any, error) {
+	t.Helper()
+	c := buscall.New(bus)
+	defer c.Close()
+	res, err := c.CallWithTimeout(context.Background(), 5*time.Second, subject, payload)
+	if err != nil {
+		return nil, err
+	}
+	m, _ := res.(map[string]any)
+	return m, nil
+}
+
+// busCallReq 同 busCall，但断言「必须成功且 result 为 map」（旧 Emit().Wait() 后立即
+// Fatalf 的口径收拢到一处）。
+func busCallReq(t *testing.T, bus mq.Bus, subject string, payload map[string]any) map[string]any {
+	t.Helper()
+	m, err := busCall(t, bus, subject, payload)
+	if err != nil {
+		t.Fatalf("%s 失败: %v", subject, err)
+	}
+	if m == nil {
+		t.Fatalf("%s 无应答（result 非 map）: %v", subject, m)
+	}
+	return m
+}
+
+// emitVal 模拟旧 Emit().Wait() 的返回面（Err/Result/Errors），供未逐点改写的旧测试
+// 断言续用（buscall 信封：err=失败信封 error；Result=信封 result；Errors 恒空——失败
+// 语义经 Err() 承载）。
+type emitVal struct {
+	Result any
+	err    error
+}
+
+func (v emitVal) Err() error { return v.err }
+
+func (v emitVal) Errors() []error {
+	if v.err != nil {
+		return []error{v.err}
+	}
+	return nil
+}
+
+// emitWait 同主题请求-应答（buscall req_id 信封）：payload 为 JSON bytes（jb 产物）或
+// map；返回 emitVal（旧 Value 断言面）。注意载荷**不能**自带 req_id（信封由 buscall 注入）。
+func emitWait(t *testing.T, bus mq.Bus, subject string, payload any) emitVal {
+	t.Helper()
+	var m map[string]any
+	switch p := payload.(type) {
+	case map[string]any:
+		m = p
+	case nil:
+		m = map[string]any{}
+	case []byte:
+		// jb 产物（已序列化 JSON）：直接解成 map（不得再 Marshal——[]byte 会被二次
+		// 编码成 base64 字符串，载荷字段全部丢失）。
+		_ = json.Unmarshal(p, &m)
+	default:
+		b, err := json.Marshal(p)
+		if err == nil {
+			_ = json.Unmarshal(b, &m)
+		}
+	}
+	if m == nil {
+		m = map[string]any{}
+	}
+	c := buscall.New(bus)
+	defer c.Close()
+	// 超时取短（300ms）：内存总线派发同步——应答信封在 Publish 返回前即达（handler 写
+	// v.Result → 自动回执层同 Publish 内发出），等待只是通道收取；无应答（fire-and-forget
+	// 主题误用本 helper）也只拖 300ms 而非 5s（避免错过其后的订阅窗口）。
+	res, err := c.CallWithTimeout(context.Background(), 300*time.Millisecond, subject, m)
+	if err != nil {
+		// 失败信封按旧 claimFail 口径落到 Result（{ok:false, error:msg}）——
+		// 旧 promise 失败面：v.Result={ok:false,error} + v.Err()；buscall 失败时 error 字符串
+		// 原样保留在 err，并回填 Result（既有断言 res["error"] 继续可用）。
+		// 超时（fire-and-forget 无应答）例外：**不**回填（旧语义成功面 Result=nil，调用方
+		// 以 res==nil 区分「已受理」——回填会被误读为拒绝）。
+		if varTimeout, isTimeout := err.(*buscall.TimeoutError); isTimeout && varTimeout != nil {
+			return emitVal{err: err}
+		}
+		return emitVal{err: err, Result: map[string]any{"ok": false, "error": err.Error()}}
+	}
+	return emitVal{Result: res}
 }
 
 // mockLLMServer 按最后文本分支返回 SSE（length/empty/async/auth/默认回显）。
@@ -400,7 +490,7 @@ func closeTestDataStore() {
 func startTurn(t *testing.T, s *Server, session, turn string) {
 	t.Helper()
 	// instance-register（客户端自生成 uuid，绑定共享 workdir——instance ↔ workdir 恒定）
-	s.bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	s.bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": testWorkDir,
 	}))
 	time.Sleep(50 * time.Millisecond)
@@ -409,10 +499,9 @@ func startTurn(t *testing.T, s *Server, session, turn string) {
 	if err := newSessionStore(s.bus, "ins-test").EnsureSession(session); err != nil {
 		t.Fatalf("EnsureSession(%s): %v", session, err)
 	}
-	f := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-" + turn, "instance_id": "ins-test", "session": session, "turn": turn,
 	}))
-	v := f.Wait()
 	if v.Err() != nil {
 		t.Fatalf("llm-start error: %v", v.Err())
 	}
@@ -453,7 +542,7 @@ func TestTurnLengthAutoContinue(t *testing.T) {
 	}
 	startTurn(t, s, "s-len", "t-len")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-len", "turn": "t-len",
 		"type": "text-user", "content": "length please",
 	}))
@@ -486,7 +575,7 @@ func TestTurnEmptyReply(t *testing.T) {
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-empty", "t-empty")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-empty", "turn": "t-empty",
 		"type": "text-user", "content": "empty please",
 	}))
@@ -513,7 +602,7 @@ func TestTurnAuthImmediate(t *testing.T) {
 	startTurn(t, s, "s-auth", "t-auth")
 
 	start := time.Now()
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-auth", "turn": "t-auth",
 		"type": "text-user", "content": "auth please",
 	}))
@@ -543,7 +632,7 @@ func TestTurnAsyncPending(t *testing.T) {
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-async", "t-async")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-async", "turn": "t-async",
 		"type": "text-user", "content": "async tool please",
 	}))
@@ -573,7 +662,7 @@ func TestTurnWritesSnapshot(t *testing.T) {
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-comp", "t1")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-comp", "turn": "t1",
 		"type": "text-user", "content": "hello compress",
 	}))
@@ -638,7 +727,7 @@ func TestTurnSyncToolPersisted(t *testing.T) {
 	defer llm.Close()
 	s := newTestServer(t, llm)
 	startTurn(t, s, "s-pers", "t-pers")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-pers", "turn": "t-pers",
 		"type": "text-user", "content": "read file",
 	}))
@@ -704,7 +793,7 @@ func TestTurnToolMetaPersisted(t *testing.T) {
 		"async": "manual", "timeout": 30.0, "category": "file",
 	})
 	startTurn(t, s, "s-meta", "t-meta")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-meta", "turn": "t-meta",
 		"type": "text-user", "content": "sync tool please",
 	}))
@@ -802,8 +891,8 @@ func TestExecControlGoesThroughSink(t *testing.T) {
 	}
 
 	// ② 前端转后台 → sink.DetachExec（无任务节点 → 以 tool_call_id 交执行池定位）
-	if v := s.bus.Emit(context.Background(), "task-background",
-		jb(map[string]any{"tool_call_id": "tc-gw", "instance_id": "ins-gw"})).Wait(); v.Err() != nil {
+	if v := emitWait(t, s.bus, "task-background",
+		jb(map[string]any{"tool_call_id": "tc-gw", "instance_id": "ins-gw"})); v.Err() != nil {
 		t.Fatalf("onTaskBackground: %v", v.Err())
 	}
 	if got := execDetachedRefs(); len(got) != 1 || got[0] != "tc-gw" {
@@ -829,8 +918,8 @@ func TestExecSinkNilExplicitError(t *testing.T) {
 	s := newTestServer(t, llm)
 	s.execSink = nil // 模拟未装配执行池
 
-	err := s.bus.Emit(context.Background(), "task-background",
-		jb(map[string]any{"tool_call_id": "tc-none", "instance_id": "ins-test"})).Wait().Err()
+	err := emitWait(t, s.bus, "task-background",
+		jb(map[string]any{"tool_call_id": "tc-none", "instance_id": "ins-test"})).Err()
 	if err == nil || !strings.Contains(err.Error(), "执行池不可用") {
 		t.Fatalf("sink 为 nil 应回明确错误，got %v", err)
 	}
@@ -892,7 +981,7 @@ func TestTaskNodeTitleFromInjectedDisplayName(t *testing.T) {
 
 	// ① 有注入 → 节点 title/name = 注入值
 	startTurn(t, s, "s-title-inj", "t-title-inj")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-title-inj", "turn": "t-title-inj",
 		"type": "text-user", "content": "inject please",
 	}))
@@ -903,7 +992,7 @@ func TestTaskNodeTitleFromInjectedDisplayName(t *testing.T) {
 
 	// ② 无注入（新会话）→ 回退工具契约名
 	startTurn(t, s, "s-title-plain", "t-title-plain")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-title-plain", "turn": "t-title-plain",
 		"type": "text-user", "content": "plain please",
 	}))
@@ -1038,7 +1127,7 @@ func TestTurnRetryCountSemantics(t *testing.T) {
 				t.Fatalf("save user-config failed: %+v", res)
 			}
 			startTurn(t, s, "s-rc0", "t-rc0")
-			s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+			s.bus.Publish("session-send", jb(map[string]any{
 				"instance_id": "ins-test", "session": "s-rc0", "turn": "t-rc0",
 				"type": "text-user", "content": "always fail please",
 			}))
@@ -1223,9 +1312,9 @@ func TestFinishTerminalOnce(t *testing.T) {
 	}
 
 	// 取消命中已终态轮次（仍在 s.turns）→ 跳过，不重复落库/广播。
-	if err := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	if err := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-t", "session": "s-t", "turn": "t-t",
-	})).Wait().Err(); err != nil {
+	})).Err(); err != nil {
 		t.Fatalf("session-cancel: %v", err)
 	}
 	mu.Lock()

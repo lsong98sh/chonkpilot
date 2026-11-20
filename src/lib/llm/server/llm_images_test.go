@@ -3,7 +3,6 @@
 package server
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -327,7 +326,7 @@ func TestTurnSendsImagesEndToEnd(t *testing.T) {
 	writeTestFile(t, upDir, "shot.png", pngData)
 
 	startTurn(t, s, "s-img", "t-img")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-img", "turn": "t-img",
 		"type": "text-user", "content": imageMsg("shot.png", "tmp/uploads/shot.png", "看图"),
 	}))

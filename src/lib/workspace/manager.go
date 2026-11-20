@@ -429,7 +429,7 @@ func (m *Manager) emit(topic, workDir, dataDir, instanceID string) {
 		m.logf("workspace: marshal %s failed: %v", topic, err)
 		return
 	}
-	_ = m.bus.Emit(context.Background(), topic, raw)
+	_ = m.bus.Publish(topic, raw)
 }
 
 func (s *Space) snapshot() Space {

@@ -5,7 +5,6 @@
 package kernel
 
 import (
-	"context"
 	"encoding/json"
 
 	"github.com/chonkpilot/chonkpilot-data"
@@ -70,7 +69,7 @@ func (b *Base) UserConfigChanged(changed map[string]any) {
 		return // 无总线（测试/无订阅场景）或空变更：无接收方/无内容，静默跳过
 	}
 	raw, _ := json.Marshal(map[string]any{"data": changed})
-	_ = b.Bus.Emit(context.Background(), msgkeys.TopicDataUserConfigChanged, raw)
+	_ = b.Bus.Publish(msgkeys.TopicDataUserConfigChanged, raw)
 }
 
 // RefreshScoped 同 Refresh，但把调用方数据根（Scope）带给 list 解析（门面 inline 绑定路径）。
@@ -139,7 +138,7 @@ func (b *Base) emitRefresh(domain, instanceID string, ids []string, op string, l
 		payload["list"] = list
 	}
 	b2, _ := json.Marshal(payload)
-	_ = b.Bus.Emit(context.Background(), "data-"+domain+"-refresh", b2)
+	_ = b.Bus.Publish("data-"+domain+"-refresh", b2)
 	if domain == "user-config" {
 		cf := map[string]any{
 			"instance_id": instanceID, // 无归属 → 空串（字段必带，61 §0）
@@ -153,6 +152,6 @@ func (b *Base) emitRefresh(domain, instanceID string, ids []string, op string, l
 			cf["list"] = list
 		}
 		cb, _ := json.Marshal(cf)
-		_ = b.Bus.Emit(context.Background(), msgkeys.TopicConfigRefresh, cb)
+		_ = b.Bus.Publish(msgkeys.TopicConfigRefresh, cb)
 	}
 }

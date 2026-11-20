@@ -4,7 +4,6 @@
 package server
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -31,7 +30,7 @@ func newBusHarness(t *testing.T) mq.Bus {
 	t.Cleanup(svc.Stop)
 	wd := t.TempDir()
 	t.Cleanup(data.Reset) // LIFO：先于 bus.Close 关缓存连接
-	_ = bus.Emit(context.Background(), "instance-register", jb(map[string]any{
+	_ = bus.Publish("instance-register", jb(map[string]any{
 		"instance_id": "ins-test", "client_type": "unittest", "work_dir": wd,
 	}))
 	time.Sleep(50 * time.Millisecond)

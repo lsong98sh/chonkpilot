@@ -3,7 +3,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -225,10 +224,10 @@ func TestAskTimeoutAutoReplyFullChain(t *testing.T) {
 	}
 
 	// 真实工具调用链：LLM 发起 ask_user → turn 落占位 tool-result → 登记 ask。
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
 		"type": "text-user", "content": "ask timeout please",
-	})).Wait()
+	}))
 
 	var askID string
 	waitCond(t, 15*time.Second, "session-ask / ask-center-add", func() bool {

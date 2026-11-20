@@ -51,7 +51,7 @@ func TestAskDialogIDBothDirections(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-ask-dlg", "turn": "t-ask-dlg",
 		"type": "text-user", "content": "ask please",
 	}))
@@ -80,12 +80,9 @@ func TestAskDialogIDBothDirections(t *testing.T) {
 	}
 
 	// 应答方向：回带同一 dialog_id（前端原样回带）→ 受理无错。
-	f := s.bus.Emit(context.Background(), "session-ask-reply", jb(map[string]any{
+	s.bus.Publish("session-ask-reply", jb(map[string]any{
 		"instance_id": "ins-test", "ask_id": askID, "answer": "y", "dialog_id": want,
 	}))
-	if v := f.Wait(); v.Err() != nil {
-		t.Fatalf("ask-user-reply（带 dialog_id）应被受理: %v", v.Err())
-	}
 	// S4：答复后 tool-result 写“已回复”标记（答案只在后续用户消息里），并作为后续消息投递。
 	delivered := waitAskAnswerDelivered(t, s, "s-ask-dlg", "t-ask-dlg", "答：y")
 	if !strings.Contains(delivered, "确认继续？") {
@@ -120,7 +117,7 @@ func TestAskReplyWithoutDialogIDStillRoutes(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-ask-old", "turn": "t-ask-old",
 		"type": "text-user", "content": "ask please",
 	}))
@@ -141,12 +138,9 @@ func TestAskReplyWithoutDialogIDStillRoutes(t *testing.T) {
 		t.Fatal("no session-ask broadcast")
 	}
 
-	f := s.bus.Emit(context.Background(), "session-ask-reply", jb(map[string]any{
+	s.bus.Publish("session-ask-reply", jb(map[string]any{
 		"instance_id": "ins-test", "ask_id": str(ev["ask_id"]), "answer": "y",
 	}))
-	if v := f.Wait(); v.Err() != nil {
-		t.Fatalf("缺 dialog_id 的应答仍应按 ask_id 路由（不阻断）: %v", v.Err())
-	}
 	// S4：缺 dialog_id 不阻断，答复照常就地回填并作为后续用户消息投递。
 	delivered := waitAskAnswerDelivered(t, s, "s-ask-old", "t-ask-old", "答：y")
 	if !strings.Contains(delivered, "确认继续？") {

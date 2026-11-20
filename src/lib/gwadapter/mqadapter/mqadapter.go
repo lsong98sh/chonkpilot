@@ -91,7 +91,7 @@ func (t *Transport) emit(topic string, payload map[string]any) {
 	if err != nil {
 		return
 	}
-	t.bus.Emit(context.Background(), topic, raw)
+	t.bus.Publish(topic, raw)
 }
 
 // Subscribe 订阅 op：gateway handler 处理请求后按 req_id 回执（总线 promise 退场，2026-11-19）：

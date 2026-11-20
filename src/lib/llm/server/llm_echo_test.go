@@ -8,7 +8,6 @@
 package server
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -41,7 +40,7 @@ func TestEchoProviderNoHTTPEchoesUserInput(t *testing.T) {
 	const input = "只回复我的输入内容"
 	const want = "收到只回复我的输入内容，目前无法回复，请设置LLM。"
 	wt := watchTurn(t, s.bus, "t-echo")
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-echo", "turn": "t-echo",
 		"type": "text-user", "content": input,
 	}))

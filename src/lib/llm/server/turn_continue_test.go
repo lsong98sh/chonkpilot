@@ -5,7 +5,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -92,7 +91,7 @@ func TestTurnContinueSameTurnReuse(t *testing.T) {
 	startTurn(t, s, session, turn)
 
 	// 第 1 轮：正常完成
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
 		"type": "text-user", "content": "first question",
 	}))
@@ -102,10 +101,10 @@ func TestTurnContinueSameTurnReuse(t *testing.T) {
 	waitTurnIdle(t, s, session)
 
 	// 同轮次继续：llm-start{continue:true, turn=同一 turn}
-	v := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-cont", "instance_id": "ins-test", "session": session, "turn": turn,
 		"continue": true,
-	})).Wait()
+	}))
 	res, _ := v.Result.(map[string]any)
 	if ok, _ := res["accepted"].(bool); !ok {
 		t.Fatalf("continue llm-start rejected: %+v", res)
@@ -114,7 +113,7 @@ func TestTurnContinueSameTurnReuse(t *testing.T) {
 		t.Fatalf("continue turn = %v, want reuse %q", got, turn)
 	}
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
 		"type": "text-user", "content": "继续",
 	}))
@@ -176,7 +175,7 @@ func TestTurnContinueResolvesLatestTurn(t *testing.T) {
 	const session, turn = "s-clatest", "t-clatest"
 	startTurn(t, s, session, turn)
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
 		"type": "text-user", "content": "q",
 	}))
@@ -186,10 +185,10 @@ func TestTurnContinueResolvesLatestTurn(t *testing.T) {
 	waitTurnIdle(t, s, session)
 
 	// 不带 turn 的 continue：应解析出最近一轮（同一个 turn）
-	v := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-cl", "instance_id": "ins-test", "session": session,
 		"continue": true,
-	})).Wait()
+	}))
 	res, _ := v.Result.(map[string]any)
 	if ok, _ := res["accepted"].(bool); !ok {
 		t.Fatalf("continue llm-start rejected: %+v", res)
@@ -198,7 +197,7 @@ func TestTurnContinueResolvesLatestTurn(t *testing.T) {
 		t.Fatalf("resolved turn = %v, want %q", got, turn)
 	}
 	// 空 turn 的 session-send：按 session 回退运行中轮次 → 注入 Kind=continue 并完成
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session,
 		"type": "text-user", "content": "继续",
 	}))
@@ -258,7 +257,7 @@ func TestAutoContinueAccumulatesAnswer(t *testing.T) {
 	}
 	const session, turn = "s-acc", "t-acc"
 	startTurn(t, s, session, turn)
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
 		"type": "text-user", "content": "q",
 	}))

@@ -4,7 +4,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -123,10 +122,10 @@ func TestTurnRuntimeIsolationAcrossInstances(t *testing.T) {
 	}
 
 	// 取消 ins-a（载荷带 instance_id）→ 只 A 终态并移出运行态
-	w := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	w := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-a", "session": "s-dup", "turn": "t-dup",
 	}))
-	res, _ := w.Wait().Result.(map[string]any)
+	res, _ := w.Result.(map[string]any)
 	if ok, _ := res["cancelled"].(bool); !ok {
 		t.Fatalf("ins-a 的轮次应被取消：%+v", res)
 	}
@@ -143,10 +142,10 @@ func TestTurnRuntimeIsolationAcrossInstances(t *testing.T) {
 	}
 
 	// 再取消 ins-b → 同样成功（互不干扰）
-	w2 := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	w2 := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-b", "session": "s-dup", "turn": "t-dup",
 	}))
-	res2, _ := w2.Wait().Result.(map[string]any)
+	res2, _ := w2.Result.(map[string]any)
 	if ok, _ := res2["cancelled"].(bool); !ok {
 		t.Fatalf("ins-b 的轮次应被取消：%+v", res2)
 	}
@@ -397,11 +396,9 @@ func TestLLMCancelClearsAsksAndBatches(t *testing.T) {
 	}
 
 	// Q1 作答：立即投递到持久化 inbox（本轮仍在跑 → 等本轮结束消费），批次只剩 Q2 未答。
-	if v := s.bus.Emit(context.Background(), "session-ask-reply", jb(map[string]any{
+	s.bus.Publish("session-ask-reply", jb(map[string]any{
 		"instance_id": "ins-test", "ask_id": a1, "answer": "A1",
-	})).Wait(); v.Err() != nil {
-		t.Fatalf("ask-user-reply 失败: %v", v.Err())
-	}
+	}))
 	items, err := s.inboxList("ins-test", session, "pending")
 	if err != nil || len(items) != 1 || !strings.Contains(items[0].Content, "A1") {
 		t.Fatalf("Q1 答复应进入持久化 inbox：items=%+v err=%v", items, err)
@@ -425,9 +422,9 @@ func TestLLMCancelClearsAsksAndBatches(t *testing.T) {
 	}
 
 	// 真实入口：llm-cancel（session-cancel）。
-	v := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn,
-	})).Wait()
+	}))
 	res, _ := v.Result.(map[string]any)
 	if ok, _ := res["cancelled"].(bool); !ok {
 		t.Fatalf("llm-cancel 应受理: %v（err=%v）", res, v.Err())

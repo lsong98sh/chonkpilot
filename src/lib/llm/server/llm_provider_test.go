@@ -79,11 +79,11 @@ func saveTestLLMProvider(t *testing.T, s *Server, item map[string]any) {
 // startTurnLLM 发 session-start（对齐前端 llm-start 拆分载荷：llm=provider name + think/effort）。
 func startTurnLLM(t *testing.T, s *Server, session, turn, llmName, think, effort string) {
 	t.Helper()
-	f := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	f := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-" + turn, "instance_id": "ins-test", "session": session, "turn": turn,
 		"llm": llmName, "think": think, "effort": effort,
 	}))
-	v := f.Wait()
+	v := f
 	if v.Err() != nil {
 		t.Fatalf("session-start error: %v", v.Err())
 	}
@@ -97,7 +97,7 @@ func startTurnLLM(t *testing.T, s *Server, session, turn, llmName, think, effort
 func sendAndWait(t *testing.T, s *Server, session, turn, text string) {
 	t.Helper()
 	wt := watchTurn(t, s.bus, turn) // 先订阅再触发
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": session, "turn": turn, "type": "text-user", "content": text,
 	}))
 	evs := wt.waitComplete(10 * time.Second)

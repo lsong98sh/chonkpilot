@@ -114,7 +114,7 @@ func TestTaskSyncToolLifecycle(t *testing.T) {
 	te := watchTasks(t, s.bus)
 	startTurn(t, s, "s-tk-sync", "t-tk-sync")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-tk-sync", "turn": "t-tk-sync",
 		"type": "text-user", "content": "sync tool please",
 	}))
@@ -163,7 +163,7 @@ func TestTaskAsyncPendingLifecycle(t *testing.T) {
 	te := watchTasks(t, s.bus)
 	startTurn(t, s, "s-tk-async", "t-tk-async")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-tk-async", "turn": "t-tk-async",
 		"type": "text-user", "content": "async tool please",
 	}))
@@ -236,7 +236,7 @@ func TestTaskAskUserMultiRecommended(t *testing.T) {
 	}
 	defer sub.Unsubscribe()
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-tk-ask", "turn": "t-tk-ask",
 		"type": "text-user", "content": "ask please",
 	}))
@@ -287,7 +287,7 @@ func TestTaskAskUserMultiRecommended(t *testing.T) {
 	}
 	// 应答 → 回填 LLM + ask 任务节点 done；先订阅再触发（轮次可能在 Emit 内完成）。
 	tw := watchTurn(t, s.bus, "t-tk-ask")
-	s.bus.Emit(context.Background(), "session-ask-reply", jb(map[string]any{
+	s.bus.Publish("session-ask-reply", jb(map[string]any{
 		"ask_id": askEv["ask_id"], "answer": "y",
 	}))
 	evs := tw.waitComplete(10 * time.Second)
@@ -365,10 +365,10 @@ func TestTaskStopCascadeCancel(t *testing.T) {
 		return len(te.started) == 3
 	})
 
-	f := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
+	f := emitWait(t, s.bus, "task-stop", jb(map[string]any{
 		"req_id": "r-stop", "instance_id": "ins-test", "task_id": parent.TaskID,
 	}))
-	v := f.Wait()
+	v := f
 	res, _ := v.Result.(map[string]any)
 	if ok, _ := res["cancelled"].(bool); !ok {
 		t.Fatalf("task-stop ack wrong: %+v", res)
@@ -430,9 +430,9 @@ func TestTaskStopCascadeFalseOnlyTarget(t *testing.T) {
 		return len(te.started) == 2
 	})
 
-	v := s.bus.Emit(context.Background(), "task-stop", jb(map[string]any{
+	v := emitWait(t, s.bus, "task-stop", jb(map[string]any{
 		"req_id": "r-stop-nc", "instance_id": "ins-test", "task_id": parent.TaskID, "cascade": false,
-	})).Wait()
+	}))
 	if err := v.Err(); err != nil {
 		t.Fatalf("task-stop(cascade=false): %v", err)
 	}
@@ -493,10 +493,10 @@ func TestLLMCancelCascadeCancel(t *testing.T) {
 		return len(te.started) == 1
 	})
 
-	f := s.bus.Emit(context.Background(), "session-cancel", jb(map[string]any{
+	f := emitWait(t, s.bus, "session-cancel", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-cancel-cas", "turn": "t-cancel-cas",
 	}))
-	v := f.Wait()
+	v := f
 	if v.Err() != nil {
 		t.Fatalf("session-cancel: %v", v.Err())
 	}
@@ -523,9 +523,9 @@ func TestTaskBackgroundForwards(t *testing.T) {
 	resetExecControl()
 
 	// ① 命中：tool_call_id → 执行池返回 {task_id} 并原样回传前端
-	v := s.bus.Emit(context.Background(), "task-background", jb(map[string]any{
+	v := emitWait(t, s.bus, "task-background", jb(map[string]any{
 		"instance_id": "ins-test", "tool_call_id": "tc-bg",
-	})).Wait()
+	}))
 	if err := v.Err(); err != nil {
 		t.Fatalf("task-background: %v", err)
 	}
@@ -539,9 +539,9 @@ func TestTaskBackgroundForwards(t *testing.T) {
 	}
 
 	// ② 缺 tool_call_id → errors 语义（v.Err 非空），且不下发执行侧
-	bad := s.bus.Emit(context.Background(), "task-background", jb(map[string]any{
+	bad := emitWait(t, s.bus, "task-background", jb(map[string]any{
 		"instance_id": "ins-test",
-	})).Wait()
+	}))
 	if bad.Err() == nil {
 		t.Fatalf("task-background without tool_call_id should error")
 	}
@@ -560,9 +560,9 @@ func TestTaskBackgroundForwards(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("tasks.start: %v", err)
 	}
-	rej := s.bus.Emit(context.Background(), "task-background", jb(map[string]any{
+	rej := emitWait(t, s.bus, "task-background", jb(map[string]any{
 		"instance_id": "ins-test", "tool_call_id": "tc-bg-auto",
-	})).Wait()
+	}))
 	if rej.Err() == nil {
 		t.Fatalf("non-manual task-background should error")
 	}
@@ -575,9 +575,9 @@ func TestTaskBackgroundForwards(t *testing.T) {
 	s.gc.mu.Lock()
 	s.gc.tools = []ToolDef{{Name: "core_script_run", Async: "manual"}}
 	s.gc.mu.Unlock()
-	okV := s.bus.Emit(context.Background(), "task-background", jb(map[string]any{
+	okV := emitWait(t, s.bus, "task-background", jb(map[string]any{
 		"instance_id": "ins-test", "tool_call_id": "tc-bg-auto",
-	})).Wait()
+	}))
 	if err := okV.Err(); err != nil {
 		t.Fatalf("manual task-background: %v", err)
 	}
@@ -622,10 +622,10 @@ func TestTaskTreeSubSessionParent(t *testing.T) {
 	}
 
 	// 子会话内开轮（parents 非空 = 子 turn）→ 工具调用落节点
-	v := s.bus.Emit(context.Background(), "session-start", jb(map[string]any{
+	v := emitWait(t, s.bus, "session-start", jb(map[string]any{
 		"req_id": "r-sub", "instance_id": "ins-test", "session": sub, "turn": "t-sub",
 		"parents": []string{"s-topo"},
-	})).Wait()
+	}))
 	if v.Err() != nil {
 		t.Fatalf("sub session-start: %v", v.Err())
 	}
@@ -633,7 +633,7 @@ func TestTaskTreeSubSessionParent(t *testing.T) {
 	if ok, _ := res["accepted"].(bool); !ok {
 		t.Fatalf("sub session-start rejected: %+v", res)
 	}
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": sub, "turn": "t-sub",
 		"type": "text-user", "content": "sync tool please",
 	}))
@@ -661,7 +661,7 @@ func TestTaskTreeMainSessionTopLevel(t *testing.T) {
 	te := watchTasks(t, s.bus)
 	startTurn(t, s, "s-top", "t-top")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-top", "turn": "t-top",
 		"type": "text-user", "content": "sync tool please",
 	}))
@@ -739,7 +739,7 @@ func TestGatewayTaskDoneEmitsToolNotify(t *testing.T) {
 	}
 	s.tasks.setGwTask(node.TaskID, "gw-notify-1")
 
-	s.bus.Emit(context.Background(), "mcp-tasks-report", jb(map[string]any{
+	s.bus.Publish("mcp-tasks-report", jb(map[string]any{
 		"task_id": "gw-notify-1", "tool": "script_run", "state": "done",
 		"result_summary": "ok", "session": "s-notify", "turn": "t-notify",
 		"instance_id": "ins-test",
@@ -815,7 +815,7 @@ func TestGatewayReportLocatesByToolCallIdempotent(t *testing.T) {
 		t.Fatalf("tasks.start: %v", err)
 	}
 	// 首次回报：无 gwTaskID 登记 → 按 tool_call_id 兜底命中 → cancelled
-	s.bus.Emit(context.Background(), "mcp-tasks-report", jb(map[string]any{
+	s.bus.Publish("mcp-tasks-report", jb(map[string]any{
 		"task_id": "tk-gw-loc", "tool_call_id": "tc-loc", "tool": "script_run",
 		"state": "cancelled", "result_summary": "cancelled", "instance_id": "ins-test",
 	}))
@@ -833,7 +833,7 @@ func TestGatewayReportLocatesByToolCallIdempotent(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	// 重复/迟到回报（state=done）→ 不二次广播、不覆盖 cancelled
-	s.bus.Emit(context.Background(), "mcp-tasks-report", jb(map[string]any{
+	s.bus.Publish("mcp-tasks-report", jb(map[string]any{
 		"task_id": "tk-gw-loc", "tool_call_id": "tc-loc", "tool": "script_run",
 		"state": "done", "result_summary": "late", "instance_id": "ins-test",
 	}))
@@ -859,7 +859,7 @@ func TestTurnSyncCancelMarksTaskCancelled(t *testing.T) {
 	te := watchTasks(t, s.bus)
 	startTurn(t, s, "s-cancel", "t-cancel")
 
-	s.bus.Emit(context.Background(), "session-send", jb(map[string]any{
+	s.bus.Publish("session-send", jb(map[string]any{
 		"instance_id": "ins-test", "session": "s-cancel", "turn": "t-cancel",
 		"type": "text-user", "content": "cancel tool please",
 	}))

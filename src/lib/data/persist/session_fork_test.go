@@ -40,7 +40,7 @@ func call(t *testing.T, s *Service, subject string, payload map[string]any) map[
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 	b, _ := json.Marshal(payload)
-	_ = s.Bus.Emit(context.Background(), subject, b).Wait()
+	_ = s.Bus.Publish(subject, b)
 	select {
 	case m := <-out:
 		return m
