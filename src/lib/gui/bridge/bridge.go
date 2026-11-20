@@ -34,6 +34,7 @@ import (
 
 	"github.com/chonkpilot/chonkpilot-gui/mqpolicy"
 	"github.com/chonkpilot/chonkpilot-workspace"
+	"github.com/lsong98sh/chonkpilot-framework/host/core/buscall"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/idgen"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/msgkeys"
@@ -52,6 +53,9 @@ type Bridge struct {
 	workDir    string
 	dataDir    string
 	eval       Eval
+	// caller 是共享 buscall 客户端（publishV 的 req_id 回执等待；懒构造见 busCall()）。
+	caller     *buscall.Client
+	callerOnce sync.Once
 	// hwnd 是宿主窗口句柄（main 注入，截图 callCaptureScreen 等本地能力使用）。
 	hwnd uintptr
 	// logDir 是 GUI 文件日志目录（main 挂上文件 sink 后注入；随 init-data 只读下发，供前端/用户定位。
@@ -748,14 +752,15 @@ func (b *Bridge) publish(subject string, payload interface{}) {
 	// 发布前标记（D-11：与 publishV 统一）——否则回环消息（本桥订阅 ">"）会在 Emit 内即时
 	// 派发时未命中标记而被转发回前端。指纹口径见 isSelfPublished。
 	b.markPublished(subject, raw)
-	v := b.bus.Emit(context.Background(), subject, raw).Wait()
-	if v.Err() != nil {
-		slog.Error("bridge publish failed", "subject", subject, "err", v.Err())
+	if err := b.bus.Publish(subject, raw); err != nil {
+		slog.Error("bridge publish failed", "subject", subject, "err", err)
 	}
 }
 
-// publishV 发布并等待派发结果（promise 语义）：返回订阅者写回的 Result 与收集的 Errors。
-// 事件类主题（无订阅者写回）→ result=nil、errs=nil，行为与 publish 一致。
+// publishV 发送并等待同主题 req_id 回执（总线 promise 退场，2026-11-19）：请求注入
+// req_id 后 Publish；订阅方（handler 写 v.Result 的服务端经总线自动信封回执 / persist
+// replyID 信封）按 req_id 应答回同主题，本方法长驻订阅收结果。
+// 事件类主题（无应答）→ 超时返回 result=nil、errs=nil（与旧 publish 行为一致）。
 // §10.3 边缘白名单：调用方 = `PublishEvent`（HTTP 上行 / 前端 eval 边缘），需同步结果信封。
 func (b *Bridge) publishV(subject string, payload interface{}) (result any, errs []error) {
 	var raw []byte
@@ -769,9 +774,45 @@ func (b *Bridge) publishV(subject string, payload interface{}) (result any, errs
 			return nil, []error{err}
 		}
 	}
+	// req_id 注入：载荷非 JSON 对象时无法注入（fire-and-forget 原样发布）。
+	var req map[string]any
+	if json.Unmarshal(raw, &req) == nil && req != nil {
+		req["req_id"] = idgen.NewUUID()
+		if raw2, err := json.Marshal(req); err == nil {
+			b.markPublished(subject, raw2)
+			res, err := b.busCall().CallWithTimeout(context.Background(), publishReplyTimeout, subject, req)
+			if err != nil {
+				if te, ok := err.(*buscall.TimeoutError); ok {
+					_ = te // 事件类主题无应答：与旧 promise「无写回=空」语义等价
+					return nil, nil
+				}
+				return nil, []error{err}
+			}
+			return res, nil
+		}
+	}
 	b.markPublished(subject, raw)
-	v := b.bus.Emit(context.Background(), subject, raw).Wait()
-	return v.Result, v.Errors
+	if err := b.bus.Publish(subject, raw); err != nil {
+		return nil, []error{err}
+	}
+	return nil, nil
+}
+
+// publishReplyTimeout 是 publishV 等应答的上限（对齐 dataReqTimeout=3s：前端消息面
+// 同进程应答微秒级；分离形态留裕量）。
+const publishReplyTimeout = 3 * time.Second
+
+// busCall 返回本桥的共享 buscall 客户端（懒构造，Start 后可复用；Close 时回收）。
+func (b *Bridge) busCall() *buscall.Client {
+	b.callerOnce.Do(func() {
+		if b.bus != nil {
+			b.caller = buscall.New(b.bus)
+		}
+	})
+	if b.caller == nil { // 无总线（纯本地桥）：空客户端（Call 恒 ErrNoBus）
+		return buscall.New(nil)
+	}
+	return b.caller
 }
 
 // exitPublishTimeout 是退出/关闭路径发布的**等待上限**：退出路径不能因等待应答而长时间阻塞
@@ -796,10 +837,10 @@ func (b *Bridge) publishWithTimeout(subject string, payload interface{}, d time.
 		}
 	}
 	b.markPublished(subject, raw)
-	ctx, cancel := context.WithTimeout(context.Background(), d)
-	defer cancel()
-	if v := b.bus.Emit(ctx, subject, raw).Wait(); v.Err() != nil {
-		slog.Warn("bridge publish (exit path) failed", "subject", subject, "err", v.Err())
+	// 退出路径：fire-and-forget 发布即可（req_id 回执语义下无应答方=超时，发布本身已
+	// 同步派发完成；不再等待任何应答，窗口线程不被拖住）。
+	if err := b.bus.Publish(subject, raw); err != nil {
+		slog.Warn("bridge publish (exit path) failed", "subject", subject, "err", err)
 	}
 }
 

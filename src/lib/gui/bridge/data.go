@@ -94,7 +94,7 @@ func (b *Bridge) dataViaPersist(subject string, payload []byte) (result any, err
 
 	// 防环：请求与应答同主题（persist.reply/fail 直发），标记自发布跳过 forwardEvent 回显。
 	b.markPublished(subject, raw)
-	_ = b.bus.Emit(context.Background(), subject, raw)
+	_ = b.bus.Publish(subject, raw)
 	select {
 	case r := <-done:
 		if r.err != nil {

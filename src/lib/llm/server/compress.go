@@ -20,6 +20,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -78,8 +79,9 @@ func (s *Server) flushMemoryBeforeCompress(instanceID, session string) {
 		msgkeys.MemoryFlushPayloadDialogId:   dialogID,
 	}
 	go func() {
-		if err := s.bus.Emit(context.Background(), msgkeys.TopicMemoryFlush, payload).Wait().Err(); err != nil {
-			logf("[chonkpilot-server] memory: 压缩前沉淀触发失败（session=%s）: %v\n", session, err)
+		// fire-and-forget：memory-flush 是插件侧通知面（无 req_id 应答）；发布即完成。
+		if b, err := json.Marshal(payload); err == nil {
+			_ = s.bus.Publish(msgkeys.TopicMemoryFlush, b)
 		}
 	}()
 }

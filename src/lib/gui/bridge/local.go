@@ -757,8 +757,10 @@ func searchCodegraphSource(b *Bridge, query string, limit int) []map[string]any 
 // searchToolCall 经 gateway（mcp-tools-call）调用已注册查询工具，带超时。
 // 引擎未启用/未就绪/超时/调用失败一律返回 ok=false（调用方静默跳过该源）。
 //
-// §10.3 判据：调用方 = 本地搜索（`gui.*` HTTP 边缘 handler，非总线派发线程）；Emit().Wait()
-// 已在**独立 goroutine** 内执行，调用线程只 select 结果/超时 → 不阻塞消息循环，保留。
+// §10.3 判据：调用方 = 本地搜索（`gui.*` HTTP 边缘 handler，非总线派发线程）；调用在
+// **独立 goroutine** 内 buscall（req_id 回执），调用线程只 select 结果/超时 → 不阻塞消息循环。
+// 2026-11-19（总线 promise 退场）：改走共享 buscall；mcp-* 方法面 handler 经总线自动
+// 信封回执（或 mqadapter.Subscribe 显式回执）。
 func searchToolCall(b *Bridge, tool string, args map[string]any, timeout time.Duration) (string, bool) {
 	if b.bus == nil {
 		return "", false
@@ -773,22 +775,26 @@ func searchToolCall(b *Bridge, tool string, args map[string]any, timeout time.Du
 	if raw, err := json.Marshal(payload); err == nil {
 		b.markPublished(msgkeys.TopicMcpToolsCall, raw)
 	}
-	// 超时可取消：超时后取消 ctx → 后台 Emit 随 ctx 收手（UDS 远程总线 Emit 阻塞至应答，
-	// 内部 select 兼顾 ctx.Done）→ goroutine 不残留至 CallTimeout。
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	done := make(chan *mq.Value, 1)
+	type reply struct {
+		text string
+		ok   bool
+	}
+	done := make(chan reply, 1)
 	go func() {
-		done <- b.bus.Emit(ctx, msgkeys.TopicMcpToolsCall, payload).Wait()
+		res, err := b.busCall().CallWithTimeout(ctx, timeout, msgkeys.TopicMcpToolsCall, payload)
+		if err != nil {
+			done <- reply{}
+			return
+		}
+		done <- reply{text: toolResultText(res), ok: true}
 	}()
 	select {
-	case v := <-done:
-		if v == nil || v.Err() != nil {
-			return "", false
-		}
-		return toolResultText(v.Result), true
+	case r := <-done:
+		return r.text, r.ok
 	case <-ctx.Done():
-		return "", false // 超时：放弃该源（ctx 取消令后台 goroutine 随之退出）
+		return "", false // 超时：放弃该源（ctx 取消令后台调用随之退出）
 	}
 }
 
