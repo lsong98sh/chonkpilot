@@ -2,13 +2,13 @@
   <div class="ws-tree">
     <div v-for="p in projects" :key="p.workDir" class="ws-project">
       <div class="ws-project-row" :title="p.workDir" @click="toggle(p.workDir)">
-        <Icon :name="expanded[p.workDir] ? 'arrow-down' : 'arrow-right'" class="ws-caret" />
+        <Icon :name="isExpanded(p.workDir) ? 'arrow-down' : 'arrow-right'" class="ws-caret" />
         <Icon name="folder-opened" class="ws-icon" />
         <span class="ws-label">{{ p.label }}</span>
         <span class="ws-count" v-if="runningCount(p)">{{ runningCount(p) }}</span>
         <Icon name="close" class="ws-remove" title="移除项目" @click.stop="removeProject(p.workDir)" />
       </div>
-      <div v-show="expanded[p.workDir]" class="ws-sessions">
+      <div v-show="isExpanded(p.workDir)" class="ws-sessions">
         <div
           v-for="s in p.sessions"
           :key="sessionIdOf(s)"
@@ -54,6 +54,13 @@ const expanded = computed(() => store.expanded)
 
 function norm(p) {
   return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+// isExpanded：展开态在 store 里按 `norm(workDir)` 存（小写 + POSIX + 去尾分隔符），而
+// `p.workDir` 来自宿主注册表（Windows 反斜杠原样）。模板若直接 `expanded[p.workDir]`
+// 会恒为 undefined → 会话列表永不显示（v-show=false），点项目行也翻不到可见键。
+function isExpanded(workDir) {
+  return !!expanded.value[norm(workDir)]
 }
 
 function sessionIdOf(s) {
@@ -141,6 +148,20 @@ onMounted(async () => {
   unsubs.push(mq.on(EventNames.llmComplete, () => loadRunning()))
   unsubs.push(mq.on(EventNames.sessionNew, () => {
     for (const p of store.projectList) store.refreshSessions(p.workDir)
+  }))
+  // 标题变更（data-session-title-changed，全局广播）：新建会话后先有 session-new（此时标题
+  // 仍 = session_id）再改标题 → 树若只在 session-new 刷新，会长期显示会话 id 而非标题。
+  // 就地更新（无需整表重拉；payload = {session_id, title}）。
+  unsubs.push(mq.on(EventNames.sessionTitleChanged, (d) => {
+    const sid = String((d && d.session_id) || '')
+    if (!sid) return
+    for (const p of store.projectList) {
+      const row = (p.sessions || []).find((s) => sessionIdOf(s) === sid)
+      if (row) {
+        row.title = (d && d.title) || row.title
+        return
+      }
+    }
   }))
 })
 

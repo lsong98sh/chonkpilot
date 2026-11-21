@@ -22,8 +22,18 @@ function norm(p) {
   return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
 
+// refreshSeq：per-workdir 的会话列表请求序号（非响应式；只用于丢弃乱序的旧响应）。
+const refreshSeq = new Map()
+
 function tabKey(workDir, sessionId) {
   return norm(workDir) + '\u0000' + String(sessionId || '')
+}
+
+/** scope 订阅/退订载荷：草稿页签（无会话身份）只订 workdir，不带空 session_id。 */
+function scopePayload(workDir, sessionId) {
+  const p = { work_dir: workDir }
+  if (sessionId) p.session_id = sessionId
+  return p
 }
 
 // 项目列表的本地持久化（宿主注册表是内存态；重启后按此列表重新 register，恢复工作区树）。
@@ -112,7 +122,7 @@ export const useWorkspacesStore = defineStore('workspaces', {
       const key = norm(workDir)
       for (const t of this.tabs) {
         if (norm(t.workDir) === key) {
-          mq.emit(MsgTopics.guiScopeUnsubscribe, { work_dir: t.workDir, session_id: t.sessionId }).catch(() => {})
+          mq.emit(MsgTopics.guiScopeUnsubscribe, scopePayload(t.workDir, t.sessionId)).catch(() => {})
         }
       }
       this.unsubscribeProject(workDir)
@@ -147,19 +157,59 @@ export const useWorkspacesStore = defineStore('workspaces', {
       this.expanded[k] = !this.expanded[k]
     },
 
-    /** 拉取某 workdir 的会话（data-session-list 带 work_dir）。 */
+    /** 拉取某 workdir 的会话（data-session-list 带 work_dir）。
+     *
+     * 竞态保护（2026-11-21）：首屏 `join()` 的 refresh 与 `session-new` 触发的 refresh 可能
+     * 并发；先发后到的旧响应会把新列表覆盖回空/旧值（实测：新建会话后工作区树仍空）。
+     * 以 per-workdir 序号只采纳**最后一次**发起的请求结果。
+     */
     async refreshSessions(workDir) {
       const key = norm(workDir)
       const project = this.projects[key]
       if (!project) return []
+      const seq = (refreshSeq.get(key) || 0) + 1
+      refreshSeq.set(key, seq)
+      let list = []
       try {
-        const list = await listSessions({ workDir: project.workDir, dataDir: project.dataDir })
-        project.sessions = Array.isArray(list) ? list : []
+        list = await listSessions({ workDir: project.workDir, dataDir: project.dataDir })
       } catch (e) {
         console.warn('[workspaces] list sessions failed:', e)
-        project.sessions = []
       }
+      if (refreshSeq.get(key) !== seq) return project.sessions
+      project.sessions = Array.isArray(list) ? list : []
       return project.sessions
+    },
+
+    /** 打开/复用「新建会话」草稿页签（session_id 尚未分配）。
+     *
+     * 页签模式（`ChatPanel bound`）下「新建会话」= 一个**空身份页签**：标签条不显示会话 tag、
+     * 对话区呈「选择会话」空态；首条消息发送时 ChatPanel 自分配 id 并发 `session-changed`
+     * → 由 `WorkspaceContent` 调 `bindDraftSession` 原地落成真实会话（不重建页签，
+     * 避免发送中的组件被卸载）。同一 workdir 只保留一个草稿页签（重复点新建 = 激活既有）。
+     */
+    openDraft(workDir) {
+      const wd = String(workDir || '')
+      if (!wd) return ''
+      const found = this.tabs.find((t) => t.draft && norm(t.workDir) === norm(wd))
+      if (found) {
+        this.activateTab(found.tabId)
+        return found.tabId
+      }
+      const tabId = 'wt-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)
+      this.tabs.push({ tabId, workDir: wd, sessionId: '', title: '', draft: true, closeable: true })
+      this.activateTab(tabId)
+      return tabId
+    },
+
+    /** 草稿页签 → 真实会话（ChatPanel 首条消息自分配 id 后经 `session-changed` 回填）。 */
+    bindDraftSession(tabId, sessionId) {
+      const tab = this.tabs.find((t) => t.tabId === tabId)
+      const sid = String(sessionId || '')
+      if (!tab || !tab.draft || !sid) return false
+      tab.sessionId = sid
+      tab.draft = false
+      tab.title = tab.title || sid.slice(0, 8)
+      return true
     },
 
     /** 打开/复用会话页签。 */
@@ -186,14 +236,14 @@ export const useWorkspacesStore = defineStore('workspaces', {
       // 右侧内容区切项目时同步全局工作目录（文件树/编辑器等非 bound 面板跟随当前页签）。
       setWorkDir(tab.workDir)
       // 后端只向显式 scope 订阅者投递；会话页签单独订阅自己（workdir 树已订阅 workdir）。
-      mq.emit(MsgTopics.guiScopeSubscribe, { work_dir: tab.workDir, session_id: tab.sessionId }).catch(() => {})
+      mq.emit(MsgTopics.guiScopeSubscribe, scopePayload(tab.workDir, tab.sessionId)).catch(() => {})
     },
 
     closeTab(tabId) {
       const idx = this.tabs.findIndex((t) => t.tabId === tabId)
       if (idx < 0) return
       const [tab] = this.tabs.splice(idx, 1)
-      mq.emit(MsgTopics.guiScopeUnsubscribe, { work_dir: tab.workDir, session_id: tab.sessionId }).catch(() => {})
+      mq.emit(MsgTopics.guiScopeUnsubscribe, scopePayload(tab.workDir, tab.sessionId)).catch(() => {})
       if (this.active.tabId === tabId) {
         const next = this.tabs[idx] || this.tabs[idx - 1] || null
         if (next) this.activateTab(next.tabId)

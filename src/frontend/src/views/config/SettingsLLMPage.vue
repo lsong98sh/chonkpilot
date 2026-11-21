@@ -113,13 +113,16 @@ const tabs = computed(() => [
   { label: t('config.llm.tabDefaults'), name: 'defaults' },
 ])
 
-// 子系统默认模型（SL-5，40-演进计划 §SL · 64-配置项一览 §3）：3 个 usr 键，值类型 llmref
+// 子系统默认模型（SL-5，40-演进计划 §SL · 64-配置项一览 §3）：5 个 usr 键，值类型 llmref
 // （provider name；'' = 回落 defaultLLM，数据层读侧已补）。
 // 2026-10-25：analysis / decision 预留键移除（后端零消费方）。
+// 2026-11-21（mcp_find 渐进披露）：新增 toolSummary（能力资产概述生成）/ toolfind（语义检索）。
 const subsystems = [
   { key: 'llm.promptOptimise', labelKey: 'config.llm.promptOptimise' },
   { key: 'llm.memory', labelKey: 'config.llm.memory' },
   { key: 'llm.compress', labelKey: 'config.llm.compress' },
+  { key: 'llm.toolSummary', labelKey: 'config.llm.toolSummary' },
+  { key: 'llm.toolfind', labelKey: 'config.llm.toolfind' },
 ]
 
 const llmColumns = computed(() => [
@@ -340,11 +343,14 @@ function focusRequestedLLM() {
 
 const unsubs = []
 onMounted(async () => {
-  await loadConfig()
-  focusRequestedLLM()
+  // 订阅必须先于 `loadConfig()` 注册（2026-11-21）：页面骨架在挂载即渲染，按钮（v-mq 发送
+  // `config-add-llm`）此时已可点击；若等配置读完才 on → 先到的添加事件被丢（满载下配置读取
+  // 变慢，e2e/真实快速点击都会表现为「点添加无对话框」）。
   unsubs.push(mq.on(EventNames.configAddLlm, addLLM))
   unsubs.push(mq.on(EventNames.configEditLlm, ({ index }) => editLLM(index)))
   unsubs.push(mq.on(EventNames.configDeleteLlm, ({ index }) => deleteLLM(index)))
+  await loadConfig()
+  focusRequestedLLM()
 })
 onUnmounted(() => unsubs.forEach(fn => fn()))
 </script>

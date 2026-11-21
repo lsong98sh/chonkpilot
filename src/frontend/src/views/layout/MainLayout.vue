@@ -127,8 +127,9 @@ onMounted(() => {
   _mqUnsubs.push(mq.on(EventNames.scenarioOpen, handleOpenScenario))
   // 向导自动弹出（project_spec.md 缺失）：由瘦插件发布 agent-wizard → 打开向导
   _mqUnsubs.push(mq.on(EventNames.agentWizard, handleAgentWizard))
-  // 会话入口（工具栏 Sessions 按钮）→ 切到左侧导航「会话」页签（原会话抽屉已迁入该页签，P3-C1）
-  _mqUnsubs.push(mq.on(EventNames.sessionsOpen, () => mq.emit(EventNames.filetreeModeSelect, { mode: 'sessions' })))
+  // 会话入口（工具栏 Sessions 按钮）→ 切到左侧导航「工作区」页签（多 workdir 后会话挂在
+  // 项目工作区树下；原「会话」一级段已撤，见 ExplorerPane 头注）
+  _mqUnsubs.push(mq.on(EventNames.sessionsOpen, () => mq.emit(EventNames.filetreeModeSelect, { mode: 'workspaces' })))
 
   // 启动恢复：LoadInitData 返回 layout / ui；应用前已做窗口关系校验。
   // locale：localStorage（getInitialLocale 同步初始化）优先，缺失时用 DB

@@ -437,6 +437,15 @@ func (s *Space) snapshot() Space {
 }
 
 // normKey 归一工作目录键（Clean + 大小写不敏感，Windows 口径）。
+//
+// **分隔符必须归一**：注册键来自宿主 `--work-dir`（Windows 反斜杠），而前端部分入口
+// （FileTree / CodeView 首屏 `setWorkDir`）以 POSIX 形态（`E:/a/b`）传 work_dir。
+// 若只做 trim+lower，同一项目会对应两个键 → `Manager.Get` 未命中 → filesys 回
+// `work dir not bound for instance`（2026-11-21 全量 e2e 实测：预置工程后展开目录/预览失败）。
 func normKey(workDir string) string {
-	return strings.ToLower(strings.TrimSpace(workDir))
+	wd := strings.TrimSpace(workDir)
+	if wd == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.Clean(wd))
 }

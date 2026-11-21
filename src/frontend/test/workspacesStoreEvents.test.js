@@ -82,3 +82,45 @@ test('WorkspaceTree 挂载绑定 store 事件、卸载调用 unbindEvents（源�
   assert.match(unmounted[0], /store\.unbindEvents\(\)/, 'onUnmounted 须清空 store 订阅缓存')
   assert.match(unmounted[0], /for \(const fn of unsubs\) fn\(\)/, '组件本地订阅仍须逐条退订')
 })
+test('草稿页签：同一 workdir 复用；bindDraftSession 原地落成真实会话', async () => {
+  const store = setup()
+
+  const t1 = store.openDraft('C:/p0/draft')
+  assert.ok(t1, 'openDraft 返回 tabId')
+  assert.equal(store.active.tabId, t1, '草稿页签即激活')
+  assert.equal(store.active.sessionId, '', '草稿页签无会话身份')
+  assert.equal(store.tabs.length, 1)
+
+  // 「新建会话」重复点 → 复用同一草稿页签（不堆积空页签）
+  const t2 = store.openDraft('c:/p0/draft/')
+  assert.equal(t2, t1, '同 workdir（大小写/尾斜杠归一）复用草稿页签')
+  assert.equal(store.tabs.length, 1)
+
+  // 首条消息自分配 session_id → session-changed → 原地绑定（不重建组件）
+  assert.equal(store.bindDraftSession(t1, 'sess-new-1'), true)
+  const tab = store.tabs.find((t) => t.tabId === t1)
+  assert.equal(tab.sessionId, 'sess-new-1')
+  assert.equal(tab.draft, false)
+  assert.equal(tab.title, 'sess-new', '标题缺省 = 会话 id 前 8 位')
+
+  // 已非草稿 → 不再接受草稿绑定（幂等 false）
+  assert.equal(store.bindDraftSession(t1, 'sess-2'), false)
+
+  // 不同 workdir 各自一份草稿
+  const t3 = store.openDraft('C:/p0/other')
+  assert.notEqual(t3, t1)
+  assert.equal(store.tabs.length, 2)
+
+  await new Promise((r) => setTimeout(r, 0))
+  store.tabs.forEach((t) => {
+    store.closeTab(t.tabId)
+  })
+})
+
+test('WorkspaceContent 把主窗口 session-changed 翻译为页签动作（源码守卫）', () => {
+  const src = readFileSync(join(HERE, '..', 'src', 'views', 'workspace', 'WorkspaceContent.vue'), 'utf8')
+  assert.match(src, /mq\.on\(EventNames\.sessionChanged/, '须订阅 session-changed')
+  assert.match(src, /store\.openDraft\(/, '空会话 = 草稿页签')
+  assert.match(src, /store\.bindDraftSession\(/, '草稿页签首条消息原地绑定')
+  assert.match(src, /store\.openSession\(/, '非空会话 = 打开/激活会话页签')
+})
