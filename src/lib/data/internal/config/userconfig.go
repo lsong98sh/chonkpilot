@@ -58,9 +58,14 @@ var userConfigKeyKinds = map[string]string{
 	// **空串 / 键缺失 → 回落全局 defaultLLM**（SL-C3/C4，回落点见 readUserConfig）；读侧同样
 	// 兼容旧 int 索引。键名与消费方见 64-配置项一览 §3。
 	// 2026-10-25：`llm.analysis` / `llm.decision` 移除（后端零消费方）。
+	// 2026-11-21（mcp_find 渐进披露）：`llm.toolSummary` = 能力资产概述生成（第三方 MCP 注册/
+	// 「加载工具」时对 tool/prompt 生成概述）；`llm.toolfind` = mcp_find 语义检索选条目。
+	// 两者均走插件 `plugin/v1/llm.step` 调用面（mcp 插件每次现读，热生效）。
 	"llm.promptOptimise": "llmref",
 	"llm.memory":         "llmref",
 	"llm.compress":       "llmref",
+	"llm.toolSummary":    "llmref",
+	"llm.toolfind":       "llmref",
 }
 
 // 多记录集合：usr 专用表。

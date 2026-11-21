@@ -285,6 +285,10 @@ test('⑧ 源码守卫：main.js 装配、App.vue seal、pluginHost.mq 暴露注
   const main = readSrc('main.js')
   assert.match(main, /import\s*\{[^}]*TOPIC_SPECS[^}]*\}\s*from\s*['"]\.\/events\/topic-specs\.generated\.js['"]/)
   assert.match(main, /mq\.installTopicSpecs\(TOPIC_SPECS\)/)
+  // schema clientTopic（tools-list 等）不进 TOPIC_SPECS（仅总线主题）→ main.js 须用生成的
+  // MsgClientTopics 补登记，否则 seal 后 emit 被拒（「topic 未注册（已 sealed）」）。
+  assert.match(main, /import\s*\{[^}]*MsgClientTopics[^}]*\}\s*from\s*['"]\.\/events\/msgkeys\.js['"]/)
+  assert.match(main, /mq\.installTopicSpecs\(Object\.values\(MsgClientTopics\)/)
   assert.match(main, /mq\.installLocalEventTopics\(Object\.values\(EventNames\)\)/)
 
   const app = readSrc('App.vue')

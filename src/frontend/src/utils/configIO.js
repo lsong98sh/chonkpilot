@@ -38,8 +38,8 @@ export const SNAPSHOT_SCALAR_KEYS = [
   'autoContinue', 'autoContinueDelaySec', 'continueText', 'nextRunMax',
   'turnEventLog', 'turnEventLogRetentionDays',
   'defaultLLM', 'defaultScenario',
-  // 子系统默认 LLM（llmref；2026-10-25 仅 3 键，analysis/decision 已移除）
-  'llm.promptOptimise', 'llm.memory', 'llm.compress',
+  // 子系统默认 LLM（llmref；2026-10-25 移除 analysis/decision；2026-11-21 新增 toolSummary/toolfind）
+  'llm.promptOptimise', 'llm.memory', 'llm.compress', 'llm.toolSummary', 'llm.toolfind',
 ]
 
 /**

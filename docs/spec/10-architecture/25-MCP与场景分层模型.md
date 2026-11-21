@@ -60,7 +60,7 @@ chat 面：prompt                                     ← 用户在输入框选�
 
 ### 4.1 直供（进入 LLM `tools` 参数）
 
-直供 = **`hot` 工具 ∪ gateway in-memory MCP 工具**（`mcp_find` / `mcp_load` / `mcp_invoke`）。
+直供 = **`hot` 工具 ∪ gateway in-memory MCP 工具**（`mcp_find` / `mcp_match` / `mcp_load` / `mcp_invoke`）。
 
 > ⚠️ **`hot` 有两个来源，两者都要**：
 > ① 下游 `HotTools`（内嵌 self 节点为 `"*"` = 全部）；
@@ -68,7 +68,7 @@ chat 面：prompt                                     ← 用户在输入框选�
 >
 > 依据 = self 节点 `entry` **无 `HotTools`**，`isHot` 不会自动补 → meta 工具必须**显式**置 `_meta.hot=true`（否则 LLM 连工具发现入口都拿不到）。**本规格须写明"两者都要"**，防后人只改 `HotTools`、漏掉 meta。
 >
-> **落点已迁移（2026-11-04 核对；2026-11-18 manifest 迁入插件仓并内嵌）**：`registerMetaTools` / `gateway/meta_tools.go` 全仓不存在；当前 `mcp_find`/`mcp_load`/`mcp_invoke` 由 **`mcp` 插件**提供（`chonkpilot-plugins/mcp/src/manifest.json` 的 `hot_tools`，随 exe 内嵌由 `plugin.hello` 上报；gateway `isHot` 按 manifest 打 `_meta.hot`），见 §5 的目标/现状说明。
+> **落点已迁移（2026-11-04 核对；2026-11-18 manifest 迁入插件仓并内嵌）**：`registerMetaTools` / `gateway/meta_tools.go` 全仓不存在；当前 `mcp_find`/`mcp_match`/`mcp_load`/`mcp_invoke` 由 **`mcp` 插件**提供（`chonkpilot-plugins/mcp/src/manifest.json` 的 `hot_tools`，随 exe 内嵌由 `plugin.hello` 上报；gateway `isHot` 按 manifest 打 `_meta.hot`），见 §5 的目标/现状说明。
 >
 > **① 的下游 `HotTools` UI**：`EditMCPDialog` 独立「**工具**」页签 —— 点【**加载工具**】按别名列出该 server 工具并逐项勾选；写库为**契约原名**列表（`"*"` = 全部 hot），**零新增消息面**（数据源 = 既有 `tools-list`）。原「运行信息」页签的「高频工具」行与独立弹窗 `SetMCPHotToolsDialog.vue` 均已摘除。
 
@@ -174,6 +174,12 @@ agent **只"注入"不"注册"**：
 > - `prompts/list` 已不列 agent（✅ 已落地）。
 >
 > 仓内 `src/lib/mcp-server/toolmeta/toolmeta.go` 已有正确实现（`findTypeScope` 返回 skill/resource、无 prompt；`metaLoad` 支持 kind），但**没有 meta 契约/执行入口**（core 侧 `src/lib/llm/contracts/` 已于 2026-11-08 删除，server 域契约 = **0**）→ **不能视为已生效**。契约切换前，3/4/6 条与 §9 测点 5 按 🔵 待实现处理（测点 4 已满足：插件 type 白名单不含 agent）。
+>
+> **🆕 2026-11-21（mcp_find 渐进披露，插件侧落地）**：检索面在插件侧完成一轮重构，方向与本篇 §4–§5 不冲突（type/kind 收敛仍按上面 🔵 目标契约处理）：
+> - **`mcp_find` = LLM 语义检索**：走 `plugin/v1/llm.step`（模型键 usr `llm.toolfind`，空值回落 `defaultLLM`），按参与检索总条数**一步/两步自适应**（阈值 = 插件配置 `plugins.mcp.two-step-threshold`，默认 300；两步先按**域 = MCP server / 插件**选域再选条目）；返回 **topN（建议 ≤5）条全量定义**（tool = `description + input_schema`，省 `mcp_load` 往返）；LLM 不可用 / 失败 → 回退本地表达式匹配（`mode=local`）。
+> - **新增 `mcp_match` = 本地表达式检索**（搜索引擎式：多词 OR、`"短语"` 精确、`-` 排除；词级匹配 name/description，按匹配度取前 `limit`；不走 LLM）。
+> - **概述（摘要）存库**：第三方 MCP 注册/「加载工具」时对 **tool / prompt** 生成概述（`llm.toolSummary`，空值回落 `defaultLLM`），由 mcp 插件落**插件私有存储**（`storage.self`，`<DataDir>/plugins/mcp/storage/overviews.json`）；resources 协议自带 name/description，不走 LLM；插件/内置工具契约描述人工写好即直接用（描述过简才 LLM 补全）。概述只含**作用 + 输入/输出**，不含 schema 与长示例（留在 `mcp_load` / find 全量返回）。触发链路 = `data-mcp-refresh` 订阅 + EditMCPDialog「加载工具」后的插件动作 `overview.generate`。
+> - 消息面**零新增主题 / 零 payload 变更**（`llm-simple` 的既有可选 `llm` 字段承载模型键；usr 键 `llm.toolSummary` / `llm.toolfind` 见 [64 §3](../60-reference/64-配置项一览.md)）。
 
 **附带结论**：「`mcp_find` 同名去重非确定」问题**随之作废**（无 agent 类目后不再成立）。
 
@@ -203,7 +209,7 @@ agent **只"注入"不"注册"**：
 
 - **格式约定**：
   - **agent 场景前缀** = **`<场景id>/<agent名>`**（分隔符 `/`；场景 id = 场景目录名，本模块 §6）——**注入面**（§3 团队成员段）、**`subchat` 委派**、**`agentDelegable`**、**子轮次 system 读取**（`registeredAgentDef` / `resolveAgentDef`）**同一口径**；引用可带前缀（精确命中）或裸名（注册表内**唯一**同名才命中；跨场景重名须带前缀；裸名歧义 → 不解析）。
-  - **第三方别名（来源前缀）** = **`<server名>_`**（沿用既有 `applyPrefix` 缺省形态，非新分隔符；`namespace "-"` 对第三方**不生效** → 强制回落该前缀）；名字往返一致（`mcp_find` / `mcp_load` 返回名 = 可直接 `tools/call` / `mcp_invoke` 的名）。
+  - **第三方别名（来源前缀）** = **`<server名>_`**（沿用既有 `applyPrefix` 缺省形态，非新分隔符；`namespace "-"` 对第三方**不生效** → 强制回落该前缀）；名字往返一致（`mcp_find` / `mcp_match` / `mcp_load` 返回名 = 可直接 `tools/call` / `mcp_invoke` 的名）。
   - **唯一性拒绝策略** = 同类同名注册**拒绝并返回含来源的明确错误**（**不静默覆盖**）；gateway 落点见 [26 §4.3.1](../20-modules/26-mcp-gateway.md)。
 - **张力闭环**：④（`restore` 写出 user 级同名副本）与 ⑥（`app↔user` 同名 UX 后果）**随本节规则统一处置**（另轨实施）：④ 随 `data-scenario-restore` 消息删除而消失（app 级改为**可直接编辑**）；⑥ 由「app 级可编辑 + 场景 id 全局唯一」承载。
 - **同场景内 agent 不许重名（用户裁决）**：上表「agent **可重名**」指**跨场景**（以 `<场景id>/<agent名>` 前缀消歧）；**同一场景内** agent 名**必须唯一** → 场景**保存**时校验（判定键 = agent **落盘文件名**、大小写不敏感），重名（含**大小写等价** / **主 agent 与子 agent 撞名 `main`** / **空名**）**拒绝保存**并返回含「**场景 id + 重复 agent 名**」的错误（落点 `capfs.WriteScenarioDir` 写盘前）；既有重名数据**不迁移**。
@@ -286,7 +292,7 @@ agent **只"注入"不"注册"**：
 ## 11. 关联文档
 
 - [21-llm-server](../20-modules/21-llm-server.md)（提示词注入 / 工具面 / 域 agent）
-- [26-mcp-gateway](../20-modules/26-mcp-gateway.md)（meta 工具 `mcp_find`/`mcp_load`/`mcp_invoke`）
+- [26-mcp-gateway](../20-modules/26-mcp-gateway.md)（meta 工具 `mcp_find`/`mcp_match`/`mcp_load`/`mcp_invoke`）
 - [12-数据层](12-数据层.md)（**四级** capability 根 · 场景根 = `<级别根>/capability/scenarios/`，[02 §7.2](../00-overview/02-配置层级.md)）
 - [37-场景](../30-function-points/37-场景.md) · [39-知识库与原语](../30-function-points/39-知识库与原语.md)
 - [61-消息一览](../60-reference/61-消息一览.md)（唯一准则）

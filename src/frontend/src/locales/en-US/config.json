@@ -170,6 +170,8 @@
     "promptOptimise": "Prompt Optimisation",
     "memory": "Memory System",
     "compress": "Context Compression",
+    "toolSummary": "Tool Overview Generation",
+    "toolfind": "Tool Semantic Search",
     "analysis": "Analysis System",
     "decision": "Decision System",
     "standby": "Standby",

@@ -22,14 +22,15 @@ const LOCALES = ['zh-CN', 'en-US']
 const PAGE = 'views/config/SettingsLLMPage.vue'
 const SELECT = 'components/ui/Select.vue'
 
-// 3 键 = 子系统默认 LLM（键名/标签口径，64 §3）：
+// 5 键 = 子系统默认 LLM（键名/标签口径，64 §3）：
 //   llm.promptOptimise 提示词优化 · llm.memory 记忆系统 · llm.compress 压缩上下文
-const KEYS = ['llm.promptOptimise', 'llm.memory', 'llm.compress']
+//   llm.toolSummary 工具概述生成 · llm.toolfind 工具语义检索（2026-11-21，mcp_find 渐进披露）
+const KEYS = ['llm.promptOptimise', 'llm.memory', 'llm.compress', 'llm.toolSummary', 'llm.toolfind']
 
 // ═══════════════════════════════════════════════════════════════
 // ① 3 个下拉齐备 + 分组标题
 // ═══════════════════════════════════════════════════════════════
-test('① LLM 页含「默认模型」分组与 3 个键（键名 + i18n 标签键）', () => {
+test('① LLM 页含「默认模型」分组与 5 个键（键名 + i18n 标签键）', () => {
   const src = read(PAGE)
   assert.match(src, /config\.llm\.defaultsTitle/, '须有分组标题 config.llm.defaultsTitle')
   for (const k of KEYS) {
@@ -88,7 +89,7 @@ test('③ analysis / decision 预留键与 standby 标记已移除', () => {
   for (const k of ['llm.analysis', 'llm.decision']) {
     assert.ok(!src.includes(`'${k}'`), `${k} 键须已移除（后端零消费方）`)
   }
-  // 其余 3 个子系统下拉不加 disabled（保存按钮的 :disabled 不在此列）。
+  // 其余子系统下拉不加 disabled（保存按钮的 :disabled 不在此列）。
   const subSelect = src.match(/<Select[\s\S]*?subsysDisplay[\s\S]*?\/>/)
   assert.ok(subSelect, '未找到子系统 Select')
   assert.doesNotMatch(subSelect[0], /:disabled/, '子系统下拉不得加禁用')
@@ -132,7 +133,8 @@ test('⑦ i18n：子系统默认模型词条双语齐备', () => {
   const need = [
     'tabList', 'tabDefaults', 'defaultsTitle', 'mainDefault', 'mainDefaultUnset', 'unset',
     'subsystemHint', 'followDefault',
-    'promptOptimise', 'memory', 'compress', 'analysis', 'decision',
+    'promptOptimise', 'memory', 'compress', 'toolSummary', 'toolfind',
+    'analysis', 'decision',
     'standby', 'standbyHint',
   ]
   for (const loc of LOCALES) {
@@ -150,6 +152,8 @@ test('⑦ i18n：子系统默认模型词条双语齐备', () => {
   assert.equal(zh.promptOptimise, '提示词优化')
   assert.equal(zh.memory, '记忆系统')
   assert.equal(zh.compress, '压缩上下文')
+  assert.equal(zh.toolSummary, '工具概述生成')
+  assert.equal(zh.toolfind, '工具语义检索')
   assert.equal(zh.analysis, '分析系统')
   assert.equal(zh.decision, '决策系统')
   assert.equal(zh.standby, '备用')

@@ -170,6 +170,8 @@
     "promptOptimise": "提示词优化",
     "memory": "记忆系统",
     "compress": "压缩上下文",
+    "toolSummary": "工具概述生成",
+    "toolfind": "工具语义检索",
     "analysis": "分析系统",
     "decision": "决策系统",
     "standby": "备用",

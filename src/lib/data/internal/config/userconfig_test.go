@@ -242,6 +242,8 @@ var llmSubsystemKeys = []string{
 	"llm.promptOptimise",
 	"llm.memory",
 	"llm.compress",
+	"llm.toolSummary",
+	"llm.toolfind",
 }
 
 // TestSaveLLMSubsystemKeysRoundTrip ① 5 键已注册为 llmref + 写库/回读一致（显式配置不回落到 defaultLLM）。
@@ -259,6 +261,8 @@ func TestSaveLLMSubsystemKeysRoundTrip(t *testing.T) {
 		"llm.promptOptimise": "p-opt",
 		"llm.memory":         "p-mem",
 		"llm.compress":       "p-cmp",
+		"llm.toolSummary":    "p-sum",
+		"llm.toolfind":       "p-find",
 	}
 	payload := map[string]any{}
 	for k, v := range want {

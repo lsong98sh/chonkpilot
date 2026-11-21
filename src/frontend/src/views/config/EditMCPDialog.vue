@@ -202,9 +202,9 @@ import Icon from '@ckfw/components/icon/Icon.vue'
 import { stripToolPrefix } from '../../utils/toolSource'
 import { classifyError } from '../../utils/errorMessage'
 import { suggestConfig } from '../../api/config'
-import mq from '@ckfw/utils/mq.js'
+import mq, { currentInstanceId } from '@ckfw/utils/mq.js'
 import { EventNames } from '../../events/event-names'
-import { MsgClientTopics } from '../../events/msgkeys.js'
+import { MsgClientTopics, MsgTopics } from '../../events/msgkeys.js'
 
 const { t } = useI18n()
 
@@ -338,6 +338,20 @@ async function loadTools() {
     }
     tools.value = rows
     toolsLoaded.value = true
+    // 概述生成（mcp_find 渐进披露）：该 server 的工具/提示概述由 mcp 插件生成并落库
+    // （插件动作 overview.generate，fire-and-forget；注册保存链路另有 data-mcp-refresh 触发）。
+    // 失败不影响工具清单展示（概述只是检索增强）。
+    if (rows.length) {
+      try {
+        await mq.emit(MsgTopics.pluginCall, {
+          id: 'mcp',
+          method: 'rpc',
+          params: { method: 'overview.generate', params: { instance_id: currentInstanceId() } },
+        })
+      } catch (e) {
+        // 概述生成失败不影响工具清单展示（概述只是检索增强）
+      }
+    }
   } catch (e) {
     console.warn('[EditMCPDialog] load tools failed:', e)
     tools.value = []

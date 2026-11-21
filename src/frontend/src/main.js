@@ -11,6 +11,7 @@ import { installGlobalCkMq } from '@ckfw/plugin-ui/ckMq.js'
 import { installGlobalCkStore, ckStore } from './utils/ckStore'
 import { EventNames } from './events/event-names.js'
 import { TOPIC_SPECS } from './events/topic-specs.generated.js'
+import { MsgClientTopics } from './events/msgkeys.js'
 import { dialog } from '@ckfw/components/dialog/index.js'
 import { setHostDeps } from '@ckfw/host-deps.js'
 import { registerSelectionSubscribers } from './stores/selectionSubscribers'
@@ -63,6 +64,11 @@ installHostStates(useSelectionStore())
 // 阶段 3b：前端本地主题注册表装载（不向后端发注册；内置 61 契约 243 条 + 前端本地事件）。
 // 顺序：installGlobalCkStore 之后、setupLayoutEngine 之前（插件加载完成后由 App.vue 触发 seal）。
 mq.installTopicSpecs(TOPIC_SPECS)
+// 客户端方法主题（schema `clientTopic`：tools-list / prompts-list / resources-list）：
+// 桥把它们映射到 `mcp-*-list`（61 §4.5）；生成物 TOPIC_SPECS 只收录**总线**主题，故此处
+// 用生成的 MsgClientTopics 补登记（scope=instance）。缺这一步 → seal 后 emit 被拒
+// （「topic 未注册（已 sealed）」→ 工具异步页/智能体工具页/场景选工具全部拿不到清单）。
+mq.installTopicSpecs(Object.values(MsgClientTopics).map((topic) => ({ topic, scope: 'instance' })))
 mq.installLocalEventTopics(Object.values(EventNames))
 app.use(mqPlugin)
 // 自由布局容器装配（UILAYOUT-1 §7 P3⑤）：须在 pinia 与 mqPlugin 之后 ——
