@@ -162,16 +162,34 @@ func (l *Layer) OnExecState(ev ExecState) {
 	// 执行句柄补充归属 provider（P3：层持 `exec.provider_key` → 取消回调定位归属 provider）
 	l.bindExec(rec.TaskID, ev.GWTaskID, rec)
 	l.setExecProviderKey(rec.TaskID, ev.ProviderKey)
-	next := *rec
-	if st := execPhaseState(ev.Phase); st != "" {
-		next.State = st
-	}
-	next.ExecJSON = mergeExecJSON(rec.ExecJSON, string(detail)) // 只增不减：与既有 exec_json 深合并
-	if terminalState(next.State) && next.DoneAt == "" {
-		next.DoneAt = ev.At
-	}
-	next.UpdatedAt = nowRFC3339()
-	if err := l.commitAgainst(&next, rec); err != nil {
+	// 提交在**同节点分片锁**内完成（2026-11-21）：llm 快照走总线异步派发，本入口是同进程直调，
+	// 两者可并发；锁内**重读热视图**再合并 → 旧快照不会反向覆盖执行态（detached 保持）。
+	err = l.withTaskLock(rec.TaskID, func() error {
+		base := l.recOf(rec.TaskID)
+		if base == nil {
+			base = l.load(rec)
+		}
+		if base == nil {
+			base = rec // 回读失败（数据面暂不可用）→ 以目标快照为底，状态不丢
+		}
+		next := *base
+		if next.InstanceID == "" {
+			// 执行态载荷自带归属实例（gateway ExecState.InstanceID = 执行池桶）→ 补全节点归属。
+			// 库回读（data-tasktree-* 精简投影）可能不含 instance_id → 不补全会使
+			// commitAgainst 走「缺 instance_id 不落库」分支：状态只留在进程内热视图。
+			next.InstanceID = ev.InstanceID
+		}
+		if st := execPhaseState(ev.Phase); st != "" {
+			next.State = st
+		}
+		next.ExecJSON = mergeExecJSON(base.ExecJSON, string(detail)) // 只增不减：与既有 exec_json 深合并
+		if terminalState(next.State) && next.DoneAt == "" {
+			next.DoneAt = ev.At
+		}
+		next.UpdatedAt = nowRFC3339()
+		return l.commitAgainst(&next, base)
+	})
+	if err != nil {
 		l.warn("执行态入库失败（仅告警，不影响 gateway 调用路径）: task_id=%s gw_task_id=%s phase=%s %v",
 			rec.TaskID, ev.GWTaskID, ev.Phase, err)
 	}

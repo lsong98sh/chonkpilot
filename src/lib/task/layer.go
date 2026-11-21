@@ -69,12 +69,16 @@ type Layer struct {
 	// mu 只守护**内存视图**（recs / execs）的读写；**绝不在持 mu 期间做数据面 IO**
 	// （2026-10-11 锁内 IO 修复）：数据面往返（store.request = bbolt 写 / 分离形态往返）一律在
 	// **锁外**进行 —— 先取视图快照 / 回读库（锁外）→ 判定（纯内存）→ 落库（锁外 IO）→ 回填热
-	// 视图（短暂持 mu）。并发正确性：同一节点的相关事件在上游（llm turn / gateway 执行）本就
-	// **顺序**发出、跨节点互不冲突，故不以一把锁串行化整条写路径；DB 仍为权威（upsert 幂等，
-	// 同 task_id 覆盖）。
-	mu    sync.Mutex
-	recs  map[string]*Record // task_id → 记录（层内热视图；DB 仍为权威）
-	execs map[string]Exec    // task_id → 执行句柄（层持有；取消时回调执行侧）
+	// 视图（短暂持 mu）。DB 仍为权威（upsert 幂等，同 task_id 覆盖）。
+	//
+	// 并发正确性（2026-11-21 修正）：同一节点的事件**不保证顺序到达** —— llm 快照经总线
+	// 异步派发，而 gateway 执行态（OnExecState）是同进程**直调**；两条通道可并发，读-合并-写
+	// 若交错会用旧快照覆盖新执行态（实测：detached 被并发 pending 快照回写）。
+	// `commitMu` 按 task_id 分片串行化**读旧值 + 合并 + 落库**；热视图 mu 仍只守护内存。
+	commitMu [64]sync.Mutex
+	mu       sync.Mutex
+	recs     map[string]*Record // task_id → 记录（层内热视图；DB 仍为权威）
+	execs    map[string]Exec    // task_id → 执行句柄（层持有；取消时回调执行侧）
 	// pendingExecs 暂存「早于节点登记到达」的 started 执行态（tool_call_id → 最近一次）；
 	// 节点随后登记时补绑（exec.go bindPendingExec）→ 否则长跑执行在完成前拿不到 exec 句柄，
 	// task-stop 无法下发执行侧取消（dsl_run 作业根即此形态）。
@@ -499,17 +503,41 @@ func (l *Layer) descendantsLocked(rootID string) []string {
 	return out
 }
 
-// commit 提交一条记录（**不持 mu**）：先解析既有记录（热视图短暂持 mu；缺失回读库 = 锁外 IO）
-// → 判定主体 commitAgainst。
+// commit 提交一条记录（**不持 mu**）：按 task_id 分片串行化「读旧值 → 合并判定 → 落库」
+// （见 Layer.commitMu 注释），随后在锁外补绑早到的执行态。
 func (l *Layer) commit(rec *Record) error {
 	if rec.TaskID == "" {
 		return fmt.Errorf("task: 记录缺 task_id")
 	}
-	old := l.recOf(rec.TaskID)
-	if old == nil {
-		old = l.load(rec) // 跨进程 / 热视图缺失：回读库（DB 权威；锁外 IO）
+	err := l.withTaskLock(rec.TaskID, func() error {
+		old := l.recOf(rec.TaskID)
+		if old == nil {
+			old = l.load(rec) // 跨进程 / 热视图缺失：回读库（DB 权威；锁外 IO，但与同节点写串行）
+		}
+		return l.commitAgainst(rec, old)
+	})
+	if err == nil {
+		l.bindPendingExec(rec) // 锁外（会重走 OnExecState；分片锁不可重入）
 	}
-	return l.commitAgainst(rec, old)
+	return err
+}
+
+// taskLink 返回 task_id 对应的提交分片锁（FNV-1a；固定 64 片，内存有界、无全局瓶颈）。
+func (l *Layer) taskLink(taskID string) *sync.Mutex {
+	h := uint32(2166136261)
+	for i := 0; i < len(taskID); i++ {
+		h ^= uint32(taskID[i])
+		h *= 16777619
+	}
+	return &l.commitMu[h%uint32(len(l.commitMu))]
+}
+
+// withTaskLock 在同一 task_id 的提交分片上独占执行 fn（跨节点并发不受影响）。
+func (l *Layer) withTaskLock(taskID string, fn func() error) error {
+	m := l.taskLink(taskID)
+	m.Lock()
+	defer m.Unlock()
+	return fn()
 }
 
 // commitAgainst 是 commit 的判定主体（old = 已解析的既有记录 / nil = 无；**不持 mu**：
@@ -556,24 +584,28 @@ func (l *Layer) commitAgainst(rec, old *Record) error {
 			}
 		}
 		if sameRecord(old, rec) {
-			l.bindPendingExec(rec) // 节点已知但执行态早到（started 先于登记）→ 补绑 exec 句柄
-			return nil             // ⑥ 幂等：重复事件不产生重复落库
+			return nil // ⑥ 幂等：重复事件不产生重复落库
 		}
+	}
+	if rec.InstanceID == "" && old != nil {
+		// 既有行已知归属 → 更新载荷缺 instance_id 时沿用（不因回读投影/局部载荷缺字段而丢写）。
+		rec.InstanceID = old.InstanceID
 	}
 	if rec.InstanceID == "" {
 		// 与既有 llm 落库口径一致（instance 不可定位 → 不落库）：避免多实例下 data 面
 		// 「唯一实例回退」把行写进别的库。层内热视图照常记录（控制面判定可用）。
 		l.warn("节点缺 instance_id（不落库，仅层内记录）: task_id=%s", rec.TaskID)
 		l.cacheRec(rec)
-		l.bindPendingExec(rec)
 		return nil
 	}
 	if err := l.store.upsert(rec); err != nil { // 数据面 IO：锁外
+		// 落库失败也回填热视图（只告警）：同节点后续快照/事件据此合并并**重试落库**；
+		// 不回填会让瞬时失败（启动期数据面未就绪等）永久丢失状态。
 		l.warn("落库失败（仅告警，不影响主路径）: task_id=%s %v", rec.TaskID, err)
+		l.cacheRec(rec)
 		return err
 	}
 	l.cacheRec(rec)
-	l.bindPendingExec(rec)
 	return nil
 }
 

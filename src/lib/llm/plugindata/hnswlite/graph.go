@@ -33,8 +33,13 @@ type layerNode[K cmp.Ordered] struct {
 	neighbors map[K]*layerNode[K]
 }
 
-// addNeighbor adds a o neighbor to the node, replacing the neighbor
-// with the worst distance if the neighbor set is full.
+// addNeighbor adds o as a neighbor of n, pruning the most **redundant** neighbor when the set is full.
+//
+// 剪枝口径（2026-11-21 修正）：旧实现按「离 n 最远」淘汰 —— 在**近重复语料**（如确定性 mock
+// embedding / 大量同义消息）下，少数「离群但真实命中」的节点每次都被当作最远者删掉，且其反向
+// 边同步删除 → 该节点在图中**不可达**，近似检索漏检（e2e：235 条消息、2 条目标向量不在 top-10）。
+// 改为淘汰「与另一邻居距离最近」的冗余节点（同距离时优先淘汰离 n 更远者）：保留方向多样性，
+// 离群点不被重复簇挤掉（HNSW 论文的 diversity heuristic 的等价增量实现）。
 func (n *layerNode[K]) addNeighbor(newNode *layerNode[K], m int, dist DistanceFunc) {
 	if n.neighbors == nil {
 		n.neighbors = make(map[K]*layerNode[K], m)
@@ -45,25 +50,36 @@ func (n *layerNode[K]) addNeighbor(newNode *layerNode[K], m int, dist DistanceFu
 		return
 	}
 
-	// Find the neighbor with the worst distance.
+	// 找「冗余度最高」的邻居：min 与其它邻居的距离（同分时取离 n 更远者）。
 	var (
-		worstDist = float32(math.Inf(-1))
-		worst     *layerNode[K]
+		victim     *layerNode[K]
+		victimPeer = float32(math.Inf(1))
+		victimSelf float32
 	)
-	for _, neighbor := range n.neighbors {
-		d := dist(neighbor.Value, n.Value)
-		// d > worstDist may always be false if the distance function
-		// returns NaN, e.g., when the embeddings are zero.
-		if d > worstDist || worst == nil {
-			worstDist = d
-			worst = neighbor
+	for _, a := range n.neighbors {
+		peer := float32(math.Inf(1))
+		for _, b := range n.neighbors {
+			if a == b {
+				continue
+			}
+			if d := dist(a.Value, b.Value); d < peer {
+				peer = d
+			}
+		}
+		self := dist(a.Value, n.Value)
+		// peer 全为 Inf（仅 1 个邻居）时不会发生（len>m≥1 ⇒ ≥2 个邻居）。
+		if victim == nil || peer < victimPeer || (peer == victimPeer && self > victimSelf) {
+			victim, victimPeer, victimSelf = a, peer, self
 		}
 	}
+	if victim == nil {
+		return
+	}
 
-	delete(n.neighbors, worst.Key)
-	// Delete backlink from the worst neighbor.
-	delete(worst.neighbors, n.Key)
-	worst.replenish(m)
+	delete(n.neighbors, victim.Key)
+	// Delete backlink from the victim.
+	delete(victim.neighbors, n.Key)
+	victim.replenish(m)
 }
 
 type searchCandidate[K cmp.Ordered] struct {
@@ -105,10 +121,14 @@ func (n *layerNode[K]) search(
 	visited[n.Key] = true
 
 	for candidates.Len() > 0 {
-		var (
-			current  = candidates.Pop().node
-			improved = false
-		)
+		// 终止条件（2026-11-21 修正）：结果集已满，且**最近的未访问候选**也不优于结果集
+		// 最差者 → 不可能再改进。旧实现用「本轮无改进」即停：近重复语料下所有距离并列
+		// （如 mock embedding 全为同值），首轮后就停，隐藏在同距离簇中的更近节点永远不访问
+		// （e2e：目标向量距离 0 却不在 top-10）。等距时继续（`>` 而非 `>=`）。
+		if result.Len() >= k && candidates.Min().dist > result.Max().dist {
+			break
+		}
+		current := candidates.Pop().node
 
 		// We iterate the map in a sorted, deterministic fashion for
 		// tests.
@@ -125,7 +145,6 @@ func (n *layerNode[K]) search(
 			visited[neighborID] = true
 
 			dist := distance(neighbor.Value, target)
-			improved = improved || dist < result.Min().dist
 			if result.Len() < k {
 				result.Push(searchCandidate[K]{node: neighbor, dist: dist})
 			} else if dist < result.Max().dist {
@@ -138,12 +157,6 @@ func (n *layerNode[K]) search(
 			if candidates.Len() > efSearch {
 				candidates.PopLast()
 			}
-		}
-
-		// Termination condition: no improvement in distance and at least
-		// kMin candidates in the result set.
-		if !improved && result.Len() >= k {
-			break
 		}
 	}
 
