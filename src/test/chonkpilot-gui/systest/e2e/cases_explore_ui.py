@@ -14,7 +14,8 @@ import time
 
 from .framework import case
 
-SEG_LABELS = ("项目", "会话", "记忆", "扩展")
+# 2026-11-19 多 workdir：原「会话」一级段 → 「工作区」（WorkspaceTree，会话挂在工作区下）。
+SEG_LABELS = ("工作区", "项目", "记忆", "扩展")
 
 
 def _segs(env):
@@ -71,7 +72,7 @@ def _click_file(env, name):
 
 @case("S-EXPLORE-01", "知识库", "资源面板四段/扩展五子 tab/单类型知识树/原语面板五页签",
       stage="seeded", order=334, fp="左侧资源面板 · run_explore_kb C1–C4",
-      desc="分段 = 项目/会话/记忆/扩展（顺序固定，无旧知识库/工具一级段）；4 个 explorer-body 且仅 1 个"
+      desc="分段 = 工作区/项目/记忆/扩展（顺序固定，无旧知识库/工具一级段）；4 个 explorer-body 且仅 1 个"
            "可见；扩展页 5 子 tab + 级别按钮 + 唯一知识树；知识/技能单类型树根与分类目录；工具树 "
            "server → *.tool.md；点开原语 → 预览/基本信息/摘要/参数/正文 + 保存/恢复。")
 def s_explore_01(env):
@@ -83,7 +84,7 @@ def s_explore_01(env):
     segs = env.wait(lambda: _segs(env) if len(_segs(env)) >= 4 else None,
                     "资源面板分段按钮", timeout=20)
     texts = [s.get("t") for s in segs]
-    env.check("分段含 项目/会话/记忆/扩展",
+    env.check("分段含 工作区/项目/记忆/扩展",
               all(any(lbl in (t or "") for t in texts) for lbl in SEG_LABELS), texts)
     env.check("无旧「知识库/工具」一级分段",
               not any((t or "").strip() in ("知识库", "工具", "Knowledge", "Tools") for t in texts),
@@ -111,11 +112,18 @@ def s_explore_01(env):
         "点击分段切项目", timeout=10)
     env.check("分段点击切项目", any(s.get("a") and any(
         x in (s.get("t") or "") for x in ("项目", "Project")) for s in _segs(env)))
+    # toggle 语义（多 workdir 后）：workspaces ↔ extensions（不再是 project ↔ extensions）。
+    env.js("window.mq.emit('filetree-mode-toggle'); 'ok'")
+    env.wait(lambda: True if any(s.get("a") and any(
+        x in (s.get("t") or "") for x in ("工作区", "Workspaces")) for s in _segs(env)) else None,
+        "toggle 切工作区", timeout=10)
+    env.check("filetree-mode-toggle 切工作区", any(s.get("a") and any(
+        x in (s.get("t") or "") for x in ("工作区", "Workspaces")) for s in _segs(env)))
     env.js("window.mq.emit('filetree-mode-toggle'); 'ok'")
     env.wait(lambda: True if any(s.get("a") and any(
         x in (s.get("t") or "") for x in ("扩展", "Extensions")) for s in _segs(env)) else None,
-        "toggle 切扩展", timeout=10)
-    env.check("filetree-mode-toggle 切扩展", any(s.get("a") and any(
+        "再次 toggle 切扩展", timeout=10)
+    env.check("再次 filetree-mode-toggle 切扩展", any(s.get("a") and any(
         x in (s.get("t") or "") for x in ("扩展", "Extensions")) for s in _segs(env)))
 
     # 单类型树：知识 / 技能

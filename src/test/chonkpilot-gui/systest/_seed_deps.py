@@ -81,7 +81,7 @@ def seed_session(sid, pairs, assistant_fmt, parent_id="", dlg=""):
             "msg": {"role": "assistant", "content": assistant_fmt % i},
         }, dlg))
         c.req("data-session-complete-turn", _with_dlg({
-            "turn_id": turn_id, "status": "done", "finish_reason": "stop",
+            "turn_id": turn_id, "status": "complete", "finish_reason": "stop",
         }, dlg))
 
 

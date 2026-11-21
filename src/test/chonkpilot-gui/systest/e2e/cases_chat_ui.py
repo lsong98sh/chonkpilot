@@ -388,6 +388,9 @@ def s_chat_flow_01(env):
         _remote(env, "llm-complete", {"session": sid, "status": "completed"})
     finally:
         _restore_llms(env, base)
+        # 复位聊天选择：本点曾把 HANG_LLM 设为当前选择；hang provider 已随 restore 移除，
+        # 不复位会让后续测试点（fields/retry…）的轮次仍打到已关闭的 hang 端口 → 永不 complete。
+        _select_mock(env)
         _stop_hang(srv)
 
     errs = [e.get("text") for e in ((env.client.console() or {}).get("entries") or [])
@@ -480,6 +483,9 @@ def s_chat_msg_01(env):
         _remote(env, "llm-complete", {"session": sid, "status": "completed"})
     finally:
         _restore_llms(env, base)
+        # 复位聊天选择：本点曾把 HANG_LLM 设为当前选择；hang provider 已随 restore 移除，
+        # 不复位会让后续测试点（fields/retry…）的轮次仍打到已关闭的 hang 端口 → 永不 complete。
+        _select_mock(env)
         _stop_hang(srv)
 
     errs = [e.get("text") for e in ((env.client.console() or {}).get("entries") or [])
@@ -526,14 +532,22 @@ def s_tool_retry_01(env):
         spy = env.wait(lambda: env.jsj("JSON.stringify(window.__retrySpy)")
                        if (env.jsj("JSON.stringify(window.__retrySpy)") or []) else None,
                        "tool-retry 载荷", timeout=10)
+        # 61 §0：业务载荷「只增」+ 前端 mq 自动补 work_dir/data_dir 上下文键（多 workdir
+        # 批次起），故判据 = 必需键在场、且不含业务外自定义键（而非精确键集合）。
+        keys = set((spy[0] or {}).keys())
         ok = (isinstance(spy, list) and len(spy) == 1
               and (spy[0] or {}).get("session") == sid
               and isinstance((spy[0] or {}).get("turn"), str)
-              and set((spy[0] or {}).keys()) <= {"session", "turn", "instance_id"})
+              and {"session", "turn"} <= keys
+              and keys <= {"session", "turn", "task_id", "tool_call_id",
+                           "instance_id", "work_dir", "data_dir"})
         env.check("tool-retry 载荷 = {session,turn} 契约", ok, spy)
         _remote(env, "llm-complete", {"session": sid, "status": "completed"})
     finally:
         _restore_llms(env, base)
+        # 复位聊天选择：本点曾把 HANG_LLM 设为当前选择；hang provider 已随 restore 移除，
+        # 不复位会让后续测试点（fields/retry…）的轮次仍打到已关闭的 hang 端口 → 永不 complete。
+        _select_mock(env)
         _stop_hang(srv)
 
     errs = [e.get("text") for e in ((env.client.console() or {}).get("entries") or [])

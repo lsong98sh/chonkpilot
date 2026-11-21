@@ -63,7 +63,9 @@ def s_llm_retry_01(env):
         env.capture(["llm-retry", "llm-complete"])
         _install_retry_recorder(env)
         _send(env, sid, "please call retry-twice", llm="mock")
-        done = env.wait_events("llm-complete", lambda p: (p or {}).get("status") in ("complete", "completed"),
+        done = env.wait_events("llm-complete",
+                               lambda p: (p or {}).get("session") == sid
+                               and (p or {}).get("status") in ("complete", "completed"),
                                "retry-twice 成功终态", timeout=90)
         retries = env.events("llm-retry")
         rp = [e.get("payload") or {} for e in retries]
@@ -95,7 +97,10 @@ def s_llm_retry_01(env):
         _open_session(env, sid2)
         env.capture(["llm-retry", "llm-complete"])
         _send(env, sid2, "please call retry-exhaust", llm="mock")
-        fail = env.wait_events("llm-complete", lambda p: (p or {}).get("status") == "error",
+        # 只认本会话的终态：失败轮若晚到（跨测试点残留会话）不得污染本判定。
+        fail = env.wait_events("llm-complete",
+                               lambda p: (p or {}).get("session") == sid2
+                               and (p or {}).get("status") == "error",
                                "retry-exhaust 错误终态", timeout=90)
         payload = fail or {}
         env.check("耗尽终态 status=error 且 retryable=true",
@@ -276,7 +281,7 @@ def s_llm_fields_01(env):
         e = {"name": name, "protocol": "responses", "apiKey": "sk-fields-%s" % rid,
              "model": "fields-model-%s" % rid,
              "baseUrl": "http://127.0.0.1:8901/v1", "temperature": 0.4,
-             "maxOutputToken": 777, "maxContextToken": 32000,
+             "maxOutputToken": 777, "maxContextToken": 128000,  # 32k 小于当前系统提示+工具面（~45k）→ 压缩阶段硬失败
              "thinking": False, "reasoningEffort": "high", "maxToolIterations": 9}
         e.update(kw)
         return e

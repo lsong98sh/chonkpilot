@@ -27,7 +27,7 @@ def _seed_session(env, sid, pairs, assistant_fmt):
             "role": "user", "kind": "text-user", "content": "user-%s-%03d" % (sid, i)}})
         env.req("data-session-append-message", {"turn_id": tid, "msg": {
             "role": "assistant", "content": assistant_fmt % i}})
-        env.req("data-session-complete-turn", {"turn_id": tid, "status": "done",
+        env.req("data-session-complete-turn", {"turn_id": tid, "status": "complete",
                                                "finish_reason": "stop"})
     return pairs * 2
 

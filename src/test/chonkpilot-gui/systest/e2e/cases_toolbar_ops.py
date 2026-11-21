@@ -28,7 +28,7 @@ def _menu_click(env, textpat):
       stage="seeded", order=850, fp="33 toolbar 顶栏（test_toolbar T1–T10）",
       desc="`.ck-topbar` 外壳 + 品牌/搜索/窗口控件/条目≥6；无知识库按钮且 Explorer 有「扩展」；"
            "最近项目下拉与 gui.recent.list 一致；配置菜单叶子打开 LLM 配置页；场景按钮打开场景页；"
-           "检索 README 命中；会话入口打开左侧会话页签；无三区 toggle 且 chat/task 常显；"
+           "检索 README 命中；会话入口打开左侧工作区树；无三区 toggle 且 chat/task 常显；"
            "主题→dark、语言→en-US 生效后**还原 light/zh-CN**。")
 def s_toolbar_01(env):
     it = env.jsj("""JSON.stringify((()=>{const q=s=>!!document.querySelector(s);
@@ -123,14 +123,14 @@ def s_toolbar_01(env):
     env.check("statusbar 条目 ≥2", int(env.js(
         "document.querySelectorAll('.statusbar .bar-item-shell').length") or 0) >= 2)
 
-    # 会话入口
+    # 会话入口（多 workdir 后 = 左侧「工作区」段：会话挂在项目工作区树下）
     env.check("点击会话入口", _bar_click(env, "会话|Sessions") == "ok")
     env.wait(lambda: True if env.js(
-        "(()=>{const p=document.querySelector('.sessions-pane');"
+        "(()=>{const p=document.querySelector('.ws-tree');"
         "return !!p&&p.getBoundingClientRect().width>0})()") is True else None,
-        "左侧会话页签打开", timeout=15)
-    env.check("会话入口 → 左侧会话页签", env.js(
-        "(()=>{const p=document.querySelector('.sessions-pane');"
+        "左侧工作区树打开", timeout=15)
+    env.check("会话入口 → 左侧工作区树", env.js(
+        "(()=>{const p=document.querySelector('.ws-tree');"
         "return !!p&&p.getBoundingClientRect().width>0})()") is True)
     env.js("window.mq.emit('filetree-mode-select', {mode:'project'}); 'ok'")
     time.sleep(0.4)

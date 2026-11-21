@@ -88,6 +88,9 @@ def r_tabs_01_opened_files_restore(env):
       desc="首次启动内展开 docs 与 docs/design（S-PREP-01）→ 重启后两目录仍为展开态、"
            "docs/guide.md 与 docs/design/arch.md 节点可见。")
 def r_ft_01_expanded_restore(env):
+    # 前序测试点可能把资源面板留在记忆/扩展模式 → 先切回项目树（否则 docs 行不渲染）。
+    env.js("window.mq.emit('filetree-mode-select', {mode:'project'}); 'ok'")
+
     def expanded(rel):
         return env.js("(()=>{const r=document.querySelector(%s);"
                       "return !!(r&&r.querySelector('.arrow svg.expanded'));})()"

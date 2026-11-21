@@ -196,17 +196,29 @@ def s_sess_02(env):
                   bool(hh) and float(hh[0].get("keyword_score") or 0) > 0, hh[:1])
 
         # 全量索引 + HNSW：后台索引 ready 后，**无过滤** semantic 检索应走近似路径。
-        def probe_hnsw():
+        # 等待条件必须**同时**包含目标会话命中（2026-11-21）：HNSW 是近似检索，后台索引
+        # ready 与「图中含本会话新向量」并非同刻（缓存按写入失效、下一次查询才重建）；
+        # 只看 ready+approx 会在满载下取到上一版快照 → 目标会话偶发不在 top-k（全量 e2e 复现）。
+        hn = None
+        last = {}
+        end = time.time() + 60
+        while time.time() < end:
             try:
                 body = _call(env, "session_search", {
                     "query": "什么时候交付", "mode": "semantic", "limit": 10})
-            except Exception:
-                return None
+            except Exception as e:  # 后台索引收尾瞬间的瞬时错误：重试
+                last = {"error": str(e)}
+                time.sleep(0.8)
+                continue
+            last = body
             idx = body.get("index") or {}
-            if body.get("approx") and idx.get("state") == "ready":
-                return body
-            return None
-        hn = env.wait(probe_hnsw, "全量索引 ready + HNSW 命中", timeout=30, interval=0.8)
+            if (body.get("approx") and idx.get("state") == "ready"
+                    and any(h.get("session_id") == sid for h in (body.get("hits") or []))):
+                hn = body
+                break
+            time.sleep(0.8)
+        env.check("全量索引 ready + HNSW 命中目标会话（60s 内）", hn is not None,
+                  {k: last.get(k) for k in ("approx", "index")} if isinstance(last, dict) else last)
         hidx = hn.get("index") or {}
         env.check("HNSW 命中目标会话",
                   any(h.get("session_id") == sid for h in (hn.get("hits") or [])),

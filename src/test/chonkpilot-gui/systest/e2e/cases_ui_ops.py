@@ -72,125 +72,98 @@ def _toast_texts(env):
                    "'#b-message-container .b-message-text')].map(e=>e.textContent.trim()))") or []
 
 
-@case("S-SESS-UI-01", "会话", "会话导航：列表/切换/就地重命名/删除/fork/复制对话/新建会话",
-      stage="seeded", order=330, fp="33 会话导航 SessionsPane（test_session_drawer）",
-      desc="切到「会话」页签 → 两张卡片（标题/#id）；点卡片切换并落活动会话；首个动作就地改名；"
-           "第二个动作删除非当前会话（确认后移除）；第三个动作 fork 新增 1 卡；第四个动作复制对话"
-           "（json-array、不含 system、内容为原文）；新建会话清空 tag。")
+@case("S-SESS-UI-01", "会话", "会话导航（多 workdir）：工作区树列会话/点击打开页签/活动高亮/折叠展开",
+      stage="seeded", order=330, fp="33 工作区树 WorkspaceTree（替代原 SessionsPane 会话抽屉）",
+      desc="「工作区」一级段按项目分组列会话（标题）；点会话行 → 树内活动高亮 + 打开工作区页签；"
+           "点另一会话 → 活动切换/再开一页；点项目行折叠/展开会话列表。")
 def s_sess_ui_01(env):
     s1 = "e2e-sui-a-%s" % env.run_id
     s2 = "e2e-sui-b-%s" % env.run_id
     _mk_session(env, s1, "E2E Drawer One")
     _mk_session(env, s2, "E2E Drawer Two")
 
-    _mode(env, "sessions")
-    env.wait(lambda: True if _pane_open(env) else None, "会话页签可见", timeout=20)
+    # 多 workdir 后会话挂在「工作区」树（原「会话」一级段已撤）：mode=workspaces。
+    _mode(env, "workspaces")
+    env.wait(lambda: True if _ws_open(env) else None, "工作区树可见", timeout=20)
     segs = env.jsj("JSON.stringify([...document.querySelectorAll('.explorer-seg-btn')]"
                    ".map(e=>e.textContent.trim()))") or []
-    env.check("左侧导航含 项目·会话·记忆·扩展",
-              segs[:4] in (["项目", "会话", "记忆", "扩展"],
-                           ["Project", "Sessions", "Memory", "Extensions"]), segs[:6])
+    env.check("左侧导航含 工作区·项目·记忆·扩展",
+              segs[:4] in (["工作区", "项目", "记忆", "扩展"],
+                           ["Workspaces", "Project", "Memory", "Extensions"]), segs[:6])
 
-    env.wait(lambda: True if {"E2E Drawer One", "E2E Drawer Two"} <= set(_titles(env))
-             else None, "两张会话卡片就绪", timeout=20)
-    env.check("卡片标题集", {"E2E Drawer One", "E2E Drawer Two"} <= set(_titles(env)), _titles(env))
-    env.js("%s?.click(); 'ok'" % _card("E2E Drawer One"))
-    active = env.wait(lambda: (env.req("data-session-active-get", {}) or {}).get("session_id")
-                      if (env.req("data-session-active-get", {}) or {}).get("session_id") == s1
-                      else None, "点击卡片后活动会话落库", timeout=15)
-    env.eq("活动会话 = 点击的会话", active, s1)
-    env.check("切换后会话页签保持打开", _pane_open(env))
+    env.wait(lambda: True if {"E2E Drawer One", "E2E Drawer Two"} <= set(_ws_titles(env))
+             else None, "两条会话行就绪", timeout=30)
+    env.check("工作区树列出两条会话", {"E2E Drawer One", "E2E Drawer Two"} <= set(_ws_titles(env)),
+              _ws_titles(env))
 
-    # 就地重命名（第一个动作）
-    _click_card_action(env, "E2E Drawer One", 1)
-    env.wait(lambda: True if env.js("!!document.querySelector('.sessions-pane .session-title-input')")
-             is True else None, "改名输入框出现", timeout=10)
-    r = env.js("""(()=>{const el=document.querySelector('.sessions-pane .session-title-input');
-      if(!el)return 'no-input';el.value='E2E Renamed';
-      el.dispatchEvent(new Event('input',{bubbles:true}));
-      el.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',bubbles:true}));return 'ok'})()""")
-    env.check("提交改名", r == "ok", r)
-    env.wait(lambda: True if "E2E Renamed" in _titles(env) else None,
-             "改名后标题更新", timeout=15)
-    env.check("就地改名生效", "E2E Renamed" in _titles(env), _titles(env))
+    # 点会话 1 → 树内活动高亮 + 打开工作区页签
+    env.check("点击会话 1 行", _ws_click(env, "E2E Drawer One") == "ok")
+    env.wait(lambda: True if _ws_active(env) == "E2E Drawer One" else None,
+             "会话 1 活动高亮", timeout=15)
+    env.eq("活动会话行 = 点击的会话", _ws_active(env), "E2E Drawer One")
+    tab = env.wait(lambda: True if "E2E Drawer One" in _ws_tabs(env) else None,
+                   "会话 1 工作区页签", timeout=15)
+    env.check("打开工作区页签", tab is True, _ws_tabs(env))
 
-    # 删除非当前会话（s2 第二个动作）
-    _click_card_action(env, "E2E Drawer Two", 2)
-    env.wait(lambda: True if int(env.js(
-        "document.querySelectorAll('.dialog-shell .b-btn--primary').length") or 0) >= 1 else None,
-        "删除确认框出现", timeout=10)
-    _primary_dialog(env)
-    env.wait(lambda: True if "E2E Drawer Two" not in _titles(env) else None,
-             "删除后 s2 卡片消失", timeout=15)
-    env.check("保留卡片标题", "E2E Renamed" in _titles(env), _titles(env))
+    # 点会话 2 → 活动切换（原页签保留，新增一页）
+    env.check("点击会话 2 行", _ws_click(env, "E2E Drawer Two") == "ok")
+    env.wait(lambda: True if _ws_active(env) == "E2E Drawer Two" else None,
+             "会话 2 活动高亮", timeout=15)
+    env.eq("活动切换 = 会话 2", _ws_active(env), "E2E Drawer Two")
+    env.wait(lambda: True if len(_ws_tabs(env)) >= 2 else None, "两条工作区页签", timeout=15)
+    env.check("两会话各开一页签", {"E2E Drawer One", "E2E Drawer Two"} <= set(_ws_tabs(env)),
+              _ws_tabs(env))
 
-    # 复制对话（第四个动作）：补消息 + 剪贴板桩（在 fork 前做，避免派生会话同名卡片歧义）
-    turn = "t-e2e-sui-%s" % env.run_id
-    dlg = _dialog_of(env, s1)
-    env.check("取到复制源会话 dialog_id", bool(dlg), dlg)
-    env.req("data-session-ensure-turn",
-            {"turn_id": turn, "session_id": s1, "dialog_id": dlg})
-    for role, text in (("system", "[已压缩早前对话] 旧摘要"),
-                       ("user", "hello-1"),
-                       ("assistant", "reply-1"),
-                       ("user", "hello-2")):
-        env.req("data-session-append-message",
-                {"turn_id": turn, "dialog_id": dlg,
-                 "msg": {"role": role, "content": text}})
-    raw = (env.req("data-session-load-messages",
-                   {"data": {"turn_id": turn, "dialog_id": dlg}}) or {}).get("messages") or []
-    env.eq("复制源含 system 行（过滤判定有效）",
-           [m.get("role") for m in raw if isinstance(m, dict)],
-           ["system", "user", "assistant", "user"])
-
-    stub = env.js("(()=>{window.__ckCopy=null;try{Object.defineProperty(navigator,'clipboard',"
-                  "{configurable:true,value:{writeText:(t)=>{window.__ckCopy=String(t);"
-                  "return Promise.resolve()}}});return 'ok'}catch(e){return 'no-clip:'+e.message}})()")
-    env.check("剪贴板桩可用", stub == "ok", stub)
-    env.client.console(clear=True)
-    _click_card_action(env, "E2E Renamed", 4)
-    try:
-        copied = env.wait(lambda: env.js("window.__ckCopy"), "复制对话写入剪贴板", timeout=20)
-    except AssertionError:
-        env.note("复制诊断", "copy=%r toasts=%r titles=%r"
-                 % (env.js("window.__ckCopy"), _toast_texts(env)[:6], _titles(env)))
-        raise
-    if isinstance(copied, list):
-        parsed = copied                      # 驱动层已解一层 JSON
-    else:
-        try:
-            parsed = json.loads(copied) if copied else None
-        except Exception:
-            parsed = None
-    roles = [m.get("role") for m in (parsed or []) if isinstance(m, dict)]
-    texts = [m.get("content") for m in (parsed or []) if isinstance(m, dict)]
-    env.check("复制结果 roles（不含 system）", roles == ["user", "assistant", "user"],
-              "parsed=%r copy=%r" % (parsed, str(copied)[:160]))
-    env.eq("复制结果正文（原文顺序）", texts, ["hello-1", "reply-1", "hello-2"])
-    env.check("复制结果不含压缩摘要", "[已压缩早前对话]" not in str(copied))
-
-    # fork（第三个动作）
-    n0 = int(env.js("document.querySelectorAll('.sessions-pane .session-card').length") or 0)
-    _click_card_action(env, "E2E Renamed", 3)
-    env.wait(lambda: True if (any(("已派生对话" in x) or ("Dialog forked" in x)
-                                  or ("派生对话失败" in x) or ("Failed to fork" in x)
-                                  for x in _toast_texts(env))) else None,
-             "fork 提示出现", timeout=20)
-    ok_fork = any(("已派生对话" in x) or ("Dialog forked" in x) for x in _toast_texts(env))
-    n1 = int(env.js("document.querySelectorAll('.sessions-pane .session-card').length") or 0)
-    env.check("fork 成功并新增 1 卡", ok_fork and n1 == n0 + 1, (ok_fork, n0, n1))
-
-    # 新建会话清空 tag
-    env.js("document.querySelector('.sessions-pane .sp-new')?.click(); 'ok'")
-    env.wait(lambda: True if env.js("!document.querySelector('.chat-session-tag')") is True else None,
-             "新建会话后 tag 清除", timeout=15)
-    env.check("新建会话清空当前会话", env.js("!document.querySelector('.chat-session-tag')") is True)
+    # 项目行折叠/展开（v-show → 用可见性判定，不以 DOM 存在为准）
+    env.check("点击项目行折叠", _ws_toggle(env) == "ok")
+    env.wait(lambda: True if not _ws_titles(env) else None, "折叠后会话行隐藏", timeout=10)
+    env.check("折叠后无可见会话行", _ws_titles(env) == [], _ws_titles(env))
+    env.check("再次点击项目行展开", _ws_toggle(env) == "ok")
+    env.wait(lambda: True if {"E2E Drawer One", "E2E Drawer Two"} <= set(_ws_titles(env))
+             else None, "展开后会话行恢复", timeout=10)
 
     _mode(env, "project")
     errs = [e.get("text") for e in ((env.client.console() or {}).get("entries") or [])
             if e.get("level") == "error"
             and "method not implemented" not in (e.get("text") or "")]
     env.check("会话导航组无前端错误", len(errs) == 0, errs[:3])
+
+
+def _ws_open(env):
+    """工作区树面板是否可见（切到 workspaces 模式后首帧/异步切换的等待判据）。"""
+    return bool(env.js("(()=>{const n=document.querySelector('.ws-tree');"
+                       "return !!(n&&n.getBoundingClientRect().width>0);})()"))
+
+
+def _ws_titles(env):
+    """工作区树中**可见**的会话行标题（v-show 折叠时 width=0）。"""
+    return env.jsj("""JSON.stringify([...document.querySelectorAll('.ws-tree .ws-session')]
+      .filter(n=>n.getBoundingClientRect().width>0)
+      .map(n=>((n.querySelector('.ws-label')||{}).textContent||'').trim()))""") or []
+
+
+def _ws_active(env):
+    r = env.jsj("""JSON.stringify((()=>{const n=[...document.querySelectorAll('.ws-tree .ws-session.active')]
+      .find(x=>x.getBoundingClientRect().width>0);
+      return n?((n.querySelector('.ws-label')||{}).textContent||'').trim():''})())""") or ""
+    return str(r)
+
+
+def _ws_tabs(env):
+    return env.jsj("JSON.stringify([...document.querySelectorAll('.ws-tabs .ws-tab-label')]"
+                   ".map(n=>(n.textContent||'').trim()))") or []
+
+
+def _ws_click(env, title):
+    return env.js("""(()=>{const rows=[...document.querySelectorAll('.ws-tree .ws-session')];
+      const r=rows.find(x=>((x.querySelector('.ws-label')||{}).textContent||'').trim()===%s);
+      if(!r)return 'no-row';r.dispatchEvent(new MouseEvent('click',{bubbles:true}));return 'ok';})()"""
+                   % json.dumps(title))
+
+
+def _ws_toggle(env):
+    return env.js("""(()=>{const r=document.querySelector('.ws-tree .ws-project-row');
+      if(!r)return 'no-row';r.dispatchEvent(new MouseEvent('click',{bubbles:true}));return 'ok';})()""")
 
 
 def _task_state(env, kind):

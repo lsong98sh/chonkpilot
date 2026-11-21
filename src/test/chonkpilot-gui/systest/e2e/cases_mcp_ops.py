@@ -9,7 +9,7 @@
 * M3 子进程 cwd == 配置 cwd；M4 env 注入 + `${SystemRoot}` 展开；
 * M5 isolate 三态：未设置（stdio 推断隔离）/ true（跨 work_dir pid 不同）/ false（pid 相同）；
 * M7 enabled=false → 工具面移除，恢复 true → 重新出现；
-* M8 sandbox true/false 回读；http 条目不下沉 sandbox；
+* M8 sandbox 写入不报错、读侧不回显（DTO 已移除；未知字段落盘保留）；
 * M6/M9 hot_tools：原名 `["probe_info"]` / `["*"]` / `[]` → 工具面 `_meta.hot` 对应变化。
 
 注：M6/M9 的 UI「工具」页签勾选路径由 `S-CFG-DATA-01`（MCP 增删/列表）与本节数据面共同覆盖；
@@ -72,7 +72,7 @@ def _save(env, data):
       stage="seeded", order=394, fp="61 §3.1 data-mcp-* · 26 MCP gateway（run_mcp_fields M1–M5/M7–M9）",
       desc="stdio 全字段哨兵回读；工具面出现 probe_* 且 argv 逐参；cwd/env（含 ${SystemRoot} 展开）"
            "与配置一致；isolate 未设置→跨 work_dir pid 不同、true→不同、false→相同；enabled=false "
-           "移除工具、true 恢复；sandbox true/false 回读且 http 不下沉；hot_tools 原名/\"*\"/清空 "
+           "移除工具、true 恢复；sandbox 写入不回显（契约变更）；hot_tools 原名/\"*\"/清空 "
            "→ _meta.hot 对应 true/true/消失。")
 def s_mcp_fields_01(env):
     rid = env.run_id.replace("-", "_")
@@ -159,23 +159,27 @@ def s_mcp_fields_01(env):
         a1, b1 = _pid(env.workspace), _pid(wd_b)
         env.check("M5 isolate=false：跨 work_dir 共享同一 pid", a1 == b1, (a1, b1))
 
-        # M8 sandbox 三态（stdio）+ http 不下沉
+        # M8 sandbox：**2026-11-18 契约变更**（3c203ef「统一契约」）——`mcps[].sandbox`
+        # 已从数据 DTO 移除，写入的未知字段按 Extra 原样落盘、**只写不读**（读侧不回显）。
+        # 旧的「round-trip 回读」断言随之失效；此处改断言「写入不报错 + 读侧不再暴露」。
         base = {"name": name, "level": "user", "transport": "stdio",
                 "runtime": sys.executable, "args": argv, "cwd": cwd,
                 "env": envs, "timeout": 7, "enabled": True, "hot_tools": []}
         _save(env, dict(base, sandbox=True))
-        env.eq("M8 sandbox=true 回读", (_entry(env, name) or {}).get("sandbox"), True)
+        e8 = _entry(env, name) or {}
+        env.check("M8 sandbox=true 写入成功且读侧不回显（DTO 已移除）",
+                  "sandbox" not in e8, e8.get("sandbox"))
         _save(env, dict(base, sandbox=False))
-        env.eq("M8 sandbox=false 回读", (_entry(env, name) or {}).get("sandbox"), False)
+        e8b = _entry(env, name) or {}
+        env.check("M8 sandbox=false 写入成功且读侧不回显",
+                  "sandbox" not in e8b, e8b.get("sandbox"))
         _save(env, {"name": http_name, "level": "user", "transport": "http",
                     "url": "http://127.0.0.1:9/probe", "enabled": False,
                     "sandbox": True})
         eh2 = _entry(env, http_name) or {}
-        # 数据面允许把 sandbox 写入 http 条目；「仅 stdio 可开」是编辑弹窗的 UI 约束
-        # （开关 disabled，不写键），在 data-mcp 层不做丢弃 → 此处按真实语义断言 round-trip。
-        env.check("M8 http sandbox 字段 round-trip", eh2.get("sandbox") is True,
-                  eh2.get("sandbox"))
-        env.note("M8 UI 约束", "「仅 stdio 可开」由编辑弹窗开关 disabled 保证（数据面不丢弃）")
+        env.check("M8 http sandbox 写入不报错且读侧不回显",
+                  "sandbox" not in eh2, eh2.get("sandbox"))
+        env.note("M8 契约", "unity 契约后 sandbox 仅作未知字段落盘（Extra 只写不读）")
 
         # M6/M9 hot_tools：原名 / "*" / 清空
         _save(env, dict(base, hot_tools=["probe_info"]))

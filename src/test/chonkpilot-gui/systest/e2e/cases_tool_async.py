@@ -3,7 +3,9 @@
 （迁移自 run_tool_async B/C/E + 裁决行 DOM）。
 
 该测试点**需要独立实例**：第三方 stdio MCP（`slow3p`）在 GUI 启动期装配（保存后需重启），
-故在点内自起隔离实例，预写用户级 `capability/mcps/slow3p.json`（调用级 timeout=1s / 条目 timeout=5s → 快速到裁决点）。
+故在点内自起隔离实例，预写用户级 `capability/mcps/slow3p.json`（条目 hard timeout=60s），
+并以 usr `tool_async.slow3p_slow_sleep.threshold=1` 把 **manual 裁决点**压到 1s
+（2026-11-14 四模式后：threshold = 转异步/裁决点，timeout = 执行硬上限，二者分离）。
 
 * manual：超时 → `mcp-tools-timeout{reason:timeout, options:[detach,cancel], tool_call_id/task_id/
   instance_id, timeout_s}`，工具行 `message.manualThreshold` 高亮（`.background-btn.threshold-hit`）+
@@ -44,8 +46,8 @@ def _start_call(c, tag):
             break
         time.sleep(0.3)
     c.mq_on_capture(EVENTS)
-    c.mq_emit("llm-start", {"session_id": sid, "turn": "t-" + sid, "q": "",
-                            "llm": "", "think": "", "effort": "", "scenario_id": ""})
+    # 不再先发一个空 q 的 llm-start：它会在真实轮次前制造一次空回合，异步事件面下
+    # 真实轮次的 llm-start 可能落在其收尾前而被会话门控丢弃（工具行不渲染）。
     return sid
 
 
@@ -68,7 +70,30 @@ def _wait_ev(c, topic, pred=None, timeout=60):
 def _save_async(c, cfg):
     c.req("data-user-config-save", {"data": {"tool_async": json.dumps(cfg)}})
     c.mq_emit("config-refresh")
-    time.sleep(0.8)
+    # 热生效是**异步广播**（data-user-config-refresh → reloadToolAsyncOverrides），无确认应答；
+    # 固定 sleep 在满载下会偶发「阈值仍是默认 30s」→ 工具在人工裁决前已跑完（2026-11-21 复现）。
+    # 以 tools-list._meta 回读为生效判据（async 档位 + async-threshold）。
+    end = time.time() + 20
+    while time.time() < end:
+        rows = {t.get("name"): t for t in ((c.req("tools-list", {}) or {}).get("tools") or [])
+                if isinstance(t, dict)}
+        ok = True
+        for name, want in cfg.items():
+            meta = (rows.get(name) or {}).get("_meta") or {}
+            mode = str(meta.get("async") or "")
+            wmode = str(want.get("mode") or "")
+            if wmode:
+                if wmode == "auto":
+                    mode = mode or "auto"  # auto 不显式透出（契约面口径）
+                if mode != wmode:
+                    ok = False
+            wthr = int(want.get("threshold") or 0)
+            if wthr > 0 and int(meta.get("async-threshold") or 0) != wthr:
+                ok = False
+        if ok:
+            return
+        time.sleep(0.4)
+    time.sleep(0.5)  # 超时仍继续（配置面失败由后续判据暴露，不在此抛错）
 
 
 def _layer(c, sid, tcid, want=None, timeout=25):
@@ -88,7 +113,7 @@ def _layer(c, sid, tcid, want=None, timeout=25):
 
 @case("S-TOOL-ASYNC-01", "工具异步", "超时提示：manual 转后台 + 后台取消 / 工具行高亮 DOM",
       stage="seeded", order=391, fp="18 工具异步超时与取消 · run_tool_async E",
-      desc="隔离实例预注册 slow3p（调用级 timeout=1s / 条目 timeout=5s）：manual 超时 → "
+      desc="隔离实例预注册 slow3p（usr threshold=1s / 条目 hard timeout=60s）：manual 超时 → "
            "mcp-tools-timeout{options:[detach,cancel]} 且工具行 threshold-hit + async 徽标；"
            "task-background → 层行 detached；task-stop(task_id) → cancelled + tasks.done。")
 def s_tool_async_01(env):
@@ -99,7 +124,7 @@ def s_tool_async_01(env):
         json.dump({"name": "slow3p", "level": "user", "transport": "stdio",
                    "runtime": sys.executable,
                    "args": [FIXTURE, "--sleep", "30"], "enabled": True,
-                   "timeout": TIMEOUT_S}, f)
+                   "timeout": 60}, f)
     h = None
     try:
         h = _h.start_gui(port=_h.free_port(), work_dir=_h.tmp_dir("ck-e2e-async-ws-"),
@@ -128,7 +153,8 @@ def s_tool_async_01(env):
             raise AssertionError("slow3p 未装配 → 超时裁决不可测")
 
         # ── E：manual 超时 → 转后台 → 后台取消 ──
-        _save_async(c, {"slow3p_slow_sleep": {"mode": "manual"}})
+        # manual 裁决点 = 1s（threshold）；条目 timeout=60s 仅作执行硬上限（不在用例窗口内触发）
+        _save_async(c, {"slow3p_slow_sleep": {"mode": "manual", "threshold": 1}})
         sid3 = _start_call(c, "manual")
         _ask(c, sid3, "please call slow3p-manual")
         p3 = _wait_ev(c, "mcp-tools-timeout", lambda x: x.get("reason") == "timeout", 60)
@@ -166,7 +192,12 @@ def s_tool_async_01(env):
                   dom.get("found") is True and dom.get("btn") is True
                   and bool(dom.get("badge")), dom)
 
-        bg = c.req("task-background", {"tool_call_id": p3["tool_call_id"]}) or {}
+        # 61 §0：instance 级主题须带 instance_id（前端 mq 自动注入；测试驱动需显式带）。
+        # 缺省 → 执行池按空实例查不到 exec → DetachExec 的 detached 执行态无接收方
+        # （层权威行停在 pending；2026-11-21 实测）。层侧现已用执行态自带 instance 兜底
+        # （exec.go OnExecState）——本处仍显式传，保持消息面口径。
+        bg = c.req("task-background", {"tool_call_id": p3["tool_call_id"],
+                                        "instance_id": p3.get("instance_id") or ""}) or {}
         env.check("E task-background 回执 task_id", bool(bg.get("task_id")), bg)
         row = _layer(c, sid3, p3["tool_call_id"], want="detached", timeout=25)
         env.check("E 转后台后层权威行 state=detached", (row or {}).get("state") == "detached",

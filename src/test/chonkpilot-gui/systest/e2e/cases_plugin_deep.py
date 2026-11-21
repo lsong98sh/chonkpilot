@@ -8,7 +8,7 @@ test_plugin_config_e2e A/B/C 的核心机制）。
 * A3/A4：插件卡片背景随主题变化、正文对比度 ≥ 4.5；
 * C1–C8（代表插件）：web 关闭 → 卡片 is-off + plugin disabled/stopped + HEAD 404 + RPC 失败 +
   禁用态配置页「插件未就绪」占位；重新启用 → running + HEAD 200；file 关闭 → 工具面移除，
-  启用 → 工具恢复；enabled.json 落库随开关变化。
+  启用 → 工具恢复；启用态以宿主 DB plugin_state（plugin-list.enabled）为准。
 """
 
 import json
@@ -109,20 +109,13 @@ def _set_theme(env, theme):
 
 
 def _enabled_flag(env, pid):
-    """插件启用表（LOCALAPPDATA/chonkpilot/plugins/enabled.json）中的值。"""
-    la = os.environ.get("LOCALAPPDATA") or ""
-    cands = []
-    for base in (os.path.join(env.data_root, "plugins"),
-                 os.path.join(la, "chonkpilot", "plugins") if la else ""):
-        if base:
-            cands.append(os.path.join(base, "enabled.json"))
-    for p in cands:
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                return (json.load(f) or {}).get(pid)
-        except Exception:
-            continue
-    return None
+    """插件启用态**权威 = 宿主 DB `plugin_state`**（`plugin-list` 视图 `enabled` 字段）。
+
+    2026-11-02 起启用态不再写 `DataDir/plugins/enabled.json`（见 mgr.setEnabled：
+    "权威 = plugin_state（宿主 DB）；不再写 DataDir/plugins/enabled.json"）。
+    """
+    p = _plugin(env, pid)
+    return None if p is None else bool(p.get("enabled"))
 
 
 def _wait_flag(env, pid, want, timeout=20):
@@ -140,7 +133,7 @@ def _wait_flag(env, pid, want, timeout=20):
       stage="seeded", order=396, fp="42 插件平台 · test_plugin_config_e2e A/B/C",
       desc="全部插件 running；≥9 个配置页 iframe 加载（控件/文案非空）；dark 下发 iframe 且背景=宿主、"
            "卡片背景随主题变化且正文对比度≥4.5；web 禁用 → is-off/disabled/HEAD404/RPC失败/占位，"
-           "启用 → running/HEAD200；file 禁用 → 工具面移除，启用 → 恢复；enabled.json 随开关变化。")
+           "启用 → running/HEAD200；file 禁用 → 工具面移除，启用 → 恢复；启用态随 plugin-list.enabled 变化。")
 def s_plug_deep_01(env):
     def _all_running():
         rows = _plugins(env)
@@ -235,7 +228,7 @@ def s_plug_deep_01(env):
             env.check("C1 web 禁用 → 卡片 is-off + 插件 disabled/stopped",
                       _card_off(env, "web") and bool(off),
                       (off or {}).get("status"))
-            env.check("C1b enabled.json web=false", _wait_flag(env, "web", False) is False,
+            env.check("C1b plugin-list.enabled web=false", _wait_flag(env, "web", False) is False,
                       _enabled_flag(env, "web"))
             env.check("C3 web 配置资源 HEAD 404", _wait_head(env, "web", 404, timeout=30) == 404)
             rpc = False
@@ -263,7 +256,7 @@ def s_plug_deep_01(env):
             env.check("点击 web 开关（开）", _click_switch(env, "web"))
             on = _wait_plugin(env, "web", {"running"}, timeout=120)
             env.check("C5 web 启用 → running", bool(on), (on or {}).get("status"))
-            env.check("C5b enabled.json web=true", _wait_flag(env, "web", True) is True,
+            env.check("C5b plugin-list.enabled web=true", _wait_flag(env, "web", True) is True,
                       _enabled_flag(env, "web"))
             env.check("C7 web 配置资源 HEAD 200", _wait_head(env, "web", 200, timeout=60) == 200)
             env.js("window.mq.emit('preview-tab-close-all', {}); 'ok'")

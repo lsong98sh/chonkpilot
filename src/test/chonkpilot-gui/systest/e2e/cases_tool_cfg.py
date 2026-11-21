@@ -54,10 +54,14 @@ def s_tool_cfg_01(env):
     try:
         # ── 工具异步页 ──
         env.check("打开工具异步页", _open_page(env, "settings-tool-async") is True)
-        dom = env.jsj("""JSON.stringify((()=>{const ps=[...document.querySelectorAll('.settings-page')]
-          .filter(p=>p.getBoundingClientRect().width>0);const P=ps[ps.length-1];
-          return {rows:P.querySelectorAll('.b-table tbody tr').length,
-                  txt:(P.innerText||'')};})())""") or {}
+        # loadTools 为异步（tools-list 往返）→ 有界等待首行渲染，避免「页面已开、表格未回填」
+        # 的瞬时 0 行假失败。
+        dom = env.wait(lambda: (lambda d: d if int((d or {}).get("rows") or 0) >= 1 else None)(
+            env.jsj("""JSON.stringify((()=>{const ps=[...document.querySelectorAll('.settings-page')]
+              .filter(p=>p.getBoundingClientRect().width>0);const P=ps[ps.length-1];
+              return P?{rows:P.querySelectorAll('.b-table tbody tr').length,
+                      txt:(P.innerText||'')}:null;})())""")),
+            "异步页表格首行", timeout=20) or {}
         env.check("异步页表格有数据行", int(dom.get("rows") or 0) >= 1, dom.get("rows"))
         opts = env.jsj("""JSON.stringify((()=>{const ps=[...document.querySelectorAll('.settings-page')]
           .filter(p=>p.getBoundingClientRect().width>0);const P=ps[ps.length-1];

@@ -337,7 +337,9 @@ def route_tool_calls(text):
     if "call slow3p-echo" in t:
         return [("slow3p_fast_echo", {"text": "ping", "tool_call_display_name": "夹具"})]
     if "call slow3p-manual" in t:
-        return [("slow3p_slow_sleep", {"seconds": 5, "async": "manual", "timeout": 1,
+        # 调用级 timeout = 执行硬上限（2026-11-14 四模式后与 manual 裁决点分离）；
+        # 裁决点由 E2E 用例的 usr tool_async.threshold=1 提供，此处不设 timeout。
+        return [("slow3p_slow_sleep", {"seconds": 40, "async": "manual",
                                        "tool_call_display_name": "夹具"})]
     # ── 任务/工具面（GATEWAY-2 L1：`dsl_run` + DSL 作业根已删除）──
     # 原 dsl_run 的 `LLM "<agent>" "<prompt>" "<目的>"` 委派步骤 / LOOP 批量 / 执行器子会话
@@ -504,15 +506,15 @@ def route_tool_calls(text):
         return [("file_read", {"targets": [{"path": a_abs}],
                                "tool_call_display_name": "读取 a.txt（工具调用链路）"})]
     if "call async-cmd" in t:
-        # C13/C18：子会话命令转后台（_async=true）→ 长运行，使 batch 根任务保持运行中
+        # C13/C18：子会话命令转后台（调用级 async=async）→ 长运行，使 batch 根任务保持运行中
         #（验证 task-stop 级联 / 任务树实时状态；task_run = 产品命令执行工具）
         return [("task_run", {"command": "Start-Sleep -Seconds 19",
-                              "_async": True, "tool_call_display_name": "测试"})]
+                              "async": "async", "tool_call_display_name": "测试"})]
     if "call py-async" in t:
         # task_run 异步（async 转后台）；结果回填 = turn 挂起等后台完成回报
         # （run_tools.py 断言 tool-pair async + tool-result 终态，不再由 LLM 主动轮询取结果）
         return [("task_run", {"command": "Write-Output py-slow",
-                              "_async": True, "tool_call_display_name": "测试"})]
+                              "async": "async", "tool_call_display_name": "测试"})]
     if "call py" in t:
         # task_run（PowerShell）同步：快命令立即完成 → 验证 tool-result 回填链路
         return [("task_run", {"command": "Write-Output py-ok",
