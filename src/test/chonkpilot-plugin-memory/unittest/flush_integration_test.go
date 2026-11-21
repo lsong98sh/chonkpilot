@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,8 +29,12 @@ import (
 	"github.com/chonkpilot/chonkpilot-data/persist"
 	"github.com/lsong98sh/chonkpilot-framework/host/core/mq"
 	memory "github.com/chonkpilot/chonkpilot-plugin-memory"
+	"github.com/lsong98sh/chonkpilot-plugin-framework/runtime/buscall"
 	plugin "github.com/lsong98sh/chonkpilot-plugin-framework/runtime/hook"
 )
+
+// reqSeq 是 call 的 req_id 序号（同主题多次请求须互异；应答按 req_id 收敛）。
+var reqSeq atomic.Uint64
 
 // strval 任意值 → 字符串（与插件侧同口径的测试用取值）。
 func strval(v any) string {
@@ -51,7 +56,7 @@ func strval(v any) string {
 // call 发一次 data-* 请求并等 persist 应答（测试用最小客户端；与外部黑盒用例同法）。
 func call(t *testing.T, bus mq.Bus, subject string, body map[string]any) map[string]any {
 	t.Helper()
-	body["req_id"] = "t-" + subject
+	body["req_id"] = fmt.Sprintf("t-%s-%d", subject, reqSeq.Add(1))
 	ch := make(chan map[string]any, 1)
 	sub, err := bus.On(subject, 0, func(_ context.Context, _ string, v *mq.Value) error {
 		var m map[string]any
@@ -72,7 +77,9 @@ func call(t *testing.T, bus mq.Bus, subject string, body map[string]any) map[str
 	}
 	defer sub.Unsubscribe()
 	raw, _ := json.Marshal(body)
-	bus.Emit(context.Background(), subject, raw).Wait()
+	if err := bus.Publish(subject, raw); err != nil {
+		t.Fatalf("publish %s: %v", subject, err)
+	}
 	select {
 	case m := <-ch:
 		return m
@@ -106,7 +113,9 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 	reg, _ := json.Marshal(map[string]any{
 		"instance_id": "ins-int", "client_type": "unittest", "work_dir": wd,
 	})
-	bus.Emit(context.Background(), "instance-register", reg).Wait()
+	if err := bus.Publish("instance-register", reg); err != nil {
+		t.Fatalf("publish instance-register: %v", err)
+	}
 	time.Sleep(30 * time.Millisecond)
 	data.Register("ins-int", wd, "")
 
@@ -213,8 +222,8 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 
 	// 真插件（Start 订阅 session-complete + memory.flush）
 	p := memory.New(memory.DefaultOptions())
-	// 插件只认框架总线；hostBus 把宿主总线适配过去（同一底层总线，见 busadapter_test.go）。
-	if err := p.Start(plugin.Deps{Bus: hostBus{bus}, Logf: t.Logf}); err != nil {
+	// 宿主 mq.Bus = 框架 runtime/bus 的类型别名（PLUGIN-SPLIT-1 统一总线），可直接注入。
+	if err := p.Start(plugin.Deps{Bus: bus, Logf: t.Logf}); err != nil {
 		t.Fatalf("plugin Start: %v", err)
 	}
 	defer p.Stop()
@@ -236,15 +245,18 @@ func TestManualFlushIntegrationWritesMemoryFiles(t *testing.T) {
 
 	// 触发手动沉淀（payload 与前端 mq.emit 一致：{instance_id, session, dialog_id}；61 §0.6 恒必填）
 	// ——**投递即回**（I-128）
-	v := bus.Emit(context.Background(), "memory.flush", map[string]any{
+	// 总线 promise 退场（2026-11-19）：请求-应答走 buscall（req_id 信封）。
+	caller := buscall.New(bus)
+	defer caller.Close()
+	ack, err := caller.CallWithTimeout(context.Background(), 5*time.Second, "memory.flush", map[string]any{
 		"instance_id": "ins-int", "session": "s-int", "dialog_id": dialogID,
-	}).Wait()
-	if err := v.Err(); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("memory.flush 派发错误：%v", err)
 	}
-	res, _ := v.Result.(map[string]any)
+	res, _ := ack.(map[string]any)
 	if res == nil || res["ok"] != true {
-		t.Fatalf("memory.flush 回执异常：%#v", v.Result)
+		t.Fatalf("memory.flush 回执异常：%#v", ack)
 	}
 	if queued, _ := res["queued"].(bool); !queued {
 		t.Fatalf("memory.flush 应投递即回（queued=true，不再同步等）：%#v", res)

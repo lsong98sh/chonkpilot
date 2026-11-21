@@ -31,7 +31,7 @@ import (
 
 func pubJSON(bus mq.Bus, subject string, v any) {
 	b, _ := json.Marshal(v)
-	bus.Emit(context.Background(), subject, b)
+	bus.Publish(subject, b)
 }
 
 // regCapture 记录 gateway tools/register|unregister 消息（并应答，使插件注册成功）。
@@ -73,7 +73,7 @@ func stubPrjConfig(t *testing.T, bus mq.Bus, vals map[string]string) *regCapture
 		b, _ := json.Marshal(map[string]any{
 			"req_id": reqID, "ok": true, "result": map[string]any{"data": vals[id]},
 		})
-		go bus.Emit(context.Background(), "data-prj-config-load", b)
+		go bus.Publish("data-prj-config-load", b)
 		return nil
 	}); err != nil {
 		t.Fatalf("桩应答订阅失败: %v", err)
@@ -85,7 +85,7 @@ func stubPrjConfig(t *testing.T, bus mq.Bus, vals map[string]string) *regCapture
 		}
 		reqID, _ := m["req_id"].(string)
 		b, _ := json.Marshal(map[string]any{"req_id": reqID, "ok": true, "result": map[string]any{}})
-		go bus.Emit(context.Background(), "data-prj-config-save", b)
+		go bus.Publish("data-prj-config-save", b)
 		return nil
 	}); err != nil {
 		t.Fatalf("桩应答订阅失败: %v", err)
@@ -93,6 +93,9 @@ func stubPrjConfig(t *testing.T, bus mq.Bus, vals map[string]string) *regCapture
 	if _, err := bus.On("mcp-tools-register", 0, func(_ context.Context, _ string, v *mq.Value) error {
 		var p map[string]any
 		_ = json.Unmarshal(v.Payload, &p)
+		if p["ok"] != nil {
+			return nil // 2026-11-19 起 v.Result 写回会以 {req_id,ok,result} 回派发 → 跳过应答信封
+		}
 		cap.mu.Lock()
 		cap.regs = append(cap.regs, p)
 		cap.mu.Unlock()
